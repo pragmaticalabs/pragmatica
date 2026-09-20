@@ -258,7 +258,12 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// #1262: the stream's COMMITTED consistency is checked first (the same guard `PartitionedStreamAccess` and
     /// `StreamWriteRouter` apply), not only the mode this publisher was built with — the hardcoded-EVENTUAL
     /// system/DLQ publishers, or a config adopted after construction, must not append EVENTUAL to a stream
-    /// committed STRONG or UNKNOWN.
+    /// committed STRONG or UNKNOWN. The guard sits at the entry points rather than in
+    /// `StreamPartitionManager.publishLocal` because every reachable caller is covered here and
+    /// `publishLocal` is the hot path — a second map lookup per append buys nothing (rev1301 M21 measured the
+    /// guard in `publishLocal` green against the whole module, so no test constrains the placement). The one
+    /// direct `publishLocal` caller, `StreamEntityLogSubstrate`, builds an EVENTUAL config by construction;
+    /// a future direct caller on a STRONG stream is the residual.
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
         return partitionManager.ensureWritableConsistency(streamName)
                                .async()

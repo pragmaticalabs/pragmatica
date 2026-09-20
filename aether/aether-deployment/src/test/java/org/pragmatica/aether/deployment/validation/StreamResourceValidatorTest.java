@@ -355,7 +355,7 @@ class StreamResourceValidatorTest {
             result.onSuccessRun(() -> fail("Expected failure"))
                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
                                               .filteredOn(failure -> failure.rule()
-                                                                            .equals(StreamResourceValidator.RULE_INERT_STREAM_CONFIG))
+                                                                            .equals(StreamResourceValidator.RULE_UNSUPPORTED_CONSISTENCY))
                                               .extracting(StreamValidationFailure::message)
                                               .anySatisfy(message -> assertThat(message).contains("consistency")
                                                                                         .contains("#1262")));
@@ -375,6 +375,8 @@ class StreamResourceValidatorTest {
 
             result.onSuccessRun(() -> fail("Expected failure"))
                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .filteredOn(failure -> failure.rule()
+                                                                            .equals(StreamResourceValidator.RULE_UNSUPPORTED_CONSISTENCY))
                                               .extracting(StreamValidationFailure::message)
                                               .anySatisfy(message -> assertThat(message).contains("consistency_mode")
                                                                                         .contains("#1262")));

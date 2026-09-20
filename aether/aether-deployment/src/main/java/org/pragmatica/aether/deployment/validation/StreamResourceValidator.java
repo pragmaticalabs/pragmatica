@@ -58,6 +58,10 @@ public sealed interface StreamResourceValidator {
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
     String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
+    /// The ONE gating rule (#1262): a STRONG declaration fails the deploy, where every other stream-validation
+    /// failure degrades to empty bindings. Its own id, so a runbook, a UI or a test keying on the rule can
+    /// tell the refusal from the non-gating class.
+    String RULE_UNSUPPORTED_CONSISTENCY = "unsupported-stream-consistency";
     String STREAMS_SECTION_PREFIX = "streams.";
     String STRONG = "strong";
     List<String> CONSISTENCY_KEYS = List.of("consistency_mode", "consistency");
@@ -99,7 +103,9 @@ public sealed interface StreamResourceValidator {
     /// empty bindings: a stream declaring `STRONG` consistency. No write path can honour it (the consensus
     /// publish path has no production caller), so deploying it would produce a stream every write refuses.
     /// `BlueprintService` runs this on every `resources.toml` it deploys, on both the artifact and the body
-    /// publish path, before any command is applied.
+    /// publish path, before any command is applied — and regardless of `registerOnly`, so a STRONG blueprint
+    /// cannot even be registered. Reported under [#RULE_UNSUPPORTED_CONSISTENCY], not the non-gating
+    /// [#RULE_INERT_STREAM_CONFIG].
     static Result<Unit> ensureHonourableConsistency(Option<String> resourcesConfig) {
         var failures = resourcesConfig.map(StreamResourceValidator::consistencyFailures).or(List.of());
 
@@ -146,7 +152,7 @@ public sealed interface StreamResourceValidator {
 
     private static StreamValidationFailure unsupportedConsistency(String section, String key) {
         return StreamValidationFailure.streamValidationFailure("[" + section + "]",
-                                                               RULE_INERT_STREAM_CONFIG,
+                                                               RULE_UNSUPPORTED_CONSISTENCY,
                                                                key
                                                               + " 'strong' cannot be honoured — the consensus publish path is not wired in "
                                                               + "this release, so every write to the stream would be refused (#1262). Remove the "
