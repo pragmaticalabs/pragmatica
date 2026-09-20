@@ -18,11 +18,15 @@
   for all five ACTIVE on distinct nodes before any arm publishes. Left autoscalable, the slice was
   descaled 5 → 4 → 3 mid-run and no consumer was attached anywhere for 5.5 minutes (#1389), and a
   late `forceActivatingToActive` moved the consumer inside an arm's window.
-- The pre-attach arm asserts on one id, never a count: the order-events warm-up whose publish
-  returned a definite success while `attachedSubscriptions` read 0 on every node. A warm-up whose
-  outcome came back unknown (5 s replication timeout, #1236) is excluded and retried under a fresh id;
-  a retry delivered by the listener after the attach used to satisfy the old `>= 1`. A run in which
-  the consumer attached before the first definite success skips the arm with that reading in the
-  message, since nothing in that run can speak about the backlog read.
+- The pre-attach arm asserts on one id, never a count: the order-events warm-up that is definitely
+  in the log before the attach — its publish returned success, or its outcome came back unknown (5 s
+  replication timeout, #1236) and the partition owner's head offset (`GET
+  /api/v1/streams/{name}/{partition}/replicas-local`, the one stream read route that takes the raw
+  `topic:` engine key) advanced by exactly one across the attempt — with `attachedSubscriptions`
+  reading 0 on every node afterwards. Warm-ups that neither resolved nor could be observed are
+  excluded and retried under a fresh id; a retry delivered by the listener after the attach used to
+  satisfy the old `>= 1`. A run in which no warm-up can be placed in the log before the attach skips
+  the arm with the readings in the message, since nothing in that run can speak about the backlog
+  read. The deterministic form of this arm is #739.
 - Publish outcomes (#1236) and pre-durability visibility (#1235) have no arm. This harness cannot
   drive either without losing quorum or failing over the owner. [unverified: no arm reaches them]

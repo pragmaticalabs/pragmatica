@@ -144,15 +144,24 @@ class DurableTopicDeliveryForgeTest {
     /// 5 runs) can be forced for a mutation probe. Never set in CI.
     private static final String FORCE_UNKNOWN_FIRST_WARMUP = "durableTopic.forceUnknownFirstWarmup";
 
-    /// The one order-events warm-up whose publish returned a DEFINITE success while `attachedSubscriptions`
-    /// read 0 on every node — the event [PreAttachBacklog] asserts on, by id, never by count. Empty when
-    /// no gate attempt met both conditions (see [#publishPreAttachWarmup]).
+    /// The one order-events warm-up that is DEFINITELY IN THE LOG BEFORE THE ATTACH — the event
+    /// [PreAttachBacklog] asserts on, by id, never by count. Established one of two ways, both with
+    /// `attachedSubscriptions` read as 0 on every node afterwards: the publish returned success, or its
+    /// outcome came back unknown and the owner's head offset advanced by exactly one across the attempt
+    /// (see [#publishPreAttachWarmup]). Empty when no gate attempt met either.
     private Option<String> preAttachOrderId = Option.none();
 
-    /// Order-events gate publishes whose outcome came back unknown or failed. Excluded from every
-    /// verdict: such an event may or may not be in the log, and a retry of it that lands after the
-    /// consumer attached is delivered by the listener, which is exactly what [PreAttachBacklog] must not
-    /// mistake for a backlog read.
+    /// How [#preAttachOrderId] was established, for the arm's message.
+    private String preAttachEvidence = "";
+
+    /// Gate attempts made so far; names the next `__warmup__-N`.
+    private int warmupAttempts = 0;
+
+    /// Order-events gate publishes that neither returned success nor could be resolved from the owner's
+    /// head offset, each with the readings that failed to resolve it. Excluded from every verdict: such
+    /// an event may or may not be in the log, and a retry of it that lands after the consumer attached
+    /// is delivered by the listener, which is exactly what [PreAttachBacklog] must not mistake for a
+    /// backlog read.
     private final List<String> excludedWarmupIds = new ArrayList<>();
 
     /// `attachedSubscriptions` summed over every node when the first definite success returned, for
@@ -175,6 +184,14 @@ class DurableTopicDeliveryForgeTest {
     private static final Pattern HEALTHY_PAYLOADS = Pattern.compile("\"healthyPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
     private static final Pattern INSTANCE_ID = Pattern.compile("\"instanceId\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern ATTACHED_SUBSCRIPTIONS = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
+    private static final Pattern SERVED_BY_OWNER = Pattern.compile("\"servedByOwner\"\\s*:\\s*true");
+    private static final Pattern OWNER_HEAD_OFFSET = Pattern.compile("\"ownerHeadOffset\"\\s*:\\s*(-?\\d+)");
+
+    /// The engine key of the `order-events` topic's backing stream: `topic:` + the blueprint-namespaced
+    /// address (`DurableTopicNames.TOPIC_STREAM_PREFIX`). Four colon-separated parts, so no
+    /// `(namespace, stream, version)` management route can address it (`Namespace` admits no colon);
+    /// the one read route that takes the raw name is `STREAM_REPLICAS_LOCAL`.
+    private static final String ORDER_EVENTS_TOPIC_STREAM = "topic:" + TestArtifacts.streamEngineKey(BLUEPRINT_ID, "order-events");
     private static final Pattern QUOTED = Pattern.compile("\"([^\"]*)\"");
 
     private EmberCluster cluster;
@@ -273,32 +290,39 @@ class DurableTopicDeliveryForgeTest {
     /// once #1285 merged. The stranding is also the mechanism #751 left unexplained: the suite's old
     /// setUp drain gate waited on exactly this event and timed out on every run.
     ///
-    /// The arm asserts on ONE id, [#preAttachOrderId], never on a count of warm-ups. A gate publish
-    /// whose outcome came back unknown (5 s replication timeout, #1236) is retried under a fresh id
-    /// (#1237); had the arm counted every warm-up, a retry delivered by the listener after the attach
-    /// would satisfy it while the backlog read it claims to prove was missing (rev1341 F2). The
-    /// pre-attach precondition is OBSERVED per run, not assumed: the id qualifies only if
-    /// `attachedSubscriptions` read 0 on every node AFTER its publish returned success — an append that
-    /// completed before any node put the group into its active set completed before any listener was
-    /// installed. `attachedSubscriptions` counts durable-topic groups too (they join
-    /// `StreamConsumerManager.active` like registry consumers), which is what makes the read speak
-    /// about this group.
+    /// The arm asserts on ONE id, [#preAttachOrderId], never on a count of warm-ups: the warm-up that is
+    /// definitely in the log before the attach. A gate publish whose outcome came back unknown (5 s
+    /// replication timeout, #1236) is retried under a fresh id (#1237); had the arm counted every
+    /// warm-up, a retry delivered by the listener after the attach would satisfy it while the backlog
+    /// read it claims to prove was missing (rev1341 F2). The precondition is OBSERVED per run, not
+    /// assumed: `attachedSubscriptions` must read 0 on every node AFTER the event is known to be in the
+    /// log — an append that completed before any node put the group into its active set completed
+    /// before any listener was installed. `attachedSubscriptions` counts durable-topic groups too (they
+    /// join `StreamConsumerManager.active` like registry consumers), which is what makes the read speak
+    /// about this group. An unknown outcome is resolved from the owner's head offset rather than
+    /// discarded, because the first publish to a fresh topic routinely times out at 5 s with its event
+    /// landed while the consumer attaches on the first reconcile tick (~5 s after registration) — the
+    /// two coincide, and discarding every timed-out attempt left the arm observing its shape in one run
+    /// of three. When neither path establishes an id the arm aborts with the readings in its message:
+    /// a named skip, never a green. The deterministic successor — an event appended while the owner is
+    /// SIGKILLed and no consumer is attached — is #739, not this arm.
     @Nested
     @Order(1)
     class PreAttachBacklog {
         @Test
         void eventPublishedBeforeTheGroupAttached_isDeliveredWithoutAFollowUpAppend() {
             var id = preAttachOrderId.or(() -> Assumptions.abort(
-                    "pre-attach shape not established this run: the first order-events publish that"
-                    + " returned success did so with attachedSubscriptions=" + attachedWhenWarmupSucceeded
-                    + " across the nodes (the consumer was already attached; excluded unknown-outcome"
-                    + " ids: " + excludedWarmupIds + "). Nothing this run can say about the backlog read"
-                    + " at subscribe — see the class doc for why this is a named skip, not a red"));
+                    "pre-attach shape not established this run: no order-events warm-up was observed in"
+                    + " the log before the attach — the first publish that returned success did so with"
+                    + " attachedSubscriptions=" + attachedWhenWarmupSucceeded + " across the nodes, and the"
+                    + " unknown-outcome attempts could not be resolved from the owner's head offset:"
+                    + " " + excludedWarmupIds + ". Nothing this run can say about the backlog read at"
+                    + " subscribe — see the class doc for why this is a named skip, not a red"));
 
-            awaitSettled("%s was published with a definite success before any consumer attached, so a"
-                         .formatted(id)
-                         + " subscribe that reads the backlog delivers it, once, without any further"
-                         + " publish (excluded unknown-outcome warm-ups: " + excludedWarmupIds + ")",
+            awaitSettled("%s is definitely in the log before the attach (%s), so a subscribe that reads"
+                         .formatted(id, preAttachEvidence)
+                         + " the backlog delivers it, once, without any further publish (excluded"
+                         + " warm-ups: " + excludedWarmupIds + ")",
                          () -> deliveriesOf(id),
                          1L);
         }
@@ -652,11 +676,25 @@ class DurableTopicDeliveryForgeTest {
         return !body.contains("\"error\"") && body.contains("count");
     }
 
-    /// One gate attempt: publishes a fresh `__warmup__-N` order and classifies the outcome. Definite
-    /// success ends the gate; the id becomes [#preAttachOrderId] only if no node had the group attached
-    /// once the publish had returned. Anything else — an error body, the 5 s replication timeout, an
-    /// HTTP failure — puts the id on [#excludedWarmupIds] and the gate tries again under the next id.
-    /// The first attempt is classified unknown unconditionally when [#FORCE_UNKNOWN_FIRST_WARMUP] is set.
+    /// One gate attempt: publishes a fresh `__warmup__-N` order and classifies the outcome. A definite
+    /// success ends the gate (the publish path resolves, which is what every arm's publishes rely on).
+    /// The id becomes [#preAttachOrderId] — once, never overwritten — when it is definitely in the log
+    /// before the attach:
+    ///
+    ///  - the publish returned success and `attachedSubscriptions` then read 0 on every node; or
+    ///  - the outcome came back unknown (the 5 s replication timeout, #1236: "the event may already be
+    ///    in the log") and the owner's head offset, read before and after the attempt, advanced by
+    ///    EXACTLY one, with `attachedSubscriptions` still 0 after that read. The outcome is then resolved
+    ///    by observation rather than excluded: the append is in the log at a known offset, and the attach
+    ///    had not happened when the offset was read. Attempt 0 runs against a topic materialized at
+    ///    deploy under a fresh `@TempDir`, so its baseline is 0 by construction even before the partition
+    ///    has an owner to report one; later attempts use the previous read.
+    ///
+    /// Anything else — an error body, an HTTP failure, an unknown outcome whose offset did not advance by
+    /// exactly one (not landed, or landed alongside an earlier unknown one) — puts the id on
+    /// [#excludedWarmupIds]; the gate tries again under the next id either way until a publish resolves.
+    /// The first attempt is classified unknown unconditionally when [#FORCE_UNKNOWN_FIRST_WARMUP] is set,
+    /// which exercises the second path on a run whose first publish would have resolved.
     private boolean publishPreAttachWarmup() {
         var ports = cluster.getAvailableAppHttpPorts();
 
@@ -664,26 +702,76 @@ class DurableTopicDeliveryForgeTest {
             return false;
         }
 
-        var attempt = excludedWarmupIds.size();
+        var attempt = warmupAttempts++;
         var id = WARMUP_ID + "-" + attempt;
+        var headBefore = orderEventsHeadOffset().or(attempt == 0 ? 0L : -1L);
         var response = httpPost(ports.getFirst(),
                                 "/api/durable-topic/publish-order",
                                 "{\"orderId\":\"" + id + "\",\"sequence\":0}");
         var forcedUnknown = attempt == 0 && Boolean.getBoolean(FORCE_UNKNOWN_FIRST_WARMUP);
         var definiteSuccess = !forcedUnknown && !response.contains("\"error\"") && response.contains("published");
 
-        if (!definiteSuccess) {
-            excludedWarmupIds.add(id);
+        if (definiteSuccess) {
+            attachedWhenWarmupSucceeded = attachedSubscriptionsClusterWide();
+            establishPreAttachId(id, attachedWhenWarmupSucceeded, "its publish returned success");
 
+            return true;
+        }
+
+        var headAfter = orderEventsHeadOffset().or(-1L);
+        var landedAlone = headBefore >= 0 && headAfter == headBefore + 1;
+        var attachedAfterRead = landedAlone
+                                ? attachedSubscriptionsClusterWide()
+                                : -1;
+
+        if (landedAlone) {
+            establishPreAttachId(id,
+                                 attachedAfterRead,
+                                 "its publish outcome was unknown (%s) and the owner's head offset advanced %d -> %d across the attempt".formatted(response,
+                                                                                                                                                       headBefore,
+                                                                                                                                                       headAfter));
+        }
+
+        if (preAttachOrderId.map(id::equals).or(false)) {
             return false;
         }
 
-        attachedWhenWarmupSucceeded = attachedSubscriptionsClusterWide();
-        if (attachedWhenWarmupSucceeded == 0) {
-            preAttachOrderId = Option.some(id);
-        }
+        excludedWarmupIds.add(id + "(head " + headBefore + "->" + headAfter + ", attached " + attachedAfterRead + ")");
 
-        return true;
+        return false;
+    }
+
+    private void establishPreAttachId(String id, int attached, String how) {
+        if (attached == 0 && preAttachOrderId.isEmpty()) {
+            preAttachOrderId = Option.some(id);
+            preAttachEvidence = how + ", and attachedSubscriptions read 0 on every node afterwards";
+        }
+    }
+
+    /// The order-events partition's next-expected offset as reported by its OWNER, i.e. the number of
+    /// events appended so far; empty until some node answers `servedByOwner=true`. Read per node over
+    /// `GET /api/v1/streams/{name}/{partition}/replicas-local`, the one stream read route that takes the
+    /// raw engine key (`STREAM_REPLICAS_LOCAL`, `LOCAL`: the answering node reports its own view, and
+    /// only the owner's `ownerHeadOffset` is the tail). Non-owner answers are ignored.
+    private Option<Long> orderEventsHeadOffset() {
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .map(node -> httpGet(node.mgmtPort(), "/api/v1/streams/" + ORDER_EVENTS_TOPIC_STREAM + "/0/replicas-local"))
+                      .filter(body -> SERVED_BY_OWNER.matcher(body).find())
+                      .map(DurableTopicDeliveryForgeTest::ownerHeadOffset)
+                      .flatMap(Option::stream)
+                      .findFirst()
+                      .map(Option::some)
+                      .orElseGet(Option::none);
+    }
+
+    private static Option<Long> ownerHeadOffset(String body) {
+        var matcher = OWNER_HEAD_OFFSET.matcher(body);
+
+        return matcher.find()
+               ? Option.some(Long.parseLong(matcher.group(1)))
+               : Option.none();
     }
 
     /// `attachedSubscriptions` from `GET /api/v1/streams/declarative-consumers` on every node's
