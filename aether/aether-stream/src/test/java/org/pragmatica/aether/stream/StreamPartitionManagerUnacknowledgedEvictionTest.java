@@ -9,6 +9,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
@@ -18,6 +19,7 @@ import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
+import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -29,7 +31,9 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -58,6 +62,9 @@ class StreamPartitionManagerUnacknowledgedEvictionTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER = NodeId.randomNodeId();
     private static final long RING_CAPACITY = 2;
+
+    @TempDir
+    Path walDir;
 
     private StreamPartitionManager manager;
 
@@ -243,6 +250,125 @@ class StreamPartitionManagerUnacknowledgedEvictionTest {
                                 Option.<Function<byte[], Object>>none(),
                                 noopWriter,
                                 tieredStreamReader(index, storage));
+        }
+    }
+
+    /// A drop is retention reclamation (#1352 ruling): the dropped range advances the contiguous sealed
+    /// watermark as a sealed segment would. Otherwise offset 0 pins it at -1 forever — `truncateWalsToSealed`
+    /// never truncates this partition's WAL again while the node runs, and once later offsets seal, a read from
+    /// 0 reports [org.pragmatica.aether.stream.segment.SegmentError.SealedRangeMissing] (a seal that FAILED)
+    /// instead of `CursorExpired` (reclaimed history).
+    @Nested
+    class WatermarkAndWalAfterDrop {
+        private static final NodeId NEW_PEER = NodeId.randomNodeId();
+        private static final long ONE_GB = 1024 * 1024 * 1024L;
+
+        private StorageInstance storage;
+
+        @AfterEach
+        void shutdownStorage() {
+            Option.option(storage).onPresent(StorageInstance::shutdown);
+        }
+
+        @Test
+        void drop_advancesTheSealedWatermark_soWalTruncationResumes_andTheDroppedOffsetReadsAsExpired() {
+            storage = StorageInstance.storageInstance("test", List.of(MemoryTier.memoryTier(ONE_GB)));
+            var index = new SegmentIndex();
+            var sealer = segmentSealer(storageSegmentSink(storage, index));
+            ReplicaRegistry registry = replicaRegistry();
+            var replication = replicationWithPeer(registry);
+            manager = walBackedManager(sealer, replication, index);
+            createStream(manager);
+            var access = access(manager, index);
+
+            publish(manager, 3);
+            registry.registerReplica(STREAM, PARTITION, NEW_PEER);
+            replication.handleAck(replicateAck(NEW_PEER, STREAM, PARTITION, 2));
+            publish(manager, 2);
+            awaitSealedThrough(index, 2);
+
+            assertThat(manager.unacknowledgedEvictionsSinceBoot()).as("only offset 0 was dropped; 1 and 2 were acknowledged and sealed")
+                                                                  .isEqualTo(1L);
+            assertThat(index.contiguousSealedEnd(STREAM, PARTITION, 0)).as("no segment holds the dropped offset").isEqualTo(Option.none());
+
+            manager.truncateWalsToSealed();
+
+            assertThat(walOf(manager).stats().truncatedUpto()).as("the WAL was truncated past the dropped offset").isEqualTo(2L);
+
+            var read = access.fetch(PARTITION, 0, 5).await();
+
+            assertThat(causeOf(read)).as("reclaimed, never a failed seal").isEqualTo(new StreamError.CursorExpired(0, 1));
+            assertThat(access.fetch(PARTITION, 1, 5).await().or(List.of()).stream().map(StreamEvent::offset)).as("the sealed, acknowledged events are served")
+                                                                                                            .containsExactly(1L, 2L);
+        }
+
+        private static void awaitSealedThrough(SegmentIndex index, long offset) {
+            var deadline = System.nanoTime() + 5_000_000_000L;
+
+            while (index.lastSealedOffset(STREAM, PARTITION) < offset && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("the watermark moved over the drop to the sealed events")
+                                                                 .isEqualTo(offset);
+        }
+
+        private PartitionedStreamAccess<byte[]> access(StreamPartitionManager manager, SegmentIndex index) {
+            PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> Promise.unitPromise();
+
+            return streamAccess(manager,
+                                identitySerializer(),
+                                identityDeserializer(),
+                                STREAM,
+                                1,
+                                Option.<Function<byte[], Object>>none(),
+                                noopWriter,
+                                tieredStreamReader(index, storage));
+        }
+
+        /// Replication, a WAL and a sealed-offset source together, without a cluster node or an epoch fence: no
+        /// public factory combines them (production wires them through the fenced factory), so the private
+        /// constructor is used, as `StreamPartitionVisibilityTest` does.
+        private StreamPartitionManager walBackedManager(EvictionListener sealer, ReplicationManager replication, SegmentIndex index) {
+            try {
+                var constructor = StreamPartitionManager.class.getDeclaredConstructor(long.class,
+                                                                                      EvictionListener.class,
+                                                                                      ReplicationManager.class,
+                                                                                      Option.class,
+                                                                                      Option.class,
+                                                                                      StreamOwnerEpochSource.class,
+                                                                                      Option.class,
+                                                                                      LastSealedOffsetSource.class);
+
+                constructor.setAccessible(true);
+                return constructor.newInstance(Long.MAX_VALUE,
+                                               sealer,
+                                               replication,
+                                               Option.none(),
+                                               Option.none(),
+                                               StreamOwnerEpochSource.zero(),
+                                               Option.some(walDir),
+                                               index);
+            } catch (ReflectiveOperationException e) {
+                return fail("manager construction failed: " + e);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private static PartitionWal walOf(StreamPartitionManager manager) {
+            try {
+                var field = StreamPartitionManager.class.getDeclaredField("streams");
+
+                field.setAccessible(true);
+                var streams = (Map<String, StreamPartitionManager.StreamEntry>) field.get(manager);
+
+                return streams.get(STREAM)
+                              .materialized()
+                              .get(PARTITION)
+                              .wal()
+                              .fold(() -> fail("no WAL configured"), wal -> wal);
+            } catch (ReflectiveOperationException e) {
+                return fail("stream map unreachable: " + e);
+            }
         }
     }
 

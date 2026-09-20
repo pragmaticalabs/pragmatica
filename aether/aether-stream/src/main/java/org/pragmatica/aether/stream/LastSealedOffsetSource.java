@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Unit;
+
+
 /// Source of the durable last-sealed offset for a `(stream, partition)`, used to bound WAL replay when
 /// a partition ring is (re)built on recovery (streaming-persistence Phase A-WAL, step W4). Sealed
 /// segments durably cover `[0, lastSealedOffset]` and are served post-restart by the tiered reader, so
@@ -20,6 +24,15 @@ public interface LastSealedOffsetSource {
     /// The highest offset durably sealed into segments for `(stream, partition)`, or `-1` when nothing
     /// is sealed yet. WAL replay skips `offset <= lastSealedOffset` and recovers only the tail above it.
     long lastSealedOffset(String stream, int partition);
+
+    /// `[fromOffset, toOffset]` of `(stream, partition)` was reclaimed by DROP_OLDEST without a seal (#1352):
+    /// never acknowledged, not in the log. The source advances its watermark over the range as over a sealed
+    /// segment, so WAL truncation proceeds past it and a read from it reports "reclaimed", not "a seal failed".
+    /// The default forgets it: the floor source has no watermark to advance.
+    @Contract
+    default Unit markReclaimed(String stream, int partition, long fromOffset, long toOffset) {
+        return Unit.unit();
+    }
 
     /// The floor source (`-1` — nothing sealed) for non-cluster stream paths, legacy callers, and
     /// tests. With it, a recovered ring is never seeded and replays its full WAL from offset 0.

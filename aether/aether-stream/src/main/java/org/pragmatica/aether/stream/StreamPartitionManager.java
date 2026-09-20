@@ -1439,12 +1439,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// The ring evicted `[fromOffset, toOffset]` of `(streamName, partition)` above its visible position
-    /// (#1352, [UnacknowledgedEvictionListener]): count them and fail their publishers' pending awaits with a
-    /// cause naming the offset, so a publisher learns "not in the log" now and never a replication timeout.
-    /// Runs under the ring's append section; the replication manager resolves the promises off this thread.
+    /// (#1352, [UnacknowledgedEvictionListener]): count them, tell the sealed-offset source the range is
+    /// reclaimed (so the contiguous watermark — and with it WAL truncation — moves past the hole the missing
+    /// seal would otherwise leave), and fail their publishers' pending awaits with a cause naming the offset,
+    /// so a publisher learns "not in the log" now and never a replication timeout. Runs under the ring's
+    /// append section; the replication manager resolves the promises off this thread.
     @Contract
     private void unacknowledgedEvicted(String streamName, int partition, long fromOffset, long toOffset) {
         unacknowledgedEvictionsSinceBoot.addAndGet(toOffset - fromOffset + 1);
+        lastSealedOffset.markReclaimed(streamName, partition, fromOffset, toOffset);
         replicationManager.failPendingAcks(streamName,
                                            partition,
                                            fromOffset,

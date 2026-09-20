@@ -16,10 +16,13 @@
   a replica's `appendRecovered` keeps sealing every evictee (`SealBound.APPENDED`) — what a replica holds is
   already in the owner's log, and dropping it there would lose an acknowledged event from the replica's ring
   and tier at once (the #1234 contract, `StreamPartitionManagerWalTruncateTest.appendRecovered_zeroCap_…`,
-  stays pinned). A read from a dropped offset is refused with `CursorExpired`.
+  stays pinned). A drop is retention reclamation: the dropped range advances `SegmentIndex`'s contiguous
+  sealed watermark as a sealed segment would (`SegmentIndex.markReclaimed`, through `LastSealedOffsetSource`),
+  so WAL truncation proceeds past it and a read from a dropped offset is refused with `CursorExpired`
+  (reclaimed), never `SealedRangeMissing` (a seal that failed).
   [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OffHeapRingBufferUnacknowledgedEvictionTest.java`,
   `StreamPartitionManagerUnacknowledgedEvictionTest.java` (the replica-set-change tiered read, the
-  prompt await failure), `HonestPublishOutcomeTest$UnacknowledgedEvictionBarrier` (all four writers)]
-  [unverified: a dropped offset leaves a permanent hole in `SegmentIndex`'s contiguous sealed
-  watermark, so that partition's WAL is not truncated again until restart — `SegmentIndex` is unchanged
-  pending a ruling]
+  prompt await failure, WAL truncation resuming past the drop), `SegmentIndexTest$ReclaimedWithoutSeal`,
+  `HonestPublishOutcomeTest$UnacknowledgedEvictionBarrier` (all four writers)]
+  [unverified: a drop is recorded in memory only — a restart before the WAL is truncated past it replays
+  the dropped record from the WAL as visible, as WAL replay does for every unacknowledged record]
