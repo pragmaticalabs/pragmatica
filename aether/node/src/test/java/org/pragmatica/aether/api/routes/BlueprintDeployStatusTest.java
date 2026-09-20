@@ -41,6 +41,8 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.deployment.cluster.PublishedBlueprint;
+import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -191,11 +193,42 @@ class BlueprintDeployStatusTest {
         assertThat(response.statusUrl()).as("a deployed response must still carry the status endpoint").isEqualTo(STATUS_URL);
     }
 
+    /// #1336 — a `[streams.*]` declaration the publish did not bind reaches the caller ON THE RESPONSE,
+    /// by field and rule, not only as a node log line. The service is stubbed: this pins the route's
+    /// half of the contract (`BlueprintService` → `BlueprintResponse.rejectedStreamBindings`); the
+    /// derivation half is `BlueprintPublishOwnershipTest.StreamBindings`.
+    @Test
+    void deployRoute_namesEveryRejectedStreamBinding_byFieldAndRule() {
+        var rejected = List.of(StreamValidationFailure.streamValidationFailure("[streams.audit-events]",
+                                                                               "version-and-source-mutually-exclusive",
+                                                                               "Stream resource 'audit-events' must not set both 'source' and 'version'"));
+
+        var response = deployWith(Map.of(), rejected);
+
+        assertThat(response.rejectedStreamBindings()).hasSize(1);
+        assertThat(response.rejectedStreamBindings().getFirst().field()).isEqualTo("[streams.audit-events]");
+        assertThat(response.rejectedStreamBindings().getFirst().rule()).isEqualTo("version-and-source-mutually-exclusive");
+        assertThat(response.rejectedStreamBindings().getFirst().message()).contains("audit-events");
+        assertThat(response.status()).as("a rejected binding does not change the deploy status — the slice using "
+                                         + "that alias fails at load, which the status surface then reports")
+                                     .isEqualTo("pending");
+    }
+
+    @Test
+    void deployRoute_reportsNoRejectedStreamBindings_whenEveryDeclarationBound() {
+        assertThat(deployWith(Map.of()).rejectedStreamBindings()).isEmpty();
+    }
+
     // --- helpers ---
     private static BlueprintResponse deployWith(Map<Artifact, Map<NodeId, SliceState>> deployed) {
+        return deployWith(deployed, List.of());
+    }
+
+    private static BlueprintResponse deployWith(Map<Artifact, Map<NodeId, SliceState>> deployed,
+                                                List<StreamValidationFailure> rejected) {
         var holder = new AtomicReference<BlueprintResponse>();
 
-        deployRoute(deployed).handler()
+        deployRoute(deployed, rejected).handler()
                    .handle(new StubRequestContext())
                    .await()
                    .onSuccess(value -> holder.set((BlueprintResponse) value))
@@ -207,8 +240,9 @@ class BlueprintDeployStatusTest {
     /// #759 — `.toList()` + a ternary replaces `.findFirst().orElseThrow()`: a missing route is
     /// still a hard test-setup failure (via `fail`, not a `throw` statement), so JBCT-EX-02 no
     /// longer fires without weakening the diagnostic.
-    private static Route<?> deployRoute(Map<Artifact, Map<NodeId, SliceState>> deployed) {
-        var routes = SliceRoutes.sliceRoutes(() -> nodeOver(deployed))
+    private static Route<?> deployRoute(Map<Artifact, Map<NodeId, SliceState>> deployed,
+                                        List<StreamValidationFailure> rejected) {
+        var routes = SliceRoutes.sliceRoutes(() -> nodeOver(deployed, rejected))
                                 .routes()
                                 .filter(candidate -> candidate.name()
                                                               .equals(ManagementRoute.BLUEPRINT_DEPLOY.name()))
@@ -217,8 +251,9 @@ class BlueprintDeployStatusTest {
         return routes.isEmpty() ? fail("BLUEPRINT_DEPLOY route not registered") : routes.getFirst();
     }
 
-    private static ManageableNode nodeOver(Map<Artifact, Map<NodeId, SliceState>> deployed) {
-        return new DeployManageableNode(fixedBlueprintService(), deploymentMapOver(deployed), noopAppHttpServer());
+    private static ManageableNode nodeOver(Map<Artifact, Map<NodeId, SliceState>> deployed,
+                                           List<StreamValidationFailure> rejected) {
+        return new DeployManageableNode(fixedBlueprintService(rejected), deploymentMapOver(deployed), noopAppHttpServer());
     }
 
     /// The sealed `DeploymentMap` interface refuses `Proxy.newProxyInstance` (the JDK rejects dynamic
@@ -249,20 +284,20 @@ class BlueprintDeployStatusTest {
         return new NoopAppHttpServer();
     }
 
-    private static BlueprintService fixedBlueprintService() {
+    private static BlueprintService fixedBlueprintService(List<StreamValidationFailure> rejected) {
         return new BlueprintService() {
             @Override
-            public Promise<ExpandedBlueprint> publish(String dsl) {
+            public Promise<PublishedBlueprint> publish(String dsl) {
                 return unsupported("publish");
             }
 
             @Override
-            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
-                return Promise.success(EXPANDED);
+            public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords) {
+                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected));
             }
 
             @Override
-            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
+            public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
                 return unsupported("publishFromArtifact(registerOnly)");
             }
 

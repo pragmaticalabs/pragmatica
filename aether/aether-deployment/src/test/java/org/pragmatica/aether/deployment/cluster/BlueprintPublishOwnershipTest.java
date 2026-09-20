@@ -27,6 +27,7 @@ import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.schema.SchemaError;
+import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
 import org.pragmatica.aether.deployment.validation.MissingConfigSection;
 import org.pragmatica.aether.resource.artifact.ArtifactFile;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
@@ -470,7 +471,7 @@ class BlueprintPublishOwnershipTest {
         Assertions.fail("Unexpected publish failure: " + cause.message());
     }
 
-    private Result<ExpandedBlueprint> publish(String coords, byte[] blueprintJar) {
+    private Result<PublishedBlueprint> publish(String coords, byte[] blueprintJar) {
         return BlueprintService.blueprintService(cluster, store, repository(), artifactStore(blueprintJar))
                                .publishFromArtifact(coords + ":blueprint")
                                .await();
@@ -479,7 +480,7 @@ class BlueprintPublishOwnershipTest {
     /// #759 review round 2: the DSL `publish(String)` path (`SliceRoutes.handleBlueprint`) parses
     /// this TOML directly — no jar, no `ArtifactStore` — but still resolves the declared slice
     /// through `repository()`, same as [#publish].
-    private Result<ExpandedBlueprint> publishDsl(String blueprintId) {
+    private Result<PublishedBlueprint> publishDsl(String blueprintId) {
         var dsl = "id = \"" + blueprintId + "\"\n" + SLICE_STANZA;
 
         return BlueprintService.blueprintService(cluster, store, repository())
@@ -979,28 +980,98 @@ class BlueprintPublishOwnershipTest {
             var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, ONE_VALID_ONE_INVALID),
                                                     CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, ONE_VALID_ONE_INVALID)));
 
-            publishBody(repository).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+            var published = publishBody(repository).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
             assertThat(boundAddresses(store))
                     .as("#1336: the valid `order-events` binding must survive the invalid `audit-events` section beside it")
                     .containsExactly(ORDER_EVENTS + "=" + NAMESPACE + ":" + ORDER_EVENTS + ":1.0.0");
+            assertThat(rejectedFieldsAndRules(published))
+                    .as("#1336: the invalid section is reported ON THE ANSWER by field and rule — once, although both "
+                        + "slice jars ship the same text — not only as a log line")
+                    .containsExactly("[streams.audit-events]::version-and-source-mutually-exclusive");
         }
 
         @Test
         void publishFromArtifact_bindsTheValidStream_whenAnotherStreamIsInvalid() {
             var artifactPathStore = new TestKVStore();
 
-            BlueprintService.blueprintService(new TestClusterNode(artifactPathStore),
-                                              artifactPathStore,
-                                              streamAppRepository(),
-                                              artifactStore(streamAppBlueprintJar(ONE_VALID_ONE_INVALID)))
-                            .publishFromArtifact(STREAM_APP_COORDS + ":blueprint")
-                            .await()
-                            .onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+            var published = BlueprintService.blueprintService(new TestClusterNode(artifactPathStore),
+                                                              artifactPathStore,
+                                                              streamAppRepository(),
+                                                              artifactStore(streamAppBlueprintJar(ONE_VALID_ONE_INVALID)))
+                                            .publishFromArtifact(STREAM_APP_COORDS + ":blueprint")
+                                            .await()
+                                            .onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
             assertThat(boundAddresses(artifactPathStore))
                     .as("#1336: the artifact path must keep the valid `order-events` binding beside the invalid section")
                     .containsExactly(ORDER_EVENTS + "=" + NAMESPACE + ":" + ORDER_EVENTS + ":1.0.0");
+            assertThat(rejectedFieldsAndRules(published))
+                    .as("#1336: the artifact path reports the invalid section on the answer by field and rule")
+                    .containsExactly("[streams.audit-events]::version-and-source-mutually-exclusive");
+        }
+
+        /// GATING: a `resources.toml` that does not parse has no sections to keep or drop, and the same
+        /// file is every slice's intrinsic config layer at load — so the publish is refused, naming the
+        /// rule, before any command lands.
+        @Test
+        void publish_isRefused_whenAResourcesTomlDoesNotParse() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, UNPARSEABLE),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, MODULE_STREAMS)));
+
+            publishBody(repository).onSuccess(_ -> Assertions.fail("an unparseable resources.toml must refuse the publish"))
+                                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_RESOURCES_PARSE));
+            assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+        }
+
+        /// GATING: the blueprint's own namespace prefixes every owned address, so when it cannot be derived
+        /// and a stream IS declared there is no per-alias subset to keep — the publish is refused naming
+        /// the rule. `system` is the reserved namespace (`Namespace.appNamespace`).
+        @Test
+        void publish_isRefused_whenTheBlueprintNamespaceIsReserved_andAStreamIsDeclared() {
+            var outcome = BlueprintService.blueprintService(cluster, store, streamAppRepository())
+                                          .publish(STREAM_APP_DSL.replace("id = \"org.example:stream-app:1.0.0\"", "id = \"system.example:stream-app:1.0.0\""))
+                                          .await();
+
+            outcome.onSuccess(_ -> Assertions.fail("a reserved blueprint namespace with declared streams must refuse the publish"))
+                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_NAMESPACE_RESERVED)
+                                                                  .contains("system.example:stream-app:1.0.0"));
+            assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+        }
+
+        /// NOT gating: with no stream declared there is nothing the namespace could prefix, so a blueprint
+        /// that deployed before #1336 still deploys; the namespace failure is reported on the answer.
+        @Test
+        void publish_reportsAReservedBlueprintNamespace_withoutRefusing_whenNoStreamIsDeclared() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, NO_STREAMS),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, NO_STREAMS)));
+            var published = BlueprintService.blueprintService(cluster, store, repository)
+                                            .publish(STREAM_APP_DSL.replace("id = \"org.example:stream-app:1.0.0\"", "id = \"system.example:stream-app:1.0.0\""))
+                                            .await()
+                                            .onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(rejectedFieldsAndRules(published))
+                    .as("nothing to bind, nothing to gate — but the operator is still told")
+                    .containsExactly("system.example:stream-app:1.0.0::" + StreamResourceValidator.RULE_NAMESPACE_RESERVED);
+            assertThat(cluster.batches).as("the publish proceeds").isNotEmpty();
+        }
+
+        private static final String UNPARSEABLE = """
+                [streams.order-events
+                partitions = 1
+                """;
+
+        private static final String NO_STREAMS = """
+                [datasource.orders]
+                url = "jdbc:postgresql://localhost/orders"
+                """;
+
+        private static List<String> rejectedFieldsAndRules(Result<PublishedBlueprint> published) {
+            return published.map(value -> value.rejectedStreamBindings()
+                                               .stream()
+                                               .map(failure -> failure.field() + "::" + failure.rule())
+                                               .toList())
+                            .or(List.of());
         }
 
         /// `order-events` is a well-formed owned stream; `audit-events` trips the parser's
@@ -1014,7 +1085,7 @@ class BlueprintPublishOwnershipTest {
                 version = "1.0.0"
                 """;
 
-        private Result<ExpandedBlueprint> publishBody(Repository repository) {
+        private Result<PublishedBlueprint> publishBody(Repository repository) {
             return BlueprintService.blueprintService(cluster, store, repository)
                                    .publish(STREAM_APP_DSL)
                                    .await();
@@ -1042,42 +1113,31 @@ class BlueprintPublishOwnershipTest {
                          .flatMap(url -> Location.location(artifact, url));
         }
 
-        /// **ENABLED TRIPWIRE FOR A KNOWN DEFECT — #1181, found in the #677 audit. DO NOT SILENCE.**
+        /// #1181/#1336 — #576 refuses the descoped `[streams.X]` keys, and until #1336 that refusal was
+        /// unreachable: `BlueprintService.streamBindings` ended `.or(List.of())`, which discarded the
+        /// `Cause`, so a blueprint carrying `compression = "lz4"` PUBLISHED with an EMPTY bindings entry
+        /// and the consuming slice failed far away with a generic `UnboundStreamAlias`. The enabled
+        /// tripwire that pinned that defect stood here.
         ///
-        /// #576 refuses the descoped `[streams.X]` keys and several documents describe that refusal.
-        /// Nothing acts on it: `BlueprintService.streamBindings` is the only production caller of
-        /// [org.pragmatica.aether.deployment.validation.StreamResourceValidator#validate] and ends
-        /// `.or(List.of())`, which returns the replacement and DISCARDS the `Cause`. So a blueprint
-        /// carrying `compression = "lz4"` PUBLISHES, and the bindings entry written for it is EMPTY.
-        /// That is worse than either a clean refusal or a clean accept: a slice consuming the alias
-        /// then fails with a generic
-        /// [org.pragmatica.aether.slice.stream.StreamAddressError.UnboundStreamAlias], far from the
-        /// offending key and naming neither it nor the reason.
-        ///
-        /// This asserts the CURRENT, WRONG behaviour ON PURPOSE so that it reddens the moment a
-        /// deploy-time gate lands (that is #1181's fix). It is ENABLED rather than `@Disabled` because a disabled test is
-        /// silence, and silence sits forgotten. **WHEN THIS GOES RED the gate exists — delete this test
-        /// and assert instead that the publish FAILS and names the offending key.**
+        /// Ruled per rule (#1336): an inert key is a per-alias rule — the stream parses, the key does
+        /// nothing — so it drops THAT alias and is reported by field and rule; it does not refuse the
+        /// publish. Here the only declared stream is the rejected one, so the entry is still empty —
+        /// but the answer now says which key and why.
         @Test
-        void publish_withDescopedStreamKey_stillSucceedsWithEmptyBindings_KNOWN_DEFECT() {
+        void publish_withDescopedStreamKey_dropsThatBinding_andNamesTheRuleOnTheAnswer() {
             var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, descopedCompression()),
                                                     CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, descopedCompression())));
 
-            var outcome = publishBody(repository);
-
-            assertThat(outcome.isSuccess())
-                    .as("KNOWN DEFECT #1181: a blueprint declaring the descoped `compression` key "
-                        + "publishes successfully, because BlueprintService.streamBindings drops the "
-                        + "StreamResourceValidator failure via `.or(List.of())`. WHEN THIS GOES RED a "
-                        + "deploy-time gate has landed: delete this test and assert the publish FAILS "
-                        + "naming the offending key.")
-                    .isTrue();
+            var published = publishBody(repository).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
             assertThat(boundAddresses(store))
-                    .as("KNOWN DEFECT #1181: the discarded failure leaves an EMPTY bindings entry, so "
-                        + "a slice consuming the alias later fails with a generic UnboundStreamAlias instead "
-                        + "of being told which key is unsupported. WHEN THIS GOES RED, see the assertion above.")
+                    .as("the rejected alias gets no binding — accepting it would bind a stream whose declared "
+                        + "compression the runtime silently ignores")
                     .isEmpty();
+            assertThat(rejectedFieldsAndRules(published))
+                    .as("the operator is told at deploy time which key and which rule, not by a later UnboundStreamAlias")
+                    .containsExactly("[streams.order-events]::" + StreamResourceValidator.RULE_INERT_STREAM_CONFIG);
+            published.onSuccess(value -> assertThat(value.rejectedStreamBindings().getFirst().message()).contains("compression 'LZ4'"));
         }
 
         /// Same shape as [#pinnedOrderEvents], plus the descoped `compression` key #576 refuses.
@@ -1324,13 +1384,13 @@ class BlueprintPublishOwnershipTest {
                                        .contains("orders-api");
         }
 
-        private Result<ExpandedBlueprint> publishWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
+        private Result<PublishedBlueprint> publishWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
             return preflightService(jar, nodeComposite).publishFromArtifact(PREFLIGHT_COORDS + ":blueprint")
                                                        .await();
         }
 
         /// The DSL path `SliceRoutes.handleBlueprint` serves for `POST /api/v1/blueprints`.
-        private Result<ExpandedBlueprint> publishDslWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
+        private Result<PublishedBlueprint> publishDslWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
             return preflightService(jar, nodeComposite).publish("id = \"" + PREFLIGHT_COORDS + "\"\n" + SLICE_STANZA)
                                                        .await();
         }

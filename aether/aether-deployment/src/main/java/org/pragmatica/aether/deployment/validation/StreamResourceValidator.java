@@ -18,6 +18,7 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
+import org.pragmatica.aether.slice.blueprint.StreamConfigParser.PartitionedStreamResources;
 import org.pragmatica.aether.slice.blueprint.StreamSourceError;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
@@ -85,6 +86,90 @@ public sealed interface StreamResourceValidator {
         return StreamValidationFailures.streamValidationFailures(List.copyOf(failures),
                                                                  List.copyOf(warnings))
                                        .result();
+    }
+
+    /// #1336 — the deploy path's pass. [#validate] answers all-or-nothing, which is right for a refusal
+    /// and wrong for a fold: `BlueprintService` took its failure as "no bindings", so one invalid
+    /// `[streams.X]` section cost every valid declaration beside it. This pass keeps the two apart.
+    ///
+    ///  - A section that fails a rule is REJECTED: its alias gets no binding, the failure names it by
+    ///    field and rule in [StreamValidationPartition#rejected], and every other section still binds.
+    ///    A slice using a rejected alias fails at load naming that alias (`UnboundStreamAlias`); the
+    ///    other slices are unaffected.
+    ///  - A [Result#failure] is GATING: the deploy is refused with every failure found. Gating rules,
+    ///    and why each leaves nothing to bind: [#RULE_RESOURCES_PARSE] — the document does not parse,
+    ///    so no section has an outcome to keep; [#RULE_BLUEPRINT_NAMESPACE]/[#RULE_NAMESPACE_RESERVED]
+    ///    raised on the blueprint artifact while at least one stream is declared — the namespace
+    ///    prefixes every owned address, so there is no per-alias subset that survives it. With no
+    ///    stream declared the namespace failure is reported and gates nothing.
+    ///
+    /// Every other rule is per-section: the parser's (`version-and-source-mutually-exclusive`,
+    /// `producer-version-must-be-exact`, `version-or-source-required`, address and version format,
+    /// the partition ceiling and replication knobs, #1282's reserved source kind) and #576's inert
+    /// config keys ([#RULE_INERT_STREAM_CONFIG], [#RULE_INERT_CONSUMER_CONFIG]), which name the alias
+    /// they sit under.
+    static Result<StreamValidationPartition> partition(Option<String> resourcesConfig,
+                                                       Artifact blueprintArtifact,
+                                                       Map<String, String> roleHints) {
+        var namespaceFailures = new ArrayList<StreamValidationFailure>();
+
+        guardBlueprintNamespace(blueprintArtifact, namespaceFailures);
+
+        return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesPartitioned(toml, roleHints))
+                              .or(Result.success(PartitionedStreamResources.partitionedStreamResources(Map.of(),
+                                                                                                        List.of())))
+                              .mapError(cause -> gating(namespaceFailures, List.of(toFailure(cause))))
+                              .flatMap(parsed -> partition(parsed, resourcesConfig, roleHints, namespaceFailures));
+    }
+
+    private static Result<StreamValidationPartition> partition(PartitionedStreamResources parsed,
+                                                               Option<String> resourcesConfig,
+                                                               Map<String, String> roleHints,
+                                                               List<StreamValidationFailure> namespaceFailures) {
+        var accepted = new LinkedHashMap<String, StreamResource>();
+        var rejected = new ArrayList<StreamValidationFailure>();
+        var warnings = new ArrayList<StreamValidationWarning>();
+
+        parsed.rejected().forEach(cause -> rejected.add(toFailure(cause)));
+        parsed.accepted().forEach((alias, resource) -> acceptOrReject(alias, resource, resourcesConfig, accepted, rejected));
+
+        var declaresStreams = !parsed.accepted().isEmpty() || !parsed.rejected().isEmpty();
+
+        if (!namespaceFailures.isEmpty() && declaresStreams) {
+            return gating(namespaceFailures, rejected).result();
+        }
+
+        rejected.addAll(namespaceFailures);
+        collectMultiVersionWarnings(accepted, resourcesConfig, roleHints, warnings);
+
+        return Result.success(StreamValidationPartition.streamValidationPartition(accepted, rejected, warnings));
+    }
+
+    private static void acceptOrReject(String alias,
+                                       StreamResource resource,
+                                       Option<String> resourcesConfig,
+                                       Map<String, StreamResource> accepted,
+                                       List<StreamValidationFailure> rejected) {
+        var inert = new ArrayList<StreamValidationFailure>();
+
+        if (resource instanceof StreamResource.Owned owned) {
+            guardStreamConfig(alias, owned.config(), inert);
+            resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, inert));
+        }
+
+        if (inert.isEmpty()) {
+            accepted.put(alias, resource);
+        } else {
+            rejected.addAll(inert);
+        }
+    }
+
+    private static StreamValidationFailures gating(List<StreamValidationFailure> first, List<StreamValidationFailure> rest) {
+        var failures = new ArrayList<>(first);
+
+        failures.addAll(rest);
+
+        return StreamValidationFailures.streamValidationFailures(failures, List.of());
     }
 
     private static void guardBlueprintNamespace(Artifact blueprintArtifact, List<StreamValidationFailure> failures) {

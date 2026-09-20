@@ -136,6 +136,55 @@ public interface StreamConfigParser {
         return Result.allOf(perSection).map(StreamConfigParser::toOrderedMap);
     }
 
+    /// #1336 — the per-section outcomes [#parseResourcesAggregating] folds into one `Result`, kept apart:
+    /// every section that parses is in `accepted`, every section that does not
+    /// contributes its cause to `rejected`. The deploy path binds the accepted aliases and reports the
+    /// rejected ones by name, instead of losing the valid declarations to the invalid one beside them.
+    /// Only a document that does not parse at all is a failure — then no section has an outcome.
+    record PartitionedStreamResources(Map<String, StreamResource> accepted, List<Cause> rejected) {
+        public PartitionedStreamResources {
+            accepted = Map.copyOf(accepted);
+            rejected = List.copyOf(rejected);
+        }
+
+        public static PartitionedStreamResources partitionedStreamResources(Map<String, StreamResource> accepted,
+                                                                     List<Cause> rejected) {
+            return new PartitionedStreamResources(accepted, rejected);
+        }
+    }
+
+    static Result<PartitionedStreamResources> parseResourcesPartitioned(String toml, Map<String, String> roleHints) {
+        if (!Verify.Is.present(toml)) {
+            return success(PartitionedStreamResources.partitionedStreamResources(Map.of(), List.of()));
+        }
+
+        return TomlParser.parse(toml)
+                         .mapError(err -> cause("Stream config parse error: " + err.message()))
+                         .map(doc -> partitionStreamResources(doc, roleHints));
+    }
+
+    private static PartitionedStreamResources partitionStreamResources(TomlDocument doc, Map<String, String> roleHints) {
+        var accepted = new LinkedHashMap<String, StreamResource>();
+        var rejected = new ArrayList<Cause>();
+
+        for (var sectionName : doc.sectionNames()) {
+            if (!isStreamSection(sectionName)) {
+                continue;
+            }
+
+            var streamName = sectionName.substring(STREAMS_PREFIX.length());
+
+            if (streamName.contains(".")) {
+                continue;
+            }
+
+            parseStreamResource(doc, sectionName, streamName, roleHints).onSuccess(res -> accepted.put(streamName, res))
+                                                                        .onFailure(rejected::add);
+        }
+
+        return PartitionedStreamResources.partitionedStreamResources(accepted, rejected);
+    }
+
     private static Map<String, StreamResource> toOrderedMap(List<Map.Entry<String, StreamResource>> entries) {
         var ordered = new LinkedHashMap<String, StreamResource>();
 
