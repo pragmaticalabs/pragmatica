@@ -55,6 +55,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 class StreamPartitionVisibilityTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
+    private static final int RECORDS = 5;
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER = NodeId.randomNodeId();
 
@@ -197,8 +198,47 @@ class StreamPartitionVisibilityTest {
             manager.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1L);
 
             assertThat(manager.syncReplicated(STREAM, PARTITION).await().isSuccess()).isTrue();
-            assertThat(eventuallyRead(manager, 1)).as("visible once the replica's WAL write is durable")
-                                                 .containsExactly("r0");
+            assertThat(readAll(manager)).as("visible once the replica's WAL write is durable — by the time the barrier resolves")
+                                        .containsExactly("r0");
+        }
+
+        /// #1235 × #1244: a WAL-backed batch requests ONE group commit, at the barrier — never one per
+        /// record. The request count is the pin because coalescing under the WAL's sync lock hides
+        /// per-record requests behind an fsync count that is "however many ran between writes" (1..N).
+        @Test
+        void appendRecovered_withWal_requestsNoCommitPerRecord_theBarrierRequestsOne() {
+            manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+            createStream(manager, 2, 2);
+            var wal = walOf(manager);
+
+            appendRecovered(manager, RECORDS);
+
+            assertThat(wal.commitRequests()).as("no record requested its own commit").isZero();
+            assertThat(visibleOffset(manager)).as("nothing is visible before the barrier").isEqualTo(-1L);
+            assertThat(manager.syncReplicated(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(wal.commitRequests()).as("the barrier requested exactly one commit for %d records", RECORDS)
+                                            .isEqualTo(1L);
+            assertThat(visibleOffset(manager)).isEqualTo(RECORDS - 1);
+            assertThat(readAll(manager)).hasSize(RECORDS);
+        }
+
+        /// #1235: the replica's visible offset moves at the barrier's fsync and not before it — while the
+        /// barrier's `force` is parked, every record is appended, WAL-written and still invisible; the
+        /// moment the barrier resolves they are visible, with no completion handler left to wait for.
+        @Test
+        void appendRecovered_withWal_visibleOffsetAdvancesOnlyWhenTheBarrierResolves() throws Exception {
+            manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+            createStream(manager, 2, 2);
+            var gate = GatedWalFsync.inject(walOf(manager));
+
+            appendRecovered(manager, RECORDS);
+            var barrier = manager.syncReplicated(STREAM, PARTITION);
+
+            assertThat(gate.forceEntered.await(10, TimeUnit.SECONDS)).as("the barrier reached the fsync").isTrue();
+            assertThat(visibleOffset(manager)).as("nothing is visible while the barrier's fsync is parked").isEqualTo(-1L);
+            gate.forceProceed.countDown();
+            assertThat(barrier.await().isSuccess()).isTrue();
+            assertThat(visibleOffset(manager)).as("visible as soon as the barrier resolved").isEqualTo(RECORDS - 1);
         }
 
         @Test
@@ -570,17 +610,11 @@ class StreamPartitionVisibilityTest {
                       .or(List.of());
     }
 
-    /// The replica path advances visibility in a completion handler of the WAL chain, which the promise
-    /// runs asynchronously; poll briefly instead of racing it.
-    private static List<String> eventuallyRead(StreamPartitionManager manager, int expected) {
-        var deadline = System.nanoTime() + 5_000_000_000L;
-        var events = readAll(manager);
-
-        while (events.size() < expected && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
-            events = readAll(manager);
+    private static void appendRecovered(StreamPartitionManager manager, int count) {
+        for (var i = 0; i < count; i++) {
+            manager.appendRecovered(STREAM, PARTITION, ("r" + i).getBytes(UTF_8), 1L + i)
+                   .onFailure(cause -> fail("replica append failed: " + cause.message()));
         }
-        return events;
     }
 
     /// The partition's WAL, reached through the manager's private stream map — the WAL's channel is the
