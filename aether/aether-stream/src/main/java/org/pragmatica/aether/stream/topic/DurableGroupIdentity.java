@@ -5,10 +5,12 @@
 package org.pragmatica.aether.stream.topic;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.lang.Option;
 
 
 /// Version-stable consumer-group identity (durable-pubsub-spec §6): the subscriber group with the
@@ -23,6 +25,29 @@ public sealed interface DurableGroupIdentity {
         return subscriber.base()
                          .asString() + "#" + method.name();
     }
+
+    static String groupId(ArtifactBase subscriber, String method) {
+        return subscriber.asString() + "#" + method;
+    }
+
+    /// Inverse of [#groupId] (#1333): the artifact base and method name a durable group id encodes, or
+    /// [Option#none] for a group id not of this shape (a declarative `[streams.X]` group). Splits at the
+    /// LAST `#` — `#` never occurs inside `groupId:artifactId`, and a method name cannot carry one either,
+    /// so the split is unambiguous.
+    static Option<GroupIdentity> parse(String groupId) {
+        var separator = groupId.lastIndexOf('#');
+
+        if (separator <= 0 || separator == groupId.length() - 1) {
+            return Option.none();
+        }
+
+        return ArtifactBase.artifactBase(groupId.substring(0, separator))
+                           .option()
+                           .map(base -> new GroupIdentity(base, groupId.substring(separator + 1)));
+    }
+
+    /// A durable group's two halves.
+    record GroupIdentity(ArtifactBase subscriber, String method) {}
 
     /// The durable group's consumer configuration (durable-pubsub-spec §6/§7): 5 attempts, serial
     /// ORDERED dispatch, RETRY-then-dead-letter, 500ms checkpoint interval (§7's time bound). Batch

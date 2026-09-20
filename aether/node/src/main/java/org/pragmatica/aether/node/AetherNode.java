@@ -167,6 +167,10 @@ import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.node.projection.PartitionBounds;
+import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
+import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
+import org.pragmatica.aether.node.projection.ProjectionRegistry;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.node.stream.TopicGroupDeclarationSource;
@@ -4178,13 +4182,19 @@ public interface AetherNode extends ManageableNode {
         //
         // No role-change callback is available (onBecameReplica / onReconcilePassComplete are
         // single-consumer seams already bound above), hence the poll.
+        // #1333: the cluster cursor store is decorated with the projection commit hook — after every
+        // resolved commit the group's projection (if this node hosts one) learns the committed cursor,
+        // stamped with the committing consumer's rewind epoch. The registry is keyed on the runtime's own
+        // group identity (artifactBase#method) and resolves lazily against the topic subscriptions.
+        var projectionRegistry = ProjectionRegistry.projectionRegistry(topicSubscriptionRegistry::allSubscriptions);
         Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
                                                                                                                                                        AetherValue.StreamCursorCheckpointValue.class);
         Fn1<Promise<Unit>, KVCommand<AetherKey>> cursorCommandWriter = command -> clusterNode.apply(List.of(command))
                                                                                              .mapToUnit();
-        var streamClusterCursorStore = ClusterCursorStore.clusterCursorStore(streamCursorStore,
-                                                                             committedCursorReader,
-                                                                             cursorCommandWriter);
+        var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
+                                                                                                                                   committedCursorReader,
+                                                                                                                                   cursorCommandWriter),
+                                                                                             projectionRegistry);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
@@ -4242,6 +4252,17 @@ public interface AetherNode extends ManageableNode {
         // #1333: a committed checkpoint carrying a newer rewind epoch than the held consumer's restarts
         // that consumer on the next pass, now rather than on the 5s tick. The manager filters the key type.
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, streamConsumerManager::onCheckpointPut));
+        // #1333: what a slice's ProjectionRuntime resource needs from the node — the registry above and
+        // the replay cursor's collaborators (partition bounds from the local ring, the fenced checkpoint
+        // put, the committed read-back). Registered beside the entity drivers, as one extension.
+        var projectionNodeSupport = ProjectionNodeSupport.projectionNodeSupport(projectionRegistry,
+                                                                                streamConsumerOwnership::partitionCount,
+                                                                                PartitionBounds.localOnly(streamPartitionManager),
+                                                                                cursorCommandWriter,
+                                                                                committedCursorReader);
+
+        resourceProviderSetup.spiProvider()
+                             .onPresent(spi -> spi.registerExtension(ProjectionNodeSupport.class, projectionNodeSupport));
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,

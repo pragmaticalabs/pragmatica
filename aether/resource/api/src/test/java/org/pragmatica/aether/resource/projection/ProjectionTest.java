@@ -227,6 +227,17 @@ class ProjectionTest {
 
             return Promise.success(generation.get());
         }
+
+        @Override
+        public synchronized Promise<ProjectionStore.ReplayStatus> replayStatus() {
+            var rebuilding = new java.util.HashMap<Integer, ProjectionStore.PartitionReplay>();
+
+            replayThrough.forEach((partition, through) -> rebuilding.put(partition,
+                                                                         new ProjectionStore.PartitionReplay(nextReplayOffset.get(partition),
+                                                                                                             through)));
+
+            return Promise.success(new ProjectionStore.ReplayStatus(generation.get(), Map.copyOf(rebuilding), currentRewind));
+        }
     }
 
     private static final ProjectionStore.ReplayRange NOTHING_TO_REPLAY = new ProjectionStore.ReplayRange(Map.of());

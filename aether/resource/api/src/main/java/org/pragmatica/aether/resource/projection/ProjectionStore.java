@@ -120,4 +120,24 @@ public interface ProjectionStore<S> {
     Promise<Unit> cursorCommitted(RewindToken token, int partition, long committedCursor);
     /// Current generation; 0 when never reset.
     Promise<Long> generation();
+
+    /// One partition still REBUILDING: the next replay offset it will admit and the head it goes LIVE
+    /// past.
+    record PartitionReplay(long nextOffset, long throughOffset) {}
+
+    /// The generation's replay state as the store sees it (#1333, added for the operator surface): the
+    /// current generation, the partitions still REBUILDING keyed by partition, and the current rewind's
+    /// token when one has been minted. A partition absent from `rebuilding` is LIVE; the generation is
+    /// LIVE when the map is empty. Pure read — nothing here moves the replay.
+    record ReplayStatus(long generation, Map<Integer, PartitionReplay> rebuilding, Option<RewindToken> currentRewind) {
+        public boolean isLive() {
+            return rebuilding.isEmpty();
+        }
+
+        public boolean isLive(int partition) {
+            return !rebuilding.containsKey(partition);
+        }
+    }
+
+    Promise<ReplayStatus> replayStatus();
 }

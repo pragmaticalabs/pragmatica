@@ -379,6 +379,13 @@ public record Projection<S, T>(String name,
         return new Projection<>(name, topic, store, key, fold, replayCursor, Option.some(new ClaimGuard(backing, lease)));
     }
 
+    /// Supply the runtime's group-cursor seam (#1333). The node's `ProjectionRuntime.attach` returns the
+    /// projection through this, wired with the cursor that captures the group's real partition bounds
+    /// and rewinds its committed cursor; the slice keeps the returned copy, as with [#withClaims].
+    public Projection<S, T> withReplayCursor(ReplayCursor cursor) {
+        return new Projection<>(name, topic, store, key, fold, cursor, claims);
+    }
+
     /// The claims backing paired with the lease every claim is taken for.
     public record ClaimGuard(ProjectionClaims backing, TimeSpan lease) {}
 
