@@ -716,18 +716,32 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// #1239: the store call waits for `predecessor` to settle (either way) and reads the cursor THEN;
     /// the tracked promise is the whole chain, so it is registered and bound-awaited from the moment it
     /// is requested.
+    ///
+    /// #1388: registered BEFORE the store call, not after it. `store.commit(...)` runs inline on this thread
+    /// when `predecessor` is already settled (the periodic path), and a [#close] running concurrently takes
+    /// its [#awaitFinalCursorCommits] snapshot the moment the store answers — with the registration after
+    /// the call, a store that stalls (or a thread descheduled between the call and the `add`) left that
+    /// commit out of the snapshot, so it was neither bound-awaited nor counted for this shutdown. The
+    /// [TrackedCommit] therefore carries a handle minted before the chain exists, settled from the chain as
+    /// a regular completion (`withResult`, immediate on resolution). The outcome handlers stay on the chain
+    /// itself: attached to a chain that a synchronously-failing store has already settled they run inline,
+    /// so the failure is counted before [#close] returns
+    /// (`StreamConsumerRuntimeTest.close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound`) —
+    /// on a pending promise they would be dispatched asynchronously.
     private Promise<CommitOutcome> issueTrackedCommit(ConsumerKey key,
                                                       ConsumerState state,
                                                       ConsumerCursorStore store,
                                                       Promise<CommitOutcome> predecessor) {
         state.clearCursorCommitFailure();
+        var tracked = new TrackedCommit(key, state, Promise.promise(), new AtomicBoolean(false));
+
+        inFlightCommits.add(tracked);
         var commit = predecessor.fold(_ -> lifted(() -> store.commit(key.groupId(),
                                                                      key.streamName(),
                                                                      key.partition(),
                                                                      state.cursor())));
-        var tracked = new TrackedCommit(key, state, commit, new AtomicBoolean(false));
 
-        inFlightCommits.add(tracked);
+        commit.withResult(tracked.commit()::resolve);
 
         return commit.onResult(_ -> inFlightCommits.remove(tracked))
                      .onSuccess(outcome -> reportIfLocalOnly(tracked, outcome))

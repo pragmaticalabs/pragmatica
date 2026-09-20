@@ -270,6 +270,12 @@ class DlqStreamSinkTest {
             assertThat(delivered).describedAs("the good event behind the garbage is delivered").containsExactly("msg-good");
             assertThat(captured).describedAs("exactly one quarantine entry, carrying the garbage bytes").hasSize(1);
             assertThat(captured.getFirst().payload()).isEqualTo(garbage);
+            // #1388: the handler records into `delivered` inside `invokeHandler`; the runtime advances the
+            // cursor in `deliverySucceeded`, after the handler's promise settles — so the advance past the
+            // good event is not ordered before the delivery poll above. Await it under the same deadline.
+            while (runtime.cursorPosition(TOPIC_STREAM, 0, "group-a").or(-1L) != 2L && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
             assertThat(runtime.cursorPosition(TOPIC_STREAM, 0, "group-a").or(-1L)).describedAs("the cursor passes the garbage")
                                                                                      .isEqualTo(2L);
         } finally {
