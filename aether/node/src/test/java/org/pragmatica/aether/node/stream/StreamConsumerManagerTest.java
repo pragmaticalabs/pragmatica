@@ -1475,7 +1475,9 @@ class StreamConsumerManagerTest {
             deployDecodingSliceLocally();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
-            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            // The durable-topic path invokes through invokeLocalWithContext (#1295); the never-resolving
+            // promise is the hung handler this pin bounds.
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
             new StreamConsumerManager.ManagerState(registry,
                                                    capturingRuntime,
                                                    invoker,
