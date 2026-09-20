@@ -1155,7 +1155,7 @@ class KVStoreSerializerTest {
         @Test
         void fromToml_streamCursorCheckpoint_recoversKeyAndOffset() {
             var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("orders", 2, "orders-onOrderEvent");
-            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L, 3L, 2L);
+            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L, 3L, 2L, true);
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)
@@ -1210,7 +1210,7 @@ class KVStoreSerializerTest {
                                                                         "orders-onOrderEvent",
                                                                         false,
                                                                         "java.lang.String"));
-            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L, 0L, 0L));
+            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L, 0L, 0L, false));
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)

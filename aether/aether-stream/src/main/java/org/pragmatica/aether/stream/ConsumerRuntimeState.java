@@ -941,7 +941,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                            List<OffHeapRingBuffer.RawEvent> events) {
         state.adjustPollInterval(!events.isEmpty());
 
-        return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH);
+        return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH)
+                                                .onSuccess(batchFull -> commitRewoundCatchUp(key, state, batchFull));
+    }
+
+    /// #1333 (review MEDIUM): a consumer resumed under a REWOUND epoch replays to the head, and a clean
+    /// replay lands entirely inside the checkpoint cadence — so the committed cursor would sit at the
+    /// rewind offset until the next event, and the groups route would show the rebuilt projection LIVE
+    /// against a cursor that never moved. The first pass that returns a NON-full batch is the catch-up
+    /// (push mode never issues an empty read after the backlog); one checkpoint is requested then, through
+    /// the same single-flight request a dead letter uses. Not while a hold is set: a batch cut short by a
+    /// failed delivery is not caught up, and the dead-letter path requests its own.
+    @Contract
+    private void commitRewoundCatchUp(ConsumerKey key, ConsumerState state, boolean batchFull) {
+        if (!batchFull && !state.isDeliveryHeld() && state.consumeRewoundCatchUp()) {
+            requestCheckpoint(key, state);
+        }
     }
 
     /// Back off on failure too, not just on an empty successful read.
@@ -1304,6 +1319,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private volatile Promise<CommitOutcome> periodicCommitRef = NO_PREDECESSOR;
         /// #1333: the rewind epoch the cursor was fetched under; every commit of this consumer carries it.
         private volatile RewindEpoch epoch = RewindEpoch.NONE;
+        /// #1333: resumed under a rewound epoch and not yet checkpointed at the head — armed by
+        /// [#resumeAt], consumed once by [ConsumerRuntimeState#commitRewoundCatchUp].
+        private final AtomicBoolean rewoundCatchUp = new AtomicBoolean(false);
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
@@ -1367,11 +1385,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         @Contract
         void resumeAt(Cursor fetched) {
             epoch = fetched.epoch();
+            rewoundCatchUp.set(!fetched.epoch().isNone());
             advanceCursor(fetched.offset());
         }
 
         RewindEpoch epoch() {
             return epoch;
+        }
+
+        boolean consumeRewoundCatchUp() {
+            return rewoundCatchUp.getAndSet(false);
         }
 
         @Contract

@@ -27,6 +27,7 @@ import org.pragmatica.aether.node.stream.TopicGroupDeclarationSource;
 import org.pragmatica.aether.resource.projection.InMemoryProjectionClaims;
 import org.pragmatica.aether.resource.projection.InMemoryProjectionStore;
 import org.pragmatica.aether.resource.projection.Projection;
+import org.pragmatica.aether.resource.projection.ProjectionStore;
 import org.pragmatica.aether.resource.projection.ProjectionStore.ReplayStatus;
 import org.pragmatica.aether.resource.projection.ProjectionStore.RewindToken;
 import org.pragmatica.aether.slice.DefaultSliceBridge;
@@ -63,6 +64,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -269,6 +271,125 @@ class DurableProjectionRebuildTest {
                   .isEqualTo(Option.some(3L));
     }
 
+    /// rev1369 probe B: a FRESH store after a committed rewind (node restart, or the assignee moved). A
+    /// process-local mint restarts at 1/1 — equal to the committed 1/1 — so the put is accepted at an equal
+    /// epoch, the running consumer is never restarted (`restartRewound` needs strictly newer) and its next
+    /// checkpoint drives the EMPTY rebuilt model LIVE. Minting from committed state gives a strictly newer
+    /// token: the consumer restarts and the fresh store is rebuilt.
+    @Test
+    void freshStoreAfterACommittedRewind_mintsAStrictlyNewerEpoch_andRestartsTheConsumer() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        projection.rebuild().await().onFailure(cause -> fail("first rebuild refused: " + cause.message()));
+        awaitLive(20_000);
+        awaitModel(123456L, 15_000);
+        awaitCommittedEpoch(RewindEpoch.rewindEpoch(1L, 1L), 20_000);
+
+        // The assignee's slice restarts: the registration goes with it, and a NEW store (generation 0)
+        // comes back. Whatever the store counts, the committed epoch is 1/1.
+        registry.unregister(ARTIFACT.base(), TOPIC_STREAM);
+        var freshStore = InMemoryProjectionStore.<Long> inMemoryProjectionStore();
+
+        projection = support.attach(ARTIFACT.base(),
+                                    TOPIC_STREAM,
+                                    Option.none(),
+                                    Projection.of(TOPIC)
+                                              .into(freshStore, _ -> MODEL_KEY)
+                                              .apply(DurableProjectionRebuildTest::fold)
+                                              .withClaims(InMemoryProjectionClaims.inMemoryProjectionClaims(),
+                                                          TimeSpan.timeSpan(30).seconds()))
+                            .unwrap();
+        assertThat(freshStore.read(MODEL_KEY).await().unwrap()).as("control: the fresh store is empty").isEqualTo(Option.none());
+
+        projection.rebuild().await().onFailure(cause -> fail("second rebuild refused: " + cause.message()));
+        var minted = freshStore.replayStatus().await().unwrap().currentRewind().unwrap();
+
+        assertThat(NodeReplayCursor.epochOf(minted).isStrictlyAfter(RewindEpoch.rewindEpoch(1L, 1L)))
+                .as("minted strictly after the committed 1/1, from committed state: %s", minted)
+                .isTrue();
+        awaitCommittedEpoch(NodeReplayCursor.epochOf(minted), 20_000);
+
+        var deadline = System.currentTimeMillis() + 20_000;
+
+        while (!freshStore.read(MODEL_KEY).await().unwrap().filter(value -> value == 123456L).isPresent() && System.currentTimeMillis() < deadline) {
+            TimeUnit.MILLISECONDS.sleep(50);
+        }
+
+        assertThat(freshStore.read(MODEL_KEY).await().unwrap()).as("the consumer restarted under the new epoch and rebuilt the FRESH store")
+                                                              .isEqualTo(Option.some(123456L));
+        assertThat(freshStore.replayStatus().await().unwrap().isLive()).isTrue();
+    }
+
+    /// rev1369 pin (2): an equal-epoch rewind record is REFUSED by the applier (it mints its epoch, so
+    /// equal is stale), and `rebuild()` reports the refusal instead of Success. The race: another rebuild of
+    /// the group committed the same next epoch between this one's mint and its put.
+    @Test
+    void equalEpochRewindPut_isRefusedByTheApplier_andRebuildReportsIt() throws InterruptedException {
+        publishAll(1, 3);
+        awaitModel(123L, 15_000);
+        var racing = projection.withReplayCursor(new RacingCursor(projection.replayCursor()));
+
+        var outcome = racing.rebuild().await();
+
+        assertThat(outcome.isFailure()).as("the losing rebuild is refused, never Success: %s", outcome).isTrue();
+        assertThat(outcome.fold(Cause::message, _ -> "")).contains("not committed");
+        // The competitor's record restarts the consumer, whose same-epoch checkpoints are accepted — so
+        // what is committed is the competitor's record or a checkpoint at ITS epoch, never OUR rewind
+        // record (same epoch, `rewind = true`, a later timestamp).
+        var committed = committed(StreamCursorCheckpointKey.streamCursorCheckpointKey(TOPIC_STREAM, PARTITION, GROUP)).unwrap();
+
+        assertThat(committed.rewindEpoch()).isEqualTo(RacingCursor.COMPETITOR.rewindEpoch());
+        assertThat(committed.rewind() && committed.commitTimestamp() != RacingCursor.COMPETITOR.commitTimestamp())
+                .as("our equal-epoch rewind record never committed: %s", committed)
+                .isFalse();
+    }
+
+    /// Between the mint and the put, a competing rebuild commits a rewind record under the SAME epoch.
+    private final class RacingCursor implements Projection.ReplayCursor {
+        static final StreamCursorCheckpointValue COMPETITOR = new StreamCursorCheckpointValue(0L, 1L, 1L, 1L, true);
+
+        private final Projection.ReplayCursor real;
+
+        private RacingCursor(Projection.ReplayCursor real) {
+            this.real = real;
+        }
+
+        @Override
+        public Promise<ProjectionStore.ReplayRange> capture() {
+            return real.capture();
+        }
+
+        @Override
+        public Promise<RewindToken> mintRewindToken(long generation) {
+            return real.mintRewindToken(generation);
+        }
+
+        @Override
+        public Promise<Unit> rewind(ProjectionStore.ReplayRange range, RewindToken token) {
+            applyNow(new KVCommand.Put<AetherKey, AetherValue>(StreamCursorCheckpointKey.streamCursorCheckpointKey(TOPIC_STREAM, PARTITION, GROUP),
+                                                                COMPETITOR));
+            assertThat(NodeReplayCursor.epochOf(token)).as("control: both minted the same next epoch").isEqualTo(COMPETITOR.rewindEpoch());
+
+            return real.rewind(range, token);
+        }
+    }
+
+    /// rev1369 MEDIUM: after a CLEAN rebuild (no dead letter, no further event) the replay lands inside one
+    /// cadence, so nothing would checkpoint the rebuilt head — the committed cursor would sit at the rewind
+    /// offset. The rewound consumer's catch-up pass requests one.
+    @Test
+    void cleanRebuild_commitsTheRebuiltHead_withoutAFurtherEvent() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        projection.rebuild().await().onFailure(cause -> fail("rebuild refused: " + cause.message()));
+        awaitLive(20_000);
+
+        assertThat(model()).isEqualTo(Option.some(123456L));
+        assertThat(deadLettersForGroup()).isEmpty();
+        awaitCommittedCursor(6L, 5_000);
+        assertThat(committedEpoch()).isEqualTo(Option.some(RewindEpoch.rewindEpoch(1L, 1L)));
+    }
+
     /// Resume order is `(epoch, offset)`: a stale-high local cursor from before the rewind loses to the
     /// rewound cluster cursor, however low. `max(local, cluster)` on the offset turns this red.
     @Test
@@ -466,6 +587,16 @@ class DurableProjectionRebuildTest {
         }
 
         assertThat(committedCursor()).as("committed cursor within " + maxMs + "ms").isEqualTo(Option.some(expected));
+    }
+
+    private void awaitCommittedEpoch(RewindEpoch expected, long maxMs) throws InterruptedException {
+        var deadline = System.currentTimeMillis() + maxMs;
+
+        while (!committedEpoch().filter(expected::equals).isPresent() && System.currentTimeMillis() < deadline) {
+            TimeUnit.MILLISECONDS.sleep(50);
+        }
+
+        assertThat(committedEpoch()).as("committed epoch within " + maxMs + "ms").isEqualTo(Option.some(expected));
     }
 
     private void awaitLive(long maxMs) throws InterruptedException {

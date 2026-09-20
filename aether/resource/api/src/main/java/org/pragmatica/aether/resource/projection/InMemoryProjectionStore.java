@@ -28,7 +28,6 @@ public final class InMemoryProjectionStore<S> implements ProjectionStore<S> {
     private final Map<Integer, Long> nextReplayOffset = new HashMap<>();
     private final Map<Integer, Long> replayThrough = new HashMap<>();
     private long generation;
-    private long rewinds;
     private Option<RewindToken> currentRewind = Option.none();
 
     private InMemoryProjectionStore() {}
@@ -124,17 +123,15 @@ public final class InMemoryProjectionStore<S> implements ProjectionStore<S> {
         return Promise.unitPromise();
     }
 
-    /// The token is `(generation, rewind)` with `rewind` a store-wide counter, so tokens are strictly
-    /// increasing in the order the runtime's `RewindEpoch` compares them.
+    /// Records the runtime-minted token; this store mints nothing (a process-local counter would restart
+    /// with the process — the #1333 review defect).
     @Override
-    public synchronized Promise<RewindToken> beginRewind(long expectedGeneration) {
-        var minted = new RewindToken(expectedGeneration, ++rewinds);
-
+    public synchronized Promise<RewindToken> beginRewind(long expectedGeneration, RewindToken token) {
         if (generation == expectedGeneration) {
-            currentRewind = Option.some(minted);
+            currentRewind = Option.some(token);
         }
 
-        return Promise.success(minted);
+        return Promise.success(token);
     }
 
     @Override

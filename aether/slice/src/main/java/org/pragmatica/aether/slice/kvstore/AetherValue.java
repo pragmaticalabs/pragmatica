@@ -1426,10 +1426,15 @@ public sealed interface AetherValue {
     /// stamped with a STRICTLY older epoch, so a zombie consumer's pre-rewind checkpoint cannot move the
     /// cursor forward again. Same-epoch puts are accepted, which is every ordinary checkpoint. The two
     /// longs are carried flat rather than as a nested record so the value needs no new codec pin.
+    /// `rewind` marks the REWIND RECORD itself — the put a projection rebuild makes to move the group's
+    /// cursor under a freshly minted epoch. It MINTS that epoch ([EpochBearing#mintsEpoch]), so the applier
+    /// refuses it unless strictly newer than the committed record; a consumer's checkpoint (`rewind = false`)
+    /// at the SAME epoch stays accepted.
     record StreamCursorCheckpointValue(long committedOffset,
                                        long commitTimestamp,
                                        long rewindGeneration,
-                                       long rewindSequence) implements AetherValue, EpochBearing<RewindEpoch> {
+                                       long rewindSequence,
+                                       boolean rewind) implements AetherValue, EpochBearing<RewindEpoch> {
         public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset) {
             return streamCursorCheckpointValue(committedOffset, RewindEpoch.NONE);
         }
@@ -1438,7 +1443,17 @@ public sealed interface AetherValue {
             return new StreamCursorCheckpointValue(committedOffset,
                                                    System.currentTimeMillis(),
                                                    epoch.generation(),
-                                                   epoch.rewind());
+                                                   epoch.rewind(),
+                                                   false);
+        }
+
+        /// The rewind record: the group's cursor moved to `fromOffset` under the minted `epoch`.
+        public static StreamCursorCheckpointValue rewindRecord(long fromOffset, RewindEpoch epoch) {
+            return new StreamCursorCheckpointValue(fromOffset,
+                                                   System.currentTimeMillis(),
+                                                   epoch.generation(),
+                                                   epoch.rewind(),
+                                                   true);
         }
 
         public RewindEpoch rewindEpoch() {
@@ -1448,6 +1463,11 @@ public sealed interface AetherValue {
         @Override
         public RewindEpoch fenceEpoch() {
             return rewindEpoch();
+        }
+
+        @Override
+        public boolean mintsEpoch() {
+            return rewind;
         }
     }
 

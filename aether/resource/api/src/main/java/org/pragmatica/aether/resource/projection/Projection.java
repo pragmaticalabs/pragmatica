@@ -126,19 +126,30 @@ public record Projection<S, T>(String name,
         }
 
         @Override
+        public Promise<ProjectionStore.RewindToken> mintRewindToken(long generation) {
+            return CURSOR_RESET_PENDING.promise();
+        }
+
+        @Override
         public Promise<Unit> rewind(ProjectionStore.ReplayRange range, ProjectionStore.RewindToken token) {
             return CURSOR_RESET_PENDING.promise();
         }
     };
 
-    /// The group-cursor seam a rebuild drives (spec §10), supplied by the runtime once the D3 operator
-    /// surface exists. [#capture] reports what a rewind WILL replay without moving anything; [#rewind]
-    /// then sends the group's cursor back over exactly that range.
+    /// The group-cursor seam a rebuild drives (spec §10), supplied by the runtime (`ProjectionRuntime.attach`).
+    /// [#capture] reports what a rewind WILL replay without moving anything; [#mintRewindToken] mints the
+    /// token the rewind runs under; [#rewind] then sends the group's cursor back over exactly that range.
     public interface ReplayCursor {
         Promise<ProjectionStore.ReplayRange> capture();
+        /// Mint the token for `generation`'s rewind from the group's COMMITTED cursor state — strictly newer
+        /// than every epoch already committed for the group, never a process-local counter (#1333 review): a
+        /// counter restarts with the process, and a re-minted equal token lets a stale consumer's checkpoint
+        /// pass for replay progress and drive an empty rebuilt model LIVE.
+        Promise<ProjectionStore.RewindToken> mintRewindToken(long generation);
         /// Rewind the group's cursor over `range`. `token` stamps every cursor commit the rewound consumer
         /// reports back through [Projection#onCursorCommitted]; a report carrying any other token is ignored,
-        /// so a pre-rewind position cannot be mistaken for replay progress (#1304 X6).
+        /// so a pre-rewind position cannot be mistaken for replay progress (#1304 X6). Refused — never a
+        /// silent success — when the rewind record did not commit under `token`.
         Promise<Unit> rewind(ProjectionStore.ReplayRange range, ProjectionStore.RewindToken token);
     }
 
@@ -329,9 +340,9 @@ public record Projection<S, T>(String name,
     }
 
     /// Capture the replay range → reset the store to a new generation, REBUILDING over it, in one step →
-    /// rewind the cursor. Capture comes first so the range exists before the reset needs it, and a
-    /// refused capture touches nothing; the rewind comes LAST so no replay delivery arrives while the
-    /// old generation is still current.
+    /// mint the rewind token from committed state → record it on the store → rewind the cursor. Capture
+    /// comes first so the range exists before the reset needs it, and a refused capture touches nothing;
+    /// the rewind comes LAST so no replay delivery arrives while the old generation is still current.
     public Promise<Unit> rebuild() {
         return claims.fold(() -> ProjectionError.UnguardedRebuild.FACTORY.apply(name).promise(),
                            _ -> rebuildGuarded());
@@ -340,8 +351,10 @@ public record Projection<S, T>(String name,
     private Promise<Unit> rebuildGuarded() {
         return replayCursor.capture()
                            .mapWith(store::resetToNewGeneration, Rebuild::new)
-                           .mapWith(rebuild -> store.beginRewind(rebuild.generation()),
+                           .mapWith(rebuild -> replayCursor.mintRewindToken(rebuild.generation()),
                                     Projection::rewound)
+                           .mapWith(rewound -> store.beginRewind(rewound.generation(), rewound.token()),
+                                    (rewound, _) -> rewound)
                            .flatMap(rewound -> replayCursor.rewind(rewound.range(),
                                                                    rewound.token()));
     }
@@ -349,12 +362,12 @@ public record Projection<S, T>(String name,
     /// The range a rebuild replays and the generation it reset to.
     private record Rebuild(ProjectionStore.ReplayRange range, long generation) {}
 
-    /// The same range, once its rewind token is minted — the token the rewound consumer stamps its cursor
-    /// reports with.
-    private record Rewound(ProjectionStore.ReplayRange range, ProjectionStore.RewindToken token) {}
+    /// The same range and generation, once the rewind token is minted — the token the rewound consumer
+    /// stamps its cursor reports with.
+    private record Rewound(ProjectionStore.ReplayRange range, long generation, ProjectionStore.RewindToken token) {}
 
     private static Rewound rewound(Rebuild rebuild, ProjectionStore.RewindToken token) {
-        return new Rewound(rebuild.range(), token);
+        return new Rewound(rebuild.range(), rebuild.generation(), token);
     }
 
     /// The runtime reports a committed cursor for this projection's consumer group (#1304): the

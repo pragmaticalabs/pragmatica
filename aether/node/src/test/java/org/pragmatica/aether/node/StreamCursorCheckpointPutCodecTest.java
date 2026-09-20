@@ -28,7 +28,7 @@ class StreamCursorCheckpointPutCodecTest {
         var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("topic:ns:orders:1.0.0",
                                                                       0,
                                                                       "org.example:orders#onPlaced");
-        var value = new StreamCursorCheckpointValue(42L, 1_700_000_000_500L, 3L, 2L);
+        var value = new StreamCursorCheckpointValue(42L, 1_700_000_000_500L, 3L, 2L, true);
         var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
         var buf = Unpooled.buffer();
 
