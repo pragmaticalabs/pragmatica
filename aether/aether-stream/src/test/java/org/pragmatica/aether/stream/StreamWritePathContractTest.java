@@ -357,6 +357,20 @@ class StreamWritePathContractTest {
 
                 return Promise.unitPromise();
             }
+
+            /// #1235: every barrier is satisfied at once, so everything appended counts as acknowledged.
+            @Override
+            public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            @Override
+            public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            @Override
+            public void observeAcks(AckObserver observer) {}
         };
     }
 
