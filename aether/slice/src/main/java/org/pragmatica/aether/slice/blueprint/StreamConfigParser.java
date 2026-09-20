@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -116,7 +117,31 @@ public interface StreamConfigParser {
 
     private static Result<Map<String, StreamResource>> aggregateStreamResources(TomlDocument doc,
                                                                                 Map<String, String> roleHints) {
-        var perSection = new ArrayList<Result<Map.Entry<String, StreamResource>>>();
+        return Result.allOf(parseSections(doc, roleHints).stream().map(StreamConfigParser::entryOf).toList()).map(StreamConfigParser::toOrderedMap);
+    }
+
+    /// #1336 — a `[streams.<alias>]` section the parser refused, with the alias the refusal is about, so the
+    /// deploy can name the section without guessing it from the message; `cause` is the parser's own typed
+    /// refusal ([StreamDeclarationError], [StreamSourceError], the address and version types' causes), from
+    /// which the rule is derived. Only per-section outcomes are wrapped: a document that does not parse at
+    /// all has no section and stays a bare cause.
+    record RefusedSection(String alias, Cause cause) implements Cause {
+        public static RefusedSection refusedSection(String alias, Cause cause) {
+            return new RefusedSection(alias, cause);
+        }
+
+        @Override
+        public String message() {
+            return cause.message();
+        }
+    }
+
+    /// One top-level `[streams.X]` section's outcome, in document order — what [#aggregateStreamResources]
+    /// folds and [#parseResourcesPartitioned] keeps apart.
+    record ParsedSection(String alias, Result<StreamResource> outcome) {}
+
+    private static List<ParsedSection> parseSections(TomlDocument doc, Map<String, String> roleHints) {
+        var perSection = new ArrayList<ParsedSection>();
 
         for (var sectionName : doc.sectionNames()) {
             if (!isStreamSection(sectionName)) {
@@ -129,11 +154,61 @@ public interface StreamConfigParser {
                 continue;
             }
 
-            perSection.add(parseStreamResource(doc, sectionName, streamName, roleHints).map(res -> Map.entry(streamName,
-                                                                                                             res)));
+            perSection.add(new ParsedSection(streamName, parseStreamResource(doc, sectionName, streamName, roleHints)));
         }
 
-        return Result.allOf(perSection).map(StreamConfigParser::toOrderedMap);
+        return perSection;
+    }
+
+    private static Result<Map.Entry<String, StreamResource>> entryOf(ParsedSection section) {
+        return section.outcome()
+                      .map(res -> Map.entry(section.alias(),
+                                            res))
+                      .mapError(cause -> RefusedSection.refusedSection(section.alias(),
+                                                                       cause));
+    }
+
+    private static Stream<RefusedSection> refusalOf(ParsedSection section) {
+        return section.outcome()
+                      .fold(cause -> Stream.of(RefusedSection.refusedSection(section.alias(),
+                                                                             cause)),
+                            _ -> Stream.empty());
+    }
+
+    /// #1336 — the per-section outcomes [#parseResourcesAggregating] folds into one `Result`, kept apart:
+    /// every section that parses is in `accepted`, every section that does not
+    /// is in `rejected` as a [RefusedSection] naming its alias. The deploy path binds the accepted aliases and reports the
+    /// rejected ones by name, instead of losing the valid declarations to the invalid one beside them.
+    /// Only a document that does not parse at all is a failure — then no section has an outcome.
+    record PartitionedStreamResources(Map<String, StreamResource> accepted, List<RefusedSection> rejected) {
+        public PartitionedStreamResources {
+            accepted = Map.copyOf(accepted);
+            rejected = List.copyOf(rejected);
+        }
+
+        public static PartitionedStreamResources partitionedStreamResources(Map<String, StreamResource> accepted,
+                                                                            List<RefusedSection> rejected) {
+            return new PartitionedStreamResources(accepted, rejected);
+        }
+    }
+
+    static Result<PartitionedStreamResources> parseResourcesPartitioned(String toml, Map<String, String> roleHints) {
+        if (!Verify.Is.present(toml)) {
+            return success(PartitionedStreamResources.partitionedStreamResources(Map.of(), List.of()));
+        }
+
+        return TomlParser.parse(toml)
+                         .mapError(err -> cause("Stream config parse error: " + err.message()))
+                         .map(doc -> partitionStreamResources(doc, roleHints));
+    }
+
+    private static PartitionedStreamResources partitionStreamResources(TomlDocument doc,
+                                                                       Map<String, String> roleHints) {
+        var perSection = parseSections(doc, roleHints);
+        var accepted = toOrderedMap(perSection.stream().flatMap(section -> entryOf(section).stream()).toList());
+        var rejected = perSection.stream().flatMap(StreamConfigParser::refusalOf).toList();
+
+        return PartitionedStreamResources.partitionedStreamResources(accepted, rejected);
     }
 
     private static Map<String, StreamResource> toOrderedMap(List<Map.Entry<String, StreamResource>> entries) {
@@ -201,7 +276,7 @@ public interface StreamConfigParser {
                                : hintOpt;
 
         if (sourceOpt.isPresent() && versionOpt.isPresent()) {
-            return Causes.cause("Stream resource '" + streamName + "' must not set both 'source' and 'version'").result();
+            return new StreamDeclarationError.VersionAndSourceBothSet(streamName).result();
         }
 
         if (sourceOpt.isPresent()) {
@@ -273,9 +348,9 @@ public interface StreamConfigParser {
     /// applied there too.
     private static Result<StreamConfig> validatePartitionCeiling(String streamName, StreamConfig config) {
         if (config.partitions() > MAX_PARTITIONS_PER_STREAM_CEILING) {
-            return Causes.<Cause> cause("Stream resource '" + streamName
-                                       + "' declares " + config.partitions()
-                                       + " partitions, over the per-stream ceiling of " + MAX_PARTITIONS_PER_STREAM_CEILING).result();
+            return new StreamDeclarationError.PartitionsOverCeiling(streamName,
+                                                                    config.partitions(),
+                                                                    MAX_PARTITIONS_PER_STREAM_CEILING).result();
         }
 
         return success(config);
@@ -288,16 +363,16 @@ public interface StreamConfigParser {
     /// path used for the rest of the parser's config rejections.
     private static Result<StreamConfig> validateReplication(String streamName, StreamConfig config) {
         if (config.replicas() < 1) {
-            return Causes.<Cause> cause("Stream resource '" + streamName
-                                       + "' has replicas=" + config.replicas()
-                                       + "; replicas must be >= 1").result();
+            return new StreamDeclarationError.ReplicationInvalid(streamName,
+                                                                 "replicas=" + config.replicas()
+                                                                + "; replicas must be >= 1").result();
         }
 
         if (config.minSyncReplicas() > config.replicas()) {
-            return Causes.<Cause> cause("Stream resource '" + streamName
-                                       + "' has min-sync-replicas=" + config.minSyncReplicas()
-                                       + " > replicas=" + config.replicas()
-                                       + "; min-sync-replicas must not exceed replicas").result();
+            return new StreamDeclarationError.ReplicationInvalid(streamName,
+                                                                 "min-sync-replicas=" + config.minSyncReplicas()
+                                                                + " > replicas=" + config.replicas()
+                                                                + "; min-sync-replicas must not exceed replicas").result();
         }
 
         return success(config);
@@ -315,10 +390,7 @@ public interface StreamConfigParser {
                                     .isPresent();
 
         if (producesEvents && spec.isLatest()) {
-            return Causes.<Cause> cause("Stream resource '" + streamName
-                                       + "' has role '" + roleOpt.or("producer")
-                                       + "' with version 'latest'; producers must pin to an exact MAJOR.MINOR.PATCH triplet "
-                                       + "(spec §11.1.3)").result();
+            return new StreamDeclarationError.ProducerVersionLatest(streamName, roleOpt.or("producer")).result();
         }
 
         return success(spec);
