@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -22,6 +23,7 @@ import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
@@ -254,22 +256,31 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                            .or(() -> publishLocalEventual(partition, bytes, timestamp));
     }
 
-    /// Owner-local append; with `minSyncReplicas > 1` it also awaits `minSyncReplicas - 1` peer acks. A
-    /// refusal because the committed owner is another node (the #1230 ownership-lag window) is redirected
+    /// Owner-local append. With `minSyncReplicas > 1` the replica floor is checked BEFORE the append (#1236:
+    /// NOT_ENOUGH_REPLICAS means "not in the log") and `minSyncReplicas - 1` peer acks are awaited after it.
+    /// A refusal because the committed owner is another node (the #1230 ownership-lag window) is redirected
     /// to that owner via {@link StreamForwardRetry#redirectNotOwner}.
     private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
-                                                                                  owner -> forwardTo(owner,
-                                                                                                     partition,
-                                                                                                     bytes,
-                                                                                                     timestamp)),
-                                     offset -> awaitMinSync(partition, offset));
+        return ensureReplicaFloor(partition).flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
+                                            .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                               owner -> forwardTo(owner,
+                                                                                                                  partition,
+                                                                                                                  bytes,
+                                                                                                                  timestamp)),
+                                                  offset -> awaitMinSync(partition, offset));
     }
 
+    private Result<Unit> ensureReplicaFloor(int partition) {
+        return minSyncReplicas > 1
+               ? partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
+               : Result.unitResult();
+    }
+
+    /// #1236: once appended, a barrier that does not confirm is an unknown outcome, never a failure.
     private Promise<Unit> awaitMinSync(int partition, long offset) {
         return minSyncReplicas > 1
                ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
                : Promise.unitPromise();
     }
 

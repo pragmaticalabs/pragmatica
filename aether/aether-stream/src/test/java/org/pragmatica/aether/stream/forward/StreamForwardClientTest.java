@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.forward;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
@@ -111,6 +112,21 @@ class StreamForwardClientTest {
             result.onFailure(cause -> assertThat(cause).isInstanceOf(StreamForwardError.RemotePublishRetryable.class));
         }
 
+        /// #1236: an owner that appended and then failed its min-sync barrier says so on the wire; the
+        /// sender must surface that as an unknown outcome, not as the permanent "not in the log" failure.
+        @Test
+        void onPublishForwardResponse_outcomeUnknown_resolvesPromiseWithPublishOutcomeUnknown() {
+            var promise = client.publishRemote(GOVERNOR, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+            var correlationId = ((PublishForward) sentMessages.getFirst().message()).correlationId();
+
+            client.onPublishForwardResponse(PublishForwardResponse.outcomeUnknownResponse(GOVERNOR, correlationId, "acks timed out"));
+
+            var result = promise.await();
+            assertThat(result.isSuccess()).isFalse();
+            result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(PublishOutcomeUnknown.class,
+                                                                               unknown -> assertThat(unknown.origin()).isInstanceOf(StreamForwardError.RemotePublishFailed.class)));
+        }
+
         @Test
         void onPublishForwardResponse_unknownCorrelationId_ignored() {
             client.onPublishForwardResponse(PublishForwardResponse.successResponse(GOVERNOR, "unknown-id", 99L));
@@ -131,7 +147,10 @@ class StreamForwardClientTest {
 
             var result = promise.await();
             assertThat(result.isSuccess()).isFalse();
-            result.onFailure(cause -> assertThat(cause.message()).contains("timed out"));
+            // #1236: the forward was sent, so the owner may have appended it — the timeout is an unknown
+            // outcome wrapping FORWARD_TIMEOUT, no longer a bare FORWARD_TIMEOUT failure.
+            result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(PublishOutcomeUnknown.class,
+                                                                               unknown -> assertThat(unknown.origin()).isEqualTo(StreamForwardError.General.FORWARD_TIMEOUT)));
         }
 
         /// Deadline budget: the ack wait is min(configured, remaining). A 60s-configured client under

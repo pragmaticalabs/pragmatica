@@ -20,7 +20,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.consensus.NodeId;
@@ -33,6 +35,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -50,6 +53,10 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// within a few seconds of `start()` resolving, and stops appearing after `stop()`. Red with the
 /// `periodicTasks.defer(...)` for the cycle removed (no round is ever logged).
 class AetherNodeAntiEntropyCycleBootTest {
+    /// #1276: node storage lives here, never under the machine-global `/data/aether/...` default.
+    @TempDir
+    Path tempDir;
+
     private static final String LOGGER_NAME = DHTAntiEntropy.class.getName();
     private static final String ROUND_MARKER = "DHT anti-entropy round:";
 
@@ -85,7 +92,7 @@ class AetherNodeAntiEntropyCycleBootTest {
     @Test
     @Timeout(value = 90, unit = SECONDS)
     void bootedNode_runsTheAntiEntropyCycle_onTheConfiguredInterval_andStopsWithTheNode() throws InterruptedException {
-        node = AetherNode.aetherNode(minimalConfig(), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(tempDir), () -> {})
                           .onFailure(cause -> fail("construction must succeed: " + cause.message()))
                           .unwrap();
 
@@ -111,7 +118,7 @@ class AetherNodeAntiEntropyCycleBootTest {
         assertThat(appender.rounds()).as("no round fires after stop() — the cycle is cancelled with the node").isEqualTo(afterStop);
     }
 
-    private static AetherNodeConfig minimalConfig() {
+    private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("anti-entropy-cycle-" + UUID.randomUUID()).unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
         var timeouts = TimeoutsConfig.timeoutsConfig()
@@ -122,6 +129,8 @@ class AetherNodeAntiEntropyCycleBootTest {
                                .sliceConfig(SliceConfig.sliceConfig()).artifactRepo(DHTConfig.DEFAULT).coreMax(1)
                                .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none()).quicTls(TlsConfig.selfSignedMutual())
                                .certificateProvider(Option.none()).configProvider(Option.none()).environment(Option.none())
+                               .managementHttpProtocol(HttpProtocol.H1)
+                               .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                .build()
                                .withTimeouts(timeouts);
     }

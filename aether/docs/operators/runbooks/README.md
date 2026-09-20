@@ -15,6 +15,8 @@ Step-by-step runbooks for common operational tasks including incident response, 
 | [Troubleshooting](troubleshooting.md) | Common issues and diagnostic steps |
 | [Deployment](deployment.md) | Deployment and upgrade procedures |
 
+> **Planned (1.0.0-rc5, #1251 — not implemented):** the [cluster supervision spec](../../specs/cluster-supervision-spec.md) extracts these procedures into a typed catalog of bounded, executable runbooks with escalation. Until it ships, every procedure here is manual.
+
 ## Quick Reference
 
 ### Health Check Endpoints
