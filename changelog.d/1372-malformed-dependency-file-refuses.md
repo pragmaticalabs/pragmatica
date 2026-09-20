@@ -8,3 +8,5 @@
   so the refusal reaches the slice load. `[verified: DependencyFileMalformedTest — an unknown section and
   a read that fails after the resource was found both refuse the load naming the jar; an absent file stays
   dependency-free; the parse error is the refusal's origin]`
+- **Removed** `SliceDependencies.load`, a second reader of the same file with the same answer-EMPTY-on-any-failure
+  shape and no production caller (only its own test).
