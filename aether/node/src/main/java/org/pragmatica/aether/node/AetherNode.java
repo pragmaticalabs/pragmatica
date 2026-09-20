@@ -4300,7 +4300,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                     StreamPartitionOwnershipValue.class),
                                                                                                                                                                             entityArcOwner),
                                                                                             clusterCommandApplier);
-        var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver();
+        // #1302/#1330: every checkpoint tick reports this node's largest checkpoint lag — over partitions it
+        // OWNS, measured from the committed checkpoint in KV — into the node metrics map, where the alert
+        // threshold path (DashboardMetricsPublisher -> AlertManager.checkThreshold) evaluates it.
+        var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver(EntityCheckpointLagMetric.sinkFor(metricsCollector),
+                                                                                   EntityCheckpointLagMetric.committedCheckpoints(kvStore));
         var entityTimerDriver = EntityTimerDriver.entityTimerDriver();
         // #345 I3: entity state lives on a fenced, fsync-durable, replicated stream partition, and its
         // checkpoints are blocks in stream storage pointed at from consensus KV. The catch-up source is
