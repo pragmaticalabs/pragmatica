@@ -143,6 +143,9 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
                                                  null);
 
         substrate.ensureLog("ledger", 1, 1, 1).unwrap();
