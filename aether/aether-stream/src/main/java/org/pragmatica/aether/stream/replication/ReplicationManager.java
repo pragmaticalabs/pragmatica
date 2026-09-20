@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -68,6 +69,16 @@ public interface ReplicationManager extends AutoCloseable {
 
     ReplicaRegistry registry();
     Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks);
+
+    /// Pre-append floor check (#1236): whether the partition's replica set can POSSIBLY deliver
+    /// `minAcks` distinct non-self acks, answered BEFORE anything is appended. A publish refused here
+    /// is genuinely not in the log, so `NOT_ENOUGH_REPLICAS` is a clean failure; the same verdict
+    /// reached inside [#awaitReplication] comes after the append and is not. The default admits every
+    /// publish — the no-op manager has no replica set to fall short of, matching its always-succeeding
+    /// [#awaitReplication].
+    default Result<Unit> ensureReplicaFloor(String streamName, int partition, int minAcks) {
+        return Result.unitResult();
+    }
 
     @Contract
     @Override

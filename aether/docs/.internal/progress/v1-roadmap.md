@@ -89,7 +89,7 @@ Provides the programming model and core runtime. Consumer groups, CDC, persisten
 | 3 | Annotation processor: detect stream resources, generate manifest, bump envelope version | 1.5 days | Processor unit tests, generated code compiles |
 | 4 | `StreamPartitionManager` + KV types, governor-local produce/consume, CDM lifecycle | 2 days | Forge integration: produce 1000 events, consume all, verify order |
 | 5 | REST endpoints (`/api/streams/*`), CLI (`aether stream`), docs | 1 day | REST round-trip, CLI output |
-| 6 | Consumer error handling (retry/skip/stall), dead-letter, co-located zero-copy | 1.5 days | Failure injection test |
+| 6 | Consumer error handling (retry/skip/stall), dead-letter, co-located zero-copy (not implemented at `ccba0dba5`; #1248) | 1.5 days | Failure injection test |
 
 **Total: 9 days**
 

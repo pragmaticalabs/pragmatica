@@ -21,4 +21,17 @@ public sealed interface ReplicationError extends Cause {
             return message;
         }
     }
+
+    /// Lifecycle refusals: the component has ended, so no retry can change the outcome (#1246 review N6).
+    enum Lifecycle implements ReplicationError, Cause.Terminal {
+        BATCHER_CLOSED("Replication batcher is closed");
+        private final String message;
+        Lifecycle(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
