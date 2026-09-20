@@ -27,6 +27,51 @@ the interrupted write; `FileOpsTest#moveAtomic_renameFails_targetSurvives` for t
 the crash window is established by reading the JDK, not by a test). Before #676 the write truncated
 `state.toml` in place and a half-written file loaded as an EMPTY state.
 
+## Storage metadata snapshots — a separate mechanism, per node, per storage instance
+
+Each storage instance (`artifacts`, `content`, `streams`, …) also keeps its OWN metadata snapshots
+under `[storage.<instance>] snapshot_path`: `snapshot-<epoch>.dat` files plus a one-line pointer
+file `LATEST` naming the current one (`DefaultSnapshotManager`, `integrations/storage`). These are
+not consensus state and are not covered by `[backup]`; the WAL truncation of the `streams` instance
+is bounded by the refs in the latest snapshot on disk (#1345).
+
+**How they are written (#1353):** the snapshot goes to `snapshot.partial`, is fsynced
+(`FileChannel.force(true)`) and renamed over `snapshot-<epoch>.dat` in one atomic rename
+(`FileOps.moveAtomic`); `LATEST` is written the same way via `LATEST.partial`. So a write that
+stops part-way — disk full, process killed — leaves the previous snapshot and the previous `LATEST`
+intact and removes its partial
+(`SnapshotDurableWriteTest#forceSnapshot_latestWriteInterrupted_previousSnapshotStillRestores`,
+`#forceSnapshot_snapshotWriteInterrupted_leavesNoTornFileUnderAnyName`). Before #1353 both files
+were truncated in place, and a torn `LATEST` restored NOTHING although a complete snapshot sat
+beside it. `[unverified: power loss — the rename's directory entry is not fsynced, the same bound
+as `GitBackedPersistence` above; the pinned property is torn-file behaviour.]`
+
+**How they are read at boot:** the file `LATEST` names is tried first. If it is missing, torn or
+fails its content-hash check, the retained snapshots are tried newest-first and the first complete
+one is restored, at WARN:
+
+    Snapshot <dir>/snapshot-000042.dat named by LATEST is unreadable; restored previous retained
+    snapshot snapshot-000041.dat (epoch=41) instead. Metadata recorded only in the unreadable
+    file is lost unless a WAL replays it. See docs/operators/runbooks/backup-recovery.md
+
+A torn snapshot is never restored. If no retained snapshot is complete the WARN ends in
+`metadata starts EMPTY` and the node boots with empty metadata for that instance — readiness is
+still signalled (#1013, open).
+
+**Operator action on that WARN:**
+1. Nothing is required for the node to run: the next snapshot write repoints `LATEST` at a fresh
+   complete file. The read path does not rewrite `LATEST` and does not delete the unreadable file.
+2. Keep the unreadable file until you have decided whether the mutations between the two epochs
+   matter; it is the only evidence of what was lost. For the `streams` instance, segment refs that
+   existed only in the torn snapshot are unreachable until it is repaired; the WAL replays whatever
+   it still holds, and a WAL that starts above the restored watermark is accepted as reclaimed
+   history with its own WARN (#1258; with #1345 truncation reads the snapshot through this same
+   fallback, so truncation and recovery agree on which file is current).
+3. To remove it by hand: stop the node, delete the named `snapshot-<epoch>.dat`, start the node.
+   Never edit `LATEST` while the node runs — it is rewritten on every snapshot.
+4. Recurring WARNs after a clean shutdown mean the disk is tearing completed writes; check the
+   volume before trusting any snapshot on it.
+
 ## Enabling Backups
 
 ### Configuration (aether.toml)
@@ -139,4 +184,5 @@ git show HEAD:state.toml   # Current snapshot: "# Phase: N" + base64 of the bina
 | Push fails | Invalid remote or credentials | Verify remote URL and SSH keys |
 | Restored state ignored | Nodes were still running when `state.toml` was checked out | Stop all nodes before restoring; the file is read at sync time only |
 | Empty backup | KV-Store has no entries | Normal for fresh cluster |
+| `named by LATEST is unreadable; restored previous retained snapshot` WARN at boot | The newest metadata snapshot of a storage instance is torn (power loss, half-copied file) | Nothing required; see "Storage metadata snapshots" above for what was lost and how to remove the file |
 | `BOOT FUTURE-HISTORY` WARN after an intentional reset | Node kept its old `[backup] path` across the reset | Stop the node, clear its backup directory, restart — see "Intentionally resetting a cluster" above |
