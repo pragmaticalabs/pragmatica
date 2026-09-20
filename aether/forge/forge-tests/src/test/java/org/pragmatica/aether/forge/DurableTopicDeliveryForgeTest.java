@@ -306,6 +306,15 @@ class DurableTopicDeliveryForgeTest {
     /// of three. When neither path establishes an id the arm aborts with the readings in its message:
     /// a named skip, never a green. The deterministic successor — an event appended while the owner is
     /// SIGKILLed and no consumer is attached — is #739, not this arm.
+    ///
+    /// The assertion on that id is AT LEAST one delivery, not exactly one. The warm-up precedes the
+    /// all-ACTIVE gate by design (see [#setUp]), so it alone can straddle a consumer move inside setUp —
+    /// a late `ROUTING -> ACTIVE` remediation changes the candidate set, the new assignee fetches a
+    /// cursor the old one never checkpointed (a lone trailing event is checkpointed only on the NEXT
+    /// `advanceCursor`), and the warm-up is delivered twice: the documented reconcile-window duplicate,
+    /// measured once in four runs by rev1341. Exactly-once is [Delivery]'s claim, made after the gate;
+    /// this arm's claim is that the backlog was read at subscribe, and a unique id cannot be satisfied
+    /// by anything else.
     @Nested
     @Order(1)
     class PreAttachBacklog {
@@ -319,12 +328,15 @@ class DurableTopicDeliveryForgeTest {
                     + " " + excludedWarmupIds + ". Nothing this run can say about the backlog read at"
                     + " subscribe — see the class doc for why this is a named skip, not a red"));
 
-            awaitSettled("%s is definitely in the log before the attach (%s), so a subscribe that reads"
-                         .formatted(id, preAttachEvidence)
-                         + " the backlog delivers it, once, without any further publish (excluded"
-                         + " warm-ups: " + excludedWarmupIds + ")",
-                         () -> deliveriesOf(id),
-                         1L);
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(deliveriesOf(id))
+                           .describedAs("%s is definitely in the log before the attach (%s), so a subscribe"
+                                        .formatted(id, preAttachEvidence)
+                                        + " that reads the backlog delivers it without any further publish"
+                                        + " (excluded warm-ups: " + excludedWarmupIds + ")")
+                           .isGreaterThanOrEqualTo(1));
         }
     }
 
