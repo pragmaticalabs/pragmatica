@@ -1024,6 +1024,24 @@ class BlueprintPublishOwnershipTest {
             assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
         }
 
+        /// The artifact path derives the bindings BEFORE it builds its batch, so a gating rule refuses the
+        /// publish with nothing applied — the same "nothing lands" the body path has.
+        @Test
+        void publishFromArtifact_isRefused_whenTheResourcesTomlDoesNotParse_beforeAnyBatch() {
+            var artifactPathStore = new TestKVStore();
+            var artifactPathCluster = new TestClusterNode(artifactPathStore);
+
+            BlueprintService.blueprintService(artifactPathCluster,
+                                              artifactPathStore,
+                                              streamAppRepository(),
+                                              artifactStore(streamAppBlueprintJar(UNPARSEABLE)))
+                            .publishFromArtifact(STREAM_APP_COORDS + ":blueprint")
+                            .await()
+                            .onSuccess(_ -> Assertions.fail("an unparseable resources.toml must refuse the artifact publish"))
+                            .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_RESOURCES_PARSE));
+            assertThat(artifactPathCluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+        }
+
         /// GATING: the blueprint's own namespace prefixes every owned address, so when it cannot be derived
         /// and a stream IS declared there is no per-alias subset to keep — the publish is refused naming
         /// the rule. `system` is the reserved namespace (`Namespace.appNamespace`).

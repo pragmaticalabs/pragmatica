@@ -10,6 +10,8 @@ import java.util.Map;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -167,6 +169,18 @@ class StreamResourceValidatorPartitionTest {
 
             result.onSuccess(_ -> fail("a declared stream, even a rejected one, makes the namespace load-bearing"))
                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_NAMESPACE_RESERVED));
+        }
+
+        /// The management-plane error funnel answers `httpStatus()` when the cause declares one and
+        /// `500` otherwise (`ProblemResponses.writeProblem`). A gating refusal is the artifact author's
+        /// content, not a server fault.
+        @Test
+        void aGatingRefusal_answers422() {
+            StreamResourceValidator.partition(Option.some("[streams.orders\n"), APP_ARTIFACT, Map.of())
+                                   .onSuccess(_ -> fail("instrument check: the fixture must gate"))
+                                   .onFailure(cause -> assertThat(cause).isInstanceOf(HttpStatusAware.class)
+                                                                        .extracting(c -> ((HttpStatusAware) c).httpStatus())
+                                                                        .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
         }
 
         @Test
