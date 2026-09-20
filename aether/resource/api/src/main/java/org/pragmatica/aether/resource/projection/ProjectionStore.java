@@ -21,7 +21,7 @@ import org.pragmatica.lang.Unit;
 /// projection wrote — KV-prefix clear, cache clear, or entity range-delete, whichever the backing
 /// means by it — while PRESERVING the generation slot. The facade's rebuild sequence depends on
 /// that split: it bumps the generation FIRST (so replayed events land under the new generation's
-/// idempotency keys once the guard exists), then resets the data, and a reset that also wiped the
+/// idempotency keys), then resets the data, and a reset that also wiped the
 /// generation would resurrect the prior pass's keys and dedup the entire replay into a no-op —
 /// the exact failure the generation exists to prevent (spec review finding 3).
 ///

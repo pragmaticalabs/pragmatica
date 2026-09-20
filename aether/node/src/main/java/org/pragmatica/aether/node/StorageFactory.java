@@ -307,7 +307,20 @@ public final class StorageFactory {
                                                        String nodeId,
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring) {
-        return admit(pendingSetups(configs, nodeId, dhtClient, keyring));
+        return createAll(configs, nodeId, dhtClient, keyring, StorageConfig.storageConfig());
+    }
+
+    /// #1276: [#createAll(Map, String, Option, Option)] with the `defaults` that the synthesized `artifacts`
+    /// and `content` instances derive from supplied by the caller, instead of [StorageConfig#storageConfig()]
+    /// with its machine-global `/data/aether/...` paths. Tests pass defaults rooted in a per-test directory, so
+    /// no test reads or writes another run's storage (an encryption marker left there by one run made every
+    /// later keyring-less run refuse to boot). Production callers never use it.
+    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
+                                                       String nodeId,
+                                                       Option<DHTClient> dhtClient,
+                                                       Option<EncryptionKeyring> keyring,
+                                                       StorageConfig defaults) {
+        return admit(pendingSetups(configs, nodeId, dhtClient, keyring, defaults));
     }
 
     /// #852 round 2: the boot decision `AetherNode` actually makes -- the config-map instances AND
@@ -327,7 +340,7 @@ public final class StorageFactory {
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring,
                                                        StreamSetupRequest streams) {
-        var results = pendingSetups(configs, nodeId, dhtClient, keyring);
+        var results = pendingSetups(configs, nodeId, dhtClient, keyring, StorageConfig.storageConfig());
 
         results.add(armStreamStorage(streams));
 
@@ -337,7 +350,8 @@ public final class StorageFactory {
     private static List<Result<PendingSetup>> pendingSetups(Map<String, StorageConfig> configs,
                                                             String nodeId,
                                                             Option<DHTClient> dhtClient,
-                                                            Option<EncryptionKeyring> keyring) {
+                                                            Option<EncryptionKeyring> keyring,
+                                                            StorageConfig defaults) {
         var results = new ArrayList<Result<PendingSetup>>();
 
         configs.forEach((name, config) -> results.add(createOne(name, config, nodeId, dhtClient, keyring)));
@@ -354,7 +368,7 @@ public final class StorageFactory {
         // a boot failure exactly like an explicit instance's, not a silently-dropped default.
         if (!configs.containsKey(ARTIFACTS_NAME)) {
             results.add(createOne(ARTIFACTS_NAME,
-                                  defaultArtifactsConfig(keyring.isPresent()),
+                                  defaultArtifactsConfig(defaults, keyring.isPresent()),
                                   nodeId,
                                   dhtClient,
                                   keyring));
@@ -370,7 +384,7 @@ public final class StorageFactory {
         // explicit `[storage.content]` section overrides it.
         if (!configs.containsKey(CONTENT_NAME)) {
             results.add(createOne(CONTENT_NAME,
-                                  defaultContentConfig(configs, keyring.isPresent()),
+                                  defaultContentConfig(configs, defaults, keyring.isPresent()),
                                   nodeId,
                                   dhtClient,
                                   keyring));
@@ -415,12 +429,10 @@ public final class StorageFactory {
         }
     }
 
-    /// #253: `StorageConfig.storageConfig()`'s defaults with `encrypted` overridden to track
-    /// node-wide keyring presence, for the synthesized default `artifacts` instance in
-    /// [#createAll] -- see the ruling note there.
-    private static StorageConfig defaultArtifactsConfig(boolean encrypted) {
-        var defaults = StorageConfig.storageConfig();
-
+    /// #253: the synthesis `defaults` (in production `StorageConfig.storageConfig()`, #1276) with
+    /// `encrypted` overridden to track node-wide keyring presence, for the synthesized default
+    /// `artifacts` instance in [#createAll] -- see the ruling note there.
+    private static StorageConfig defaultArtifactsConfig(StorageConfig defaults, boolean encrypted) {
         return new StorageConfig(defaults.memoryMaxBytes(),
                                  defaults.diskMaxBytes(),
                                  defaults.diskPath(),
@@ -435,11 +447,12 @@ public final class StorageFactory {
     private static final String ARTIFACTS_NAME = "artifacts";
     private static final String CONTENT_NAME = "content";
 
-    /// #783: `StorageConfig.storageConfig()`'s defaults with `encrypted` tracking node-wide keyring
-    /// presence (mirroring [#defaultArtifactsConfig]), but `diskPath`/`snapshotPath` are NOT the bare
-    /// defaults -- `assembleSetup` reads `config.snapshotPath()` directly with no per-instance
-    /// subdirectory of its own, so reusing the artifacts default verbatim would collide both
-    /// instances' snapshot files (and disk blocks) in the same directory. Instead this derives a
+    /// #783: the synthesis `defaults` (in production `StorageConfig.storageConfig()`, #1276) with
+    /// `encrypted` tracking node-wide keyring presence (mirroring [#defaultArtifactsConfig]), but
+    /// `diskPath`/`snapshotPath` are NOT the bare defaults -- `assembleSetup` reads
+    /// `config.snapshotPath()` directly with no per-instance subdirectory of its own, so reusing the
+    /// artifacts default verbatim would collide both instances' snapshot files (and disk blocks) in
+    /// the same directory. Instead this derives a
     /// `content` data dir as a SIBLING of wherever `artifacts` actually resolves -- the explicit
     /// `[storage.artifacts]` config when the operator set one, else the hardcoded default -- then splits
     /// it into `content/blocks` (disk) and `content/snapshots` (metadata) so neither collides with
@@ -460,8 +473,9 @@ public final class StorageFactory {
     /// The GENERAL version of the collision hazard -- any two EXPLICITLY configured instances that
     /// both omit `disk_path`/`snapshot_path` still share the bare `StorageConfig.storageConfig()`
     /// default and collide -- is likewise not addressed here; see the PR body.
-    private static StorageConfig defaultContentConfig(Map<String, StorageConfig> configs, boolean encrypted) {
-        var defaults = StorageConfig.storageConfig();
+    private static StorageConfig defaultContentConfig(Map<String, StorageConfig> configs,
+                                                      StorageConfig defaults,
+                                                      boolean encrypted) {
         var artifactsConfig = option(configs.get(ARTIFACTS_NAME)).or(defaults);
         var contentDataDir = Path.of(artifactsConfig.diskPath()).resolveSibling(CONTENT_NAME);
 

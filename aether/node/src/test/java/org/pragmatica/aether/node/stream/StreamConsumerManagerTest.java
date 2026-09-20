@@ -9,6 +9,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
@@ -55,6 +59,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 
@@ -135,10 +141,9 @@ class StreamConsumerManagerTest {
                                                            self);
     }
 
-    /// A seam for #545's re-resolution race: `reconcile()` and `declarationFor` each re-read
-    /// declarations independently, and a REAL registry answers both reads identically within one
-    /// synchronous call, so the ambiguity branch cannot be driven from a real registry. A mock that
-    /// answers the two reads DIFFERENTLY reproduces the only interleaving in which it matters.
+    /// A seam for a registry whose answer changes BETWEEN reads — a KV notification landing while a
+    /// pass is in flight. A real registry answers every read from its current state, so only a mock can
+    /// script the change deterministically.
     private StreamConsumerManager managerWithRegistry(StreamConsumerRegistry customRegistry) {
         return StreamConsumerManager.streamConsumerManager(customRegistry,
                                                            runtime,
@@ -661,16 +666,16 @@ class StreamConsumerManagerTest {
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
         }
 
-        /// `reconcile()`'s own guard already keeps a colliding declaration's key out of `desired`, so a
-        /// REAL registry can never drive `declarationFor` into an ambiguous match: both reads it takes
-        /// — the one `reconcile()` uses to build `desired` and the one it makes internally to resolve a
-        /// key back to a declaration — see the same snapshot. The only way the ambiguity branch is
-        /// reachable at all is a THIRD declaration landing between those two reads (a KV notification
-        /// racing a `reconcile()` in flight); a mock registry answering the two reads differently is
-        /// the only way to reproduce that interleaving synchronously. Proves the branch is not dead
-        /// code: it is what keeps that race from picking a side.
+        /// #1267 replaced what this test used to pin. A pass used to read the declarations once to build
+        /// `desired` and again, per key, to resolve each key back to a declaration, so a colliding
+        /// declaration landing between those reads reached `declarationFor`'s refusal branch mid-pass.
+        /// A pass now reads ONE snapshot and resolves every key against it, so that interleaving no
+        /// longer exists: a collision landing mid-pass is invisible to that pass and is acted on by the
+        /// next one. Pinned here: the registry is read exactly once per pass, the first pass acts on
+        /// what it read, and the next pass retracts the attachment the moment the collision is visible —
+        /// fail-closed per pass, never an arbitrary winner.
         @Test
-        void declarationFor_refusesToPickAWinner_whenACollisionAppearsBetweenTheTwoDeclarationReads() {
+        void reconcile_readsOneSnapshotPerPass_andRetractsOnTheNextPass_whenACollisionLandsBetweenPasses() {
             var declarationA = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, ARTIFACT, METHOD, GROUP, false, "java.lang.String");
             var declarationB = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, OTHER_ARTIFACT, METHOD, GROUP, false, "java.lang.String");
             var raceyRegistry = mock(StreamConsumerRegistry.class);
@@ -680,9 +685,17 @@ class StreamConsumerManagerTest {
             deploySliceLocally();
             ownership.ownedBySelf(0, 1, 2, 3);
 
-            managerWithRegistry(raceyRegistry).reconcile();
+            var manager = managerWithRegistry(raceyRegistry);
 
-            assertThat(runtime.subscribedPartitions()).describedAs("the collision surfaced only on re-resolution — `declarationFor` must still refuse to pick a side, never fall back to the first match")
+            manager.reconcile();
+
+            verify(raceyRegistry, times(1)).allDeclarations();
+            assertThat(runtime.subscribedPartitions()).describedAs("the first pass's one snapshot holds no collision — consuming is the correct decision for what it read")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the next pass sees the collision and retracts — never an arbitrary winner")
                       .isEmpty();
         }
 
@@ -772,6 +785,232 @@ class StreamConsumerManagerTest {
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
             assertThat(runtime.subscribeCalls).describedAs("the actual symptom: a group-only filter detaches `invoices` mid-pass and then transparently re-subscribes it since it is still desired — a spurious unsubscribe+resubscribe a real runtime would feel as a needless cursor flush and resume. A stream-scoped filter never touches `invoices`: zero new subscribe calls since before the collision")
                       .isEqualTo(subscribeCallsBeforeCollision);
+        }
+    }
+
+    /// #1267: one declaration snapshot per reconcile pass, and passes that never overlap.
+    ///
+    /// The timer tick and the registration-change listener both call `reconcile()`, on different
+    /// threads. Unserialized, a pass that read the declarations BEFORE a registration landed can finish
+    /// AFTER the listener's pass attached that registration's partitions, and its `dropStale` then
+    /// detaches what the newer pass just attached — leaving a desired consumer detached until the next
+    /// tick. The latch parks the older pass inside that window; it widens the window, it does not create
+    /// it.
+    @Nested
+    class ReconcilePasses {
+        private static final long PARK_TIMEOUT_SECONDS = 10;
+        private static final int BURST_SIZE = 5;
+
+        @Test
+        void reconcile_readsTopicDeclarationsExactlyOnce_perPass() {
+            var topicGroups = new CountingTopicGroups();
+
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(topicGroups.calls.get()).describedAs("one declaration snapshot per pass — not one more per desired subscription")
+                                               .isEqualTo(1);
+        }
+
+        @Test
+        void reconcile_keepsAttachedPartitions_whenAnOlderConcurrentPassFinishesLast() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+            var timerPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the timer pass reached the declaration read with the OLD registry snapshot")
+                                                                                   .isTrue();
+            var listenerPass = Thread.ofPlatform().start(ReconcilePasses.this::declareOnListenerThread);
+
+            awaitFinishedOrBlocked(listenerPass);
+            topicGroups.release.countDown();
+            timerPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            listenerPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+
+            assertThat(timerPass.isAlive() || listenerPass.isAlive()).describedAs("both passes completed").isFalse();
+            assertThat(runtime.subscribedPartitions()).describedAs("the newer registration's partitions stay attached once both passes are done")
+                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(manager.activeSubscriptionCount()).isEqualTo(4);
+        }
+
+        /// Coalescing (#1267): every trigger that arrives while a pass is in flight is covered by ONE
+        /// follow-up pass, not one pass per trigger. Counted by declaration reads — one per pass.
+        @Test
+        void reconcile_runsExactlyOneFollowUpPass_forABurstOfTriggersDuringABusyPass() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+            var manager = managerWithTopicGroups(topicGroups);
+            var busyPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the busy pass reached its declaration read")
+                                                                                   .isTrue();
+            var burst = IntStream.range(0, BURST_SIZE)
+                                 .mapToObj(_ -> Thread.ofPlatform().start(manager::reconcile))
+                                 .toList();
+
+            for (var trigger : burst) {
+                awaitFinishedOrBlocked(trigger);
+            }
+            topicGroups.release.countDown();
+            busyPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            for (var trigger : burst) {
+                trigger.join(PARK_TIMEOUT_SECONDS * 1_000);
+            }
+
+            assertThat(topicGroups.calls.get()).describedAs("the busy pass plus ONE follow-up pass for all %d triggers", BURST_SIZE)
+                                               .isEqualTo(2);
+        }
+
+        /// `stop()` waits for an in-flight pass, so a pass parked past its snapshot cannot attach after
+        /// `stop()` returns: the stop's detach sweep runs after that pass has finished.
+        @Test
+        void stop_leavesNothingAttached_whenAPassInFlightFinishesAfterStopWasCalled() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+            var inFlightPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the pass holds its snapshot and has not attached yet")
+                                                                                   .isTrue();
+            var stopping = Thread.ofPlatform().start(manager::stop);
+
+            awaitFinishedOrBlocked(stopping);
+            topicGroups.release.countDown();
+            inFlightPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            stopping.join(PARK_TIMEOUT_SECONDS * 1_000);
+
+            assertThat(inFlightPass.isAlive() || stopping.isAlive()).describedAs("the pass and the stop completed").isFalse();
+            assertThat(runtime.subscribedPartitions()).describedAs("nothing may stay attached once stop() has returned")
+                                                      .isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        /// The lock alone is not enough: a trigger after `stop()` — a queued caller, or a tick that
+        /// outlives it — must not run a pass that re-attaches.
+        @Test
+        void reconcile_attachesNothing_afterStop() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(new CountingTopicGroups());
+
+            manager.reconcile();
+            manager.stop();
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("a stopped manager must not re-attach").isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        /// `stopped` must be set BEFORE the sweep, not after it. A pass triggered while the sweep holds
+        /// the lock — here re-entrantly from inside the sweep, which is the one interleaving a test can
+        /// force without a scheduler — must find the manager already stopped; with the flag set after
+        /// the sweep it runs, re-attaches what the sweep had just detached, and survives `stop()`.
+        @Test
+        void stop_leavesNothingAttached_whenAPassIsTriggeredDuringTheDetachSweep() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(new CountingTopicGroups());
+            var triggered = new AtomicBoolean();
+
+            manager.reconcile();
+            runtime.afterUnsubscribe = () -> triggerOnce(manager, triggered);
+            manager.stop();
+
+            assertThat(triggered.get()).describedAs("a pass was triggered from inside the sweep").isTrue();
+            assertThat(runtime.subscribedPartitions()).describedAs("a pass triggered during stop() must not re-attach")
+                                                      .isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        private static void triggerOnce(StreamConsumerManager manager, AtomicBoolean triggered) {
+            if (triggered.compareAndSet(false, true)) {
+                manager.reconcile();
+            }
+        }
+
+        private void declareOnListenerThread() {
+            declareStringConsumer();
+        }
+
+        /// The listener pass either ran to completion (unserialized) or is waiting for the parked pass
+        /// (serialized); only then is the parked pass released, so the older pass finishes LAST.
+        private static void awaitFinishedOrBlocked(Thread thread) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(PARK_TIMEOUT_SECONDS);
+
+            while (thread.isAlive() && !isWaiting(thread) && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+        }
+
+        private static boolean isWaiting(Thread thread) {
+            return switch (thread.getState()) {
+                case BLOCKED, WAITING, TIMED_WAITING -> true;
+                default -> false;
+            };
+        }
+
+        private StreamConsumerManager managerWithTopicGroups(TopicGroupDeclarationSource topicGroups) {
+            return StreamConsumerManager.streamConsumerManager(registry,
+                                                               runtime,
+                                                               invoker,
+                                                               invocationHandler,
+                                                               FrameworkCodecs.frameworkCodecs(),
+                                                               ownership,
+                                                               placement,
+                                                               SELF,
+                                                               topicGroups);
+        }
+    }
+
+    /// Counts declaration reads; synthesizes no topic declarations.
+    private static final class CountingTopicGroups implements TopicGroupDeclarationSource {
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public List<StreamConsumerRegistry.ConsumerDeclaration> declarations() {
+            calls.incrementAndGet();
+
+            return List.of();
+        }
+    }
+
+    /// Parks the FIRST declaration read until released. `allDeclarations()` reads the registry before
+    /// the topic source, so the parked pass holds the registry snapshot taken before the park.
+    private static final class ParkingTopicGroups implements TopicGroupDeclarationSource {
+        private static final long PARK_SECONDS = 10;
+
+        private final CountDownLatch parked = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public List<StreamConsumerRegistry.ConsumerDeclaration> declarations() {
+            if (calls.getAndIncrement() == 0) {
+                parked.countDown();
+                awaitRelease();
+            }
+
+            return List.of();
+        }
+
+        private void awaitRelease() {
+            try {
+                release.await(PARK_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -885,6 +1124,9 @@ class StreamConsumerManagerTest {
 
         private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
         private int subscribeCalls;
+        // Runs on the unsubscribing thread after each unsubscribe — lets a test trigger a pass from INSIDE
+        // the stop sweep, while that thread holds the pass lock. Inert by default.
+        private volatile Runnable afterUnsubscribe = () -> {};
 
         List<Integer> subscribedPartitions() {
             return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
@@ -921,6 +1163,7 @@ class StreamConsumerManagerTest {
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
             subscriptions.remove(new StreamPartition(streamName, partition));
+            afterUnsubscribe.run();
 
             return Result.unitResult();
         }
