@@ -48,7 +48,8 @@ class HierarchyAuthorityAcceptanceTest {
     }
 
     @Test void workerMajorityCannotSynchronizeColdVoter_orChangeRolesOrIssueDrain() {
-        cluster.withAdditionalNodeSlots(1).unwrap();
+        // Ember retains stopped nodes' port slots for identity-preserving restart.
+        cluster.withAdditionalNodeSlots(2).unwrap();
         LifecycleAwait.settled("start two of three voters", cluster, cluster.start(Set.of("authority-3")));
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
         var workers = new ArrayList<AetherNode>();
