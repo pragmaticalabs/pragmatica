@@ -46,6 +46,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -218,12 +219,26 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `AetherNode` binds it to the [org.pragmatica.aether.stream.replication.ReplicaRegistry]. Default:
     /// [#ALL_CAUGHT_UP]. Volatile: set once at wiring, read on the reconcile tick.
     private volatile ReplicaCatchupSource catchupSource = ALL_CAUGHT_UP;
-
     /// Live committed-ownership guard for the owner release rule (#265 increment 5): a node never releases a
     /// partition whose COMMITTED owner is still itself. `AetherNode` binds it to the committed
     /// `StreamPartitionOwnershipValue`. Default: [#OWNER_ELSEWHERE]. Volatile: set once at wiring, read on
     /// the reconcile tick.
     private volatile OwnerReleaseGuard ownerReleaseGuard = OWNER_ELSEWHERE;
+
+    /// Default owner-write admission (#1230): no committed ownership source, so no application append is
+    /// refused on ownership grounds. Forge/unit/legacy managers keep this; `AetherNode` late-binds the real
+    /// committed-`StreamPartitionOwnershipValue` check.
+    private static final OwnerWriteAdmission ADMIT_ALL = (_, _) -> Option.none();
+    /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
+    /// owner-write admission (#1230) — only the epoch fence applies to them.
+    private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
+    /// A publish with no min-sync barrier: the floor check is trivially met.
+    private static final int NO_REPLICA_FLOOR = 0;
+
+    /// Live committed-ownership admission for application appends (#1230). Consulted by [#publishLocal]
+    /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
+    /// a replica. Default: [#ADMIT_ALL]. Volatile: set once at wiring, read on every owner-path append.
+    private volatile OwnerWriteAdmission ownerWriteAdmission = ADMIT_ALL;
 
     /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
@@ -412,6 +427,23 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           lastSealedOffset);
     }
 
+    /// Test/standalone factory wiring an eviction listener (the segment sealer) together with a per-partition
+    /// WAL root and a last-sealed source, with the no-replication / no-cluster / fence-free defaults — the
+    /// seal → sealed-watermark → WAL-truncation → recovery chain end to end without a cluster (#1234).
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          ReplicationManager.NONE,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero(),
+                                          walBaseDir,
+                                          lastSealedOffset);
+    }
+
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode) {
         return new StreamPartitionManager(maxTotalBytes,
@@ -457,6 +489,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     @FunctionalInterface
     public interface OwnerReleaseGuard {
         boolean committedOwnerElsewhere(String stream, int partition);
+    }
+
+    /// Committed-ownership admission for application appends (#1230). Reports the COMMITTED
+    /// `StreamPartitionOwnershipValue.owner` of `(stream, partition)` when it names a node OTHER than self;
+    /// [Option#none] when self is the committed owner or no ownership record is committed (the cold-start
+    /// window, where the fence is inert and HRW routing alone picks the writer). Holding the partition ring
+    /// authorizes reads and replication receipt, never an application write: the epoch fence cannot tell a
+    /// live replica from the owner, because both stamp the same committed epoch. `AetherNode` binds it to the
+    /// committed ownership record; the default admits every append.
+    @FunctionalInterface
+    public interface OwnerWriteAdmission {
+        Option<NodeId> remoteCommittedOwner(String stream, int partition);
     }
 
     /// Committed-config source for the owner-side forwarded-publish race recovery (write-forward race fix).
@@ -548,6 +592,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerReleaseGuard(OwnerReleaseGuard guard) {
         this.ownerReleaseGuard = guard;
+    }
+
+    /// Late-bind the committed-ownership write admission (#1230). `AetherNode` wires this to the committed
+    /// `StreamPartitionOwnershipValue` (refuse iff it names a node other than self). Until then — and in
+    /// Forge/unit/legacy managers — the default admits every append. Set once at wiring; read on every
+    /// owner-path append.
+    @Contract
+    public void ownerWriteAdmission(OwnerWriteAdmission admission) {
+        this.ownerWriteAdmission = admission;
     }
 
     /// Late-bind the committed-config source for the owner-side forwarded-publish race recovery
@@ -1123,14 +1176,23 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// on this node it returns the RETRYABLE {@link StreamError.StreamConfigNotYetVisible} so the forwarder
     /// backs off and retries rather than surfacing a spurious permanent failure. Any OTHER `publishLocal`
     /// failure (event too large, partition out of range, a genuine non-owner `PARTITION_NOT_LOCAL`, a stale
-    /// epoch) propagates UNCHANGED — no lazy create, no retry.
-    public Result<Long> publishForwarded(String streamName, int partition, byte[] payload, long timestamp) {
-        return publishLocal(streamName, partition, payload, timestamp).fold(cause -> recoverForwardedPublish(cause,
-                                                                                                             streamName,
-                                                                                                             partition,
-                                                                                                             payload,
-                                                                                                             timestamp),
-                                                                            Result::success);
+    /// epoch) propagates UNCHANGED — no lazy create, no retry. `minAcks` is the #1236 replica floor, checked
+    /// through {@link #publishLocalAtFloor} — AFTER the owner admission, so a forward that lands on a
+    /// non-owner is answered with the retryable [StreamError.NotOwnerAppend], never with a
+    /// `NOT_ENOUGH_REPLICAS` about replication this node does not own. The caller reads `minAcks` from the
+    /// stream it knows; on the lazy-materialization path that stream was unknown (`min-sync` 0), so the
+    /// retry takes its floor from the committed config it materializes from (#1290 review M1).
+    public Result<Long> publishForwarded(String streamName,
+                                         int partition,
+                                         byte[] payload,
+                                         long timestamp,
+                                         int minAcks) {
+        return publishLocalAtFloor(streamName, partition, payload, timestamp, minAcks).fold(cause -> recoverForwardedPublish(cause,
+                                                                                                                             streamName,
+                                                                                                                             partition,
+                                                                                                                             payload,
+                                                                                                                             timestamp),
+                                                                                            Result::success);
     }
 
     private Result<Long> recoverForwardedPublish(Cause cause,
@@ -1156,12 +1218,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                            timestamp));
     }
 
+    /// The retry's replica floor is the committed config's own `min-sync - 1`: the caller's floor was read
+    /// before the stream existed here and is therefore always 0 on this path.
     private Result<Long> materializeThenPublish(StreamConfig config,
                                                 String streamName,
                                                 int partition,
                                                 byte[] payload,
                                                 long timestamp) {
-        return ensureStreamMaterialized(config).flatMap(_ -> publishLocal(streamName, partition, payload, timestamp));
+        return ensureStreamMaterialized(config).flatMap(_ -> publishLocalAtFloor(streamName,
+                                                                                 partition,
+                                                                                 payload,
+                                                                                 timestamp,
+                                                                                 config.minSyncReplicas() - 1));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
@@ -1170,6 +1238,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                             payload,
                             timestamp,
                             ownerEpochSource.currentOwnerEpoch(streamName, partition));
+    }
+
+    /// Owner-local publish that also checks the replica floor (#1236) — `minAcks` in-sync peers must exist
+    /// BEFORE the append, so a `NOT_ENOUGH_REPLICAS` refusal leaves nothing in the ring or the WAL. The
+    /// floor runs AFTER the epoch fence and the owner admission (#1230/#1236 composition): the in-sync
+    /// floor is the OWNER's replication state, so a non-owner is redirected ([StreamError.NotOwnerAppend])
+    /// rather than answering `NOT_ENOUGH_REPLICAS` for a partition whose replication it does not own.
+    public Result<Long> publishLocalAtFloor(String streamName,
+                                            int partition,
+                                            byte[] payload,
+                                            long timestamp,
+                                            int minAcks) {
+        return publishLocal(streamName,
+                            partition,
+                            payload,
+                            timestamp,
+                            ownerEpochSource.currentOwnerEpoch(streamName, partition),
+                            minAcks);
     }
 
     /// Owner-local publish stamped with an explicit `ownerEpoch` fencing token (#345 item 1d-ii). The
@@ -1191,17 +1277,35 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// group-commit fsync is awaited after the section is released, so concurrent publishers still share
     /// fsyncs. A publish whose fsync then fails has already been replicated; it was already readable from
     /// the owner's ring before the fsync, so this adds no new exposure.
+    ///
+    /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] when the committed owner of
+    /// `(streamName, partition)` is another node — see [OwnerWriteAdmission]. It runs AFTER the epoch fence,
+    /// so a deposed writer presenting a stale epoch is told it is deposed ([StreamError.StaleEpochAppend],
+    /// permanent) rather than being redirected (`NotOwnerAppend`, transient); a current-epoch append from a
+    /// live non-owner passes the fence and is refused here.
     public Result<Long> publishLocal(String streamName,
                                      int partition,
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch) {
+        return publishLocal(streamName, partition, payload, timestamp, ownerEpoch, NO_REPLICA_FLOOR);
+    }
+
+    private Result<Long> publishLocal(String streamName,
+                                      int partition,
+                                      byte[] payload,
+                                      long timestamp,
+                                      Epoch ownerEpoch,
+                                      int minAcks) {
         return resolveStreamEntry(streamName).flatMap(entry -> publishInSection(entry,
                                                                                 streamName,
                                                                                 partition,
                                                                                 payload,
                                                                                 timestamp,
-                                                                                ownerEpoch))
+                                                                                ownerEpoch,
+                                                                                admitOwnerWrite(streamName,
+                                                                                                partition,
+                                                                                                minAcks)))
                                  .flatMap(this::awaitDurable)
                                  .fold(cause -> handleDrop(cause, streamName, partition),
                                        Result::success);
@@ -1279,18 +1383,31 @@ public final class StreamPartitionManager implements AutoCloseable {
         return refusedReplicaDropsSinceBoot.get();
     }
 
+    /// Owner admission first, then the replica floor: the floor is evaluated only for an admitted write.
+    private Result<Unit> admitOwnerWrite(String streamName, int partition, int minAcks) {
+        return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
+                                  .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
+                                  .or(Result::unitResult)
+                                  .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks));
+    }
+
+    /// The owner-side pre-checks — epoch fence, then `admission` (owner admission and replica floor, #1230/#1236)
+    /// — run BEFORE the partition's ordered section: they read committed state the section cannot make
+    /// atomic with the append, and a refused write must neither take an offset nor hold the lock.
     private Result<LoggedAppend> publishInSection(StreamEntry entry,
                                                   String streamName,
                                                   int partition,
                                                   byte[] payload,
                                                   long timestamp,
-                                                  Epoch ownerEpoch) {
+                                                  Epoch ownerEpoch,
+                                                  Result<Unit> admission) {
         return appendToPartition(entry,
                                  streamName,
                                  partition,
                                  payload,
                                  timestamp,
                                  ownerEpoch,
+                                 admission,
                                  offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
     }
 
@@ -1413,6 +1530,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  payload,
                                  timestamp,
                                  ownerEpoch,
+                                 RECEIPT_NEEDS_NO_ADMISSION,
                                  offset -> success(logReplicated(streamName, partition, offset, payload, timestamp)));
     }
 
@@ -1528,15 +1646,19 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Append into the partition's ordered section: `inOrder` runs with the assigned offset before any
-    /// other append on this partition is assigned one (see [OffHeapRingBuffer#appendOrdered]).
+    /// other append on this partition is assigned one (see [OffHeapRingBuffer#appendOrdered]). The epoch
+    /// fence and `admission` are checked first, in that order (#1230: a deposed writer learns it is deposed,
+    /// not merely redirected), and before the section is entered.
     private <T> Result<T> appendToPartition(StreamEntry entry,
                                             String streamName,
                                             int partition,
                                             byte[] payload,
                                             long timestamp,
                                             Epoch ownerEpoch,
+                                            Result<Unit> admission,
                                             Fn1<Result<T>, Long> inOrder) {
-        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSize(entry, payload))
+        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
+                             .flatMap(_ -> checkEventSize(entry, payload))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
                              .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, inOrder))
                              .onSuccess(_ -> entry.updateActivity());
@@ -1547,7 +1669,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// metadata-only partition is materialized ONLY when this node is its OWNER/REPLICA (a publish/replica-
     /// receive that lands here because reconcile has not fired yet must not drop the write); a genuine
     /// non-replica (`NONE`) is rejected with `PARTITION_NOT_LOCAL` so the caller forwards to a holder (the
-    /// read/write routers already fall back to owner-forward on an absent local buffer — spec §8). The
+    /// read router forwards on an absent local buffer, the write routers route by owner (#1230) — spec §8). The
     /// READ path never materializes — it forwards.
     private Result<OffHeapRingBuffer> resolveAppendTarget(String streamName, int partition, StreamEntry entry) {
         if (partition < 0 || partition >= entry.declaredPartitions()) {
@@ -1802,6 +1924,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return current;
     }
 
+    /// Whether `offset` of `(streamName, partition)` has been evicted and handed to the eviction listener but
+    /// is not yet durably sealed (#1234) — a read of it is IN FLIGHT and succeeds once the seal lands.
+    public boolean sealInFlight(String streamName, int partition, long offset) {
+        return evictionListener.holdsUnsealed(streamName, partition, offset);
+    }
+
     /// Periodically reclaim WAL disk by truncating each partition's write-ahead log up to its DURABLE
     /// last-sealed offset (streaming-persistence W5). For every live stream and each partition that has a
     /// [PartitionWal], `base = lastSealedOffset.lastSealedOffset(stream, partition)` is computed and, when
@@ -1915,6 +2043,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> closeAndRelease(StreamEntry entry) {
         releaseEntry(entry);
         entry.deleteWals();
+        evictionListener.onStreamDeleted(entry.config().name());
 
         return success(unit());
     }
@@ -2919,14 +3048,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         /// Replay one partition's WAL tail into its ring, or a no-op when the partition has no WAL
-        /// ([Option#none]). The fresh ring is seeded above the durable last-sealed offset and only records
+        /// ([Option#none]). The WAL is attached to the ring's eviction listener FIRST (#1234): replay can evict,
+        /// and those hand-overs must already see the partition as WAL-backed. The fresh ring is seeded above the durable last-sealed offset and only records
         /// with `offset > lastSealedOffset` are appended (PartitionWal.replay already filters them).
         private static Result<Unit> recoverPartition(String streamName,
                                                      int partition,
                                                      OffHeapRingBuffer ring,
                                                      Option<PartitionWal> wal,
                                                      LastSealedOffsetSource lastSealedOffset) {
-            return wal.map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
+            return wal.onPresent(ring::attachWal)
+                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
                       .or(() -> success(unit()));
         }
 
