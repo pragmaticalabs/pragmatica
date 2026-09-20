@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -572,7 +573,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_EMPTY.result();
         }
 
-        return readSliceAtOffset(offset);
+        VarHandle.acquireFence();
+
+        return readSliceAtOffset(offset).flatMap(slice -> retainedAfterCopy(offset, slice));
     }
 
     @Contract
@@ -611,17 +614,46 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         var count = (int) Math.min(maxEvents, head - fromOffset + 1);
 
-        return readEvents(fromOffset, count);
+        VarHandle.acquireFence();
+
+        return retainedAfterCopy(fromOffset, readEvents(fromOffset, count));
     }
 
-    private Result<List<RawEvent>> readEvents(long fromOffset, int count) {
+    private List<RawEvent> readEvents(long fromOffset, int count) {
         var events = new ArrayList<RawEvent>(count);
 
         for (long offset = fromOffset; offset < fromOffset + count; offset++) {
             events.add(readSingleEvent(offset));
         }
 
-        return success(List.copyOf(events));
+        return List.copyOf(events);
+    }
+
+    /// Seqlock validation of a copy against a concurrent eviction (#1340). Readers take no lock: the
+    /// tail check at the top of [#readChecked] / [#readSliceChecked] is a snapshot, and a writer wrapping
+    /// the ring advances the tail past `fromOffset` and overwrites that slot with the record of
+    /// `fromOffset + capacity` while the copy is in flight. The copy then holds the NEWER record under
+    /// the REQUESTED offset's label — well-formed, decodable, and another offset's data (measured at
+    /// rc4: 3,499 of 23,984 tail reads on a 64-slot ring, `OffHeapRingBufferReadEvictionRaceTest`).
+    ///
+    /// The re-read decides AFTER the bytes are copied: if the tail has moved past `fromOffset`, some slot
+    /// of the copy may have been reclaimed under it, and the whole read fails `CursorExpired` — the same
+    /// typed refusal a read that arrived after the eviction gets, so every caller already handles it
+    /// (`PartitionedStreamAccess.handleReadFailure` reroutes to the sealed tier). What makes the check a
+    /// guarantee rather than an x86 accident is the fence pairing: [#evictOldest] publishes the new tail
+    /// with a store-store fence BEFORE the slot is overwritten, and the reader's acquire fence here
+    /// orders the copy's loads BEFORE the tail re-read. So a copy that observed the overwrite cannot
+    /// observe the old tail. Holding the slot instead would put a lock on a path that has never had one
+    /// and serialise every reader against the writer; the re-check keeps readers lock-free.
+    private <T> Result<T> retainedAfterCopy(long fromOffset, T copy) {
+        VarHandle.acquireFence();
+        var tailAfterCopy = rawTailOffset();
+
+        if (tailAfterCopy > fromOffset) {
+            return new StreamError.CursorExpired(fromOffset, tailAfterCopy).result();
+        }
+
+        return success(copy);
     }
 
     /// Guarded header reads (#999). See [#guardedRead] for why a `long`-returning accessor needs a
@@ -1041,7 +1073,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         controlSegment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP, timestamp);
     }
 
+    /// The slot's data and index stores must be visible before the head that publishes it (#1340): a
+    /// reader that sees `newHeadOffset` copies that slot next, and without the release fence it could
+    /// read the index entry the slot held `capacity` offsets ago — the head-side twin of the tail race.
     private void updateHeaderAfterAppend(long newHeadOffset, int payloadLength) {
+        VarHandle.releaseFence();
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, newHeadOffset);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() + payloadLength);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() + 1);
@@ -1126,6 +1162,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, tail + 1);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() - 1);
+        // The new tail must be visible before the slot it frees is overwritten — the writer half of
+        // the reader's post-copy check in retainedAfterCopy (#1340).
+        VarHandle.storeStoreFence();
     }
 
     private void evictByCount(long maxCount) {
