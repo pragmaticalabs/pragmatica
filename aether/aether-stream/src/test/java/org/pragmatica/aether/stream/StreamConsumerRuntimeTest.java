@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -1791,6 +1792,75 @@ class StreamConsumerRuntimeTest {
             } finally {
                 gate.countDown();
             }
+        }
+
+        /// #1388 review (rev1393 M1, adopted from `oss/internal/probes/s25-rev1393/Rev1393ProbeTest.java`): the
+        /// tracked handle is no longer the chain, so "the handle settles when the chain settles"
+        /// (`issueTrackedCommit`'s `withResult`) is its own property — without it every `close()` with a commit in
+        /// flight would wait the full 5 s bound and count a settled commit as unsettled. Both commits pending at
+        /// `close()`, settled by the test while it waits: `close()` returns when they do, well inside the bound, and
+        /// counts nothing. Reddens with the `withResult` line deleted.
+        @Test
+        void pendingCommitsSettledAfterCloseBegan_closeReturnsWhenTheyDo_countsNothing() throws Exception {
+            createTestStream("orders");
+            var pendings = new CopyOnWriteArrayList<Promise<CommitOutcome>>();
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), pendingEachCommit(pendings));
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            awaitUntil(() -> pendings.size() >= 1, "periodic commit issued");
+
+            var returned = new CountDownLatch(1);
+            var started = System.nanoTime();
+
+            Thread.ofPlatform().start(() -> {
+                observedRuntime.close();
+                returned.countDown();
+            });
+            // #1355: the final commit's store call is chained behind the periodic one, so only ONE store promise
+            // exists until the periodic settles; the final's handle is registered though.
+            assertThat(returned.await(500, TimeUnit.MILLISECONDS)).describedAs("close() is waiting on the pending periodic commit").isFalse();
+            assertThat(pendings).hasSize(1);
+
+            pendings.getFirst().succeed(CommitOutcome.persisted());
+            awaitUntil(() -> pendings.size() >= 2, "the final commit's store call fires once its predecessor settled");
+            assertThat(returned.await(300, TimeUnit.MILLISECONDS)).describedAs("close() is now waiting on the pending final commit").isFalse();
+
+            pendings.get(1).succeed(CommitOutcome.persisted());
+
+            assertThat(returned.await(2, TimeUnit.SECONDS)).describedAs("close() returned once the store settled, well inside the 5 s bound").isTrue();
+            assertThat((System.nanoTime() - started) / 1_000_000).isLessThan(3_000L);
+            assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("settled inside the bound: no incident").isZero();
+        }
+
+        /// Every `commit` returns a fresh pending promise, recorded so the test can settle it.
+        private static ConsumerCursorStore pendingEachCommit(List<Promise<CommitOutcome>> pendings) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    var pending = Promise.<CommitOutcome>promise();
+
+                    pendings.add(pending);
+
+                    return pending;
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+        }
+
+        private static void awaitUntil(Supplier<Boolean> condition, String what) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (!condition.get() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(5);
+            }
+            assertThat(condition.get()).describedAs(what).isTrue();
         }
 
         /// The first `commit` runs `onEntry`, counts down `entered`, then parks inside the call until `gate`

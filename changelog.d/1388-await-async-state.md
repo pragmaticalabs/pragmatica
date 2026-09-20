@@ -23,7 +23,10 @@
   `close_countsAPeriodicCommitWhoseStoreCallIsStillInProgress_asUnsettled` — the store stub reads the
   package-private `inFlightCommitCount()` from INSIDE `commit()` (must already be 1) and then parks there
   until the test releases it after `close()` returned; red at the base with `but was: 1L`, red 3/3 with
-  the registration moved back after the store call (`but was: 0`), green with the fix; the base also fails 3/3 under a 200 ms stall between the store call and the
+  the registration moved back after the store call (`but was: 0`), green with the fix;
+  `pendingCommitsSettledAfterCloseBegan_closeReturnsWhenTheyDo_countsNothing` (rev1393 M1) — the handle settles with
+  the chain: both commits pending at `close()` and settled while it waits, `close()` returns when they do and counts
+  nothing; red with the `withResult` forwarding deleted (`close()` returned only at the 5 s bound); the base also fails 3/3 under a 200 ms stall between the store call and the
   registration, and the fix passes 3/3 under the same stall placed after the call]
   [mechanism: `Promise.processActions` — `onResult`/`onSuccess`/`onFailure` attached to a pending promise
   run on `AsyncExecutor`, `withResult`/`map` completions run inline on resolution]
