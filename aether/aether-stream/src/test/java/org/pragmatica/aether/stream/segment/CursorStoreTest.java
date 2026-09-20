@@ -8,17 +8,24 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.BlockMetadata;
+import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -379,6 +386,85 @@ class CursorStoreTest {
                               org.junit.jupiter.api.Assertions.fail("BlockId computation failed");
                               return null;
                           }, id -> id);
+        }
+    }
+
+    /// #1333 (rev1369 MEDIUM-2) — the 24-byte block `offset | rewindGeneration | rewindSequence` is what
+    /// lets a same-node restart resume under the epoch the consumer committed with. Every other test in
+    /// this class goes through the offset-only `commit`/`fetch`, so before these three pins a decode that
+    /// DROPPED the epoch left the whole repo green (rev1369's mutation M7').
+    @Nested
+    class RewindEpochLayout {
+
+        private static final RewindEpoch EPOCH = RewindEpoch.rewindEpoch(7L, 3L);
+
+        @Test
+        void encodeCursor_decodeCursor_roundTrip_carriesTheEpoch() {
+            var encoded = CursorStore.encodeCursor(Long.MAX_VALUE, EPOCH);
+
+            assertThat(encoded).hasSize(CursorStore.CURSOR_BYTES);
+            assertThat(CursorStore.decodeCursor(encoded)).isEqualTo(Cursor.cursor(Long.MAX_VALUE, EPOCH));
+            assertThat(CursorStore.decodeOffset(encoded))
+                    .as("the offset-only reader still sees the offset in the first eight bytes")
+                    .isEqualTo(Long.MAX_VALUE);
+        }
+
+        /// The epoch must live in the BLOCK on disk, not in the store object: the storage is closed and
+        /// reopened over the same directory the way `StorageFactory` restores a node (fresh metadata store
+        /// with the refs restored, fresh disk tier, fresh [CursorStore]) and the cursor resumes under the
+        /// epoch that was committed.
+        @Test
+        void commitUnderAnEpoch_thenReopenTheStorage_resumesUnderThePersistedEpoch(@TempDir Path dir) {
+            var firstMetadata = MetadataStore.inMemoryMetadataStore("first");
+            var first = cursorStore(diskStorage("first", dir, firstMetadata));
+
+            first.commit(GROUP, STREAM, PARTITION, 42L, EPOCH).await();
+
+            var reopenedMetadata = MetadataStore.inMemoryMetadataStore("reopened");
+            reopenedMetadata.restoreRefs(firstMetadata.listAllRefs());
+            var reopened = cursorStore(diskStorage("reopened", dir, reopenedMetadata));
+
+            assertThat(reopened.fetchCursor(GROUP, STREAM, PARTITION).await())
+                    .as("the reopened store must resume under the epoch the first one committed")
+                    .isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.cursor(42L, EPOCH))));
+            assertThat(reopened.fetch(GROUP, STREAM, PARTITION).await())
+                    .isEqualTo(org.pragmatica.lang.Result.success(Option.some(42L)));
+        }
+
+        /// The pre-#1333 8-byte offset-only block is REFUSED, not upgraded: it reads as absent (resume from
+        /// the earliest retained offset, once), and the next commit rewrites the ref in the 24-byte layout.
+        /// Upgrading it in place would have to invent an epoch, and `NONE` is exactly the value a resume
+        /// ranks BELOW a rewound cluster cursor — so the redelivery is the honest outcome.
+        @Test
+        void legacyEightByteBlock_readsAsAbsent_andTheNextCommitRewritesItInTheNewLayout() {
+            var refName = CursorStore.buildRefName(GROUP, STREAM, PARTITION);
+            var legacyBlock = ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN).putLong(99L).array();
+
+            storage.putRef(refName, legacyBlock).await();
+
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await())
+                    .as("an 8-byte block is the pre-#1333 layout and must read as absent, never as offset 99")
+                    .isEqualTo(org.pragmatica.lang.Result.success(Option.empty()));
+            assertThat(store.fetch(GROUP, STREAM, PARTITION).await())
+                    .isEqualTo(org.pragmatica.lang.Result.success(Option.empty()));
+
+            store.commit(GROUP, STREAM, PARTITION, 7L).await();
+
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await())
+                    .isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.unrewound(7L))));
+            assertThat(storage.resolveRef(refName).flatMap(id -> storage.get(id).await().option().flatMap(o -> o)))
+                    .as("the rewritten ref points at a 24-byte block")
+                    .isEqualTo(Option.some(CursorStore.encodeOffset(7L)));
+        }
+
+        private static StorageInstance diskStorage(String name, Path dir, MetadataStore metadataStore) {
+            var tier = LocalDiskTier.localDiskTier(dir, ONE_GB)
+                                    .fold(cause -> {
+                                        org.junit.jupiter.api.Assertions.fail("disk tier: " + cause.message());
+                                        return null;
+                                    }, t -> t);
+
+            return StorageInstance.storageInstance(name, List.of(tier), metadataStore);
         }
     }
 

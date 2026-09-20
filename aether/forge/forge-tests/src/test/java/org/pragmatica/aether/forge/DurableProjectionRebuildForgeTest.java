@@ -58,7 +58,9 @@ import static org.awaitility.Awaitility.await;
 /// counts: a dead-lettered event is exactly one that hit the 5-attempt budget. A second dead letter — the
 /// cadence-gap cascade the in-JVM twin's mutation M1 shows — would be a second seq at 5 replay attempts.
 /// A live event refused `Rebuilding` once and admitted on its first retry shows as 2 attempts, which is the
-/// stated one-burned-retry cost, never 5.
+/// stated one-burned-retry cost, never 5. So this test never READS the DLQ: "one dead letter" here is an
+/// inference from the fixture's attempt counter; the `.dlq` stream itself is read only in the in-JVM twin
+/// (`DurableProjectionRebuildTest.deadLettersForGroup`, over the real `DeadLetterHandler`).
 ///
 /// **LOCAL is asserted, not assumed:** a node that hosts the slice but consumes none of the group's
 /// partitions answers `409` naming the consuming node. That refusal is what keeps a per-node store
