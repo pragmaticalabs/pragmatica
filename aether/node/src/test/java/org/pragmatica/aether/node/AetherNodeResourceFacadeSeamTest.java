@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.nio.file.Path;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.config.ConfigService;
@@ -36,6 +38,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// The assertion is on whether the RESOURCE was closed, never on whether the release promise
 /// succeeded -- it succeeded before the fix too, which is exactly what made #892 invisible.
 class AetherNodeResourceFacadeSeamTest {
+    @TempDir
+    Path tempDir;
+
     private static final String SCOPE = "org.example:probe-slice:1.0.0";
 
     @BeforeEach
@@ -55,7 +60,7 @@ class AetherNodeResourceFacadeSeamTest {
         var configProvider = ConfigurationProvider.builder()
                                                   .withDefaults(Map.of(ReleaseProbeFactory.SECTION + ".enabled", "true"))
                                                   .build();
-        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), configProvider);
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), configProvider, tempDir);
 
         var method = AetherNode.class.getDeclaredMethod("createResourceProviderFacade", AetherNodeConfig.class);
 

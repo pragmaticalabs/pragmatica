@@ -24,6 +24,8 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.List;
 import java.util.function.Function;
 
@@ -47,6 +49,10 @@ class SegmentFallbackTest {
     /// Small ring buffer capacity to force eviction quickly.
     private static final int RING_CAPACITY = 5;
     private static final int RING_DATA_BYTES = 1024;
+    /// Ring control layout (header then 24-byte index entries); mirrors `OffHeapRingBuffer`'s private constants.
+    private static final long HEADER_CAPACITY = 40;
+    private static final long INDEX_START = 64;
+    private static final long INDEX_ENTRY_SIZE = 24;
 
     private StorageInstance storage;
     private SegmentIndex index;
@@ -136,6 +142,50 @@ class SegmentFallbackTest {
                               .isGreaterThan(events.get(i - 1).offset());
                       }
                   });
+        }
+    }
+
+    /// #1247 review M2: after the CursorExpired segment fallback, the ring read for the tail used to be
+    /// `.or(List.of())`, so a corrupted ring silently truncated the read to the sealed events. The distinct
+    /// cause must reach the caller instead.
+    @Nested
+    class CorruptedRingAfterFallback {
+
+        @Test
+        void fetch_mixedRange_corruptedRing_failsWithRingIndexCorrupted_notTruncated() {
+            publishEvents(10);
+            corruptEveryIndexSlot(partitionManager.partitionBuffer(STREAM, PARTITION)
+                                                  .fold(() -> org.junit.jupiter.api.Assertions.fail("no ring"),
+                                                        ring -> ring));
+
+            access.fetch(PARTITION, 0, 20)
+                  .await()
+                  .onSuccess(events -> org.junit.jupiter.api.Assertions.fail("expected RingIndexCorrupted, got "
+                                                                             + events.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.RingIndexCorrupted.class));
+        }
+
+        private static void corruptEveryIndexSlot(OffHeapRingBuffer ring) {
+            var control = controlSegment(ring);
+            var capacity = control.get(ValueLayout.JAVA_LONG, HEADER_CAPACITY);
+
+            assertThat(capacity).as("PRECONDITION: ring capacity read from the header").isPositive();
+
+            for (long slot = 0; slot < capacity; slot++) {
+                control.set(ValueLayout.JAVA_LONG, INDEX_START + slot * INDEX_ENTRY_SIZE, -1_000L);
+            }
+        }
+
+        private static MemorySegment controlSegment(OffHeapRingBuffer ring) {
+            try {
+                var field = OffHeapRingBuffer.class.getDeclaredField("controlSegment");
+
+                field.setAccessible(true);
+
+                return (MemorySegment) field.get(ring);
+            } catch (ReflectiveOperationException e) {
+                throw new AssertionError("controlSegment field not reachable", e);
+            }
         }
     }
 

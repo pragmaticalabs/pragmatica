@@ -66,7 +66,7 @@ class StorageFactorySnapshotEpochTest {
     }
 
     private StorageFactory.StorageSetup bootInstance() {
-        var setups = StorageFactory.createAll(Map.of(INSTANCE, instanceConfig()), NODE_ID, Option.none(), Option.none())
+        var setups = StorageFactory.createAll(Map.of(INSTANCE, instanceConfig()), NODE_ID, Option.none(), Option.none(), HermeticStorage.synthesisDefaultsIn(tempDir))
                                    .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
                                    .unwrap();
 

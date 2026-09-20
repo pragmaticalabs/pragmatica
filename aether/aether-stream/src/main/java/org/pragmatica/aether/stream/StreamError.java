@@ -31,6 +31,7 @@ public sealed interface StreamError extends Cause {
         STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded"),
         CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream"),
         BUFFER_FULL("Ring buffer is full, STRONG consistency prevents eviction"),
+        EVENT_DROPPED("Event dropped: larger than the ring's allocation, and the ring cannot grow"),
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
         STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
         PARTITION_NOT_LOCAL("Stream partition is not owned by this node");
@@ -177,6 +178,16 @@ public sealed interface StreamError extends Cause {
             return "Materialize of %s[%d] paced: node already has %d partitions in materialize+backfill (reshuffle_concurrency)".formatted(streamName,
                                                                                                                                            partition,
                                                                                                                                            inFlightLimit);
+        }
+    }
+
+    /// A ring's index or offset arithmetic produced an out-of-bounds native access (#1247) — a defect in
+    /// the ring, never the closed-arena race. Distinct from {@link General#BUFFER_CLOSED} so a corrupted
+    /// ring is not reported as a benign release; `detail` carries the JDK's bounds message.
+    record RingIndexCorrupted(String streamName, int partition, String detail) implements StreamError {
+        @Override
+        public String message() {
+            return "Ring index corrupted at %s[%d]: %s".formatted(streamName, partition, detail);
         }
     }
 
