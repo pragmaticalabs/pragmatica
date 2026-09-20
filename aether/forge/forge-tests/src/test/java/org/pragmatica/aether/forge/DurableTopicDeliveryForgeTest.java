@@ -28,6 +28,7 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -115,6 +116,11 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestClassOrder(ClassOrderer.OrderAnnotation.class)
 class DurableTopicDeliveryForgeTest {
+    /// One `SETUP SHAPE` line per run, so a red, a skip and a green on [PreAttachBacklog] can be attributed
+    /// from the log next to the product's own attach/detach lines: rev1341's false red on a setUp move
+    /// was readable only that way.
+    private static final System.Logger LOG = System.getLogger(DurableTopicDeliveryForgeTest.class.getName());
+
     private static final int BASE_PORT = 19000;
     private static final int BASE_MGMT_PORT = 19100;
     private static final int BASE_APP_HTTP_PORT = 19200;
@@ -157,6 +163,9 @@ class DurableTopicDeliveryForgeTest {
 
     /// Gate attempts made so far; names the next `__warmup__-N`.
     private int warmupAttempts = 0;
+
+    /// Per gate attempt: id, publish start and return instants, outcome — for the `SETUP SHAPE` line.
+    private final List<String> warmupTimeline = new ArrayList<>();
 
     /// Order-events gate publishes that neither returned success nor could be resolved from the owner's
     /// head offset, each with the readings that failed to resolve it. Excluded from every verdict: such
@@ -273,6 +282,17 @@ class DurableTopicDeliveryForgeTest {
                .pollInterval(SETTLE)
                .failFast(this::failIfSliceFailed)
                .until(() -> unchangedSinceLastSample(lastPoisonSample, failingAttemptsFor(WARMUP_ID)));
+
+        LOG.log(System.Logger.Level.INFO,
+                "SETUP SHAPE: preAttachOrderId={0} ({1}); attachedSubscriptions now {2}; warm-up attempts {3}; excluded {4}; setUp done at {5}",
+                preAttachOrderId.or("none"),
+                preAttachEvidence.isEmpty()
+                ? "not established"
+                : preAttachEvidence,
+                attachedSubscriptionsClusterWide(),
+                warmupTimeline,
+                excludedWarmupIds,
+                Instant.now());
     }
 
     @AfterAll
@@ -726,6 +746,7 @@ class DurableTopicDeliveryForgeTest {
         var headBefore = orderEventsHeadOffset().or(attempt == 0 ? 0L : -1L);
         var responseRef = new AtomicReference<>(ERROR_FALLBACK);
         var port = ports.getFirst();
+        var started = Instant.now();
         var publisher = Thread.ofVirtual()
                               .start(() -> responseRef.set(httpPost(port,
                                                                     "/api/durable-topic/publish-order",
@@ -734,6 +755,17 @@ class DurableTopicDeliveryForgeTest {
         var response = responseRef.get();
         var forcedUnknown = attempt == 0 && Boolean.getBoolean(FORCE_UNKNOWN_FIRST_WARMUP);
         var definiteSuccess = !forcedUnknown && !response.contains("\"error\"") && response.contains("published");
+
+        warmupTimeline.add("%s: started %s, returned %s (%s%s), in-flight: %s".formatted(id,
+                                                                                    started,
+                                                                                    Instant.now(),
+                                                                                    definiteSuccess
+                                                                                    ? "success"
+                                                                                    : response,
+                                                                                    forcedUnknown
+                                                                                    ? ", forced unknown"
+                                                                                    : "",
+                                                                                    observedInFlight.or("no sample saw the append before the attach")));
 
         observedInFlight.onPresent(sample -> establishPreAttachId(id, 0, sample));
 
