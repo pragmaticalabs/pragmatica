@@ -331,7 +331,9 @@ public final class SliceRoutes implements RouteSource {
     private static List<RejectedStreamBinding> rejectedStreamBindings(PublishedBlueprint published) {
         return published.rejectedStreamBindings()
                         .stream()
-                        .map(failure -> new RejectedStreamBinding(failure.field(), failure.rule(), failure.message()))
+                        .map(failure -> new RejectedStreamBinding(failure.field(),
+                                                                  failure.rule(),
+                                                                  failure.message()))
                         .toList();
     }
 

@@ -45,7 +45,6 @@ import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidat
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator.SliceJar;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
 import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
-import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
 import org.pragmatica.aether.deployment.validation.StreamValidationFailures;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -437,8 +436,8 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<PublishedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
-                                                              String artifactCoords,
-                                                              boolean registerOnly) {
+                                                               String artifactCoords,
+                                                               boolean registerOnly) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
                                         repository)
                                 .flatMap(expanded -> applyResourcesConfig(expanded,
@@ -462,7 +461,9 @@ class BlueprintServiceInstance implements BlueprintService {
                                                               String artifactCoords,
                                                               boolean registerOnly) {
         return ensureMigrationOwnership(expanded.id(),
-                                        migrations).flatMap(_ -> streamBindings(expanded.id(), resourcesConfig, roleHints))
+                                        migrations).flatMap(_ -> streamBindings(expanded.id(),
+                                                                                resourcesConfig,
+                                                                                roleHints))
                                        .async()
                                        .flatMap(bindings -> applyAllCommands(expanded,
                                                                              bindings,
@@ -484,7 +485,8 @@ class BlueprintServiceInstance implements BlueprintService {
 
         return cluster.apply(commands)
                       .flatMap(_ -> confirmOutcomeStart(expanded, 0))
-                      .map(stored -> PublishedBlueprint.publishedBlueprint(stored, bindings.rejected()));
+                      .map(stored -> PublishedBlueprint.publishedBlueprint(stored,
+                                                                           bindings.rejected()));
     }
 
     /// Deploy-time single-migrator gate. Every datasource this artifact declares migrations for must
@@ -807,8 +809,7 @@ class BlueprintServiceInstance implements BlueprintService {
     /// ([#ensureUnambiguousAliases]): `BlueprintStreamBindingsValue.addressFor` would otherwise answer
     /// with whichever came first and silently misbind the other slice.
     private Promise<StreamBindings> sliceStreamBindings(ExpandedBlueprint expanded) {
-        return loadSliceDeclarations(expanded).flatMap(declarations -> sliceBindings(expanded.id(),
-                                                                                     declarations).async());
+        return loadSliceDeclarations(expanded).flatMap(declarations -> sliceBindings(expanded.id(), declarations).async());
     }
 
     private Promise<List<Option<String>>> loadSliceDeclarations(ExpandedBlueprint expanded) {
@@ -832,16 +833,19 @@ class BlueprintServiceInstance implements BlueprintService {
     private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId, List<Option<String>> declarations) {
         return Result.allOf(declarations.stream()
                                         .flatMap(Option::stream)
-                                        .map(toml -> streamBindings(blueprintId, Option.some(toml), Map.of()))
-                                        .toList())
-                     .flatMap(BlueprintServiceInstance::unionSliceBindings);
+                                        .map(toml -> streamBindings(blueprintId,
+                                                                    Option.some(toml),
+                                                                    Map.of()))
+                                        .toList()).flatMap(BlueprintServiceInstance::unionSliceBindings);
     }
 
     private static Result<StreamBindings> unionSliceBindings(List<StreamBindings> perSlice) {
-        var rejected = perSlice.stream().flatMap(bindings -> bindings.rejected().stream()).distinct().toList();
+        var rejected = perSlice.stream().flatMap(bindings -> bindings.rejected()
+                                                                     .stream()).distinct().toList();
 
         return ensureUnambiguousAliases(perSlice.stream()
-                                                .flatMap(bindings -> bindings.bound().stream())
+                                                .flatMap(bindings -> bindings.bound()
+                                                                             .stream())
                                                 .distinct()
                                                 .toList()).map(bound -> StreamBindings.streamBindings(bound, rejected));
     }

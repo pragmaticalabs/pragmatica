@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -116,6 +117,13 @@ public interface StreamConfigParser {
 
     private static Result<Map<String, StreamResource>> aggregateStreamResources(TomlDocument doc,
                                                                                 Map<String, String> roleHints) {
+        return Result.allOf(parseSections(doc, roleHints)).map(StreamConfigParser::toOrderedMap);
+    }
+
+    /// One `Result` per top-level `[streams.X]` section, in document order — the per-section outcomes
+    /// [#aggregateStreamResources] folds and [#parseResourcesPartitioned] keeps apart.
+    private static List<Result<Map.Entry<String, StreamResource>>> parseSections(TomlDocument doc,
+                                                                                 Map<String, String> roleHints) {
         var perSection = new ArrayList<Result<Map.Entry<String, StreamResource>>>();
 
         for (var sectionName : doc.sectionNames()) {
@@ -133,7 +141,7 @@ public interface StreamConfigParser {
                                                                                                              res)));
         }
 
-        return Result.allOf(perSection).map(StreamConfigParser::toOrderedMap);
+        return perSection;
     }
 
     /// #1336 — the per-section outcomes [#parseResourcesAggregating] folds into one `Result`, kept apart:
@@ -148,7 +156,7 @@ public interface StreamConfigParser {
         }
 
         public static PartitionedStreamResources partitionedStreamResources(Map<String, StreamResource> accepted,
-                                                                     List<Cause> rejected) {
+                                                                            List<Cause> rejected) {
             return new PartitionedStreamResources(accepted, rejected);
         }
     }
@@ -163,26 +171,17 @@ public interface StreamConfigParser {
                          .map(doc -> partitionStreamResources(doc, roleHints));
     }
 
-    private static PartitionedStreamResources partitionStreamResources(TomlDocument doc, Map<String, String> roleHints) {
-        var accepted = new LinkedHashMap<String, StreamResource>();
-        var rejected = new ArrayList<Cause>();
-
-        for (var sectionName : doc.sectionNames()) {
-            if (!isStreamSection(sectionName)) {
-                continue;
-            }
-
-            var streamName = sectionName.substring(STREAMS_PREFIX.length());
-
-            if (streamName.contains(".")) {
-                continue;
-            }
-
-            parseStreamResource(doc, sectionName, streamName, roleHints).onSuccess(res -> accepted.put(streamName, res))
-                                                                        .onFailure(rejected::add);
-        }
+    private static PartitionedStreamResources partitionStreamResources(TomlDocument doc,
+                                                                       Map<String, String> roleHints) {
+        var perSection = parseSections(doc, roleHints);
+        var accepted = toOrderedMap(perSection.stream().flatMap(Result::stream).toList());
+        var rejected = perSection.stream().flatMap(StreamConfigParser::causeOf).toList();
 
         return PartitionedStreamResources.partitionedStreamResources(accepted, rejected);
+    }
+
+    private static Stream<Cause> causeOf(Result<Map.Entry<String, StreamResource>> parsed) {
+        return parsed.fold(Stream::of, _ -> Stream.empty());
     }
 
     private static Map<String, StreamResource> toOrderedMap(List<Map.Entry<String, StreamResource>> entries) {

@@ -753,7 +753,8 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint **
   "targetInstances": 3,
   "activeInstances": 0,
   "failedInstances": 0,
-  "statusUrl": "/api/v1/blueprints/status/my-blueprint"
+  "statusUrl": "/api/v1/blueprints/status/my-blueprint",
+  "rejectedStreamBindings": []
 }
 ```
 
@@ -939,9 +940,30 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
   "targetInstances": 5,
   "activeInstances": 0,
   "failedInstances": 0,
-  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0"
+  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0",
+  "rejectedStreamBindings": [
+    {
+      "field": "[streams.audit-events]",
+      "rule": "version-and-source-mutually-exclusive",
+      "message": "Stream resource 'audit-events' must not set both 'source' and 'version'"
+    }
+  ]
 }
 ```
+
+#1336 — **`rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
+blueprint WITHOUT binding**, each by its TOML `field`, the `rule` it failed and the diagnostic. Empty
+when every declaration bound. The other declarations are bound as usual; a slice that uses a
+rejected alias fails to load naming that alias (`UnboundStreamAlias`), and this list is where the
+operator learns why, at the point where it is actionable. The same shape is returned by
+[`POST /api/v1/blueprints`](#post-apiv1blueprints) and `POST /api/v1/blueprints/publish`. Rules
+whose violation leaves nothing to bind refuse the publish outright with **`422`** and the same
+`field`/`rule`/`message` triples in the error body: a `resources.toml` that does not parse
+(`resources-toml-parse`), a blueprint whose own namespace cannot be derived
+(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream. Every other rule — the parser's per-section rules and
+#576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`) — costs only its own
+alias. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
+declarations included.
 
 #759 — `status` is earned off the deployment map at response time, not assumed from a successful
 publish; deployment is asynchronous, so **`pending` is the normal, expected response for a

@@ -117,8 +117,9 @@ public sealed interface StreamResourceValidator {
 
         return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesPartitioned(toml, roleHints))
                               .or(Result.success(PartitionedStreamResources.partitionedStreamResources(Map.of(),
-                                                                                                        List.of())))
-                              .mapError(cause -> gating(namespaceFailures, List.of(toFailure(cause))))
+                                                                                                       List.of())))
+                              .mapError(cause -> gating(namespaceFailures,
+                                                        List.of(toFailure(cause))))
                               .flatMap(parsed -> partition(parsed, resourcesConfig, roleHints, namespaceFailures));
     }
 
@@ -131,8 +132,8 @@ public sealed interface StreamResourceValidator {
         var warnings = new ArrayList<StreamValidationWarning>();
 
         parsed.rejected().forEach(cause -> rejected.add(toFailure(cause)));
-        parsed.accepted().forEach((alias, resource) -> acceptOrReject(alias, resource, resourcesConfig, accepted, rejected));
-
+        parsed.accepted()
+              .forEach((alias, resource) -> acceptOrReject(alias, resource, resourcesConfig, accepted, rejected));
         var declaresStreams = !parsed.accepted().isEmpty() || !parsed.rejected().isEmpty();
 
         if (!namespaceFailures.isEmpty() && declaresStreams) {
@@ -164,7 +165,8 @@ public sealed interface StreamResourceValidator {
         }
     }
 
-    private static StreamValidationFailures gating(List<StreamValidationFailure> first, List<StreamValidationFailure> rest) {
+    private static StreamValidationFailures gating(List<StreamValidationFailure> first,
+                                                   List<StreamValidationFailure> rest) {
         var failures = new ArrayList<>(first);
 
         failures.addAll(rest);
