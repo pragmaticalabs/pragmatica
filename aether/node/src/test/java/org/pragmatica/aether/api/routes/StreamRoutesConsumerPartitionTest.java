@@ -11,17 +11,26 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// rev1272 F7 follow-up: `GET /api/streams/declarative-consumers` renders the "not started, retrying
-/// its cursor fetch" state, so a stuck consumer does not read as a quiet one.
+/// #1266 and rev1272 F7 follow-up: `GET /api/streams/declarative-consumers` renders every way a
+/// partition can be attached and not delivering — held behind a dead-letter append, held behind a
+/// scheduled retry, or never started because its cursor fetch keeps failing. Each is set on its own, so
+/// a dropped or swapped mapping shows.
 class StreamRoutesConsumerPartitionTest {
     @Test
-    void toConsumerPartition_carriesAwaitingCursorFetch() {
-        var awaiting = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 0L, false, Option.none(), true));
-        var started = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 42L, false, Option.none(), false));
+    void toConsumerPartition_carriesEachNonDeliveringState_fromItsOwnCursorField() {
+        var deadLetterHeld = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 42L, false, Option.none(), true, false, false));
+        var retryHeld = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 42L, false, Option.none(), false, true, false));
+        var awaitingFetch = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 0L, false, Option.none(), false, false, true));
 
-        assertThat(awaiting.awaitingCursorFetch()).isTrue();
-        assertThat(awaiting.committedOffset()).isZero();
-        assertThat(started.awaitingCursorFetch()).isFalse();
-        assertThat(started.committedOffset()).isEqualTo(42L);
+        assertThat(deadLetterHeld.deadLetterInFlight()).isTrue();
+        assertThat(deadLetterHeld.retryInFlight()).isFalse();
+        assertThat(deadLetterHeld.awaitingCursorFetch()).isFalse();
+        assertThat(retryHeld.deadLetterInFlight()).isFalse();
+        assertThat(retryHeld.retryInFlight()).isTrue();
+        assertThat(retryHeld.awaitingCursorFetch()).isFalse();
+        assertThat(awaitingFetch.deadLetterInFlight()).isFalse();
+        assertThat(awaitingFetch.retryInFlight()).isFalse();
+        assertThat(awaitingFetch.awaitingCursorFetch()).isTrue();
+        assertThat(retryHeld.committedOffset()).isEqualTo(42L);
     }
 }

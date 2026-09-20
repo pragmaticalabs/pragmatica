@@ -104,9 +104,12 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// One live subscription. `cursor` is the next offset this consumer will read, i.e. one past the
     /// last delivered offset. `lastCursorCommitFailure` (#654) is the detail of this consumer's most
     /// recent cursor commit failure, cleared on its next successful commit; [Option#none] when its
-    /// last commit succeeded or none has been attempted yet. `awaitingCursorFetch` (rev1272 F7 follow-up)
-    /// says this subscription has not STARTED: its cursor fetch keeps failing and is being retried, so it
-    /// delivers nothing while looking exactly like a quiet partition.
+    /// last commit succeeded or none has been attempted yet. `deadLetterInFlight` / `retryInFlight`
+    /// (#1266) are the holds that stop the delivery loop while a failed head event is being resolved —
+    /// a dead-letter append outstanding, or a retry scheduled — so a HELD partition never reads as an
+    /// idle one (both are `false` with the cursor frozen when the partition is merely quiet).
+    /// `awaitingCursorFetch` (rev1272 F7 follow-up) is the third non-delivering state: this subscription
+    /// has not STARTED, because its cursor fetch keeps failing and is being retried.
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,
@@ -114,6 +117,8 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                 boolean stalled,
                                 IdlePolicy idlePolicy,
                                 Option<String> lastCursorCommitFailure,
+                                boolean deadLetterInFlight,
+                                boolean retryInFlight,
                                 boolean awaitingCursorFetch) {}
 
     /// Whether the idle reaper may unsubscribe a consumer that has not polled recently.

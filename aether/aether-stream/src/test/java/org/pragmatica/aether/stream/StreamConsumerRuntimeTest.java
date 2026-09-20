@@ -722,6 +722,278 @@ class StreamConsumerRuntimeTest {
         }
     }
 
+    /// #1266: a dead-letter append that throws synchronously or never settles must not hold a partition.
+    /// A throw escaping before any callback is attached leaves the dead-letter hold set forever: silent,
+    /// permanent, and indistinguishable from an idle partition. (The handler-throw case lives in
+    /// [PassBoundary], fixed with #1238's review round.)
+    @Nested
+    class SynchronousThrows {
+        @Test
+        void deadLetterHandlerSyncThrow_doesNotWedge() throws Exception {
+            createTestStream("orders");
+            var sink = new ThrowingOnceDeadLetterSink();
+            var throwingRuntime = streamConsumerRuntime(manager, sink);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                throwingRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-t", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                          (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+                awaitContains(delivered, 1L);
+                assertThat(sink.thrown.get()).describedAs("control: the sink really threw once").isEqualTo(1);
+                assertThat(delivered).describedAs("the next event is delivered past a sink that threw synchronously")
+                                     .contains(1L);
+                assertThat(throwingRuntime.deadLetterHandler().read("orders", 10)).describedAs("the poison event is still dead-lettered once the sink recovers")
+                                                                                  .hasSize(1);
+            } finally {
+                throwingRuntime.close();
+            }
+        }
+
+        /// rev1272 F5, the reviewer's probe verbatim: the dead-letter sink throws synchronously once, SKIP
+        /// strategy, offset 0 is poison, then e1 and e2. On #1285 alone (sink call not lifted) the result
+        /// was `delivered=[] cursor=Some(0)` — `deadLetterInFlight` stuck true. The sink call is lifted, so
+        /// the throw takes the retry-with-backoff path and the partition moves on.
+        @Test
+        void reviewProbe_deadLetterSinkSyncThrowOnce_doesNotHoldTheLoopForever() throws Exception {
+            createTestStream("orders");
+            var sink = new ThrowingOnceDeadLetterSink();
+            var probeRuntime = streamConsumerRuntime(manager, sink);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                probeRuntime.subscribe("orders",
+                                       0,
+                                       ConsumerConfig.consumerConfig("group-f5", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                       (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+                awaitContains(delivered, 2L);
+                assertThat(sink.thrown.get()).describedAs("control: the sink really threw").isEqualTo(1);
+                assertThat(delivered).containsExactly(1L, 2L);
+                assertThat(probeRuntime.cursorPosition("orders", 0, "group-f5").or(-1L)).isEqualTo(3L);
+            } finally {
+                probeRuntime.close();
+            }
+        }
+
+        /// #1266 review (attack5): a handler that returns `null` instead of a promise once is a failed
+        /// delivery — retried — and the loop moves on.
+        @Test
+        void handlerReturningNull_isADeliveryFailure_andDoesNotWedgeTheLoop() throws Exception {
+            createTestStream("orders");
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var returnedNull = new AtomicBoolean(false);
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-null", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> nullOnceOnZero(returnedNull, delivered, offset));
+            manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+            manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+            awaitContains(delivered, 2L);
+            assertThat(returnedNull.get()).describedAs("control: the handler really returned null").isTrue();
+            assertThat(delivered).containsExactly(0L, 1L, 2L);
+        }
+
+        /// The discriminating half: a handler that ALWAYS returns `null` goes through the error strategy
+        /// (SKIP dead-letters it), not the read-failure path that would re-read the same offset forever.
+        @Test
+        void handlerAlwaysReturningNull_isDeadLettered() throws Exception {
+            createTestStream("orders");
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-null2", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                              (offset, payload, ts) -> nullOnZero(delivered, offset));
+            manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+            awaitContains(delivered, 1L);
+            assertThat(delivered).containsExactly(1L);
+            assertThat(runtime.deadLetterHandler().read("orders", 10)).hasSize(1);
+        }
+
+        /// #1266 review F2: every outcome ends with the holds clear — cancellation included.
+        @Test
+        void cancel_releasesBothDeliveryHolds() {
+            var state = ConsumerRuntimeState.ConsumerState.consumerState(ConsumerConfig.consumerConfig("group-c"),
+                                                                          (offset, payload, ts) -> Promise.unitPromise(),
+                                                                          0L,
+                                                                          StreamConsumerRuntime.IdlePolicy.REAP_WHEN_IDLE);
+
+            state.markRetryInFlight();
+            state.markDeadLetterInFlight();
+            state.cancel();
+            assertThat(state.isRetryInFlight()).isFalse();
+            assertThat(state.isDeadLetterInFlight()).isFalse();
+        }
+
+        /// #1266: an append that never settles is bounded (shortened here through the constructor seam;
+        /// production uses [ConsumerRuntimeState#DEAD_LETTER_APPEND_TIMEOUT]) and takes the retry path —
+        /// and while it is outstanding the hold is VISIBLE on the snapshot, never an idle-looking partition.
+        @Test
+        void deadLetterAppendNeverSettles_doesNotHoldForever_andTheHoldIsVisible() throws Exception {
+            createTestStream("orders");
+            var sink = new NeverSettlingOnceDeadLetterSink();
+            var boundedRuntime = new ConsumerRuntimeState(manager,
+                                                          sink,
+                                                          none(),
+                                                          none(),
+                                                          StreamConsumerRuntime.localPartitionReader(manager),
+                                                          org.pragmatica.lang.io.TimeSpan.timeSpan(300).millis());
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                boundedRuntime.subscribe("orders",
+                                         0,
+                                         ConsumerConfig.consumerConfig("group-n", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                         (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+                Thread.sleep(100);
+                assertThat(boundedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> assertThat(snapshot.deadLetterInFlight())
+                                                          .describedAs("the outstanding dead-letter append is visible as a hold")
+                                                          .isTrue());
+                awaitContains(delivered, 1L);
+                assertThat(sink.calls.get()).describedAs("control: the first append never settled, a retry followed")
+                                            .isGreaterThanOrEqualTo(2);
+                assertThat(delivered).describedAs("the timeout released the loop and the next event was delivered")
+                                     .contains(1L);
+                assertThat(boundedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> assertThat(snapshot.deadLetterInFlight()).isFalse());
+            } finally {
+                boundedRuntime.close();
+            }
+        }
+
+        /// #1266: a scheduled retry of the head event is a hold too, and is visible the same way.
+        @Test
+        void retryBackoff_isVisibleAsAHold() throws Exception {
+            createTestStream("orders");
+            var attempts = new AtomicInteger();
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-r", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> attempts.incrementAndGet() == 1
+                                                       ? StreamError.General.BUFFER_EMPTY.promise()
+                                                       : Promise.unitPromise());
+            manager.publishLocal("orders", 0, "flaky".getBytes(UTF_8), 1000L);
+            Thread.sleep(30);
+            assertThat(runtime.subscriptions()).singleElement()
+                      .satisfies(snapshot -> assertThat(snapshot.retryInFlight())
+                                                      .describedAs("inside the retry backoff (>= 100ms base, jittered) the hold is visible")
+                                                      .isTrue());
+
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (runtime.cursorPosition("orders", 0, "group-r").or(-1L) < 1L && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertThat(runtime.subscriptions()).singleElement()
+                      .satisfies(snapshot -> assertThat(snapshot.retryInFlight()).describedAs("released once the retry succeeded")
+                                                                                 .isFalse());
+        }
+
+        private Promise<Unit> failFirst(List<Long> delivered, long offset) {
+            if (offset == 0L) {
+                return StreamError.General.BUFFER_EMPTY.promise();
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        @SuppressWarnings("JBCT-NULL-01")
+        private static Promise<Unit> nullOnceOnZero(AtomicBoolean returnedNull, List<Long> delivered, long offset) {
+            if (offset == 0L && returnedNull.compareAndSet(false, true)) {
+                return null;
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        @SuppressWarnings("JBCT-NULL-01")
+        private static Promise<Unit> nullOnZero(List<Long> delivered, long offset) {
+            if (offset == 0L) {
+                return null;
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private void awaitContains(List<Long> delivered, long offset) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 5_000;
+
+            while (!delivered.contains(offset) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+    }
+
+    /// Returns a promise that never settles from the FIRST `append`, then delegates.
+    static final class NeverSettlingOnceDeadLetterSink implements DeadLetterHandler {
+        final AtomicInteger calls = new AtomicInteger();
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    String failingGroup,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            if (calls.getAndIncrement() == 0) {
+                return Promise.promise();
+            }
+
+            return delegate.append(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
+        }
+    }
+
+    /// Throws synchronously from `append` exactly once, then delegates to the in-memory default.
+    static final class ThrowingOnceDeadLetterSink implements DeadLetterHandler {
+        final AtomicInteger thrown = new AtomicInteger();
+        private final AtomicBoolean armed = new AtomicBoolean(true);
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    String failingGroup,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            if (armed.compareAndSet(true, false)) {
+                thrown.incrementAndGet();
+                throw new IllegalStateException("sink blew up synchronously");
+            }
+
+            return delegate.append(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
+        }
+    }
+
     /// Sink that refuses appends until [#recover] is called, then delegates to the in-memory
     /// default. The volatile default can never fail, so it can never exercise the failure-aware
     /// contract — this stub is the adversarial half. `failedAttempts` counts down once per refused
