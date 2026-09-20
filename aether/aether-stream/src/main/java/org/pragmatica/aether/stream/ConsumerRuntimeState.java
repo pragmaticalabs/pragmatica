@@ -1151,13 +1151,17 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              attemptCount)).timeout(deadLetterAppendTimeout);
     }
 
-    /// #1333: the advance past a dead-lettered event is committed AT ONCE, not on the periodic cadence.
-    /// The committed cursor is the only signal that lets a rebuilding projection skip a replay offset
-    /// that never reached its fold; left to the 500ms/1000-event cadence, the skip would wait for the
-    /// NEXT delivery's advance — whose write the store refuses `Rebuilding` until then, so that event
-    /// burns its retry budget and is dead-lettered too: one extra DLQ entry per poison replay offset.
-    /// One consensus round per dead letter, bounded by the poison count (CTO ruling 3, 2026-09-20).
-    /// [#requestCheckpoint] coalesces with a periodic commit already in flight, so the two never overlap.
+    /// #1333: the advance past a dead-lettered event REQUESTS a checkpoint at once, independent of the
+    /// 500ms/1000-event cadence. The committed cursor is the only signal that lets a rebuilding projection
+    /// skip a replay offset that never reached its fold. [#advanceCursor] already runs the cadence check,
+    /// and for a durable group the retry budget (≥1.5s over 5 attempts) always exceeds the interval, so
+    /// there the cadence commits the skip anyway (measured, `DurableProjectionRebuildTest`); a SKIP
+    /// strategy or a budget shorter than the interval would wait for the NEXT delivery's advance — whose
+    /// write the store refuses `Rebuilding` until then. The request also lands the acks that follow the
+    /// dead letter on a partition that then goes quiet: absorbed as PENDING into the in-flight commit, it
+    /// schedules the follow-up one interval later. One coalesced consensus round per dead letter, bounded
+    /// by the poison count (CTO ruling 3, 2026-09-20); [#requestCheckpoint] never overlaps a periodic
+    /// commit already in flight.
     private void completeDeadLetter(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         advanceCursor(key, state, event.offset());
         requestCheckpoint(key, state);
