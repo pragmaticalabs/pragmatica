@@ -170,28 +170,36 @@ class StorageFactoryEncryptionTest {
                           .isEqualTo(PLAINTEXT);
     }
 
-    /// Review round 2 (NOTE 7): every `Map.of()` case below leaves BOTH synthesized defaults on their
-    /// fixed absolute paths (`/data/aether/storage`, `/data/aether/content/{blocks,snapshots}`) and
-    /// relies on `/data` NOT being writable, so each degrades to memory+DHT
-    /// (`handleDiskTierUnavailable`) and no test touches the real filesystem. On a host where `/data`
-    /// IS writable (a root container) a keyring-present case would stamp `.encryption-enabled` on the
-    /// real disk and a later keyring-absent case would refuse to boot -- order-dependent, and hard to
-    /// read back to its cause. So fail HERE, loudly and before any write, rather than skip: a skip
-    /// would hide exactly the cases that host needs to hear about. Pre-existing for `artifacts`;
-    /// #783 widened the population to `content`.
-    private static void requireDefaultDiskRootUnwritable() {
-        assertThat(Files.isWritable(Path.of("/data"))).as("PRECONDITION: the synthesized defaults' fixed disk root "
-                                                          + "/data must not be writable on this host, or these "
-                                                          + "tests would write encryption markers onto the real "
-                                                          + "filesystem -- run them in a sandbox without a writable "
-                                                          + "/data")
-                                                      .isFalse();
+    /// Review round 2 (NOTE 7): every `Map.of()` case below leaves BOTH synthesized defaults
+    /// (`artifacts`, and `content` as its sibling) on a disk root that cannot be created, so each
+    /// degrades to memory+DHT (`handleDiskTierUnavailable`). #1276: that root used to be the production
+    /// default's machine-global `/data/aether/...`, and the cases relied on `/data` not being writable. On
+    /// a host where it WAS writable, a keyring-present case stamped `.encryption-enabled` onto the real
+    /// disk and every later keyring-absent run refused to boot, in this tree and in every other one. The
+    /// root is now injected through `StorageFactory.createAll`'s `defaults` overload and sits under a
+    /// regular file in this test's `@TempDir` ([HermeticStorage]), so it is uncreatable on every host,
+    /// root included. This check pins that the fixture still has that shape before any case relies on it.
+    private void requireDefaultDiskRootUnwritable() {
+        var blocker = tempDir.resolve(HermeticStorage.BLOCKER_FILE);
+        var diskRoot = Path.of(synthesisDefaults().diskPath());
+
+        assertThat(Files.isRegularFile(blocker) && diskRoot.startsWith(blocker))
+                .as("PRECONDITION: the synthesized defaults' disk root %s must sit under the regular file %s, so "
+                    + "no directory can be created for it and the cases below exercise the degraded "
+                    + "memory+DHT path", diskRoot, blocker)
+                .isTrue();
     }
 
-    private static Map<String, StorageFactory.StorageSetup> createAllOrFail(Map<String, StorageConfig> configs,
-                                                                             Option<DHTClient> dhtClient,
-                                                                             Option<EncryptionKeyring> keyring) {
-        return StorageFactory.createAll(configs, NODE_ID, dhtClient, keyring)
+    /// #1276: the defaults `createAll` synthesizes `artifacts`/`content` from, rooted in this test's
+    /// `@TempDir` rather than the machine-global production default.
+    private StorageConfig synthesisDefaults() {
+        return HermeticStorage.synthesisDefaultsIn(tempDir);
+    }
+
+    private Map<String, StorageFactory.StorageSetup> createAllOrFail(Map<String, StorageConfig> configs,
+                                                                      Option<DHTClient> dhtClient,
+                                                                      Option<EncryptionKeyring> keyring) {
+        return StorageFactory.createAll(configs, NODE_ID, dhtClient, keyring, synthesisDefaults())
                               .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
                               .unwrap();
     }
@@ -283,6 +291,27 @@ class StorageFactoryEncryptionTest {
                                           + "the disk-available and the degraded memory+DHT path")
                                       .isTrue();
         stored.onPresent(raw -> assertPlaintextAtRest(raw, "the synthesized 'artifacts' DHT tier"));
+    }
+
+    /// #1276: the synthesized `artifacts` instance takes its disk path from the `defaults` handed to
+    /// `createAll`, never from `StorageConfig.storageConfig()`. Every hermetic case in this class depends
+    /// on that: if the injected defaults were ignored, they would silently fall back to the machine-global
+    /// `/data/aether/...` again. The check is on disk, with a WRITABLE injected root: the block must land
+    /// under it. That holds on every host. Where `/data` is unwritable the production default would
+    /// degrade to memory+DHT and write no file; where it is writable the file would land in `/data`.
+    @Test
+    void createAll_synthesizedArtifacts_takesDiskPathFromInjectedDefaults() {
+        var defaults = HermeticStorage.storageConfigAt(tempDir.resolve("injected-defaults"), false);
+        var setups = StorageFactory.createAll(Map.of(), NODE_ID, Option.none(), Option.none(), defaults)
+                                    .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                    .unwrap();
+
+        var blockId = writeThrough(setups.get(ARTIFACTS));
+
+        assertThat(Files.exists(rawBlockPath(Path.of(defaults.diskPath()), blockId)))
+                .as("the synthesized 'artifacts' block must land under the injected defaults' diskPath %s, not "
+                    + "under the production default", defaults.diskPath())
+                .isTrue();
     }
 
     /// #783 C1 (2026-09-04 ruling): `content`'s synthesized default `diskPath` must be a SIBLING of
@@ -513,7 +542,7 @@ class StorageFactoryEncryptionTest {
         var result = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, true)),
                                               NODE_ID,
                                               Option.none(),
-                                              Option.some(singleKeyRing("key-1")));
+                                              Option.some(singleKeyRing("key-1")), synthesisDefaults());
 
         assertThat(result.isFailure()).as("an instance whose encryption enablement was refused must fail the "
                                           + "whole boot, not be silently dropped from the map")
@@ -573,7 +602,7 @@ class StorageFactoryEncryptionTest {
                                                         CONTENT, storageConfigAt(contentDir, false)),
                                                  NODE_ID,
                                                  Option.some(dhtClient),
-                                                 Option.some(singleKeyRing("key-1")));
+                                                 Option.some(singleKeyRing("key-1")), synthesisDefaults());
 
         assertThat(firstBoot.isFailure()).as("the disk-side legacy-plaintext guard must still refuse the boot "
                                             + "when a DHT client is also present")
@@ -597,7 +626,7 @@ class StorageFactoryEncryptionTest {
                                                          CONTENT, storageConfigAt(contentDir, false)),
                                                   NODE_ID,
                                                   Option.some(dhtClient),
-                                                  Option.none());
+                                                  Option.none(), synthesisDefaults());
 
         assertThat(secondBoot.isSuccess()).as("#858: createAll never checks the DHT marker at construction time -- "
                                              + "rebooting the same DHT namespace must succeed regardless of any "
@@ -628,7 +657,7 @@ class StorageFactoryEncryptionTest {
         configs.put(ARTIFACTS, storageConfigAt(artifactsDir, false));
         configs.put(CONTENT, storageConfigAt(contentDir, false));
 
-        var refused = StorageFactory.createAll(configs, NODE_ID, Option.none(), Option.some(singleKeyRing("key-1")));
+        var refused = StorageFactory.createAll(configs, NODE_ID, Option.none(), Option.some(singleKeyRing("key-1")), synthesisDefaults());
 
         assertThat(refused.isFailure()).as("the legacy instance's guard refuses the boot").isTrue();
         refused.onFailure(cause -> assertThat(cause.source().unwrap()).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class));
@@ -641,7 +670,7 @@ class StorageFactoryEncryptionTest {
                                                         CONTENT, storageConfigAt(contentDir, false)),
                                                  NODE_ID,
                                                  Option.none(),
-                                                 Option.none());
+                                                 Option.none(), synthesisDefaults());
 
         assertThat(backedOut.isSuccess()).as("the sibling, backed out to encrypted = false after the refused boot, must start")
                                          .isTrue();
@@ -827,7 +856,7 @@ class StorageFactoryEncryptionTest {
                                                         CONTENT, storageConfigAt(contentDir, false)),
                                                  NODE_ID,
                                                  Option.none(),
-                                                 Option.none());
+                                                 Option.none(), synthesisDefaults());
 
         assertThat(backedOut.isFailure()).as("backing a stamped instance out to encrypted = false does NOT recover "
                                              + "a half-stamped set -- its reverse guard refuses, which is the "
@@ -875,7 +904,7 @@ class StorageFactoryEncryptionTest {
 
         writeThrough(seeded.get(INSTANCE));
 
-        var result = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, false)), NODE_ID, Option.none(), Option.none());
+        var result = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, false)), NODE_ID, Option.none(), Option.none(), synthesisDefaults());
 
         assertThat(result.isFailure()).as("booting a previously-encrypted disk directory with no keyring for this "
                                           + "instance must fail closed, not silently return the bare tier over "
