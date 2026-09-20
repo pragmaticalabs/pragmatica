@@ -6,6 +6,8 @@ package org.pragmatica.aether.node;
 
 import java.util.List;
 import java.util.function.Function;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.entity.EntityLogError;
@@ -19,11 +21,15 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.StreamCatalog;
+import org.pragmatica.aether.stream.segment.SegmentError;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -32,8 +38,14 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Retry;
+import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// The node's [EntityLogSubstrate]: an entity keyspace's durable log IS a stream named
@@ -60,6 +72,16 @@ import org.pragmatica.storage.StorageInstance;
 /// taking the partition over. The pointer therefore goes into consensus KV, which every node can read,
 /// and only the pointer does: the folded state itself stays out of consensus.
 public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
+    private static final Logger LOG = LoggerFactory.getLogger(StreamEntityLogSubstrate.class);
+
+    /// How long a read waits in place for an in-flight seal before reporting
+    /// [EntityLogError.FoldInProgress]: 20 attempts 100 ms apart, about 2 seconds (#1240). A seal that
+    /// lands inside the window costs the fold nothing; past it, the fold's next access restarts the
+    /// rebuild from the checkpoint.
+    private static final Retry IN_FLIGHT_RETRY = Retry.retry()
+                                                      .attempts(20)
+                                                      .strategy(BackoffStrategy.fixed().interval(TimeSpan.timeSpan(100).millis()));
+
     private static final int ENTITY_MAX_EVENT_SIZE_BYTES = 4 * 1024 * 1024;
     private static final String AUTO_OFFSET_RESET_EARLIEST = "earliest";
     /// Ring capacity per entity partition — index slots allocated UP FRONT at `INDEX_ENTRY_SIZE` (24)
@@ -68,9 +90,10 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// the `RetentionPolicy` default of 100k would be ~154 MB for the same keyspace, which is why this
     /// deliberately does not inherit it.
     ///
-    /// It also sets the recovery safety margin: a partition must not wrap more than one checkpoint
-    /// interval's worth of writes, or the fold's gap check refuses. 10k records against a 30-second
-    /// checkpoint tolerates a sustained ~330 writes/sec on a single partition before that margin closes.
+    /// It no longer bounds recovery on the node that sealed the history (#1240): records the ring evicts are
+    /// sealed by the segment sealer and [#read] serves them from there. It still bounds recovery on a node
+    /// taking the partition over, which reads no other node's segments — there the fold refuses once the
+    /// checkpoint lags further behind than this node's ring reaches.
     private static final long ENTITY_RING_CAPACITY = 10_000L;
     /// Data-region CAP, not an up-front allocation: the ring grows one segment at a time toward it.
     private static final long ENTITY_RING_BYTES = 64L * 1024 * 1024;
@@ -80,17 +103,26 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
 
     private final StreamPartitionManager partitionManager;
     private final StreamPartitionManager.ReplicaCatchupSource catchupSource;
+    private final TieredStreamReader tieredReader;
+    private final SegmentIndex segmentIndex;
+    private final EvictionListener evictionListener;
     private final StorageInstance storage;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
 
     private StreamEntityLogSubstrate(StreamPartitionManager partitionManager,
                                      StreamPartitionManager.ReplicaCatchupSource catchupSource,
+                                     TieredStreamReader tieredReader,
+                                     SegmentIndex segmentIndex,
+                                     EvictionListener evictionListener,
                                      StorageInstance storage,
                                      KVStore<AetherKey, AetherValue> kvStore,
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         this.partitionManager = partitionManager;
         this.catchupSource = catchupSource;
+        this.tieredReader = tieredReader;
+        this.segmentIndex = segmentIndex;
+        this.evictionListener = evictionListener;
         this.storage = storage;
         this.kvStore = kvStore;
         this.applier = applier;
@@ -98,10 +130,20 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
 
     public static EntityLogSubstrate streamEntityLogSubstrate(StreamPartitionManager partitionManager,
                                                               StreamPartitionManager.ReplicaCatchupSource catchupSource,
+                                                              TieredStreamReader tieredReader,
+                                                              SegmentIndex segmentIndex,
+                                                              EvictionListener evictionListener,
                                                               StorageInstance storage,
                                                               KVStore<AetherKey, AetherValue> kvStore,
                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return new StreamEntityLogSubstrate(partitionManager, catchupSource, storage, kvStore, applier);
+        return new StreamEntityLogSubstrate(partitionManager,
+                                            catchupSource,
+                                            tieredReader,
+                                            segmentIndex,
+                                            evictionListener,
+                                            storage,
+                                            kvStore,
+                                            applier);
     }
 
     @Override
@@ -176,12 +218,13 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// recovery floor in `RetentionEnforcer`, not this policy.
     ///
     /// ## What the ring window has to be big enough for
-    /// A recovering owner replays from its checkpoint forward using what its own ring still holds, so the
-    /// window must stay comfortably ahead of the checkpoint interval — if the checkpoint falls further
-    /// behind than the ring reaches back, the fold refuses rather than serving state missing writes.
-    /// Age-based eviction is therefore pushed far out (a finite value, NOT `Long.MAX_VALUE`, because
-    /// `evictByAge` computes `now - maxAgeMs` and would underflow); size and count do the bounding, and
-    /// tier-aware retention keeps the ring from dropping anything not yet sealed.
+    /// A recovering owner replays from its checkpoint forward through its ring and the segments it sealed
+    /// (#1240), so on that node the window no longer has to cover the checkpoint lag. A node taking the
+    /// partition over reads only its own ring, so there the window must stay ahead of the checkpoint
+    /// interval, or the fold refuses rather than serving state missing writes. Age-based eviction is
+    /// pushed far out (a finite value, NOT `Long.MAX_VALUE`, because `evictByAge` computes
+    /// `now - maxAgeMs` and would underflow); size and count do the bounding, and every evicted record is
+    /// handed to the segment sealer, which retains it until it is sealed (#1234).
     private static StreamConfig entityStreamConfig(String keyspace,
                                                    int partitionCount,
                                                    int replicationFactor,
@@ -283,25 +326,212 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                                                              cause));
     }
 
-    /// Reads come from the local ring alone, and that is a consequence of the fold's own precondition
-    /// rather than a limitation: the fold refuses unless it can start at or above
-    /// [#earliestRetainedOffset], so every offset it asks for is one the ring still holds. Falling back to
-    /// the tiered segment reader would be dead code that looked like a safety net — worse, it would look
-    /// like one on a node where the segment index cannot resolve another node's segments anyway.
+    /// Reads span both tiers this node holds (#1240), as contract item 3 of [EntityLogSubstrate] requires.
+    /// An offset the ring still holds is read from the ring. An offset below the ring's earliest was
+    /// evicted and handed to the segment sealer, so it is read from the segments this node sealed. Before
+    /// #1240 every read went to the ring, so a partition whose checkpoint lagged further than the ring
+    /// reaches (10k records, or fewer large ones) refused every operation although its history sat sealed
+    /// in local storage.
     ///
-    /// The read is bounded by the APPENDED head, not the stream-consumer visible position (#1235): the
-    /// fold replays up to [#headOffset], which is the appended head, and treats a short read below it as a
-    /// truncated log. Entity-log visibility is the fold's own contract, not a stream consumer's.
+    /// A sealed read is capped at the ring's earliest offset, so the two tiers never overlap, and the
+    /// records it returns must sit at exactly `fromOffset, fromOffset + 1, …`: the fold assigns offsets by
+    /// position, so a skipped or repeated record would silently fold every later record at the wrong
+    /// offset. A mismatch is refused, never repaired.
+    ///
+    /// Both tiers hold APPENDED records, as the #1274 ruling requires of entity folds: the ring read uses
+    /// [StreamPartitionManager#readAppended], bounded by the APPENDED head rather than the stream-consumer
+    /// visible position (#1235), and a sealed record was appended before it was evicted. Entity-log
+    /// visibility is the fold's own contract, not a stream consumer's.
+    ///
+    /// A node reads only the segments IT sealed — the index is node-local — so a node that never held the
+    /// partition still refuses exactly as before: [#earliestRetainedOffset] stays at its ring. A PROMOTED
+    /// REPLICA is the case this widens: replica rings are materialized with the same node-wide eviction
+    /// listener as owner rings, so a replica has sealed segments of the partition, and after promotion it
+    /// can rebuild from that history where it previously refused. A suffix sealed only after it joined
+    /// leaves a hole below, and the read that reaches the hole refuses loudly rather than folding around it.
     @Override
     public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
-        return partitionManager.readAppended(EntityPartitionArc.arcName(keyspace),
-                                             partition,
-                                             fromOffset,
-                                             maxRecords)
-                               .map(events -> events.stream()
-                                                    .map(RawEvent::data)
-                                                    .toList())
-                               .async();
+        var stream = EntityPartitionArc.arcName(keyspace);
+        var ringEarliest = partitionManager.earliestRetainedOffset(stream, partition);
+
+        return belowRing(fromOffset, ringEarliest)
+               ? readSealed(keyspace, stream, partition, fromOffset, sealedBound(fromOffset, maxRecords, ringEarliest))
+               : readRing(keyspace, stream, partition, fromOffset, maxRecords);
+    }
+
+    private static boolean belowRing(long fromOffset, long ringEarliest) {
+        return ringEarliest < 0 || fromOffset < ringEarliest;
+    }
+
+    private static int sealedBound(long fromOffset, int maxRecords, long ringEarliest) {
+        return ringEarliest < 0
+               ? maxRecords
+               : (int) Math.min(maxRecords, ringEarliest - fromOffset);
+    }
+
+    private Promise<List<byte[]>> readRing(String keyspace,
+                                           String stream,
+                                           int partition,
+                                           long fromOffset,
+                                           int maxRecords) {
+        return partitionManager.readAppended(stream, partition, fromOffset, maxRecords)
+                               .fold(cause -> evictedDuringRead(keyspace,
+                                                                stream,
+                                                                partition,
+                                                                fromOffset,
+                                                                maxRecords,
+                                                                cause),
+                                     events -> Promise.success(payloads(events)));
+    }
+
+    /// The ring evicted `fromOffset` between the tier choice and the ring read — a real race under a
+    /// concurrently appending partition, and the reroute is what absorbs it. The offset is then in the
+    /// sealer or in a segment, and the sealed read picks it up.
+    ///
+    /// The bound comes from the refusal's own `tailOffset` rather than a fresh
+    /// `earliestRetainedOffset` read: the two can differ, and a ring replaced between them would answer
+    /// `-1`, which would make the bound negative.
+    private Promise<List<byte[]>> evictedDuringRead(String keyspace,
+                                                    String stream,
+                                                    int partition,
+                                                    long fromOffset,
+                                                    int maxRecords,
+                                                    Cause cause) {
+        return switch (cause) {
+            case StreamError.CursorExpired expired -> readSealed(keyspace,
+                                                                 stream,
+                                                                 partition,
+                                                                 fromOffset,
+                                                                 sealedBound(fromOffset,
+                                                                             maxRecords,
+                                                                             expired.tailOffset()));
+            default -> cause.promise();
+        };
+    }
+
+    /// An evicted offset whose seal has not landed is IN FLIGHT (#1234): the sealer retains it and the WAL
+    /// holds it, and it becomes readable once the seal lands. The read waits for it in place for about two
+    /// seconds ([#IN_FLIGHT_RETRY]); a seal still pending after that is reported as the transient
+    /// [EntityLogError.FoldInProgress]. The offset is never skipped. The cost of the fallback: the fold
+    /// discards its partial rebuild, so its next access re-reads everything from the checkpoint.
+    private Promise<List<byte[]>> readSealed(String keyspace,
+                                             String stream,
+                                             int partition,
+                                             long fromOffset,
+                                             int count) {
+        return IN_FLIGHT_RETRY.execute(() -> readSealedOnce(keyspace, stream, partition, fromOffset, count),
+                                       SegmentError.SealInFlight.class::isInstance).mapError(cause -> stillInFlight(keyspace,
+                                                                                                                    stream,
+                                                                                                                    partition,
+                                                                                                                    cause));
+    }
+
+    /// The in-flight check runs before the segment read: the sink indexes a segment before the sealer
+    /// releases it, so no evicted offset is in neither place.
+    private Promise<List<byte[]>> readSealedOnce(String keyspace,
+                                                 String stream,
+                                                 int partition,
+                                                 long fromOffset,
+                                                 int count) {
+        if (evictionListener.holdsUnsealed(stream, partition, fromOffset)) {
+            return new SegmentError.SealInFlight(stream, partition, fromOffset).promise();
+        }
+
+        return tieredReader.read(stream, partition, fromOffset, count)
+                           .mapError(cause -> sealedReadFailure(keyspace, stream, partition, cause))
+                           .flatMap(events -> contiguousPayloads(keyspace, stream, partition, fromOffset, events));
+    }
+
+    private static Cause stillInFlight(String keyspace, String stream, int partition, Cause cause) {
+        return switch (cause) {
+            case SegmentError.SealInFlight inFlight -> foldInProgress(keyspace, stream, partition, inFlight);
+            default -> cause;
+        };
+    }
+
+    private static Cause foldInProgress(String keyspace,
+                                        String stream,
+                                        int partition,
+                                        SegmentError.SealInFlight inFlight) {
+        LOG.info("Entity log {}/{} offset {} is still being sealed; the fold retries on the next access",
+                 stream,
+                 partition,
+                 inFlight.fromOffset());
+
+        return new EntityLogError.FoldInProgress(keyspace, partition);
+    }
+
+    /// A hole in the sealed range, or a range retention already reclaimed, cannot be read around: the fold
+    /// would serve state missing committed writes. Both refuse the fold loudly. Any other failure (a storage
+    /// read error) keeps its own cause and classification.
+    private static Cause sealedReadFailure(String keyspace, String stream, int partition, Cause cause) {
+        return switch (cause) {
+            case SegmentError.SealedRangeMissing missing -> refused(keyspace, stream, partition, missing);
+            case StreamError.CursorExpired expired -> refused(keyspace, stream, partition, expired);
+            default -> cause;
+        };
+    }
+
+    private Promise<List<byte[]>> contiguousPayloads(String keyspace,
+                                                     String stream,
+                                                     int partition,
+                                                     long fromOffset,
+                                                     List<RawEvent> events) {
+        if (events.isEmpty()) {
+            return emptySealedRead(keyspace, stream, partition, fromOffset);
+        }
+
+        return firstMisplaced(events, fromOffset).map(position -> notContiguous(keyspace,
+                                                                                stream,
+                                                                                partition,
+                                                                                fromOffset + position,
+                                                                                events.get(position).offset()))
+                             .or(() -> Promise.success(payloads(events)));
+    }
+
+    private static Option<Integer> firstMisplaced(List<RawEvent> events, long fromOffset) {
+        return Option.from(IntStream.range(0,
+                                           events.size())
+                                    .filter(position -> events.get(position)
+                                                              .offset() != fromOffset + position)
+                                    .boxed()
+                                    .findFirst());
+    }
+
+    private static Promise<List<byte[]>> notContiguous(String keyspace,
+                                                       String stream,
+                                                       int partition,
+                                                       long expected,
+                                                       long found) {
+        return refused(keyspace,
+                       stream,
+                       partition,
+                       new EntityLogError.MalformedRecord("sealed history is not contiguous: expected offset " + expected
+                                                         + ", found " + found)).promise();
+    }
+
+    /// Nothing sealed at or above `fromOffset`, not in flight, and below the ring: no tier holds it. Past
+    /// the head that is simply the end of the log; at or below it, it is a refusal.
+    private Promise<List<byte[]>> emptySealedRead(String keyspace, String stream, int partition, long fromOffset) {
+        return fromOffset > headOffset(keyspace, partition)
+               ? Promise.success(List.of())
+               : refused(keyspace,
+                         stream,
+                         partition,
+                         new EntityLogError.MalformedRecord("offset " + fromOffset
+                                                           + " is in neither the ring, the sealer nor a sealed segment")).promise();
+    }
+
+    private static Cause refused(String keyspace, String stream, int partition, Cause reason) {
+        LOG.error("Entity log {}/{} cannot be rebuilt from its sealed history: {}", stream, partition, reason.message());
+
+        return new EntityLogError.FoldFailed(keyspace, partition, reason);
+    }
+
+    private static List<byte[]> payloads(List<RawEvent> events) {
+        return events.stream()
+                     .map(RawEvent::data)
+                     .toList();
     }
 
     @Override
@@ -309,9 +539,20 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return partitionManager.nextExpectedOffset(EntityPartitionArc.arcName(keyspace), partition) - 1;
     }
 
+    /// The earliest offset [#read] can serve here (#1240): the lowest of the offsets this node sealed, the
+    /// offsets its sealer still holds in flight, and the ring's earliest. A hole between those tiers is not
+    /// hidden by this answer: the read that reaches it fails `SealedRangeMissing`, which refuses the fold.
     @Override
     public long earliestRetainedOffset(String keyspace, int partition) {
-        return partitionManager.earliestRetainedOffset(EntityPartitionArc.arcName(keyspace), partition);
+        var stream = EntityPartitionArc.arcName(keyspace);
+        var ringEarliest = partitionManager.earliestRetainedOffset(stream, partition);
+
+        return Stream.of(segmentIndex.nextSealedOffset(stream, partition, -1L),
+                         evictionListener.lowestUnsealed(stream, partition))
+                     .flatMap(Option::stream)
+                     .filter(offset -> belowRing(offset, ringEarliest))
+                     .min(Long::compare)
+                     .orElse(ringEarliest);
     }
 
     /// Answered from the replica catch-up view, which is the cluster's existing statement that this

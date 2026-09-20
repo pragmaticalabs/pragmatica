@@ -456,7 +456,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                                              String artifactCoords,
                                                              boolean registerOnly) {
         return ensureMigrationOwnership(expanded.id(),
-                                        migrations).async()
+                                        migrations).flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
+                                       .async()
                                        .flatMap(_ -> applyAllCommands(expanded,
                                                                       resourcesConfig,
                                                                       roleHints,
@@ -553,6 +554,9 @@ class BlueprintServiceInstance implements BlueprintService {
         // (re-)derived here from the embedded resources.toml + roleHints. Derivation is best-effort:
         // on validation failure an empty bindings entry is still written, preserving rc1's deploy
         // semantics (the gate that would HTTP-422 on bad stream config is a separate stage).
+        // #1262 exception: a STRONG-consistency declaration is refused BEFORE this point
+        // (StreamResourceValidator.ensureHonourableConsistency in storeAllInSingleBatch), failing the deploy —
+        // registerOnly included: a STRONG blueprint is not even registered.
         commands.add(buildStreamBindingsCommand(expanded, resourcesConfig, roleHints));
         if (!migrations.isEmpty()) {
             commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords, expanded.id()));
@@ -809,8 +813,17 @@ class BlueprintServiceInstance implements BlueprintService {
                          .flatMap(BlueprintServiceInstance::readSliceResourcesToml);
     }
 
+    /// #1262: every slice declaration passes the STRONG-consistency deploy gate before any binding is derived
+    /// — the same gate the artifact path runs — so a STRONG stream refuses the publish with its named cause
+    /// instead of degrading to empty bindings.
     private static Result<List<NamedAddress>> sliceBindings(BlueprintId blueprintId,
                                                             List<Option<String>> declarations) {
+        return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList()).flatMap(_ -> unambiguousBindings(blueprintId,
+                                                                                                                                                       declarations));
+    }
+
+    private static Result<List<NamedAddress>> unambiguousBindings(BlueprintId blueprintId,
+                                                                  List<Option<String>> declarations) {
         return ensureUnambiguousAliases(declarations.stream()
                                                     .flatMap(Option::stream)
                                                     .flatMap(toml -> streamBindings(blueprintId,
