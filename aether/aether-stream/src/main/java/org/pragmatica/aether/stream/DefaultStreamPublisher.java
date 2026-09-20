@@ -261,13 +261,16 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// A refusal because the committed owner is another node (the #1230 ownership-lag window) is redirected
     /// to that owner via {@link StreamForwardRetry#redirectNotOwner}.
     private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        return ensureReplicaFloor(partition).flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
-                                            .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
-                                                                                               owner -> forwardTo(owner,
-                                                                                                                  partition,
-                                                                                                                  bytes,
-                                                                                                                  timestamp)),
-                                                  offset -> awaitMinSync(partition, offset));
+        return ensureReplicaFloor(partition).flatMap(_ -> partitionManager.publishLocal(streamName,
+                                                                                        partition,
+                                                                                        bytes,
+                                                                                        timestamp))
+                                 .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                    owner -> forwardTo(owner,
+                                                                                                       partition,
+                                                                                                       bytes,
+                                                                                                       timestamp)),
+                                       offset -> awaitMinSync(partition, offset));
     }
 
     private Result<Unit> ensureReplicaFloor(int partition) {
