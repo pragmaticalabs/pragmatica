@@ -1,145 +1,195 @@
 # Aether Streams — Architecture & Performance Design Notes
 
-**Status:** Post Phase 2+3 completion (2026-04-11)
-**Scope:** Design reference describing the implemented streaming architecture and its performance-relevant properties. This document intentionally avoids quantitative latency/throughput numbers — no benchmarks exist in the repository at the time of writing, so all claims are structural/architectural rather than measured.
+**Status:** Re-verified against source at `ccba0dba5` on 2026-09-19 (#1248) for §1, §3, §4, §5, §6.3, §10 and §11. §2, §6.1–6.2, §7, §8 and §9 carry over from the 2026-04-11 original and were **not** re-verified at that read point; each says so.
+**Measurements:** **None.** This document contains no measured latency, throughput or recovery figure. No benchmark harness for `aether-stream` exists in the repository (searched `git ls-files aether` for `bench|perf|jmh` at `ccba0dba5`; the one code hit, `ObservabilityStep0BenchTest` in `aether/node`, is not a stream benchmark). The integration suite's `04-streaming/test-stream-under-load.sh` exercises streams under load but records no figure used here. Every statement is structural (read from source) or analytical (derived from structure).
+**Scope:** The implemented streaming architecture and its performance-relevant properties.
 
-Primary implementation lives in `aether/aether-stream/`, with cold-tier storage in `aether/pg-tools/` and codec/storage primitives in `integrations/storage/`.
+Primary implementation lives in `aether/aether-stream/`, WAL in `aether/aether-stream/.../stream/wal/`, cold-tier storage wiring in `aether/node/`, and codec/storage primitives in `integrations/storage/`.
+
+### How to read the figures and tags
+
+Every number in this document is labelled:
+
+- **(code constant)** — a literal in source at `ccba0dba5`; the symbol is named so it can be re-checked.
+- **(analytical)** — derived from the structure of the code; not observed on any machine.
+- **(measured)** — observed on a stated machine and run. **There are none in this revision.**
+
+Guarantee statements carry the evidence tags from the aether claim discipline: `[mechanism: …]` for what follows from the code path, `[design intent — unverified]` for what is believed but not demonstrated. No statement here carries `[verified: …]`: nothing below was exercised end-to-end on a multi-node live path for this document.
 
 ---
 
-## 1. Feature Inventory (verified against source)
+## 1. Feature Inventory (re-verified at `ccba0dba5`)
 
-| Feature | Implementation file(s) |
+Line numbers are deliberately omitted — they rot; symbols do not.
+
+| Feature | Implementation |
 |---|---|
-| Off-heap ring buffer (per-partition hot tier) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/OffHeapRingBuffer.java` |
-| Batch append | `OffHeapRingBuffer.appendBatch` (line 154) |
-| REJECT_WHEN_FULL guard | `OffHeapRingBuffer.append` (line 141), `EvictionPolicy` |
-| `MemorySegment` slice read (zero-copy fast path) | `OffHeapRingBuffer.readSlice` / `readSliceAtOffset` (line 330) |
-| Append listener (push path for co-located consumers) | `OffHeapRingBuffer` listeners (lines 81, 176, 305) |
-| Cross-node publish forwarding over QUIC | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/forward/StreamForwardMessage.java`, `StreamForwardClient`, `StreamForwardHandler` |
-| `minSyncReplicas` sync ack | `DefaultStreamPublisher.publishLocalEventual` (lines 188–195) |
-| Batch replication (per-partition accumulator) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/replication/ReplicationBatcher.java` (defaults: 100 events / 1 ms, lines 22–24) |
-| Read-preference (GOVERNOR / NEAREST / ANY_REPLICA) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/PartitionedStreamAccess.java` (line 256) |
-| Consumer group coordination (KV-consensus backed) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/consumer/ConsumerGroupCoordinator.java` |
-| Transactional cursor commit (PostgreSQL) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/consumer/PgTransactionalCursorCommit.java` |
-| Segment sealer (evicted-events → sealed segment) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/segment/SegmentSealer.java` |
-| Segment compression (LZ4 / ZSTD / none) | `integrations/storage/src/main/java/org/pragmatica/storage/Compression.java` wired via `StorageSegmentSink` |
-| Segment encryption at rest (AES/GCM) | `StorageSegmentSink` (compress→encrypt→persist), `SegmentReader` (decrypt with `"AES/GCM/NoPadding"`, line 118) |
-| Tiered read (ring buffer → sealed segments) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/segment/TieredStreamReader.java` |
-| Governor failover handler | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/replication/GovernorFailoverHandler.java` |
-| Watermark tracker | `.../replication/WatermarkTracker.java` |
-| Compound retention (ANY / ALL modes + tier-aware) | `aether/slice-api/.../RetentionPolicy.java`; enforcement in `OffHeapRingBuffer.applyRetention` |
-| Retention enforcer scheduler | `.../segment/RetentionEnforcer.java` |
-| Cursor store (cold persistence) | `.../segment/CursorStore.java`, `PgCursorStore` |
-| PostgreSQL cold tier | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/pg/PgStreamStore.java` (tables `aether_stream_segments`, `aether_stream_cursors`) |
-| STRONG consistency via Rabia consensus | `.../consensus/ConsensusPublishPath.java`, `.../consensus/ConsensusProposer.java` |
-| Adaptive poll interval (push-path fallback) | `ConsumerRuntimeState` constants `MIN_POLL_MS = 1`, `MAX_POLL_MS = 50` (lines 34–36) |
+| Off-heap ring buffer (per-partition hot tier) | `OffHeapRingBuffer` (`Arena.ofShared()`, floor-reserve + segmented lazy growth) |
+| Batch append | `OffHeapRingBuffer.appendBatch` |
+| REJECT_WHEN_FULL / DROP_OLDEST | `OffHeapRingBuffer.append`, `EvictionPolicy` |
+| `readSlice` returning a `MemorySegment` | `OffHeapRingBuffer.readSlice` → `readSliceAtOffset`. **Not a zero-copy read:** it returns `MemorySegment.ofArray(readDataBytes(...))`, a heap segment over a fresh `byte[]` copy. `PartitionedStreamAccess.readSlice` is its only caller and has no production caller. See §4.3. |
+| Append listener (push path for co-located consumers) | `OffHeapRingBuffer.addAppendListener` / `notifyAppendListeners`, fired inside `append` |
+| Per-partition crash-durable WAL (owner) | `StreamPartitionManager.durablyLog` → `PartitionWal.append` (group-commit `force(false)`) |
+| Replica WAL frame write + ack barrier | `StreamPartitionManager.appendRecovered` → `logReplicated` (the frame is written inside the partition's ordered append section, with no fsync); barrier `syncReplicated` → one `PartitionWal.commit` group commit covering every frame written so far, awaited by `ReplicationReceiveHandler` once per batch before acking (#1244) |
+| Cross-node publish forwarding over QUIC | `stream/forward/`: `StreamForwardMessage`, `StreamForwardClient`, `StreamForwardHandler` |
+| `min-sync-replicas` write-ack floor | `DefaultStreamPublisher.publishLocalEventual`, `PartitionedStreamAccess.publishLocal`, `StreamWriteRouter.publishLocal`, `StreamForwardHandler` → `awaitReplication(..., minSyncReplicas - 1)`. **Exception:** the `StreamWriteRouter.forwardToOwner` fallback (owner unknown or self, or no forward client, with no local ring) calls `publishLocal(...).async()` without the await (§5.1; #1230). |
+| Owner → replica push | `DefaultReplicationManager.replicateEvent`. The node wires the **non-batching** manager (`ReplicationManager.replicationManager(...)` in `AetherNode`), so each event is sent by `replicateImmediately`. `ReplicationBatcher` (`DEFAULT_MAX_EVENTS = 100`, `DEFAULT_MAX_DELAY = 1 ms`, **code constants**) exists but `batchingReplicationManager` has no production caller. |
+| Read routing (GOVERNOR / NEAREST / ANY_REPLICA / LINEARIZABLE) | `PartitionedStreamAccess.readWithPreference` → `ForwardingReadRouter` |
+| Consumer group coordination (KV-consensus backed) | `consumer/ConsumerGroupCoordinator` |
+| Transactional cursor commit (PostgreSQL) | `consumer/PgTransactionalCursorCommit` — **library only: no production caller** |
+| Segment sealer (evicted events → sealed segment) | `segment/SegmentSealer` |
+| Segment compression / encryption | `StorageSegmentSink` supports compress → encrypt → `putRef`; the node wires it with neither (`CompressionCodec.NONE`, no encryptor). `SegmentReader` inverts both. |
+| Tiered read (ring buffer → sealed segments) | `segment/TieredStreamReader` |
+| Governor failover | `replication/GovernorFailoverHandler`, `WatermarkTracker`, `StreamPartitionRecovery` |
+| Retention | `RetentionPolicy`, `OffHeapRingBuffer.applyRetention`, `segment/RetentionEnforcer` |
+| STRONG publish via Rabia | `consensus/ConsensusPublishPath`, `ConsensusProposer` — **implemented, not wired**: see §3.3 |
+| Adaptive poll interval | `ConsumerRuntimeState` `MIN_POLL_MS = 1`, `MAX_POLL_MS = 50`, `MAX_POLL_BATCH = 100` **(code constants)** |
+| Stream memory gauge | `aether.streams.memory.used.ratio` (`ManagementServer`) |
 
-### Explicitly not implemented (at time of writing)
+### Not implemented at `ccba0dba5`
 
-- **Cross-node replica reads.** `PartitionedStreamAccess.selectReplicaAndRead` currently *falls back to local read* with a debug log noting "remote forwarding is Phase 2" (see `PartitionedStreamAccess.java:278-279`). ReadPreference today selects a replica logically but serves from the local partition. Remote read forwarding is not yet wired.
+Searched by name across `aether/**/*.java` (non-test) for keep-latest/compaction policy, CDC/change-feed, and consumer-lag autoscaling; none found. Positive control: the same search form finds the two `aether.streams.*` gauges.
+
 - Log compaction (keep-latest-per-key).
 - CDC adapter (KV-Store → stream change feed).
 - Consumer lag autoscaling.
-- Full streaming metrics suite (a `streamMemoryUsedRatio` gauge exists; broader Micrometer coverage is pending).
-- Cross-cluster / multi-region stream replication.
+- Cross-cluster / multi-region stream replication. `[design intent — unverified]` that nothing partial exists; not searched beyond name.
+
+The 2026-04-11 revision listed cross-node replica reads here. That is no longer true: reads route through `ForwardingReadRouter` (§4.4).
 
 ---
 
 ## 2. Architectural Overview
 
-Streams are modelled as partitioned, append-only logs. Each partition has exactly one governor node (the single writer). A governor is selected via the cluster's DHT ring / task-group assignment; this document does not restate that mechanism, it only notes that app EVENTUAL publishes route to the partition's HRW owner via `GovernorResolver.partitionOwnerResolver` — the arg-less leader resolver is retained as a fallback, and a self-resolved owner falls back to a local append (see `DefaultStreamPublisher.resolveOwner` / `publishRemote`).
+*Carried over from 2026-04-11; not re-verified at `ccba0dba5` except where marked.*
 
-**Hot tier.** Events land in an off-heap ring buffer allocated via `Arena.ofShared()` with a fixed layout: 64-byte header, 24-byte index entries, then a circular data region (see `OffHeapRingBuffer.java:22-47`). The 24-byte index entry is a fixed overhead per event and is material for small payloads.
+Streams are modelled as partitioned, append-only logs, each partition with one intended writer, its owner. App EVENTUAL publishes (`DefaultStreamPublisher.publishEventual`, re-verified) append locally whenever **this node holds a ring for the partition** (`partitionBuffer(...).isPresent()`), and otherwise route to the partition's HRW owner. The arg-less leader resolver is a fallback, and a self-resolved owner falls back to a local append. Replica nodes also materialise rings, so a publish on a replica node can append locally as a second writer. The append fence checks the epoch but not the owner's identity `[mechanism: StreamPartitionManager.rejectIfStale tests only highWater.isStale(domain, ownerEpoch)]`. Tracked as #1230.
 
-**Cold tier.** When events are evicted from the ring buffer (count/size/age), `SegmentSealer` (wired as an `EvictionListener`) serialises them into a sealed segment and hands them to a `SegmentSink`. A sink can be backed by object storage via `StorageSegmentSink` (with optional compression + encryption) or by PostgreSQL via `PgSegmentSink`. Retention on the cold tier is applied by `RetentionEnforcer`.
+**Hot tier.** Events land in an off-heap ring buffer allocated via `Arena.ofShared()`: a 64-byte header (`HEADER_SIZE`, **code constant**), 24-byte index entries (`INDEX_ENTRY_SIZE`, **code constant**), then a data region grown in segments up to the stream's cap.
 
-**Reads.** `TieredStreamReader` serves hot reads from the ring buffer and falls back to sealed segments for offsets below the buffer tail. Segment reads transparently decrypt and decompress using per-segment metadata (`SegmentReader.java:116-127`).
+**Durable log.** On a node with a writable WAL directory, each partition also has a `PartitionWal`. An owner publish is not acknowledged until its record is fsynced there (§3.1, §5). A node whose WAL directory is unwritable refuses to boot unless `aether.allowNonDurableStreams=true` / `AETHER_ALLOW_NON_DURABLE_STREAMS=true` is set. The refusal is `AetherNode.verifyWalBootable` → `decideWalAvailability`, called from the production entrypoint (`Main`) only. Forge and embedded nodes skip it and degrade via `resolveStreamWalDir` with a WARN. Without a WAL, publishes ack with no fsync `[mechanism: durablyLog returns success(offset) when walFor is empty]`.
 
-**Replication.** Governors push events to replicas through `ReplicationBatcher`, which accumulates per-partition batches (default 100 events / 1 ms max delay, `ReplicationBatcher.java:22-24`). `WatermarkTracker` records per-replica progress so that `GovernorFailoverHandler` can resume from the most up-to-date replica on failover.
+**Cold tier.** Evicted events are serialised into a sealed segment by `SegmentSealer` and handed to a `SegmentSink`. The node wires `StorageSegmentSink` through its two-argument factory: `CompressionCodec.NONE` and no encryptor (re-verified). `PgSegmentSink` exists but has no production caller.
+
+**Reads.** `TieredStreamReader` serves hot reads from the ring and falls back to sealed segments below the ring tail.
+
+**Replication.** Owners push each event to its replicas as it is published (§5.1; re-verified). `WatermarkTracker` records per-replica progress for failover.
 
 ---
 
-## 3. Publish Paths
+## 3. Publish Paths (re-verified at `ccba0dba5`)
 
-### 3.1 EVENTUAL, co-located
+### 3.1 EVENTUAL, owner-local
 
-Flow (`DefaultStreamPublisher.publishLocalEventual`, line 188):
+Flow (`DefaultStreamPublisher.publishLocalEventual` → `StreamPartitionManager.publishLocal`):
 
-1. Serialize the event via the configured `Codec`.
-2. `StreamPartitionManager.publishLocal` → `OffHeapRingBuffer.append` writes the payload into the ring buffer.
-3. If `minSyncReplicas > 0`, the returned `Promise` waits for `awaitReplication` to reach the configured ack count.
-4. Append listeners are notified (push path).
+1. Serialize the event via the configured codec (one `byte[]`).
+2. `appendToPartition` → `OffHeapRingBuffer.append`: copy the payload into the off-heap data region, write the index entry, and **fire append listeners** (the co-located push path, §4.1).
+3. `durablyLog`: if the partition has a WAL, `PartitionWal.append(offset, payload, timestamp)` and **block the calling thread** (`.await()`, a `@TerminalOperation`) until the group-commit fsync covering that record completes. With no WAL, pass the offset through unchanged.
+4. On success, hand the event to `ReplicationManager.replicateEvent` (asynchronous; §5).
+5. If `min-sync-replicas ≥ 2`, the returned `Promise` additionally awaits `awaitReplication(..., minSyncReplicas - 1)`: that many distinct non-self replica acks, each sent only after that replica's own WAL sync (§5). With `min-sync-replicas ≤ 1` there is no peer-ack wait.
 
-Design properties:
-- No network hop, no HTTP layer, no JSON.
-- Serialization and memory copy into the off-heap segment are unavoidable; the "zero-copy" claim applies only to the *consumer* slice read, not the producer path.
-- With `minSyncReplicas = 0`, the publish Promise resolves as soon as the local append and listener notification return.
+Consequences:
+
+- A successful owner-local publish means the record was fsynced to the owner's WAL `[mechanism: publishLocal chains durablyLog before success; PartitionWal.append resolves only after force(false) covering its record]`, and for `min-sync-replicas ≥ 2`, that `min-sync-replicas − 1` replicas reported their WAL sync for it `[mechanism: ReplicationReceiveHandler acks only on durability.sync success]`. Neither has been exercised by a multi-node crash test for this document.
+- **Visibility precedes durability.** Steps 2 and 3 are ordered ring-append-then-fsync, so a co-located consumer can be notified of, and read, an event whose publish then fails on fsync or replication `[mechanism: notifyAppendListeners runs inside OffHeapRingBuffer.append, before durablyLog]`. Tracked as #1235.
+- Copies on this path: the codec's `byte[]`, the copy into the off-heap ring, and the WAL write (**analytical**). The producer path is not zero-copy and does not claim to be.
+- Recovery action when the WAL fail-stops (a failed fsync): every later append on that partition is refused with `WalError.FailStopped`. Restart the node, and recovery trims to the valid prefix. Nothing acked is lost, because refused appends were never acked `[mechanism: a failed force sets PartitionWal.syncFailure; append refuses while it is set]`.
 
 ### 3.2 EVENTUAL, remote (cross-node)
 
-Flow (`DefaultStreamPublisher.publishRemote`, line 197):
+Flow (`DefaultStreamPublisher.publishRemote`):
 
-1. Resolve the governor node via `governorResolver`.
-2. `StreamForwardClient.publishRemote` sends a `PublishForward` `ProtocolMessage` over the cluster's QUIC transport.
-3. Governor executes `publishLocal` and returns a `PublishForwardResponse`.
+1. Resolve the partition owner.
+2. `StreamForwardClient` sends a `PublishForward` `ProtocolMessage` over QUIC.
+3. The owner's `StreamForwardHandler` runs `publishLocal` (§3.1 steps 2–4) and, for `min-sync-replicas ≥ 2`, `awaitReplication`, then replies.
 
-Design properties:
-- Binary `ProtocolMessage` (not HTTP), routed directly to the partition governor.
-- Adds one network round trip plus serialization/deserialization at each end.
-- No silent fallback to local partition.
+Adds one network round trip plus serialization/deserialization at each end (**analytical**).
 
-### 3.3 STRONG (consensus-committed)
+### 3.3 STRONG (consensus) — implemented, not wired
 
-Flow (`DefaultStreamPublisher.publishStrong` → `ConsensusPublishPath.publish`, line 28):
-
-1. Wrap the event in a `StreamConsensusCommand`.
-2. Submit via `ConsensusProposer` (Rabia). The returned `Promise<Long>` resolves when the command has been committed.
-3. The consensus state-machine callback (wired in the node module) performs the actual local append on every node.
-
-Design properties:
-- Each `publish(event)` is one consensus proposal. The aether-stream module does **not** itself coalesce multiple STRONG events into one proposal; any batching is whatever Rabia does internally at the consensus layer. `publishBatchStrong` simply calls `publish` per event and gathers results (`DefaultStreamPublisher.publishBatchStrong`, line 163).
-- STRONG guarantees total order across all nodes; every node applies the same committed command.
+`DefaultStreamPublisher.publishStrong` requires a `ConsensusPublishPath`. Every production construction of a publisher (`StreamPublisherFactory`, `SystemStreamFactories`, `AetherNode`) passes `Option.none()` for it, and `ConsensusPublishPath.consensusPublishPath(...)` is called only from tests. A STRONG publish through a `StreamPublisher` therefore fails with `CONSENSUS_PATH_UNAVAILABLE` `[mechanism: consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)]`. Publishes to a STRONG stream through `PartitionedStreamAccess.publish` or the REST route (`StreamWriteRouter.publish`) do **not** fail. Neither checks the consistency mode, so both silently take the EVENTUAL path `[mechanism: no ConsistencyMode branch in either method]`. Tracked as #1262. **No cross-node total-order guarantee is available at `ccba0dba5`.** When wired, `publishBatchStrong` issues one proposal per event (`Promise.allOf` over `publish`).
 
 ---
 
-## 4. Consumer Paths
+## 4. Consumer Paths (re-verified at `ccba0dba5`)
 
 ### 4.1 Push path (co-located, append listener)
 
-`ConsumerRuntimeState.subscribePushOrPoll` wires a `LongConsumer` onto the ring buffer's append listeners (`OffHeapRingBuffer.java:176`). When an append occurs, the listener is invoked synchronously from the append thread, which then reads and dispatches to the consumer callback. This avoids any polling delay when a consumer is co-located with the partition governor and the buffer is not empty.
+`ConsumerRuntimeState.subscribePushOrPoll` registers a `LongConsumer` on the ring's append listeners when the partition is local. On append, the listener calls `onAppend` → `pollCycle` on the appending thread. That reads up to `MAX_POLL_BATCH` events from the cursor and starts delivering them. The listener fires at ring append, before the WAL fsync (§3.1). With a local ring the read resolves synchronously, so the publisher's thread also pays for the decode and for starting the consumer invocation before its own fsync (**analytical**; not measured). Tracked as #1235 and #1238.
 
 ### 4.2 Adaptive poll fallback
 
-When push is unavailable (e.g. remote read, replica catch-up), `ConsumerRuntimeState` uses an adaptive poll interval bounded by `MIN_POLL_MS = 1` and `MAX_POLL_MS = 50` (lines 34–36). Poll batch size is bounded by `MAX_POLL_BATCH = 100` (line 38).
+When the partition is not local, `ConsumerRuntimeState` polls with an interval bounded by `MIN_POLL_MS = 1` and `MAX_POLL_MS = 50`, batch `MAX_POLL_BATCH = 100` (**code constants**).
 
-### 4.3 Zero-copy read fast path
+### 4.3 Delivery copies — there is no zero-copy read
 
-`OffHeapRingBuffer.readSliceAtOffset` returns a `MemorySegment` slice directly into the ring buffer's arena when the event does not wrap the circular boundary (`readSliceAtOffset`, line 336: `segment.asSlice(...)`). When the stored bytes wrap, a contiguous copy is made (`copyWrappedToContiguous`, line 340). Consumers that deserialize directly from `MemorySegment` avoid the `byte[]` allocation on the non-wrapping path; consumers using `read(...)` still receive a `byte[]` copy via `RawEvent`.
+Storage is off-heap; **delivery copies to heap.** When the consumer runs on the node that holds the ring, the declarative-consumer path makes three `byte[]` copies per event and then a decode → re-encode → decode round trip `[mechanism: traced below at ccba0dba5]`:
 
-### 4.4 Read-preference — current behaviour
+1. `OffHeapRingBuffer.readDataBytes` — `new byte[dataLen]`, filled from the off-heap data region (called by `readSingleEvent`).
+2. The `RawEvent` compact constructor — `data = data.clone()`.
+3. The `RawEvent.data()` accessor — a second `clone()`, called by `ConsumerRuntimeState.deliverSingleEvent`.
+4. `StreamConsumerManager.deliver` → `bridge.decode(payload)` into the subscriber's type, then `SliceInvoker.invokeLocal` → `invokeViaBridge`, which **re-encodes** the decoded object (`senderBridge.encode`) for the target slice to decode again (`targetBridge.invoke`).
 
-`PartitionedStreamAccess.readWithPreference` dispatches to:
-- `GOVERNOR` → read the local partition buffer.
-- `ANY_REPLICA` / `NEAREST` → `readFromReplicaOrLocal` → `selectReplicaAndRead`, which *logs* the selected replica and then **falls back to `readPartition` (local)** (see `PartitionedStreamAccess.java:268-283`). The debug log at line 278 explicitly notes "remote forwarding is Phase 2".
+`OffHeapRingBuffer.readSlice` does not avoid this: `readSliceAtOffset` returns `MemorySegment.ofArray(readDataBytes(...))`, a heap segment over copy 1, and has no production caller. The `StreamConsumerAdapter` that once advertised zero-copy reads was dead code and was deleted in #577.
 
-**Consequence for this document:** any claim that read-preference scales reads by routing to remote replicas is currently aspirational. The wiring for remote replica reads is not in place.
+When the assigned consumer does **not** hold the ring, the node's consumer reader (`streamReadRouter.read(..., GOVERNOR)`) forwards the read to the owner. The copies then roughly double: copies 1–3 plus a `RawEventDto` clone on the owner (`StreamForwardHandler`), the wire encode/decode, and on the consumer side a `RawEventDto` clone, a `dto.data()` clone (`StreamReadRouter.toRawEvent`), and the `RawEvent` constructor and accessor clones, about eight array copies in all. Durable-topic streams add a `TopicEventEnvelope` decode (`StreamConsumerManager.deliverTopicEvent`).
+
+Allocation per delivered event is therefore at least three payload-sized `byte[]` arrays (local ring) or about eight plus the wire buffers (forwarded read), plus the decoded object twice (**analytical**).
+
+### 4.4 Read routing
+
+`PartitionedStreamAccess.readWithPreference` delegates to `ForwardingReadRouter.route`:
+
+- `GOVERNOR` reads locally and forwards to the owner on `PARTITION_NOT_LOCAL`.
+- `NEAREST` serves any non-empty local read and otherwise goes to the owner.
+- `ANY_REPLICA` prefers a caught-up remote replica, even when this node is itself caught up.
+- `LINEARIZABLE` runs the committed-owner pipeline. It degrades to the replica-routed read when its components are unwired or no committed ownership record exists. The 2026-04-11 statement that non-GOVERNOR preferences always fall back to a local read is no longer true.
 
 ### 4.5 Transactional cursor commit
 
-`PgTransactionalCursorCommit.commitWithLogic` wraps business-logic writes and a cursor UPSERT in a single `SqlConnector.transactional` block against PostgreSQL. The UPSERT uses `ON CONFLICT (consumer_group, stream_name, partition_id) DO UPDATE` (`PgTransactionalCursorCommit.java:18`). Atomicity of business writes and cursor advancement is delegated to the PostgreSQL transaction, supporting exactly-once processing for workloads whose side effects live in the same database.
+`PgTransactionalCursorCommit.commitWithLogic` wraps business writes and a cursor UPSERT in one PostgreSQL transaction, so for side effects that live in that same database, the cursor advances if and only if they commit `[mechanism: single SqlConnector.transactional block]`. **It has no production caller at `ccba0dba5`;** a deployed slice cannot reach it through the runtime. This is not an end-to-end exactly-once delivery guarantee: redelivery before the cursor commit is still possible, and effects outside that database are not covered.
 
 ---
 
-## 5. Replication Model
+## 5. Replication and Durability Model (re-verified at `ccba0dba5`)
 
-`ReplicationBatcher.add` routes each appended event into a per-partition `BatchAccumulator`. The accumulator flushes when it hits `maxEvents` (default 100) or on the periodic scheduled flush with `maxDelay` (default 1 ms). Flushes send a `ReplicateEvents` message to every replica registered for the partition via `ReplicationTransport.send` (`ReplicationBatcher.java:91`).
+### 5.1 Owner side
 
-- **Async replication.** Publish resolves as soon as the local append completes; the batcher dispatches on its own cadence.
-- **Sync replication.** If the publisher is configured with `minSyncReplicas > 0`, `publishLocalEventual` chains `awaitReplication(...)` on the append, so the Promise completes only after that many replica acks.
-- **Consistency with consensus.** STRONG publishes bypass the batcher; the consensus state machine applies the commit locally on every node (no separate replication step).
+After the WAL gate, `publishLocal` calls `ReplicationManager.replicateEvent`. The node constructs its manager with `ReplicationManager.replicationManager(...)`, which has no batcher, so `DefaultReplicationManager.replicateImmediately` sends one `ReplicateEvents` message per event to every registered non-self replica `[mechanism: AetherNode wires the non-batching factory; batchingReplicationManager has no production caller]`. The 2026-04-11 revision described a 100-event / 1 ms `ReplicationBatcher` on this path. That class exists and is unit-tested, but it is not wired.
 
-**Bandwidth behaviour.** Batching amortises per-message overhead but does not reduce total bytes on the wire. Replication fan-out at high event rates is bandwidth-bound, not count-bound. The practical replication ceiling is `NIC_bandwidth / (event_rate * event_size)` minus overhead; that formula is stated without a measured constant because no throughput benchmark exists.
+- **`min-sync-replicas ≤ 1`.** Publish resolves once the owner's WAL fsync completes (or immediately after the ring append when the node runs without a WAL). Replication is sent but not awaited; the caller is not told whether any replica has the event.
+- **`min-sync-replicas ≥ 2`.** The one bypass: the REST path's `StreamWriteRouter.forwardToOwner` fallback appends locally without awaiting replication `[mechanism: .or(() -> partitionManager.publishLocal(...).async())]`, so that ack carries only the owner-WAL meaning (#1230). Everywhere else, publish additionally awaits `min-sync-replicas − 1` distinct non-self acks (`awaitReplication`). Fewer registered non-self replicas than required fails the await immediately with `NOT_ENOUGH_REPLICAS` rather than acking `[mechanism: DefaultReplicationManager.awaitReplication]`. A failed or timed-out wait does **not** remove the event: it is already in the owner's ring and WAL and continues to replicate, so a caller that retries can publish it twice `[mechanism: publishLocal commits before awaitReplication is called]`.
+
+### 5.2 Replica side
+
+`ReplicationReceiveHandler` applies a batch via `appendRecovered`, which writes each record's WAL frame inside the partition's ordered append section — on the receiving thread, with no fsync — then awaits `syncReplicated` once for the batch and only then acks the highest applied offset. A failed sync withholds the ack.
+
+`syncReplicated` is the durability barrier (#1244). `lastReplicatedWalWrite` records, per `(stream, partition)`, the latest frame write (its WAL instance and write sequence), and the barrier issues one `PartitionWal.commit` for it: a `force(false)` that covers every frame written before it, so a batch of N records costs one fsync, not N `[mechanism: logReplicated → PartitionWal.write inside the section; ReplicatedWrite.commit → PartitionWal.commit(writeSeq); pinned in one JVM by ReplicaWalGroupCommitTest]`. File order is offset order because the replica's frame write shares the owner's section `[mechanism: appendReplicatedInSection; pinned under 16 concurrent appenders by StreamPartitionManagerOrderedAppendTest.appendRecovered_walFileOrderEqualsOffsetOrder_underConcurrentAppends]`. A failed frame write or fsync fail-stops the WAL: the recorded write holds the failure, the barrier fails, and every later write on that WAL instance is refused, so the replica stops acking until the node restarts and reopen recovers the valid prefix `[mechanism: PartitionWal fail-stop; StreamPartitionManager.ReplicatedWrite]`. Releasing a partition (role loss, destroy, idle reap) closes its WAL and only then forgets its entry, so a barrier racing the release meets the closed channel and fails rather than resolving without an fsync `[mechanism: releaseEntry / completeRelease order; StreamPartitionManagerWalTest.syncReplicated_racingTheRelease_neverResolvesBeforeTheClosingFsync]`.
+
+### 5.3 WAL mechanics that bound throughput
+
+- **Group commit.** `PartitionWal.append` writes under a lock, then `groupCommit` issues one `force(false)` covering every write completed so far, so concurrent appenders to the same WAL can share an fsync. It resolves an append only after a force that happened after its own write.
+- **One WAL per partition.** Each `(stream, partition)` has its own file, so fsyncs are never shared across partitions (**analytical**).
+- **Owner, single publisher per partition.** `durablyLog` blocks its caller until the fsync, and `DefaultStreamPublisher.publishGroupInOrder` starts each event of a batch only after the previous one resolves. A batch to one partition therefore pays one fsync (plus, for `min-sync-replicas ≥ 2`, one replication round trip including the replica's fsync) **per event, serially**. Upper bound: events/s per partition per publisher ≤ 1 / (owner fsync latency + [replication RTT + replica fsync latency]) (**analytical**). Tracked as #1245.
+- **Replica.** Frames are written without an fsync and the barrier commits them together, so a replicated batch to one partition pays one fsync per `syncReplicated` — one per received batch and one per backfill run — whatever its record count (#1244). Concurrent batches to the same partition can share a force, because `commit` resolves on any force that happened after the record's own write. Upper bound: durable replicated batches/s per partition ≤ 1 / replica fsync latency, with records/s scaling with batch size (**analytical**). The owner sends one event per message (§5.1), so on the live replication path a batch is one record and the bound stays one record per fsync per partition until owner-side batching is wired; backfill batches are where the group commit pays today (**analytical**).
+- **Blocking.** The owner's `.await()` holds a thread for the fsync duration; how many publishes can batch into one fsync depends on how many threads are blocked concurrently on the same partition (**analytical**).
+
+None of the latencies in these bounds has been measured for this document.
+
+### 5.4 Pending changes (not shipped at `ccba0dba5`)
+
+The following open tickets change the behaviour described in the sections they cite. **None is merged at `ccba0dba5`.** Until they merge, the text above is what ships; after they merge, this section must be rewritten from the merged code, not from the tickets.
+
+- **#1235** — reads and push notifications expose events before they are WAL-durable or replicated (§3.1, §4.1).
+- **#1245** — `publishBatch` serialises every event through its own fsync and replication round trip (§5.3).
+- **#1236 / #1237** (PR #1257, open) — the outcomes a durable publish reports (§5.1).
+- **#1230** — replica nodes accept application writes (ring-presence routing), and the REST fallback skips the min-sync await (§2, §5.1).
+- **#1238** — push-path delivery defects (§4.1).
+- **#1262** — STRONG streams are written as EVENTUAL through `StreamAccess` and the management API (§3.3).
+- **#1261** — sealed-segment codec metadata and raw-bytes fallbacks (§6.3). Latent.
+
+**Merged since:** #1244 (PR #1277) — replica WAL group commit; §1, §5.2, §5.3 and §11 were rewritten from the merged code.
 
 ---
 
@@ -147,98 +197,96 @@ When push is unavailable (e.g. remote read, replica catch-up), `ConsumerRuntimeS
 
 ### 6.1 Hot: OffHeapRingBuffer
 
-Fixed per-partition budget configured by `(capacity, dataRegionSize)`. Each event occupies 24 bytes of index plus its payload bytes inside the data region. For small payloads the index overhead is a non-trivial fraction of the total footprint (e.g. 24 / 124 for a 100-byte payload); for large payloads it is negligible.
+*Carried over; not re-verified.* Each event occupies 24 bytes of index plus its payload bytes. For small payloads the index is a material fraction of the footprint: 24 / 124 for a 100-byte payload (**analytical**).
 
-Retention is driven by `RetentionPolicy`:
-- `ANY` mode: evict when any single limit (count / bytes / age) is exceeded.
-- `ALL` mode: evict only when all configured limits are exceeded simultaneously (`OffHeapRingBuffer.applyAllModeRetention`, line 250).
-- Tier-aware retention (`TierAwareRetention`) retains a configurable window of already-sealed events in the hot tier for fast rewind (`applyTierAwareRetention`, line 277).
+Retention is driven by `RetentionPolicy`: `ANY` evicts when any configured limit (count / bytes / age) is exceeded; `ALL` only when all are (`applyAllModeRetention`); tier-aware retention keeps a window of already-sealed events in the hot tier (`applyTierAwareRetention`).
 
 ### 6.2 Cold: SegmentSink implementations
 
-- **`StorageSegmentSink`** compresses (`CompressionCodec`) and optionally encrypts (`ContentEncryptor` with AES/GCM) before writing to a storage backend (`StorageSegmentSink.java:55-95`). Per-segment metadata (compression ordinal, `encrypted` flag, original size, IV) is stored in `SegmentIndex` so readers can invert the transformations (`SegmentReader.decrypt` / `decompress`, lines 114–129).
-- **`PgSegmentSink`** persists segments as raw bytes in the `aether_stream_segments` PostgreSQL table keyed by `(stream_name, partition_id, start_offset)` (`PgStreamStore.java:39-43`). A `DELETE_EXPIRED` statement supports time-based cleanup.
+*Carried over; not re-verified except as noted.* `StorageSegmentSink` can compress and encrypt before `putRef`, though the node's instance does neither (re-verified, §2); per-segment metadata lets `SegmentReader` invert the transformations. `PgSegmentSink` persists segments in `aether_stream_segments` but has no production caller at `ccba0dba5`.
 
-### 6.3 Segment sealing is synchronous
+### 6.3 Segment sealing runs partly on the evicting thread (re-verified)
 
-`SegmentSealer.onEviction` is invoked directly from `OffHeapRingBuffer.notifyAndEvict` (`OffHeapRingBuffer.java:470-478` → `SegmentSealer.java:28`). The call to `SegmentSink.seal` therefore executes on the append thread that triggered the eviction. If the configured sink is slow (network storage, busy database), a hot append can be delayed until the seal completes. This is a real risk surface worth noting; there is no built-in async offloading inside the sealer.
+`OffHeapRingBuffer.notifyAndEvict` calls `SegmentSealer.onEviction` on the thread that triggered eviction. That thread builds and serialises the segment and calls `StorageSegmentSink.seal`. The node's sink neither compresses nor encrypts (§2), so `seal` goes straight to `putRef`. The sealer then **discards** the `Promise` returned by `sink.seal`, so it does not wait for the storage write `[mechanism: SegmentSealer.onEviction does not use the Promise from sink.seal]`. Any at-rest encryption happens below `putRef`, in the storage tier. Which thread runs it, and whether `putRef` blocks before returning its `Promise`, was not traced `[design intent — unverified]`. Segment serialisation therefore lands on the append path (**analytical**).
+
+A sink built with an encryptor (not the node's today) writes **plaintext** if encryption fails `[mechanism: StorageSegmentSink.encryptData falls back via .or(ProcessedData.unencrypted(data))]`. Both this fallback and the node's uncompressed, unencrypted sealing are tracked as #1261. They are latent, because blueprint validation rejects the `compression` and non-default `encryption-key-id` stream keys (#576; see `streaming-spec.md` header).
 
 ---
 
 ## 7. Governor Failover
 
-`GovernorFailoverHandler` is a sealed interface with a default implementation that delegates to `StreamPartitionRecovery`. The recovery path uses `WatermarkTracker` to find the most advanced replica watermark and replays sealed segments from that offset into a new ring buffer. The governor selection itself is determined by the cluster's DHT / task-group assignment (outside the stream module); the stream module inherits whatever the cluster decides.
+*Carried over from 2026-04-11; not re-verified at `ccba0dba5`.*
 
-What this means in practice:
-- Detection speed is governed by the cluster's failure detector (SWIM). That number is an aether-wide property, not a streams-specific one.
-- Replay cost is proportional to the number of events between the best replica watermark and the current head, read from the configured cold tier. No quantitative replay rate exists in this repository.
-- Events that were accepted by the old governor but never replicated (when `minSyncReplicas = 0`) are a potential data-loss window. `minSyncReplicas > 0` trades latency for a tighter bound on that window.
+`GovernorFailoverHandler` delegates to `StreamPartitionRecovery`, which uses `WatermarkTracker` to find the most advanced replica. Owner selection is decided outside the stream module.
+
+- Detection speed is governed by the cluster's failure detector (SWIM), an aether-wide property.
+- Replay cost is proportional to the events between the best replica watermark and the head. No replay rate has been measured.
+- With `min-sync-replicas ≤ 1`, events acked by the old owner but not yet replicated are a loss window if that owner's disk is also lost; its local WAL covers a process crash with the disk intact `[design intent — unverified]`.
 
 ---
 
 ## 8. Compression & Encryption
 
-- **Compression** is opt-in per stream and implemented at the segment sink level. The codecs live in `integrations/storage/`: `Lz4Codec`, `ZstdCodec`, `NoOpCodec`; `Compression` is a closed enum `{NONE, LZ4, ZSTD}` (`Compression.java:4-14`). Hot-tier events are never compressed — compression only affects sealed segments going to the cold tier.
-- **Encryption** is opt-in per sink. `StorageSegmentSink` encrypts after compression using an injected `ContentEncryptor`; `SegmentReader` reverses this with the IV and length prefix embedded in the segment bytes. The cipher parameter string in `SegmentReader.java:118` is `"AES/GCM/NoPadding"`. Keys and key management are outside the stream module.
+*Carried over; not re-verified except as noted.* The node's sink uses `CompressionCodec.NONE` and no encryptor (re-verified, §2). Compression is implemented at the segment sink (`Compression` enum `{NONE, LZ4, ZSTD}` in `integrations/storage/`); hot-tier events are never compressed. Encryption is opt-in per sink via `StorageSegmentSink`; `SegmentReader` uses `"AES/GCM/NoPadding"`. Key management is outside the stream module. Note that `streaming-spec.md` records the `compression` stream key as unwired and rejected by blueprint validation (#576).
 
 ---
 
 ## 9. Consumer Group Coordination
 
-`ConsumerGroupCoordinator` is a sealed interface with a `DefaultConsumerGroupCoordinator` backed by the cluster's consensus KV store (`ClusterNode<KVCommand<AetherKey>>`). Membership and assignment live under KV keys; on join/leave, the coordinator recomputes partition assignment for the group and writes the new assignment back through KV commands (`ConsumerGroupCoordinator.java:105-171`). Rebalancing is round-based on member lists rather than per-partition streaming.
-
-Design properties:
-- Assignment state is reconstructible from KV at any time.
-- Coordinator is dormant on non-leader nodes and active on the leader (standard aether leader-scoped pattern).
-- Failure and recovery of the coordinator inherit the cluster's leader re-election semantics.
+*Carried over; not re-verified.* `ConsumerGroupCoordinator` is backed by the consensus KV store. Membership and assignment live under KV keys; the coordinator recomputes assignment on join/leave. It is active on the leader and dormant elsewhere, and inherits leader re-election semantics.
 
 ---
 
-## 10. Performance Characteristics (qualitative)
+## 10. Performance Characteristics (qualitative; re-verified at `ccba0dba5`)
 
-No benchmarks for aether-stream exist in this repository at the time of writing (verified by searching for `*Benchmark*`, `*Perf*`, and JMH harnesses under `aether/` — none found). This section describes **design properties** only. Any numeric comparison to Kafka or other systems requires measurements that do not yet exist.
+No benchmarks for `aether-stream` exist in the repository. This section describes **design properties** only. No comparison with Kafka or any other system is supported by this document.
 
-### What the design is optimised for
+### What the design avoids
 
-- **Avoiding the network in the common case.** Co-located publish is a single in-process call plus an off-heap write; remote publish is one QUIC `ProtocolMessage` rather than an HTTP request.
-- **Avoiding allocation in the consumer fast path.** `readSlice` returns a `MemorySegment` directly into the ring buffer arena when the event does not wrap the circular data region.
-- **Amortising replication cost.** `ReplicationBatcher` coalesces up to 100 events / 1 ms before sending, reducing per-event QUIC frame overhead on the wire and governor CPU per send.
-- **Keeping hot reads off disk.** Retention on the ring buffer is tuneable; tier-aware retention keeps already-sealed events around for rewind without hitting the cold tier.
-- **Mixed-consistency from the same API.** A single `StreamPublisher<T>` exposes both EVENTUAL and STRONG through a configuration flag, with the STRONG path routed through Rabia consensus inside the node.
+- **The network, when producer and owner share a node.** Owner-local publish is an in-process call, an off-heap copy and a WAL write; remote publish is one QUIC `ProtocolMessage`.
+- **Disk reads for recent events.** Hot reads are served from the ring; tier-aware retention keeps sealed events available for rewind.
+
+### What the design does *not* avoid
+
+- **Per-event replication messages.** The production manager sends one `ReplicateEvents` per event; `ReplicationBatcher` is not wired (§5.1).
+- **Copies on delivery.** Three `byte[]` copies with a local ring, about eight on a forwarded read, plus a decode → re-encode → decode round trip per consumed event (§4.3).
+- **An fsync per durable publish.** Every acked owner publish on a WAL-backed node waits for a `force(false)` covering its record. Group commit amortises that only across concurrent appenders to the same partition (§5.3).
 
 ### Known latency cliffs and risk surfaces
 
-- **Synchronous segment sealing** blocks the append thread during eviction. Slow sinks (remote object storage, busy PostgreSQL) will backpressure publishes.
-- **Cold-tier reads** replay sealed segments and are dramatically slower than hot reads (disk / PostgreSQL vs. off-heap). There is no production benchmark for the size of the step.
-- **Read-preference cross-node reads are not yet implemented.** Setting `NEAREST` or `ANY_REPLICA` selects a replica logically but still serves from the local partition. Treat as a future optimisation, not a current property.
-- **STRONG throughput is proposal-bound.** Each event becomes one consensus proposal at the publisher layer; any amortisation depends on Rabia's internal behaviour, which lives outside the stream module.
-- **Index overhead on small events.** The 24-byte index entry is a non-trivial fraction of the effective footprint for sub-kilobyte payloads and should be accounted for when sizing `dataRegionSize`.
-
-### Known structural gaps vs. general-purpose streaming systems
-
-- Log compaction, CDC, consumer lag autoscaling, full metrics, and cross-cluster replication are not in this release (see §1 "Explicitly not implemented").
-- JVM-only client surface.
-- No external schema registry, connector framework, or cross-language client ecosystem.
+- **Per-partition serial fsync** on the owner for batched publishes and on replicas for every record (§5.3; #1244, #1245).
+- **Visibility before durability**: consumers can act on events whose publish later fails (§3.1; #1235).
+- **Segment build and serialisation on the evicting thread** (§6.3).
+- **Cold-tier reads** replay sealed segments. The size of the step has not been measured.
+- **Index overhead on small events** — 24 bytes per event (**code constant**).
+- **STRONG** is unavailable at `ccba0dba5` (§3.3).
 
 ---
 
 ## 11. Open Questions / Unmeasured
 
-The following would require a benchmark harness (not present) to make any quantitative statement:
+Each item needs a benchmark harness, which does not exist:
 
-1. **End-to-end co-located publish latency** for realistic event sizes and serializers.
-2. **EVENTUAL publish throughput per partition** on the current `OffHeapRingBuffer` implementation, including index-overhead effects.
-3. **Remote publish (QUIC forward) round-trip latency** in the current transport and the overhead of the `PublishForward` / `PublishForwardResponse` codec path.
-4. **Push-path consumer delivery latency** (append → listener → callback) including the cost of notification under load.
-5. **Replication batcher effectiveness** under bursty producer patterns (actual flush sizes, CPU cost).
-6. **Sync replication latency distribution** as a function of `minSyncReplicas` and cluster size.
-7. **Governor failover recovery time**, broken into detection, watermark resolution, and segment replay.
-8. **STRONG publish latency and throughput** — both directly (per-event Rabia proposal) and for `publishBatchStrong`, which currently fans out `n` independent proposals rather than coalescing them.
-9. **Cold-tier read step change** between hot buffer reads and sealed-segment reads, for object-storage and PostgreSQL sinks.
-10. **Impact of synchronous segment sealing** on append latency when the cold sink is slow or temporarily unavailable.
-11. **Compression ratio and CPU cost** of LZ4 vs. ZSTD on representative segment payloads.
+1. Owner-local publish latency, split into ring append, WAL fsync, and (for `min-sync-replicas ≥ 2`) replication wait.
+2. EVENTUAL publish throughput per partition, single publisher and concurrent publishers (group-commit effectiveness).
+3. Replica durable throughput per partition under the group-commit barrier (#1244): fsyncs per received batch and per backfill run, and how far concurrent single-record batches share one force.
+4. Remote publish (QUIC forward) round-trip latency.
+5. Push-path delivery latency (append → listener → callback), and the cost of the three delivery copies plus the re-encode.
+6. Replication message rate and owner CPU per event with the unbatched manager, and the effect of wiring `ReplicationBatcher`.
+7. Owner failover recovery time: detection, watermark resolution, replay.
+8. Cold-tier read step, and the cost of synchronous segment build on append latency.
+9. Compression ratio and CPU cost of LZ4 vs ZSTD on representative segments.
 
-Any performance comparison against other streaming systems should be deferred until the above are measured on this codebase; the architecture supports several claims that are plausible but not currently verifiable from source alone.
+### Benchmark acceptance — required before any figure here is labelled (measured)
+
+A throughput or latency figure is admissible only if the same run also checks correctness, so that a faster result cannot hide dropped or overlapping work:
+
+- **Unique offsets.** Every acked publish returned an offset, and no offset was returned twice within a partition.
+- **Payload integrity.** Every consumed event's bytes equal the bytes published at that offset (e.g. a per-event checksum carried in the payload).
+- **Acknowledged-write survival.** After the run, including any injected crash or restart, every acked event is readable at its acked offset. For `min-sync-replicas ≥ 2`, this must hold after losing the owner.
+- **Bounded backlog.** Consumer lag and ring occupancy stay bounded over the measurement window. A run whose backlog grows without bound is measuring the buffer, not the system.
+
+The report must also state the machine, the stream configuration (`partitions`, `replicas`, `min-sync-replicas`, WAL on/off), the commit SHA, and the sample size.
 
 ---
 
@@ -247,14 +295,13 @@ Any performance comparison against other streaming systems should be deferred un
 | Concern | Path |
 |---|---|
 | Ring buffer, append/read, listeners, retention | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/OffHeapRingBuffer.java` |
-| Publisher (EVENTUAL / STRONG, local / remote, sync ack) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/DefaultStreamPublisher.java` |
-| Partition manager and read routing | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/StreamPartitionManager.java`, `PartitionedStreamAccess.java` |
-| Consumer runtime (push + adaptive poll) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/ConsumerRuntimeState.java`, `StreamConsumerRuntime.java` |
-| Consumer groups | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/consumer/ConsumerGroupCoordinator.java`, `ConsumerGroupRegistry.java` |
-| Transactional cursor | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/consumer/PgTransactionalCursorCommit.java` |
-| Cross-node forwarding | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/forward/` |
+| Publisher (EVENTUAL / STRONG, local / remote, min-sync await) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/DefaultStreamPublisher.java` |
+| Partition manager, WAL gate, replica WAL chain | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/StreamPartitionManager.java` |
+| Per-partition WAL (group commit, fail-stop, recovery) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/wal/PartitionWal.java` |
+| Read routing | `PartitionedStreamAccess.java`, `ForwardingReadRouter.java` |
+| Consumer runtime (push + adaptive poll) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/ConsumerRuntimeState.java` |
+| Declarative consumer delivery (decode, invoke) | `aether/node/src/main/java/org/pragmatica/aether/node/stream/StreamConsumerManager.java`, `aether/aether-invoke/src/main/java/org/pragmatica/aether/invoke/SliceInvoker.java` |
 | Replication | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/replication/` |
-| Segments (hot → cold seal, read, index) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/segment/` |
-| PostgreSQL cold tier | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/pg/` |
-| Consensus bridge (STRONG) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/consensus/` |
-| Compression codecs | `integrations/storage/src/main/java/org/pragmatica/storage/Compression.java`, `Lz4Codec.java`, `ZstdCodec.java` |
+| Segments (seal, read, index) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/segment/` |
+| Consensus bridge (STRONG, unwired) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/consensus/` |
+| WAL directory boot gate | `aether/node/src/main/java/org/pragmatica/aether/node/AetherNode.java` (`verifyWalBootable`, `decideWalAvailability`; degrade path `resolveStreamWalDir`) |

@@ -19,6 +19,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
@@ -132,11 +133,18 @@ public class AlertManager {
         this.clusterEventsSource = Option.option(source);
     }
 
-    /// Bind node configuration — currently the hysteresis margin (#969). Called from `AetherNode` after
+    /// Bind node configuration — the hysteresis margin (#969) and the durable-entity checkpoint-lag
+    /// default threshold (#1302). Called from `AetherNode` after
     /// [org.pragmatica.aether.config.AlertConfig#check] has passed at boot, so a margin that reaches
-    /// here has already been validated to lie in `[0.0, 1.0)`.
+    /// here has already been validated to lie in `[0.0, 1.0)` and the lag pair to be ordered.
+    ///
+    /// The lag threshold is installed only when the cluster holds none for the metric, so an
+    /// operator's `/api/v1/thresholds` value always wins over the configured default.
     public void bindAlertConfig(AlertConfig alertConfig) {
         this.hysteresisMargin = alertConfig.hysteresisMargin();
+        thresholds.putIfAbsent(EntityCheckpointDriver.CHECKPOINT_LAG_METRIC,
+                               new Threshold(alertConfig.entityCheckpointLag().warning(),
+                                             alertConfig.entityCheckpointLag().critical()));
     }
 
     /// Bind the forwarder that carries raised alerts OUT of this process (webhooks). Bound

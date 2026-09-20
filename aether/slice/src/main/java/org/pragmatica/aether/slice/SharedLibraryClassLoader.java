@@ -6,7 +6,6 @@ package org.pragmatica.aether.slice;
 
 import java.io.IOException;
 import java.net.URL;
-import java.net.URLClassLoader;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -25,7 +24,7 @@ import static org.pragmatica.lang.Option.option;
 
 
 @SuppressWarnings("JBCT-SEQ-01")
-public class SharedLibraryClassLoader extends URLClassLoader {
+public class SharedLibraryClassLoader extends UncachedResourceClassLoader {
     private static final Logger log = LoggerFactory.getLogger(SharedLibraryClassLoader.class);
 
     private final Map<String, Version> loadedArtifacts = new ConcurrentHashMap<>();

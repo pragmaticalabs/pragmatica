@@ -11,8 +11,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
@@ -51,6 +53,19 @@ public interface StreamForwardClient {
                                                   int maxEvents,
                                                   ReadPreference preference) {
         return readRemote(replicaId, streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// #1235: forward a REPLICATION read — a replica catching up, or a new owner pulling from a survivor —
+    /// which the serving node answers up to its APPENDED head instead of its visible position. The default
+    /// forwards plainly; it matters only on the production transport ({@link DefaultStreamForwardClient}),
+    /// which stamps `catchup` into the {@link ReadForward} message. Test fakes and {@link #NOOP} inherit the
+    /// plain forward.
+    default Promise<ReadForwardResult> readRemoteCatchup(NodeId sourceId,
+                                                         String streamName,
+                                                         int partition,
+                                                         long fromOffset,
+                                                         int maxEvents) {
+        return readRemote(sourceId, streamName, partition, fromOffset, maxEvents);
     }
 
     @MessageReceiver
@@ -205,30 +220,51 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                                  long fromOffset,
                                                  int maxEvents,
                                                  ReadPreference preference) {
+        return sendRead(replicaId,
+                        readForward(selfNodeId,
+                                    UUID.randomUUID().toString(),
+                                    streamName,
+                                    partition,
+                                    fromOffset,
+                                    maxEvents,
+                                    preference == ReadPreference.LINEARIZABLE),
+                        preference.name());
+    }
+
+    @Override
+    public Promise<ReadForwardResult> readRemoteCatchup(NodeId sourceId,
+                                                        String streamName,
+                                                        int partition,
+                                                        long fromOffset,
+                                                        int maxEvents) {
+        return sendRead(sourceId,
+                        readForward(selfNodeId,
+                                    UUID.randomUUID().toString(),
+                                    streamName,
+                                    partition,
+                                    fromOffset,
+                                    maxEvents,
+                                    false,
+                                    true),
+                        "CATCHUP");
+    }
+
+    private Promise<ReadForwardResult> sendRead(NodeId target, ReadForward message, String readClass) {
         metrics.recordAttempt();
-        var correlationId = UUID.randomUUID().toString();
         Promise<ReadForwardResult> promise = Promise.promise();
 
-        pendingReads.put(correlationId, promise);
-        SharedScheduler.schedule(() -> timeoutRead(correlationId),
+        pendingReads.put(message.correlationId(), promise);
+        SharedScheduler.schedule(() -> timeoutRead(message.correlationId()),
                                  Deadline.current().bounded(readTimeout));
-        var message = readForward(selfNodeId,
-                                  correlationId,
-                                  streamName,
-                                  partition,
-                                  fromOffset,
-                                  maxEvents,
-                                  preference == ReadPreference.LINEARIZABLE);
-
-        transport.send(replicaId, message);
+        transport.send(target, message);
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
-                  replicaId,
-                  streamName,
-                  partition,
-                  fromOffset,
-                  maxEvents,
-                  correlationId,
-                  preference);
+                  target,
+                  message.streamName(),
+                  message.partition(),
+                  message.fromOffset(),
+                  message.maxEvents(),
+                  message.correlationId(),
+                  readClass);
 
         return promise;
     }
@@ -257,11 +293,16 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
 
     /// Rebuild the typed forward-publish cause from the wire response, preserving the owner's
     /// retryable/permanent classification (write-forward race fix): a `retryable` response becomes
-    /// {@link StreamForwardError.RemotePublishRetryable} so the forwarder bounded-retries, otherwise a
-    /// permanent {@link StreamForwardError.RemotePublishFailed}.
-    private static StreamForwardError publishFailureCause(PublishForwardResponse response) {
-        return response.retryable()
-               ? new StreamForwardError.RemotePublishRetryable(response.errorMessage())
+    /// {@link StreamForwardError.RemotePublishRetryable} so the forwarder bounded-retries, an
+    /// `outcomeUnknown` response (#1236 — the owner appended, its barrier did not confirm) becomes
+    /// [PublishOutcomeUnknown], otherwise a permanent {@link StreamForwardError.RemotePublishFailed}.
+    private static Cause publishFailureCause(PublishForwardResponse response) {
+        if (response.retryable()) {
+            return new StreamForwardError.RemotePublishRetryable(response.errorMessage());
+        }
+
+        return response.outcomeUnknown()
+               ? PublishOutcomeUnknown.FACTORY.apply(new StreamForwardError.RemotePublishFailed(response.errorMessage()))
                : new StreamForwardError.RemotePublishFailed(response.errorMessage());
     }
 
@@ -274,8 +315,10 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         }
     }
 
+    /// #1236: the forward was SENT, so the owner may have appended it before the response was lost or
+    /// late — a publish-forward timeout is an unknown outcome, never a clean failure.
     private void timeoutRequest(String correlationId) {
-        option(pendingRequests.remove(correlationId)).onPresent(promise -> promise.resolve(FORWARD_TIMEOUT.result()));
+        option(pendingRequests.remove(correlationId)).onPresent(promise -> promise.resolve(PublishOutcomeUnknown.FACTORY.apply(FORWARD_TIMEOUT).result()));
     }
 
     private void timeoutRead(String correlationId) {
