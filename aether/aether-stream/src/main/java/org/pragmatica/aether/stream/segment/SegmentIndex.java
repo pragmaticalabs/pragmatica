@@ -97,10 +97,12 @@ public final class SegmentIndex {
 
     /// The CONTIGUOUS sealed watermark for `(streamName, partition)`: the highest offset at or below which
     /// EVERY offset has been durably sealed into a segment (lowest unsealed offset - 1), or `-1` when offset
-    /// 0 is not sealed. It bounds WAL truncation (records at or below it are discarded) and WAL replay on
-    /// partition recovery (the recovered ring skips records at or below it, served by the tiered reader), so
-    /// it must never pass a hole: until #1234 it was the MAXIMUM sealed `endOffset`, and a later successful
-    /// seal licensed truncating the WAL past a segment that had failed to seal — permanent silent loss.
+    /// 0 is not sealed. It bounds WAL replay on partition recovery (the recovered ring skips records at or
+    /// below it, served by the tiered reader) and — computed from the refs in the metadata snapshot ON DISK,
+    /// not from this live index (#1345, [org.pragmatica.aether.stream.DurableSealedOffsetSource]) — WAL
+    /// truncation, so it must never pass a hole: until #1234 it was the MAXIMUM sealed `endOffset`, and a
+    /// later successful seal licensed truncating the WAL past a segment that had failed to seal — permanent
+    /// silent loss.
     ///
     /// Two properties callers rely on:
     ///   - **Monotonic.** Retention reclaiming a sealed segment ([#removeSegment]) does not un-seal it. A
