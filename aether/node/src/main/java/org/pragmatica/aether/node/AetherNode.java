@@ -914,7 +914,7 @@ public interface AetherNode extends ManageableNode {
     ///
     /// An UNWRITABLE dir is a BOOT ERROR by default (#634 item 2). The old behaviour — one startup WARN,
     /// then every publish acks with no fsync — silently converted "durable entity" into "in-memory
-    /// entity": the ack path (`durablyLog`) degrades to `success(offset)` when the WAL is absent, and
+    /// entity": the ack path (`awaitDurable`) passes an already-resolved barrier when the WAL is absent, and
     /// nothing downstream can tell. A node that cannot honour the durability its streams declare must
     /// say so at the moment an operator is looking at it, not in a log line nobody reads back.
     ///
