@@ -40,13 +40,12 @@ import static org.pragmatica.lang.Result.unitResult;
 /// against the tail AFTER copying ([#retainedAfterCopy]); the writer publishes an advanced tail with a
 /// store-store fence before overwriting the freed slot ([#evictOldest]) and a new head with a release
 /// fence after the slot's stores ([#updateHeaderAfterAppend]). That protocol is sound for ONE appender
-/// per ring at a time: two concurrent `append`s both read the same tail in [#countEvictionsForSpace],
-/// both store `tail + 1`, one eviction is lost, and the second write lands on a slot the tail still
-/// claims — a torn read the post-copy check cannot see. Nothing in `aether-stream` enforces a single
-/// appender: `StreamPartitionManager.appendToPartition` takes no lock, and concurrent `publishLocal`
-/// callers (request threads) or `appendRecovered` (the replication receive path) reach `append` together.
-/// `[unverified: single writer — no serialising mechanism was found to cite; whether production ever runs
-/// two appenders against one partition concurrently was not traced through every caller]`.
+/// per ring at a time: two concurrent `append`s would both read the same tail in
+/// [#countEvictionsForSpace], both store `tail + 1`, lose one eviction, and land the second write on a
+/// slot the tail still claims — a torn read the post-copy check cannot see. The single appender is
+/// `appendLock` (#1258): every header-writing path — `append`, `appendOrdered`, `appendBatch`,
+/// `seedHead` and the retention sweeps via [#guardedSweep] — runs inside `synchronized (appendLock)`,
+/// and `StreamPartitionManager.appendToPartition` reaches the ring only through `appendOrdered`.
 public final class OffHeapRingBuffer implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(OffHeapRingBuffer.class);
     /// Empty-ring encoding reported when a native read is refused (#999): allocation seeds
