@@ -135,6 +135,51 @@ class ConsumerRuntimeCheckpointPredecessorRaceTest {
         }
     }
 
+    /// rev1370 NIT 2 (adopted): the two tests above detach through `unsubscribe()`, which cancels FIRST and then
+    /// reads the slot. `close()` orders it the other way — it sets `closed`, issues every consumer's flush in
+    /// `awaitFinalCursorCommits` (reading the slot), and cancels only afterwards. The same slot-before-check
+    /// ordering must cover that path: the flush reads the pending slot and waits, and `close()` returns once
+    /// both commits settle. The closer runs on its own thread because `close()` blocks on the flush.
+    @Test
+    void closeFlush_arrivingWhileThePeriodicCommitIsBeingIssued_waitsForThatCommit() throws InterruptedException {
+        var commits = new AtomicInteger();
+        Promise<CommitOutcome> heldA = Promise.promise();
+        var runtime = (ConsumerRuntimeState) streamConsumerRuntime(manager,
+                                                                   DeadLetterHandler.deadLetterHandler(),
+                                                                   holdingFirst(commits, heldA));
+        var parkedInWindow = new CountDownLatch(1);
+        var closing = new CountDownLatch(1);
+        var closer = new Thread(runtime::close, "s1355-closer");
+
+        runtime.checkpointIssueProbe(parkFirstIssueAt(CheckpointIssuePoint.BEFORE_STORE_CALL, parkedInWindow, closing));
+        try {
+            runtime.subscribe("orders", 0, config(), (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            assertThat(parkedInWindow.await(5, TimeUnit.SECONDS)).as("the periodic commit's issuing thread parked before the store call")
+                      .isTrue();
+            assertThat(commits.get()).as("nothing has reached the store while the issue is parked").isZero();
+            closer.start();
+            Thread.sleep(300);
+            assertThat(commits.get()).as("close()'s flush read the pending slot and waits; it must not be issued beside the parked periodic commit")
+                      .isZero();
+            closing.countDown();
+            awaitCount(commits::get, 1);
+            Thread.sleep(200);
+            assertThat(commits.get()).as("commit A (periodic) is the only commit while it is held").isEqualTo(1);
+            heldA.succeed(CommitOutcome.persisted());
+            awaitCount(commits::get, 2);
+            assertThat(commits.get()).as("B (close flush) is issued once A settles").isEqualTo(2);
+            closer.join(TimeUnit.SECONDS.toMillis(6));
+            assertThat(closer.isAlive()).as("close() returned once both commits settled, within the shutdown bound")
+                      .isFalse();
+        } finally {
+            heldA.succeed(CommitOutcome.persisted());
+            closing.countDown();
+            runtime.close();
+        }
+    }
+
     /// The store hands the FIRST commit `held` and settles every later one at once, so the test decides when
     /// the periodic commit completes.
     private static ConsumerCursorStore holdingFirst(AtomicInteger commits, Promise<CommitOutcome> held) {

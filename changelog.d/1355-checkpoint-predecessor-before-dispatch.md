@@ -18,6 +18,10 @@
   check(not cancelled) → `cancel()` → flush reads the settled slot → the checkpoint is issued anyway
   (CTO ruling 2026-09-20: in scope). [mechanism: slot assigned before `closed`/`isCancelled()` are read;
   pinned by `ConsumerRuntimeCheckpointPredecessorRaceTest.detachFlush_arrivingBeforeTheCancellationCheck_isIssuedAsSoonAsTheCheckpointBails`]
+- `close()` orders detach the other way round — flush first (`awaitFinalCursorCommits`), cancel after — and the
+  same ordering covers it: its flush reads the pending slot and waits, and `close()` returns once both commits
+  settle. [verified: `ConsumerRuntimeCheckpointPredecessorRaceTest.closeFlush_arrivingWhileThePeriodicCommitIsBeingIssued_waitsForThatCommit`,
+  red under the original ordering]
 - `ConsumerRuntimeState` gains a package-private test seam, `checkpointIssueProbe`, run at two named
   points of `issueCheckpoint` (`SLOT_ASSIGNED`, `BEFORE_STORE_CALL`); production never sets it. The tests
   park the issuing thread there and detach the consumer from the test thread, so each interleaving is
@@ -26,6 +30,12 @@
   — red on the unmodified base with the defect's own signature (`expected: 1 but was: 2`), and red again
   under each of seven mutations: slot after the store call, slot after the check, bail path leaving the
   slot unsettled, flush ignoring the slot, slot never resolved, either probe point unwired]
+- [unverified — recorded, not fixed (rev1370 NIT 1): between `state.periodicCommit(periodic)` and
+  `.withResult(periodic::resolve)` there is no exceptional-exit settlement of the slot. Nothing in that span can
+  throw today (`Result.lift` catches `Throwable`; the timeout scheduler is a JVM-lifetime daemon pool, never
+  shut down; the probe is a no-op in production), so it is unreachable. If throwing code is ever put there, a
+  never-settled slot would leave an interactive `unsubscribe` flush unissued — `periodic.fail(...)` in a catch is
+  the cure.]
 - [unverified: the `withResult` (inline) vs `onResult` (asynchronous event) choice for resolving the
   slot is not pinned by a test — both orderings pass the suite; inline was chosen so the slot never lags
   the commit it stands for.]
