@@ -1031,6 +1031,27 @@ class StreamConsumerManagerTest {
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
+        /// rev1272 F7 follow-up: the "not started, retrying its cursor fetch" state reaches the
+        /// per-partition status the declarative-consumers route renders.
+        @Test
+        void statuses_carryAwaitingCursorFetch_fromTheSnapshot() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.reconcile();
+            runtime.awaitingCursorFetch(true);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                     .satisfies(cursor -> assertThat(cursor.awaitingCursorFetch()).isTrue()));
+            runtime.awaitingCursorFetch(false);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                     .satisfies(cursor -> assertThat(cursor.awaitingCursorFetch()).isFalse()));
+        }
+
         @Test
         void statuses_areEmpty_whenNothingDeclared() {
             assertThat(manager().statuses()).isEmpty();
@@ -1124,9 +1145,14 @@ class StreamConsumerManagerTest {
 
         private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
         private int subscribeCalls;
+        private volatile boolean awaitingCursorFetch;
         // Runs on the unsubscribing thread after each unsubscribe — lets a test trigger a pass from INSIDE
         // the stop sweep, while that thread holds the pass lock. Inert by default.
         private volatile Runnable afterUnsubscribe = () -> {};
+
+        void awaitingCursorFetch(boolean awaiting) {
+            awaitingCursorFetch = awaiting;
+        }
 
         List<Integer> subscribedPartitions() {
             return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
@@ -1193,7 +1219,8 @@ class StreamConsumerManagerTest {
                                                                        0L,
                                                                        false,
                                                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
-                                                                       Option.none()))
+                                                                       Option.none(),
+                                                                       awaitingCursorFetch))
                                 .toList();
         }
 
@@ -1435,6 +1462,93 @@ class StreamConsumerManagerTest {
         private static <T> Promise<Unit> record(AtomicReference<T> seen, T value) {
             seen.set(value);
             return Promise.unitPromise();
+        }
+
+        /// #1238: the runtime runs ONE serial delivery loop per (group, partition), so a handler that
+        /// never resolves must not hold that partition forever — the declarative path bounds each
+        /// invocation, and the timeout surfaces as a delivery failure for the error strategy to handle.
+        /// The bound is shortened through the constructor seam; production uses
+        /// [StreamConsumerManager.ManagerState#HANDLER_TIMEOUT].
+        @Test
+        void delivery_failsWithTimeout_whenTheSliceHandlerNeverResolves() throws InterruptedException {
+            subscribeTopic(ARTIFACT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            // The durable-topic path invokes through invokeLocalWithContext (#1295); the never-resolving
+            // promise is the hung handler this pin bounds.
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            new StreamConsumerManager.ManagerState(registry,
+                                                   capturingRuntime,
+                                                   invoker,
+                                                   invocationHandler,
+                                                   topicAwareCodec,
+                                                   ownership,
+                                                   placement,
+                                                   SELF,
+                                                   TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
+                                                                                                           name -> ownership.partitionCount(name)
+                                                                                                                            .isPresent()),
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis()).reconcile();
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
+                                                                                     1234L,
+                                                                                     sliceCodec.encode(new AppEvent("order-42")));
+            var settled = new java.util.concurrent.CountDownLatch(1);
+            var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
+
+            capturingRuntime.callbackFor(TOPIC_STREAM, 0)
+                            .onEvent(0L,
+                                     topicAwareCodec.encode(envelope),
+                                     1234L)
+                            .onResult(result -> {
+                                          outcome.set(result);
+                                          settled.countDown();
+                                      });
+            assertThat(settled.await(2, java.util.concurrent.TimeUnit.SECONDS)).describedAs("a hung handler must end its delivery, not hold the partition's loop forever")
+                      .isTrue();
+            assertThat(outcome.get().isFailure()).describedAs("a timed-out invocation is a delivery failure")
+                      .isTrue();
+        }
+
+        /// rev1285d F2: the declarative `[streams.X]` twin of the pin above. That pin moved to
+        /// `invokeLocalWithContext` with #1295, which left `invokeConsumer`'s own `.timeout(handlerTimeout)`
+        /// on the `invokeLocal` path unpinned — removing it kept all 1,533 node tests green. Same seam,
+        /// same 200ms bound, the never-resolving promise stubbed on `invokeLocal` instead.
+        @Test
+        void delivery_failsWithTimeout_whenTheDeclarativeSliceHandlerNeverResolves() throws InterruptedException {
+            declare(APP_EVENT_TYPE, false);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            new StreamConsumerManager.ManagerState(registry,
+                                                   capturingRuntime,
+                                                   invoker,
+                                                   invocationHandler,
+                                                   topicAwareCodec,
+                                                   ownership,
+                                                   placement,
+                                                   SELF,
+                                                   TopicGroupDeclarationSource.none(),
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis()).reconcile();
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var settled = new java.util.concurrent.CountDownLatch(1);
+            var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
+
+            assertThat(capturingRuntime.callbackFor(STREAM, 0)).describedAs("control: the declarative consumer attached to orders[0]")
+                      .isNotNull();
+            capturingRuntime.callbackFor(STREAM, 0)
+                            .onEvent(0L, sliceCodec.encode(new AppEvent("order-42")), 1234L)
+                            .onResult(result -> {
+                                          outcome.set(result);
+                                          settled.countDown();
+                                      });
+            assertThat(settled.await(2, java.util.concurrent.TimeUnit.SECONDS)).describedAs("a hung declarative handler must end its delivery, not hold the partition's loop forever")
+                      .isTrue();
+            assertThat(outcome.get().isFailure()).describedAs("a timed-out declarative invocation is a delivery failure")
+                      .isTrue();
+            verify(invoker).invokeLocal(any(), any(), any(), any());
         }
 
         private record DecodingBridge(SliceCodec codec) implements SliceBridge {

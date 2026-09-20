@@ -862,11 +862,13 @@ public sealed interface ManagementApiResponses {
     /// `committedOffset` is the next offset this consumer will read — one past the last delivered
     /// event. `lastCursorCommitFailure` (#654) is this partition's most recent cursor commit failure
     /// detail while the consumer stays attached, empty when its last commit succeeded — same
-    /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`.
+    /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`. `awaitingCursorFetch`: this
+    /// consumer has not started at all, because its cursor fetch keeps failing and is being retried.
     record DeclarativeConsumerPartition(int partition,
                                         long committedOffset,
                                         boolean stalled,
-                                        String lastCursorCommitFailure) {}
+                                        String lastCursorCommitFailure,
+                                        boolean awaitingCursorFetch) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
