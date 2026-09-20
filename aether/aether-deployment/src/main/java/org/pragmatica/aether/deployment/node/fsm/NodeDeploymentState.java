@@ -1161,7 +1161,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     result.add(new ReactiveManifestEntry(category, method, config, props, prefix));
                 }
             } catch (Exception e) {
-                log.debug("Could not read reactive manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read reactive manifest {}: {}", manifestPath, e.toString());
             }
         }
 
@@ -1460,7 +1460,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     }
                 }
             } catch (Exception e) {
-                log.debug("Could not read config update manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read config update manifest {}: {}", manifestPath, e.toString());
             }
         }
 
@@ -1845,7 +1845,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 appendRoleEntries(props, "stream.publisher.", "stream.publishers.count", "producer", sink);
                 appendRoleEntries(props, "stream.access.", "stream.access.count", "consumer", sink);
             } catch (Exception e) {
-                log.debug("Could not read stream role declarations from manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read stream role declarations from manifest {}: {}", manifestPath, e.toString());
             }
         }
 

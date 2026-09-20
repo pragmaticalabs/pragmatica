@@ -61,6 +61,13 @@ class UncachedResourceClassLoaderTest {
         assertSharedJarSurvivesLoaderClose(jar, new FrameworkClassLoader(new URL[]{jar}));
     }
 
+    @Test
+    void uncachedResourceClassLoader_closedAfterAResourceRead_leavesTheSharedJarUsable() throws IOException {
+        var jar = sliceJar("bare.jar");
+
+        assertSharedJarSurvivesLoaderClose(jar, new UncachedResourceClassLoader(new URL[]{jar}, PLATFORM));
+    }
+
     private static void assertSharedJarSurvivesLoaderClose(URL jar, URLClassLoader loader) throws IOException {
         var shared = sharedJarFile(jar);
 
