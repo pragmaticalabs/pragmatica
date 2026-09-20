@@ -26,6 +26,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
@@ -56,7 +57,7 @@ class BatchPublishOutcomeTest {
     @BeforeEach
     void setUp() {
         partitionManager = streamPartitionManager(Long.MAX_VALUE,
-                                                  (_, _, _) -> {},
+                                                  (_, _, _) -> Result.unitResult(),
                                                   barrierFailsOnPartitionOne());
         partitionManager.createStream(config()).onFailureRun(Assertions::fail);
     }
@@ -233,6 +234,20 @@ class BatchPublishOutcomeTest {
                        ? BARRIER_FAILED.promise()
                        : Promise.unitPromise();
             }
+
+            /// #1235: acknowledgement is decided by the barrier above, so every appended offset counts as acked.
+            @Override
+            public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            @Override
+            public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            @Override
+            public void observeAcks(AckObserver observer) {}
         };
     }
 
