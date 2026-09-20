@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -178,6 +179,10 @@ class DurableTopicDeliveryForgeTest {
     /// How long a count must stay put before it is read as final. Longer than the whole retry budget
     /// (100+200+400+800ms of backoff), so a late duplicate or a resumed retry lands inside it.
     private static final Duration SETTLE = Duration.ofSeconds(10);
+
+    /// Cadence of [#observeAppendBeforeAttach]: each sample is one management GET per node for the head
+    /// and, once the head has moved, one more per node for the attach count.
+    private static final Duration IN_FLIGHT_SAMPLE_INTERVAL = Duration.ofMillis(100);
 
     private static final Pattern ORDER_ENTRY = Pattern.compile("\"orderId\"\\s*:\\s*\"([^\"]*)\"\\s*,\\s*\"sequence\"\\s*:\\s*(-?\\d+)");
     private static final Pattern FAILING_PAYLOADS = Pattern.compile("\"failingPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
@@ -693,11 +698,13 @@ class DurableTopicDeliveryForgeTest {
     /// The id becomes [#preAttachOrderId] — once, never overwritten — when it is definitely in the log
     /// before the attach:
     ///
+    ///  - an in-flight sample ([#observeAppendBeforeAttach]) saw the owner's head offset advance by
+    ///    EXACTLY one over the pre-attempt baseline while `attachedSubscriptions` read 0 on every node;
     ///  - the publish returned success and `attachedSubscriptions` then read 0 on every node; or
     ///  - the outcome came back unknown (the 5 s replication timeout, #1236: "the event may already be
-    ///    in the log") and the owner's head offset, read before and after the attempt, advanced by
-    ///    EXACTLY one, with `attachedSubscriptions` still 0 after that read. The outcome is then resolved
-    ///    by observation rather than excluded: the append is in the log at a known offset, and the attach
+    ///    in the log") and the head offset read after the call returned had advanced by exactly one,
+    ///    with `attachedSubscriptions` still 0 after that read. Either way the outcome is resolved by
+    ///    observation rather than excluded: the append is in the log at a known offset, and the attach
     ///    had not happened when the offset was read. Attempt 0 runs against a topic materialized at
     ///    deploy under a fresh `@TempDir`, so its baseline is 0 by construction even before the partition
     ///    has an owner to report one; later attempts use the previous read.
@@ -717,11 +724,18 @@ class DurableTopicDeliveryForgeTest {
         var attempt = warmupAttempts++;
         var id = WARMUP_ID + "-" + attempt;
         var headBefore = orderEventsHeadOffset().or(attempt == 0 ? 0L : -1L);
-        var response = httpPost(ports.getFirst(),
-                                "/api/durable-topic/publish-order",
-                                "{\"orderId\":\"" + id + "\",\"sequence\":0}");
+        var responseRef = new AtomicReference<>(ERROR_FALLBACK);
+        var port = ports.getFirst();
+        var publisher = Thread.ofVirtual()
+                              .start(() -> responseRef.set(httpPost(port,
+                                                                    "/api/durable-topic/publish-order",
+                                                                    "{\"orderId\":\"" + id + "\",\"sequence\":0}")));
+        var observedInFlight = observeAppendBeforeAttach(publisher, headBefore);
+        var response = responseRef.get();
         var forcedUnknown = attempt == 0 && Boolean.getBoolean(FORCE_UNKNOWN_FIRST_WARMUP);
         var definiteSuccess = !forcedUnknown && !response.contains("\"error\"") && response.contains("published");
+
+        observedInFlight.onPresent(sample -> establishPreAttachId(id, 0, sample));
 
         if (definiteSuccess) {
             attachedWhenWarmupSucceeded = attachedSubscriptionsClusterWide();
@@ -739,7 +753,7 @@ class DurableTopicDeliveryForgeTest {
         if (landedAlone) {
             establishPreAttachId(id,
                                  attachedAfterRead,
-                                 "its publish outcome was unknown (%s) and the owner's head offset advanced %d -> %d across the attempt".formatted(response,
+                                 "its publish outcome was unknown (%s) and the owner's head offset read %d -> %d after the call returned".formatted(response,
                                                                                                                                                        headBefore,
                                                                                                                                                        headAfter));
         }
@@ -748,15 +762,50 @@ class DurableTopicDeliveryForgeTest {
             return false;
         }
 
-        excludedWarmupIds.add(id + "(head " + headBefore + "->" + headAfter + ", attached " + attachedAfterRead + ")");
+        excludedWarmupIds.add(id + "(head " + headBefore + "->" + headAfter + ", attached " + attachedAfterRead + " after return; no in-flight sample saw the append before the attach)");
 
         return false;
+    }
+
+    /// While the publish call is in flight, samples the owner's head offset and then the cluster-wide
+    /// attach count, and returns the first sample in which the head had advanced by exactly one over
+    /// `headBefore` while no group was attached anywhere — the append observed before the attach,
+    /// with the reading order making the claim sound (attach state is read AFTER the head). A read
+    /// taken only after the call returns cannot place a 5 s timed-out append against an attach that
+    /// happened inside those 5 s (measured: head 0->1 and attachedSubscriptions=3 at return, attach 1.2 s
+    /// before the return). Sampling stops at the first such sample or when the call returns; empty when
+    /// neither happened.
+    private Option<String> observeAppendBeforeAttach(Thread publisher, long headBefore) {
+        var samples = 0;
+
+        while (publisher.isAlive()) {
+            samples++;
+            var head = orderEventsHeadOffset().or(-1L);
+
+            if (headBefore >= 0 && head == headBefore + 1) {
+                var attached = attachedSubscriptionsClusterWide();
+
+                if (attached == 0) {
+                    return Option.some("in-flight sample %d saw the owner's head offset at %d (was %d) with attachedSubscriptions=0 on every node".formatted(samples,
+                                                                                                                                                                 head,
+                                                                                                                                                                 headBefore));
+                }
+
+                return Option.none();
+            }
+
+            sleep(IN_FLIGHT_SAMPLE_INTERVAL);
+        }
+
+        return Option.none();
     }
 
     private void establishPreAttachId(String id, int attached, String how) {
         if (attached == 0 && preAttachOrderId.isEmpty()) {
             preAttachOrderId = Option.some(id);
-            preAttachEvidence = how + ", and attachedSubscriptions read 0 on every node afterwards";
+            preAttachEvidence = how + (how.startsWith("in-flight")
+                                       ? ""
+                                       : ", and attachedSubscriptions read 0 on every node afterwards");
         }
     }
 
