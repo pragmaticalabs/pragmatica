@@ -1151,8 +1151,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              attemptCount)).timeout(deadLetterAppendTimeout);
     }
 
+    /// #1333: the advance past a dead-lettered event is committed AT ONCE, not on the periodic cadence.
+    /// The committed cursor is the only signal that lets a rebuilding projection skip a replay offset
+    /// that never reached its fold; left to the 500ms/1000-event cadence, the skip would wait for the
+    /// NEXT delivery's advance — whose write the store refuses `Rebuilding` until then, so that event
+    /// burns its retry budget and is dead-lettered too: one extra DLQ entry per poison replay offset.
+    /// One consensus round per dead letter, bounded by the poison count (CTO ruling 3, 2026-09-20).
+    /// [#requestCheckpoint] coalesces with a periodic commit already in flight, so the two never overlap.
     private void completeDeadLetter(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         advanceCursor(key, state, event.offset());
+        requestCheckpoint(key, state);
         state.clearDeadLetterInFlight();
         resumeAfterDeadLetter(key, state);
     }
