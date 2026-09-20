@@ -373,7 +373,7 @@ public interface SystemTags {
         pin(table, 1128, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey");
         pin(table, 1129, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey");
         pin(table, 1130, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey");
-        pin(table, 1131, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionAssignmentKey");
+        pin(table, 1131, "org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey");
         pin(table, 1132, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey");
         pin(table, 1133, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey");
         pin(table, 1134, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey");
@@ -431,10 +431,8 @@ public interface SystemTags {
         pin(table, 1647, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
         pin(table, 1648, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
         pin(table, 1649, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue");
-        pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionAssignmentValue");
-        pin(table,
-            1651,
-            "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionAssignmentValue.PartitionAssignment");
+        pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue");
+        pin(table, 1651, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken");
         pin(table, 1652, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue");
         pin(table, 1653, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue");
         pin(table, 1654, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue");
