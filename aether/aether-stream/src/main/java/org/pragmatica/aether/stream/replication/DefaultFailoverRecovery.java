@@ -15,21 +15,27 @@ import static org.pragmatica.aether.stream.replication.FailoverRecovery.Recovery
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
 
 
-/// OBLIGATION (#1244 backfill-commit ruling, waived for failover paths by the CTO on 2026-09-19 because this
-/// class has no production caller): replica WAL frames carry no per-record fsync, so if this ever gains a caller, commit each
-/// recovered partition through the replica WAL barrier (`StreamPartitionManager::syncReplicated`) before
-/// counting it as recovered.
+/// #1244 backfill-commit ruling, applied to this failover path on 2026-09-20 (CTO ruling, #1235 × #1244):
+/// replica WAL frames carry no per-record fsync and a WAL-backed record becomes visible on this replica
+/// only at the barrier, so each recovered partition commits through the replica WAL barrier
+/// (`StreamPartitionManager::syncReplicated`) ONCE, after its last `appendRecoveredEvent` and before it
+/// counts as recovered — one fsync per partition per run, and the recovered records are visible here when
+/// the run completes instead of when the next live batch's barrier happens to cover them. A failed
+/// barrier fails the run: the events landed in RAM but were never made durable or visible here.
 final class DefaultFailoverRecovery implements FailoverRecovery {
     private final ReplicaRegistry registry;
     private final StreamPartitionRecovery partitionRecovery;
     private final CatchupTransport transport;
+    private final ReplicationReceiveHandler.ReplicaDurability durability;
 
     DefaultFailoverRecovery(ReplicaRegistry registry,
                             StreamPartitionRecovery partitionRecovery,
-                            CatchupTransport transport) {
+                            CatchupTransport transport,
+                            ReplicationReceiveHandler.ReplicaDurability durability) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
+        this.durability = durability;
     }
 
     @Override
@@ -66,7 +72,9 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
 
         return transport.requestCatchup(bestReplica.nodeId(),
                                         request)
-                        .map(response -> applyRecoveredEvents(streamName, partition, response));
+                        .map(response -> applyRecoveredEvents(streamName, partition, response))
+                        .flatMap(count -> durability.sync(streamName, partition)
+                                                    .map(_ -> count));
     }
 
     private long applyRecoveredEvents(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
