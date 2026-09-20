@@ -11,12 +11,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.parse.Number;
 
 import org.slf4j.Logger;
@@ -26,7 +28,6 @@ import static org.pragmatica.lang.io.FileOps.createDirectories;
 import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.list;
 import static org.pragmatica.lang.io.FileOps.readString;
-import static org.pragmatica.lang.io.FileOps.writeString;
 
 
 /// Default snapshot manager that writes text-format snapshots to local disk.
@@ -40,13 +41,23 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
     private final MetadataStore metadataStore;
     private final SnapshotConfig config;
+    private final BiFunction<Path, String, Result<Unit>> fileWriter;
     private final AtomicLong lastSnapshotEpoch = new AtomicLong();
     private final AtomicBoolean snapshotInProgress = new AtomicBoolean();
     private volatile long lastSnapshotTimestamp;
 
     DefaultSnapshotManager(MetadataStore metadataStore, SnapshotConfig config) {
+        this(metadataStore, config, FileOps::writeString);
+    }
+
+    /// Test seam: the file write, for a fixture that stops after N bytes (a disk that fills or a
+    /// process that dies mid-snapshot). Everything after the write is the production path.
+    DefaultSnapshotManager(MetadataStore metadataStore,
+                           SnapshotConfig config,
+                           BiFunction<Path, String, Result<Unit>> fileWriter) {
         this.metadataStore = metadataStore;
         this.config = config;
+        this.fileWriter = fileWriter;
         this.lastSnapshotTimestamp = System.currentTimeMillis();
     }
 
@@ -128,16 +139,16 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var filePath = config.snapshotPath().resolve(fileName);
         var content = serializeSnapshot(snapshot);
 
-        return writeString(filePath, content).mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())))
-                          .flatMap(_ -> updateLatestLink(filePath))
-                          .map(_ -> filePath);
+        return fileWriter.apply(filePath, content).mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())))
+                         .flatMap(_ -> updateLatestLink(filePath))
+                         .map(_ -> filePath);
     }
 
     private Result<Unit> updateLatestLink(Path snapshotFile) {
         var latestPath = config.snapshotPath().resolve(LATEST_LINK);
 
-        return writeString(latestPath,
-                           snapshotFile.getFileName().toString()).mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
+        return fileWriter.apply(latestPath,
+                                snapshotFile.getFileName().toString()).mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
     }
 
     // --- Disk read ---
