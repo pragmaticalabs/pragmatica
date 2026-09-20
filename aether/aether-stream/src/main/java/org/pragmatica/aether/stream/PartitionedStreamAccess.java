@@ -24,6 +24,7 @@ import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -37,6 +38,7 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
+import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"})
@@ -72,6 +74,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     private final Option<LinearizableBarrier> barrier;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
+    private final ForwardingReadRouter<StreamEvent<T>> readRouter;
 
     private PartitionedStreamAccess(StreamPartitionManager partitionManager,
                                     Serializer serializer,
@@ -114,7 +117,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
 
     /// #345 item 1e-c: full constructor adding the three `LINEARIZABLE` pipeline components — the
     /// committed-owner source, the ownership epoch high-water, and the no-op-round barrier — that the
-    /// typed read path threads into {@link #forwardingReadRouter()} so a `LINEARIZABLE` read runs the
+    /// typed read path threads into {@link #buildReadRouter()} so a `LINEARIZABLE` read runs the
     /// same owner-routed fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path. Every
     /// other overload delegates here with [Option#none] components (no behaviour change).
     private PartitionedStreamAccess(StreamPartitionManager partitionManager,
@@ -159,6 +162,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         this.barrier = barrier;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
+        this.readRouter = buildReadRouter();
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -302,7 +306,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         var cursorWriter = cursorStore.map(cs -> (CursorCheckpointWriter)(stream, group, partition, offset) -> cs.commit(group,
                                                                                                                          stream,
                                                                                                                          partition,
-                                                                                                                         offset))
+                                                                                                                         offset)
+                                                                                                                 .mapToUnit())
                                       .or(NOOP_WRITER);
 
         return new PartitionedStreamAccess<>(partitionManager,
@@ -593,12 +598,22 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// a steady-state single-node cluster is always its own owner, and dropping the write would be
     /// worse than landing it on the only node that can serve it; once placement is known, subsequent
     /// publishes route correctly. This mirrors the B3 owner-gate's bootstrap-window tolerance.
+    ///
+    /// **STRONG (#1262):** a stream declared `STRONG` is refused with `CONSENSUS_PATH_UNAVAILABLE` before
+    /// routing — no consensus path is wired, and writing it as EVENTUAL would silently weaken the declared
+    /// guarantee (see {@link StreamPartitionManager#ensureWritableConsistency}).
     @Override
     public Promise<Long> publish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
 
+        return partitionManager.ensureWritableConsistency(streamName)
+                               .async()
+                               .flatMap(_ -> routePublish(partition, bytes, timestamp));
+    }
+
+    private Promise<Long> routePublish(int partition, byte[] bytes, long timestamp) {
         return resolveOwner(partition).map(owner -> routeToOwner(owner, partition, bytes, timestamp))
                            .or(() -> publishLocal(partition, bytes, timestamp));
     }
@@ -642,23 +657,27 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// the in-sync set, so only the remaining peers are awaited. `awaitReplication` registers the
     /// pending ack against the already-fired replication (the manager seeds it from the registry to
     /// close the ack-before-register race). With `minSyncReplicas <= 1` it resolves on the local write
-    /// (0 = eventual, 1 = owner-only).
+    /// (0 = eventual, 1 = owner-only). A refusal because the committed owner is another node (the #1230
+    /// ownership-lag window) is redirected to that owner via {@link StreamForwardRetry#redirectNotOwner}.
     private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 1) {
-            return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                                   .async();
-        }
-        // #1236: floor before the append (a refusal is not in the log); after it, an unconfirmed
-        // barrier is an unknown outcome.
-        return partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
-                               .flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
-                               .async()
-                               .flatMap(offset -> partitionManager.awaitReplication(streamName,
-                                                                                    partition,
-                                                                                    offset,
-                                                                                    minSyncReplicas - 1)
-                                                                  .mapError(PublishOutcomeUnknown.FACTORY)
-                                                                  .map(_ -> offset));
+        // #1236: floor before the append (a refusal is not in the log), after the #1230 owner admission.
+        return partitionManager.publishLocalAtFloor(streamName, partition, bytes, timestamp, minSyncReplicas - 1)
+                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                  owner -> forwardClient.map(client -> forwardToOwner(client,
+                                                                                                                                      owner,
+                                                                                                                                      partition,
+                                                                                                                                      bytes,
+                                                                                                                                      timestamp))),
+                                     offset -> awaitMinSync(partition, offset));
+    }
+
+    /// #1236: after the append, an unconfirmed barrier is an unknown outcome.
+    private Promise<Long> awaitMinSync(int partition, long offset) {
+        return minSyncReplicas > 1
+               ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
+                                 .map(_ -> offset)
+               : Promise.success(offset);
     }
 
     @Override
@@ -742,7 +761,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     }
 
     private Promise<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
-        return forwardingReadRouter().route(streamName, partition, fromOffset, maxEvents);
+        return readRouter().route(streamName, partition, fromOffset, maxEvents);
     }
 
     /// Fix #3 (forward-read): build the shared forward-read core for this stream's typed reads. The
@@ -759,7 +778,11 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path (1e-a). With [Option#none]
     /// components the `LINEARIZABLE` arm degrades to the replica-routed read; the non-linearizable arms
     /// ignore all three.
-    private ForwardingReadRouter<StreamEvent<T>> forwardingReadRouter() {
+    ///
+    /// #1264: built ONCE, as the constructor's last step, from `final` fields only — not per partition
+    /// read. What is cached is the mechanism, never the answer: {@link #resolveOwner} runs inside the
+    /// router at route time, so an ownership change between two reads reaches the new owner.
+    private ForwardingReadRouter<StreamEvent<T>> buildReadRouter() {
         return ForwardingReadRouter.forwardingReadRouter(replicaRegistry,
                                                          selfNodeId,
                                                          forwardClient,
@@ -773,6 +796,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                          committedOwnerSource,
                                                          epochHighWater,
                                                          barrier);
+    }
+
+    ForwardingReadRouter<StreamEvent<T>> readRouter() {
+        return readRouter;
     }
 
     private List<StreamEvent<T>> decodeAll(List<RawEventDto> events, int partition) {
@@ -793,10 +820,24 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                             long fromOffset,
                                                             int maxEvents) {
         if (cause instanceof StreamError.CursorExpired expired) {
-            return readWithSegmentFallback(partition, fromOffset, maxEvents, expired.requestedOffset());
+            return readEvicted(partition, fromOffset, maxEvents, expired.requestedOffset());
         }
 
         return cause.promise();
+    }
+
+    /// An offset the ring no longer holds is IN FLIGHT while the segment sealer still retains it (#1234): its
+    /// seal has not landed, so it is in no segment either, and the caller must back off and re-read rather
+    /// than skip it. Asked BEFORE the cold read: the sink indexes a segment before the sealer lets it go, so
+    /// an offset not retained at this point is already findable in the index — there is no instant at which
+    /// it is in neither place.
+    private Promise<List<StreamEvent<T>>> readEvicted(int partition,
+                                                      long fromOffset,
+                                                      int maxEvents,
+                                                      long expiredOffset) {
+        return partitionManager.sealInFlight(streamName, partition, fromOffset)
+               ? new SegmentError.SealInFlight(streamName, partition, fromOffset).promise()
+               : readWithSegmentFallback(partition, fromOffset, maxEvents, expiredOffset);
     }
 
     private Promise<List<StreamEvent<T>>> readWithSegmentFallback(int partition,
@@ -819,28 +860,54 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                                long fromOffset,
                                                                int maxEvents) {
         return reader.read(streamName, partition, fromOffset, maxEvents)
-                     .map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
+                     .flatMap(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
     }
 
-    private List<StreamEvent<T>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
-                                                         int partition,
-                                                         long fromOffset,
-                                                         int maxEvents) {
+    /// Continue a cold read into the ring (#1234). With nothing sealed at `fromOffset` the ring is the only
+    /// remaining source, so its failure — `CursorExpired` for an offset held by neither tier — is returned
+    /// as-is: answering `[]` here stalled the consumer at that cursor forever. After a sealed prefix, a ring
+    /// failure is absorbed by FER (degrade forward, [#bufferReadFallback]): the sealed prefix is returned and
+    /// the next read, which starts right after it, reaches this method with nothing sealed and surfaces the
+    /// failure then — the consumer makes progress and still sees the error at the exact offset it occurs.
+    /// The one exception is a corrupted ring (#1247 review M2), which fails the read on either path.
+    private Promise<List<StreamEvent<T>>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
+                                                                  int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents) {
         var remaining = maxEvents - sealedEvents.size();
         var sealed = toStreamEvents(sealedEvents, partition);
 
         if (remaining <= 0) {
-            return sealed;
+            return Promise.success(sealed);
         }
 
-        var bufferStart = sealedEvents.isEmpty()
-                          ? fromOffset
-                          : sealedEvents.getLast().offset() + 1;
-        var bufferEvents = partitionManager.readLocal(streamName, partition, bufferStart, remaining)
-                                           .map(rawEvents -> toStreamEvents(rawEvents, partition))
-                                           .or(List.of());
+        if (sealedEvents.isEmpty()) {
+            return readBufferEvents(partition, fromOffset, remaining).async();
+        }
 
-        return List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList());
+        return readBufferEvents(partition,
+                                sealedEvents.getLast().offset() + 1,
+                                remaining).fold(this::bufferReadFallback, Result::success)
+                               .map(bufferEvents -> List.copyOf(Stream.concat(sealed.stream(),
+                                                                              bufferEvents.stream())
+                                                                      .toList()))
+                               .async();
+    }
+
+    private Result<List<StreamEvent<T>>> readBufferEvents(int partition, long fromOffset, int maxEvents) {
+        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+                               .map(rawEvents -> toStreamEvents(rawEvents, partition));
+    }
+
+    /// FER (degrade forward) for the ring tail after a segment fallback: any buffer failure except a
+    /// corrupted ring returns the sealed events alone — a short read the consumer continues from its next
+    /// offset, which is what this path always did. A corrupted ring is the exception (#1247 review M2): its
+    /// events cannot be trusted and "no buffer events" would silently truncate the read, so
+    /// [StreamError.RingIndexCorrupted] reaches the caller.
+    private Result<List<StreamEvent<T>>> bufferReadFallback(Cause cause) {
+        return cause instanceof StreamError.RingIndexCorrupted
+               ? cause.result()
+               : success(List.of());
     }
 
     private List<StreamEvent<T>> toStreamEvents(List<OffHeapRingBuffer.RawEvent> rawEvents, int partition) {

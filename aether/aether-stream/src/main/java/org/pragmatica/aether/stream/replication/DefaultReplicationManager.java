@@ -4,7 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -25,6 +28,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.NOT_ENOUGH_REPLICAS;
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.REPLICATION_TIMEOUT;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
@@ -36,6 +42,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 final class DefaultReplicationManager implements ReplicationManager {
+    private static final Logger log = LoggerFactory.getLogger(DefaultReplicationManager.class);
     private static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     private static final Runnable NO_OP = DefaultReplicationManager::noOp;
 
@@ -56,6 +63,7 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// Test probe (#1260). A `LongAdder`, not an `AtomicLong`: it is bumped per visited waiter on the ack
     /// hot path of every partition, and a single CAS'd counter would reintroduce cross-partition contention.
     private final LongAdder ackVisits = new LongAdder();
+    private volatile Option<AckObserver> ackObserver = none();
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
         this(governorId, registry, transport, none(), ALWAYS_PROMOTE);
@@ -127,19 +135,41 @@ final class DefaultReplicationManager implements ReplicationManager {
                                byte[] payload,
                                long timestamp,
                                Epoch ownerEpoch) {
-        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp, ownerEpoch))
+        // FER: `replicateEvent` is fire-and-forget (void); the only refusal is BATCHER_CLOSED after close(),
+        // when this manager is shutting down and no replica may be sent to — logged, then dropped.
+        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp, ownerEpoch)
+                                .onFailure(cause -> log.warn("Event {}[{}]@{} not replicated: {}",
+                                                             streamName,
+                                                             partition,
+                                                             offset,
+                                                             cause.message())))
                .onEmpty(() -> replicateImmediately(streamName, partition, offset, payload, timestamp, ownerEpoch));
     }
 
     @Contract
     @Override
     public void handleAck(ReplicationMessage.ReplicateAck ack) {
+        notifyObserver(ack);
         registry.updateWatermark(ack.streamName(),
                                  ack.partition(),
                                  ack.replicaId(),
                                  ack.confirmedOffset(),
                                  promotionState(ack));
+        notifyObserver(ack);
         resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+    }
+
+    /// Called BEFORE the registry update, so no waiter a registry read could resolve is resolved before the
+    /// observer sees the ack; and again AFTER it, see [AckObserver].
+    @Contract
+    private void notifyObserver(ReplicationMessage.ReplicateAck ack) {
+        ackObserver.onPresent(observer -> observer.acked(ack));
+    }
+
+    @Contract
+    @Override
+    public void observeAcks(AckObserver observer) {
+        ackObserver = some(observer);
     }
 
     /// A live ack promotes the replica to CAUGHT_UP only when its confirmed offset reaches back to the
@@ -243,15 +273,65 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     /// Distinct non-self replicas whose registry-recorded confirmed offset already reaches `offset`.
     private Set<NodeId> peersAtOrAbove(List<NodeId> targets, String streamName, int partition, long offset) {
-        var byNode = registry.replicasFor(streamName, partition)
-                             .stream()
-                             .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
-                                                       ReplicaDescriptor::confirmedOffset,
-                                                       Math::max));
+        var byNode = confirmedByNode(streamName, partition);
 
         return targets.stream()
                       .filter(nodeId -> byNode.getOrDefault(nodeId, -1L) >= offset)
                       .collect(Collectors.toSet());
+    }
+
+    /// Reads the SAME registry rows [#awaitReplication] seeds from, so an offset reported here is one an
+    /// await for it would resolve on at once.
+    @Override
+    public long replicatedThrough(String streamName, int partition, int minAcks) {
+        return minAcks <= 0
+               ? Long.MAX_VALUE
+               : minAcksConfirmedOffset(peerConfirmedDescending(streamName,
+                                                                partition,
+                                                                confirmedByNode(streamName, partition)),
+                                        minAcks);
+    }
+
+    @Override
+    public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+        return minAcks <= 0
+               ? Long.MAX_VALUE
+               : minAcksConfirmedOffset(peerConfirmedDescending(pending.streamName(),
+                                                                pending.partition(),
+                                                                withAck(pending)),
+                                        minAcks);
+    }
+
+    /// The registry rows with `pending` overlaid — a row is only ever raised, as the registry update would.
+    private Map<NodeId, Long> withAck(ReplicationMessage.ReplicateAck pending) {
+        var byNode = new HashMap<>(confirmedByNode(pending.streamName(), pending.partition()));
+
+        byNode.merge(pending.replicaId(), pending.confirmedOffset(), Math::max);
+
+        return byNode;
+    }
+
+    /// The `minAcks`-th highest confirmed offset among the non-self replicas: every offset at or below it
+    /// is covered by at least `minAcks` distinct peers.
+    private static long minAcksConfirmedOffset(List<Long> descending, int minAcks) {
+        return descending.size() >= minAcks
+               ? descending.get(minAcks - 1)
+               : -1L;
+    }
+
+    private List<Long> peerConfirmedDescending(String streamName, int partition, Map<NodeId, Long> byNode) {
+        return replicationTargets(streamName, partition).stream()
+                                 .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
+                                 .sorted(Comparator.reverseOrder())
+                                 .toList();
+    }
+
+    private Map<NodeId, Long> confirmedByNode(String streamName, int partition) {
+        return registry.replicasFor(streamName, partition)
+                       .stream()
+                       .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
+                                                 ReplicaDescriptor::confirmedOffset,
+                                                 Math::max));
     }
 
     private void sendToAllReplicas(List<NodeId> replicas,

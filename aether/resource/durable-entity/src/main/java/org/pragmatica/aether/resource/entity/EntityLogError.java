@@ -34,8 +34,9 @@ public sealed interface EntityLogError extends Cause {
         }
     }
 
-    /// The log refused an append because this node's owner epoch for the partition is older than the
-    /// partition's committed high-water — i.e. the writer is a DEPOSED owner.
+    /// The log refused an append because this node is a DEPOSED owner: its owner epoch for the partition is
+    /// older than the partition's committed high-water, or (#1230) the committed ownership record already
+    /// names another node.
     ///
     /// This is the write fence firing, and it exists in this vocabulary so the entity module can
     /// recognise it without depending on the stream module's error types. The entity translates it to
