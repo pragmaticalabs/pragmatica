@@ -6,7 +6,9 @@
   receive handler awaits before acking) commits everything written so far in **one** group commit. The same
   batch now costs one fsync, and replay order equals offset order.
   `[mechanism: frames are written in-section and the barrier commits the latest write sequence once; pinned
-  in one JVM by ReplicaWalGroupCommitTest]`
+  in one JVM by ReplicaWalGroupCommitTest; the in-section placement is pinned under 16 concurrent appenders by
+  StreamPartitionManagerOrderedAppendTest.appendRecovered_walFileOrderEqualsOffsetOrder_underConcurrentAppends —
+  moved after the section, a slower appender's frame is refused and the barrier resolves over a WAL with holes]`
 - **Backfill commits before it promotes.** Replica frames no longer carry their own fsync, so a
   `PartitionBackfill` run commits what it applied, exactly once and never per record, **before** it
   marks the replica CAUGHT_UP and acks the owner. This holds even on a quiet partition that receives no
@@ -18,6 +20,15 @@
 - A failed replica frame write or fsync still stops acks for that partition, because it fail-stops that
   WAL. The latest-write entry is forgotten when its WAL is released, so a rebuilt partition's first
   barrier never targets the closed WAL. Previously the per-key chain stayed poisoned until restart.
+  The entry is forgotten only while it still points at the released instance, so releasing a duplicate that
+  lost the install race never erases the live winner's unsynced entry; and it is forgotten AFTER the WAL is
+  closed, so a barrier racing the release meets the closed channel and fails instead of resolving before the
+  close-time fsync. `[mechanism: unlessWrittenTo; pinned by
+  ReplicaWalGroupCommitTest.duplicateLoserRelease_keepsTheWinnersUnsyncedWrite_soItsBarrierStillFsyncs]`
+  `[mechanism: close-then-forget in releaseEntry and completeRelease; the destroy path is pinned by
+  StreamPartitionManagerWalTest.syncReplicated_racingTheRelease_neverResolvesBeforeTheClosingFsync]`
+  `[unverified: the role-loss release (completeRelease) carries the same order by reading; no unit harness
+  induces a role-loss release]`
 - `[design intent — unverified: live replication sends one record per ReplicateEvents message (#263), so each message
   still pays one barrier; batching fsyncs across back-to-back messages depends on group-commit timing and
   is not bounded by a test]`

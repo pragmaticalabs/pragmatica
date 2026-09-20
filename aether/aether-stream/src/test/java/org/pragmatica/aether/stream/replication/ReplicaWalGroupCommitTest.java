@@ -9,17 +9,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
@@ -83,6 +88,75 @@ class ReplicaWalGroupCommitTest {
                .await()
                .onFailure(cause -> fail("the rebuilt partition's barrier hit the released WAL: " + cause.message()));
         replica.close();
+    }
+
+    /// #1277 review N2: releasing a duplicate that LOST the install race must not erase the winner's
+    /// latest-write entry, or the winner's next barrier resolves without an fsync. Both creates are parked
+    /// inside their WAL recovery — the sealed-offset source is consulted there, after the WAL is open and
+    /// before the install — so the first can win, a replicated write can land on the winner, and only then
+    /// is the loser released.
+    @Test
+    void duplicateLoserRelease_keepsTheWinnersUnsyncedWrite_soItsBarrierStillFsyncs() throws Exception {
+        var gates = List.of(new CountDownLatch(1), new CountDownLatch(1));
+        var arrivals = new AtomicInteger();
+        var replica = streamPartitionManager(Long.MAX_VALUE,
+                                             Option.some(walDir),
+                                             (_, partition) -> parkFirstPartition(partition, gates, arrivals));
+        var creates = IntStream.range(0, 2)
+                               .mapToObj(_ -> CompletableFuture.supplyAsync(() -> replica.createStream(StreamConfig.streamConfig(STREAM))))
+                               .toList();
+
+        awaitArrivals(arrivals, 2);
+        gates.get(0).countDown();
+        CompletableFuture.anyOf(creates.get(0), creates.get(1)).get(10, TimeUnit.SECONDS);
+        replica.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1000L).onFailure(cause -> fail(cause.message()));
+        var fsyncsBefore = fsyncCount(replica);
+
+        gates.get(1).countDown();
+        CompletableFuture.allOf(creates.get(0), creates.get(1)).get(10, TimeUnit.SECONDS);
+
+        assertThat(creates.stream().map(CompletableFuture::join).toList())
+            .as("one create won the install and the other released its duplicate through the loser path")
+            .containsExactlyInAnyOrder(Result.unitResult(), StreamError.General.STREAM_ALREADY_EXISTS.result());
+        replica.syncReplicated(STREAM, PARTITION).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(fsyncCount(replica) - fsyncsBefore).as("the winner's barrier still fsyncs after the duplicate loser is released")
+                                                      .isEqualTo(1L);
+        replica.close();
+    }
+
+    /// Each create consults the source once per partition, partition 0 first: park that call on the gate
+    /// for the create's arrival order. Every other call — the other partitions, and the WAL snapshot's own
+    /// lookups later in the test — answers "nothing sealed" at once.
+    private static long parkFirstPartition(int partition, List<CountDownLatch> gates, AtomicInteger arrivals) {
+        if (partition == PARTITION) {
+            var arrival = arrivals.getAndIncrement();
+
+            if (arrival < gates.size()) {
+                awaitGate(gates.get(arrival));
+            }
+        }
+
+        return -1L;
+    }
+
+    private static void awaitGate(CountDownLatch gate) {
+        try {
+            assertThat(gate.await(10, TimeUnit.SECONDS)).as("the parked create was released").isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail(e);
+        }
+    }
+
+    private static void awaitArrivals(AtomicInteger arrivals, int expected) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (arrivals.get() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(arrivals.get()).as("both creates are past their WAL open and neither is installed").isEqualTo(expected);
     }
 
     /// The handler acks from the barrier's completion callback, which may run on another thread.

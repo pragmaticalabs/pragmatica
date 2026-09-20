@@ -1575,6 +1575,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// WAL is released — but only while the entry still points at THAT instance, so releasing a duplicate
     /// that lost the install race can never erase the live winner's entry (which would let its next
     /// barrier resolve without an fsync).
+    ///
+    /// Called AFTER the WAL is closed (#1277 review N3): a barrier racing the release then finds the closed
+    /// channel through the still-recorded entry and fails, instead of finding no entry and resolving
+    /// before the close-time fsync has run.
     @Contract
     private void forgetReplicatedWrites(String streamName, int partition, Option<PartitionWal> wal) {
         wal.onPresent(released -> lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
@@ -2058,13 +2062,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Sum released = `control + firstSegment + grown` = the live allocation. No double-release, no leak.
     @Contract
     private void releaseEntry(StreamEntry entry) {
+        release(entry.controlBytes());
+        entry.close();
         IntStream.range(0,
                         entry.declaredPartitions())
                  .forEach(partition -> forgetReplicatedWrites(entry.config().name(),
                                                               partition,
                                                               entry.walFor(partition)));
-        release(entry.controlBytes());
-        entry.close();
     }
 
     /// Held-floor = `perPartitionFloor × materializedCount` (#265 increment 2): the off-heap floor for
@@ -2481,9 +2485,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void completeRelease(PartitionRef ref, StreamEntry.MaterializedPartition mp) {
         var controlBytes = mp.ring().controlBytes();
 
-        forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
         release(controlBytes);
         mp.close();
+        forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
         releaseCandidacy.remove(ref);
         freeReshuffleSlot(ref);
         releasedSinceBoot.incrementAndGet();
