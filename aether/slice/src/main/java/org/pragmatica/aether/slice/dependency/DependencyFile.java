@@ -15,11 +15,16 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.StreamError;
 import org.pragmatica.lang.io.StreamOps;
 import org.pragmatica.lang.utils.Causes;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -133,6 +138,10 @@ public record DependencyFile(List<ArtifactDependency> shared,
 
     private static final Set<String> FRAMEWORK_ARTIFACTS = Set.of("slice-api", "infra-api", "slice-annotations");
 
+    private static final Logger log = LoggerFactory.getLogger(DependencyFile.class);
+    private static final String DEPENDENCIES_DIR = "META-INF/dependencies/";
+    private static final DependencyFile EMPTY = new DependencyFile(List.of(), List.of(), List.of());
+
     private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. "
                                                                                            + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
@@ -141,11 +150,36 @@ public record DependencyFile(List<ArtifactDependency> shared,
     }
 
     public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
-        return StreamOps.readResource(classLoader, "META-INF/dependencies/" + sliceClassName)
+        var resource = DEPENDENCIES_DIR + sliceClassName;
+
+        return StreamOps.readResource(classLoader, resource)
                         .flatMap(DependencyFile::dependencyFile)
-                        .orElse(success(new DependencyFile(List.of(),
-                                                           List.of(),
-                                                           List.of())));
+                        .onFailure(cause -> warnIfPresentButUnreadable(resource, classLoader, cause))
+                        .orElse(success(EMPTY));
+    }
+
+    /// An ABSENT dependency file is the normal shape of a slice without dependencies and stays silent. A
+    /// file that is present but cannot be read or parsed is still answered as EMPTY — the contract every
+    /// caller relies on — but said out loud with the jar and the cause: silently dropping a slice's
+    /// declared dependencies is the swallow class #1351 removed from the manifest readers (#1357 review).
+    @Contract
+    private static void warnIfPresentButUnreadable(String resource, ClassLoader classLoader, Cause cause) {
+        if (cause instanceof StreamError.ResourceNotFound) {
+            return;
+        }
+
+        log.warn("Dependency file {} in {} is present but unreadable; treating the slice as dependency-free: {}",
+                 resource,
+                 jarOf(classLoader),
+                 cause.message());
+    }
+
+    private static String jarOf(ClassLoader classLoader) {
+        return classLoader instanceof SliceClassLoader slice
+               ? slice.sliceJarUrl()
+                      .map(URL::toString)
+                      .or("<loader without a jar url>")
+               : classLoader.toString();
     }
 
     /// Read the dependency file straight from the slice jar at `jarUrl`, through a throwaway
