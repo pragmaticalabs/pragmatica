@@ -152,4 +152,81 @@ class DurableRabiaPersistenceTest {
         System.out.printf("Local WAL append+fsync, temp directory %s: n=64 median=%.3f ms p95=%.3f ms%n",
             directory, samples[32] / 1_000_000.0, samples[60] / 1_000_000.0);
     }
+    @Test void everyDurabilityFailurePoisonsWriterAndLeavesRecoverableFileCombination() throws Exception {
+        for (var step : DurableRabiaPersistence.DurabilityStep.values()) {
+            var location = directory.resolve(step.name());
+            var armed = new java.util.concurrent.atomic.AtomicBoolean(false);
+            var persistence = DurableRabiaPersistence.<TestCommand>open(location, CODEC, CODEC,
+                observed -> armed.get() && observed == step ? VotingJournalError.CAPACITY.result()
+                                                          : Result.success(org.pragmatica.lang.Unit.unit())).unwrap();
+            opened.add(persistence);
+            var vote = new VoteRound1(SELF, 0, Phase.ZERO, 0, StateValue.V0);
+            var appendBoundary = step == DurableRabiaPersistence.DurabilityStep.APPEND_FORCE
+                                 || step == DurableRabiaPersistence.DurabilityStep.APPEND_DIRECTORY_FORCE;
+            if (!appendBoundary) {
+                assertThat(persistence.append(vote).isSuccess()).isTrue();
+            }
+            armed.set(true);
+            var result = appendBoundary ? persistence.append(vote)
+                                        : persistence.save(new TestStateMachine(), Phase.ZERO, List.of());
+            assertThat(result.isFailure()).as("failure at %s must not report success", step).isTrue();
+            assertThat(persistence.append(new VoteRound2(SELF, 0, Phase.ZERO, 0, StateValue.V0)).isFailure())
+                .as("writer poisoned at %s", step).isTrue();
+            persistence.close();
+            var recovered = DurableRabiaPersistence.<TestCommand>open(location, CODEC, CODEC).unwrap();
+            opened.add(recovered);
+            assertThat(recovered.loadJournal().unwrap()).as("durable vote survives %s", step).containsExactly(vote);
+            recovered.close();
+        }
+    }
+
+    @Test void appendAcknowledgmentWaitsForForceBoundary() throws Exception {
+        var reached = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var persistence = DurableRabiaPersistence.<TestCommand>open(directory, CODEC, CODEC, step -> {
+            if (step != DurableRabiaPersistence.DurabilityStep.APPEND_FORCE) {
+                return Result.success(org.pragmatica.lang.Unit.unit());
+            }
+            reached.countDown();
+            return Result.lift(Causes::fromThrowable, () -> release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                         .mapToUnit();
+        }).unwrap();
+        opened.add(persistence);
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var append = executor.submit(() -> persistence.append(new VoteRound1(SELF, Phase.ZERO, StateValue.V0)));
+            try {
+                assertThat(reached.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                assertThat(append.isDone()).isFalse();
+            } finally {
+                release.countDown();
+            }
+            assertThat(append.get(2, java.util.concurrent.TimeUnit.SECONDS).isSuccess()).isTrue();
+        }
+    }
+
+    @Test void versionOneHeaderAndCrc32cHaveFixedGoldenBytes() throws Exception {
+        var serializer = new org.pragmatica.serialization.Serializer() {
+            @Override public <T> void write(io.netty.buffer.ByteBuf buffer, T value) {
+                buffer.writeBytes("123456789".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            }
+        };
+        var persistence = DurableRabiaPersistence.<TestCommand>open(directory, serializer, CODEC).unwrap();
+        opened.add(persistence);
+        assertThat(persistence.append(new VoteRound1(SELF, Phase.ZERO, StateValue.V0)).isSuccess()).isTrue();
+        assertThat(java.util.HexFormat.of().formatHex(Files.readAllBytes(directory.resolve("voting.wal"))))
+            .isEqualTo("524142310000000100000009e3069283313233343536373839");
+    }
+
+    @Test void unknownFormatVersionFailsWithoutRewritingEvidence() throws Exception {
+        var persistence = open();
+        persistence.append(new VoteRound1(SELF, Phase.ZERO, StateValue.V0)).unwrap();
+        persistence.close();
+        var file = directory.resolve("voting.wal");
+        var bytes = Files.readAllBytes(file);
+        java.nio.ByteBuffer.wrap(bytes).putInt(4, 2);
+        Files.write(file, bytes);
+        assertThat(DurableRabiaPersistence.<TestCommand>open(directory, CODEC, CODEC).isFailure()).isTrue();
+        assertThat(Files.readAllBytes(file)).isEqualTo(bytes);
+    }
+
 }

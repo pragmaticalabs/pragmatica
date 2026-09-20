@@ -34,6 +34,18 @@ final class DurableRabiaPersistence<C extends Command> implements RabiaPersisten
     private static final int CHECKPOINT_RECORDS = 4096;
     private static final int MAX_RETAINED_RECORDS = 65_536;
 
+    enum DurabilityStep {
+        APPEND_FORCE, APPEND_DIRECTORY_FORCE,
+        CHECKPOINT_TEMP_FORCE, CHECKPOINT_RENAME, CHECKPOINT_DIRECTORY_FORCE,
+        WAL_TEMP_FORCE, WAL_RENAME, WAL_DIRECTORY_FORCE
+    }
+
+    @FunctionalInterface
+    interface DurabilityBoundary {
+        Result<Unit> before(DurabilityStep step);
+    }
+
+    private final DurabilityBoundary boundary;
     private final Path directory;
     private final Path journalFile;
     private final Path checkpointFile;
@@ -87,7 +99,8 @@ final class DurableRabiaPersistence<C extends Command> implements RabiaPersisten
                                  org.pragmatica.lang.Cause::result);
     }
 
-    private DurableRabiaPersistence(Path directory, Serializer serializer, Deserializer deserializer) {
+    private DurableRabiaPersistence(Path directory, Serializer serializer, Deserializer deserializer, DurabilityBoundary boundary) {
+        this.boundary = boundary;
         this.directory = directory;
         this.journalFile = directory.resolve("voting.wal");
         this.checkpointFile = directory.resolve("checkpoint.bin");
@@ -98,7 +111,14 @@ final class DurableRabiaPersistence<C extends Command> implements RabiaPersisten
     static <C extends Command> Result<RabiaPersistence<C>> open(Path directory,
                                                                 Serializer serializer,
                                                                 Deserializer deserializer) {
-        var persistence = new DurableRabiaPersistence<C>(directory, serializer, deserializer);
+        return open(directory, serializer, deserializer, _ -> Result.success(Unit.unit()));
+    }
+
+    static <C extends Command> Result<RabiaPersistence<C>> open(Path directory,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              DurabilityBoundary boundary) {
+        var persistence = new DurableRabiaPersistence<C>(directory, serializer, deserializer, boundary);
 
         return Result.lift(Causes::fromThrowable,
                            () -> Files.createDirectories(directory))
@@ -211,56 +231,38 @@ final class DurableRabiaPersistence<C extends Command> implements RabiaPersisten
     }
 
     private Result<Unit> appendBytes(byte[] bytes) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> {
-                               var existed = Files.exists(journalFile);
-
-                               try (var channel = FileChannel.open(journalFile,
-                                                                   StandardOpenOption.CREATE,
-                                                                   StandardOpenOption.WRITE,
-                                                                   StandardOpenOption.APPEND)) {
-                               var buffer = ByteBuffer.wrap(bytes);
-
-                               while (buffer.hasRemaining()) {
-                               channel.write(buffer);
-                           }
-
-                               channel.force(true);
-                           }
-
-                               return existed;
-                           })
-                     .flatMap(existed -> existed
-                                         ? Result.success(Unit.unit())
-                                         : forceDirectory());
+        var existed = Files.exists(journalFile);
+        return writeForced(journalFile, bytes, true, DurabilityStep.APPEND_FORCE)
+            .flatMap(_ -> existed ? Result.success(Unit.unit())
+                                  : boundary.before(DurabilityStep.APPEND_DIRECTORY_FORCE).flatMap(_ -> forceDirectory()));
     }
 
     private Result<Unit> atomicReplace(Path destination, byte[] bytes) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> {
-                               var temporary = destination.resolveSibling(destination.getFileName() + ".tmp");
+        var checkpoint = destination.equals(checkpointFile);
+        var temporary = destination.resolveSibling(destination.getFileName() + ".tmp");
+        return writeForced(temporary, bytes, false,
+                           checkpoint ? DurabilityStep.CHECKPOINT_TEMP_FORCE : DurabilityStep.WAL_TEMP_FORCE)
+            .flatMap(_ -> boundary.before(checkpoint ? DurabilityStep.CHECKPOINT_RENAME : DurabilityStep.WAL_RENAME))
+            .flatMap(_ -> Result.lift(Causes::fromThrowable,
+                () -> Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)))
+            .flatMap(_ -> boundary.before(checkpoint ? DurabilityStep.CHECKPOINT_DIRECTORY_FORCE : DurabilityStep.WAL_DIRECTORY_FORCE))
+            .flatMap(_ -> forceDirectory());
+    }
 
-                               try (var channel = FileChannel.open(temporary,
-                                                                   StandardOpenOption.CREATE,
-                                                                   StandardOpenOption.WRITE,
-                                                                   StandardOpenOption.TRUNCATE_EXISTING)) {
-                               var buffer = ByteBuffer.wrap(bytes);
-
-                               while (buffer.hasRemaining()) {
-                               channel.write(buffer);
-                           }
-
-                               channel.force(true);
-                           }
-
-                               Files.move(temporary,
-                                          destination,
-                                          StandardCopyOption.ATOMIC_MOVE,
-                                          StandardCopyOption.REPLACE_EXISTING);
-
-                               return Unit.unit();
-                           })
-                     .flatMap(_ -> forceDirectory());
+    private Result<Unit> writeForced(Path file, byte[] bytes, boolean append, DurabilityStep step) {
+        return Result.lift(Causes::fromThrowable, () -> {
+            try (var channel = FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                                               append ? StandardOpenOption.APPEND : StandardOpenOption.TRUNCATE_EXISTING)) {
+                var buffer = ByteBuffer.wrap(bytes);
+                while (buffer.hasRemaining()) {
+                    channel.write(buffer);
+                }
+                return boundary.before(step).flatMap(_ -> Result.lift(Causes::fromThrowable, () -> {
+                    channel.force(true);
+                    return Unit.unit();
+                }));
+            }
+        }).flatMap(result -> result);
     }
 
     private Result<Unit> forceDirectory() {
