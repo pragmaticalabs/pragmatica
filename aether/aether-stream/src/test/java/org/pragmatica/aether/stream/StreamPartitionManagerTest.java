@@ -130,7 +130,8 @@ class StreamPartitionManagerTest {
                                                                  highWater,
                                                                  StreamOwnerEpochSource.zero(),
                                                                  Option.none(),
-                                                                 LastSealedOffsetSource.none());
+                                                                 LastSealedOffsetSource.none(),
+                                                                 DurableSealedOffsetSource.none());
         }
 
         private static OwnershipEpochHighWater highWaterAt(Epoch epoch) {

@@ -7,41 +7,50 @@ package org.pragmatica.aether.slice;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+
+import java.util.List;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class StreamPublisherTest {
 
+    /// #1342: `publishBatch` has no default (a batch derived from `publish` could not report offsets), so the
+    /// SPI is no longer a functional interface; a stub implements both methods.
     @Nested
-    class FunctionalInterfaceContract {
-
-        @Test
-        void canBeAssignedAsLambda() {
-            StreamPublisher<String> publisher = event -> Promise.success(Unit.unit());
-
-            assertThat(publisher).isNotNull();
-        }
-
-        @Test
-        void canBeAssignedAsMethodReference() {
-            StreamPublisher<String> publisher = StreamPublisherTest::stubPublish;
-
-            assertThat(publisher).isNotNull();
-        }
+    class PublishContract {
 
         @Test
         void publish_returnsSuccessPromise() {
-            StreamPublisher<String> publisher = event -> Promise.success(Unit.unit());
-
-            var result = publisher.publish("test-event").await();
+            var result = stubPublisher().publish("test-event").await();
 
             assertThat(result.isSuccess()).isTrue();
         }
+
+        @Test
+        void publishBatch_reportsOneOutcomePerEvent_inInputOrder() {
+            var outcomes = stubPublisher().publishBatch(List.of("a", "b")).await().unwrap();
+
+            assertThat(outcomes).containsExactly(new PublishOutcome.Published(0L), new PublishOutcome.Published(1L));
+        }
     }
 
-    private static Promise<Unit> stubPublish(String event) {
-        return Promise.success(Unit.unit());
+    private static StreamPublisher<String> stubPublisher() {
+        return new StreamPublisher<>() {
+            @Override
+            public Promise<Unit> publish(String event) {
+                return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Promise<List<PublishOutcome>> publishBatch(List<String> events) {
+                return Promise.success(IntStream.range(0, events.size())
+                                                .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                .toList());
+            }
+        };
     }
 }

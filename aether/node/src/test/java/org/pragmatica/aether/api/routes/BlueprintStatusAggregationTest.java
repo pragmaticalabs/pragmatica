@@ -37,6 +37,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.deployment.cluster.PublishedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -428,11 +429,11 @@ class BlueprintStatusAggregationTest {
     private static BlueprintService blueprintServiceWith(Option<ExpandedBlueprint> getResult, Option<DeploymentOutcomeValue> outcomeResult) {
         return new BlueprintService() {
             @Override
-            public Promise<ExpandedBlueprint> publish(String dsl) { return unsupported("publish"); }
+            public Promise<PublishedBlueprint> publish(String dsl) { return unsupported("publish"); }
             @Override
-            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) { return unsupported("publishFromArtifact"); }
+            public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords) { return unsupported("publishFromArtifact"); }
             @Override
-            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) { return unsupported("publishFromArtifact(registerOnly)"); }
+            public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) { return unsupported("publishFromArtifact(registerOnly)"); }
             @Override
             public Option<ExpandedBlueprint> get(BlueprintId id) { return getResult; }
             @Override

@@ -68,7 +68,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     private final Option<Fn0<Option<NodeId>>> ownerResolver;
     private final Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver;
     private final StreamReadForwardMetrics metrics;
-    private final int minSyncReplicas;
+    private final StreamWriteRouter writeRouter;
     private final Option<CommittedStreamOwnerSource> committedOwnerSource;
     private final Option<OwnershipEpochHighWater> epochHighWater;
     private final Option<LinearizableBarrier> barrier;
@@ -91,8 +91,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                     NodeId selfNodeId,
                                     Option<Fn0<Option<NodeId>>> ownerResolver,
                                     Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
-                                    StreamReadForwardMetrics metrics,
-                                    int minSyncReplicas) {
+                                    StreamReadForwardMetrics metrics) {
         this(partitionManager,
              serializer,
              deserializer,
@@ -109,7 +108,6 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
              ownerResolver,
              partitionOwnerResolver,
              metrics,
-             minSyncReplicas,
              Option.none(),
              Option.none(),
              Option.none());
@@ -136,7 +134,6 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                     Option<Fn0<Option<NodeId>>> ownerResolver,
                                     Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
                                     StreamReadForwardMetrics metrics,
-                                    int minSyncReplicas,
                                     Option<CommittedStreamOwnerSource> committedOwnerSource,
                                     Option<OwnershipEpochHighWater> epochHighWater,
                                     Option<LinearizableBarrier> barrier) {
@@ -156,7 +153,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         this.ownerResolver = ownerResolver;
         this.partitionOwnerResolver = partitionOwnerResolver;
         this.metrics = metrics;
-        this.minSyncReplicas = minSyncReplicas;
+        this.writeRouter = StreamWriteRouter.streamWriteRouter(partitionManager,
+                                                               forwardClient,
+                                                               knownSelf(selfNodeId),
+                                                               (_, partition) -> resolveOwner(partition));
         this.committedOwnerSource = committedOwnerSource;
         this.epochHighWater = epochHighWater;
         this.barrier = barrier;
@@ -186,17 +186,14 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP,
-                                             0);
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     /// A6: app-stream overload that wires owner-routed {@link #publish} (forward client + self +
     /// owner-resolver) while keeping the default local read path (no tiered/cursor/registry). Used by
-    /// the app `StreamAccessFactory` so a non-owner producer write-forwards to the partition owner.
-    /// `minSyncReplicas > 1` makes a local app publish AWAIT `minSyncReplicas - 1` distinct non-self
-    /// replica acks before the publisher's promise resolves (#262.4) — the owner counts as one of the
-    /// in-sync set, so only the remaining peers are awaited. `minSyncReplicas <= 1` resolves on the
-    /// local write (0 = eventual, 1 = owner-only) — the durability guarantee the stream was created with.
+    /// the app `StreamAccessFactory` so a non-owner producer write-forwards to the partition owner. The
+    /// min-sync barrier is the stream's committed `min-sync-replicas`, read live per publish by
+    /// {@link StreamWriteRouter} (#1263) — no longer a value frozen in at construction.
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
                                                               Serializer serializer,
                                                               Deserializer deserializer,
@@ -206,8 +203,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                               Option<StreamForwardClient> forwardClient,
                                                               NodeId selfNodeId,
                                                               Option<Fn0<Option<NodeId>>> ownerResolver,
-                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
-                                                              int minSyncReplicas) {
+                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver) {
         return new PartitionedStreamAccess<>(partitionManager,
                                              serializer,
                                              deserializer,
@@ -223,8 +219,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              selfNodeId,
                                              ownerResolver,
                                              partitionOwnerResolver,
-                                             StreamReadForwardMetrics.NOOP,
-                                             minSyncReplicas);
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     /// A4+A5: durable owner-routed overload — mirrors the owner-routed publish overload above and ADDS
@@ -252,7 +247,6 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                               NodeId selfNodeId,
                                                               Option<Fn0<Option<NodeId>>> ownerResolver,
                                                               Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
-                                                              int minSyncReplicas,
                                                               Option<TieredStreamReader> tieredReader,
                                                               Option<CursorStore> cursorStore,
                                                               Option<ReplicaRegistry> replicaRegistry) {
@@ -266,7 +260,6 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                             selfNodeId,
                             ownerResolver,
                             partitionOwnerResolver,
-                            minSyncReplicas,
                             tieredReader,
                             cursorStore,
                             replicaRegistry,
@@ -295,7 +288,6 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                               NodeId selfNodeId,
                                                               Option<Fn0<Option<NodeId>>> ownerResolver,
                                                               Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
-                                                              int minSyncReplicas,
                                                               Option<TieredStreamReader> tieredReader,
                                                               Option<CursorStore> cursorStore,
                                                               Option<ReplicaRegistry> replicaRegistry,
@@ -326,7 +318,6 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              ownerResolver,
                                              partitionOwnerResolver,
                                              StreamReadForwardMetrics.NOOP,
-                                             minSyncReplicas,
                                              committedOwnerSource,
                                              epochHighWater,
                                              barrier);
@@ -354,7 +345,6 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                             EMPTY_SELF,
                             Option.none(),
                             Option.none(),
-                            0,
                             tieredReader,
                             cursorStore,
                             Option.none());
@@ -396,8 +386,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              selfNodeId,
                                              ownerResolver,
                                              Option.none(),
-                                             metrics,
-                                             0);
+                                             metrics);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -422,8 +411,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP,
-                                             0);
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -449,8 +437,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP,
-                                             0);
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -477,8 +464,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP,
-                                             0);
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -507,8 +493,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP,
-                                             0);
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -540,8 +525,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              selfNodeId,
                                              Option.none(),
                                              Option.none(),
-                                             metrics,
-                                             0);
+                                             metrics);
     }
 
     /// A6: full overload that also wires an owner-resolver so {@link #publish} routes writes to the
@@ -580,104 +564,34 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              selfNodeId,
                                              ownerResolver,
                                              Option.none(),
-                                             metrics,
-                                             0);
+                                             metrics);
     }
 
-    /// A6 owner-routed publish. Resolves the HRW owner of `(stream, partition)` via the injected
-    /// owner-resolver and routes accordingly:
-    ///   - **self is owner** (or no resolver / no forward client wired): publish locally. The owner's
-    ///     {@link StreamPartitionManager#publishLocal} replicates the event to the registered replica
-    ///     set, so one authoritative log per partition is produced.
-    ///   - **a remote node is owner**: write-forward the publish to that owner via
-    ///     `forwardClient.publishRemote`; the owner then performs the local publish + replicate. The
-    ///     returned offset is the owner-assigned partition offset.
-    ///
-    /// **Bootstrap / no-owner (fail-soft):** when the resolver returns {@link Option#none()} (no quorum
-    /// yet, placement not computed, stream not created) we publish locally rather than fail. Rationale:
-    /// a steady-state single-node cluster is always its own owner, and dropping the write would be
-    /// worse than landing it on the only node that can serve it; once placement is known, subsequent
-    /// publishes route correctly. This mirrors the B3 owner-gate's bootstrap-window tolerance.
-    ///
-    /// **STRONG (#1262):** a stream declared `STRONG` is refused with `CONSENSUS_PATH_UNAVAILABLE` before
-    /// routing — no consensus path is wired, and writing it as EVENTUAL would silently weaken the declared
-    /// guarantee (see {@link StreamPartitionManager#ensureWritableConsistency}).
+    /// A6 owner-routed publish, delegated whole to the ONE write operation, {@link StreamWriteRouter} (#1263):
+    /// this class only encodes the event and picks its partition. Ownership routing, the STRONG / UNKNOWN refusal
+    /// (#1262), write-forwarding with the bounded retry, the committed-owner redirect (#1230) and the min-sync
+    /// barrier — read live from the stream's committed config — all live there, shared with the slice
+    /// {@link DefaultStreamPublisher} and the management publish, so the three entry points cannot drift.
+    /// The owner is this stream's HRW resolver ({@link #resolveOwner}), the same one the read path uses.
     @Override
     public Promise<Long> publish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
 
-        return partitionManager.ensureWritableConsistency(streamName)
-                               .async()
-                               .flatMap(_ -> routePublish(partition, bytes, timestamp));
+        return writeRouter.publish(streamName, partition, bytes, timestamp);
     }
 
-    private Promise<Long> routePublish(int partition, byte[] bytes, long timestamp) {
-        return resolveOwner(partition).map(owner -> routeToOwner(owner, partition, bytes, timestamp))
-                           .or(() -> publishLocal(partition, bytes, timestamp));
-    }
-
-    /// #47: resolve the publish owner for `(streamName, partition)`. Prefers the partition-aware HRW
-    /// resolver (the SAME `ReplicaSetController` placement that owns the replica set) so the publish
-    /// owner and the replica-set owner are one authority; falls back to the arg-less resolver only when
-    /// no HRW resolver is wired (legacy / minimal runtimes). {@link Option#none()} from either path
-    /// keeps the fail-soft local write in {@link #publish}.
+    /// #47: resolve the owner for `(streamName, partition)` — see {@link StreamWriteRouter#hrwOwner}.
     private Option<NodeId> resolveOwner(int partition) {
-        return partitionOwnerResolver.flatMap(resolver -> resolver.apply(partition))
-                                     .orElse(() -> ownerResolver.flatMap(Fn0::apply));
+        return StreamWriteRouter.hrwOwner(partitionOwnerResolver, ownerResolver, partition);
     }
 
-    private Promise<Long> routeToOwner(NodeId owner, int partition, byte[] bytes, long timestamp) {
-        return owner.equals(selfNodeId)
-               ? publishLocal(partition, bytes, timestamp)
-               : forwardClient.map(client -> forwardToOwner(client, owner, partition, bytes, timestamp))
-                              .or(() -> publishLocal(partition, bytes, timestamp));
-    }
-
-    /// #506: wrap the single owner-forward in the shared bounded retry so the app publish path absorbs the
-    /// same transient owner-config-lag race the management/API write path ({@link StreamWriteRouter}) and
-    /// {@link DefaultStreamPublisher} already do (parity via {@link StreamForwardRetry}). Only this
-    /// remote-forward arm retries; the self-owner and no-owner/no-client fail-soft local arms in
-    /// {@link #routeToOwner} are unchanged.
-    private Promise<Long> forwardToOwner(StreamForwardClient client,
-                                         NodeId owner,
-                                         int partition,
-                                         byte[] bytes,
-                                         long timestamp) {
-        return StreamForwardRetry.withBoundedRetry(() -> client.publishRemote(owner,
-                                                                              streamName,
-                                                                              partition,
-                                                                              bytes,
-                                                                              timestamp));
-    }
-
-    /// Local publish on the owner. With `minSyncReplicas > 1` the publish does not resolve until
-    /// `minSyncReplicas - 1` DISTINCT non-self replica acks land (#262.4) — the owner itself is one of
-    /// the in-sync set, so only the remaining peers are awaited. `awaitReplication` registers the
-    /// pending ack against the already-fired replication (the manager seeds it from the registry to
-    /// close the ack-before-register race). With `minSyncReplicas <= 1` it resolves on the local write
-    /// (0 = eventual, 1 = owner-only). A refusal because the committed owner is another node (the #1230
-    /// ownership-lag window) is redirected to that owner via {@link StreamForwardRetry#redirectNotOwner}.
-    private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
-        // #1236: floor before the append (a refusal is not in the log), after the #1230 owner admission.
-        return partitionManager.publishLocalAtFloor(streamName, partition, bytes, timestamp, minSyncReplicas - 1)
-                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
-                                                                                  owner -> forwardClient.map(client -> forwardToOwner(client,
-                                                                                                                                      owner,
-                                                                                                                                      partition,
-                                                                                                                                      bytes,
-                                                                                                                                      timestamp))),
-                                     offset -> awaitMinSync(partition, offset));
-    }
-
-    /// #1236: after the append, an unconfirmed barrier is an unknown outcome.
-    private Promise<Long> awaitMinSync(int partition, long offset) {
-        return minSyncReplicas > 1
-               ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
-                                 .mapError(PublishOutcomeUnknown.FACTORY)
-                                 .map(_ -> offset)
-               : Promise.success(offset);
+    /// #1263: the no-self factories pass the {@link #EMPTY_SELF} sentinel; the shared write router takes an
+    /// unknown self as [Option#none] and then never forwards — the rule {@link DefaultStreamPublisher} always
+    /// applied — where the sentinel previously compared unequal to every owner and forwarded.
+    private static Option<NodeId> knownSelf(NodeId selfNodeId) {
+        return Option.some(selfNodeId).filter(self -> !EMPTY_SELF.equals(self));
     }
 
     @Override

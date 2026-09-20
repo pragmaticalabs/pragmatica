@@ -1035,7 +1035,7 @@ public Result<Long> append(byte[] serializedEvent, long timestamp) {
 }
 ```
 
-*Implementation note (#1248, verified at `ccba0dba5`):* the `asSlice` above only addresses the write target; the payload is **copied** into off-heap memory. The shipped `OffHeapRingBuffer.append` writes through `writeDataBytes` / `copyIntoData` across a segmented data region, and fires append listeners before the owner's WAL fsync (`StreamPartitionManager.durablyLog`). See `reference/streaming-performance-analysis.md` §3.1.
+*Implementation note (#1248, verified at `ccba0dba5`):* the `asSlice` above only addresses the write target; the payload is **copied** into off-heap memory. The shipped `OffHeapRingBuffer.append` writes through `writeDataBytes` / `copyIntoData` across a segmented data region, then writes the WAL frame in the same ordered section (`StreamPartitionManager.logAndReplicate`) and awaits the fsync outside it (`awaitDurable`); no listener fires at append (#1235). See `reference/streaming-performance-analysis.md` §3.1.
 
 ### 6.5 Read Operation
 
