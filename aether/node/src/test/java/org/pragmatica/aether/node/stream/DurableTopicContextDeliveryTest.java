@@ -10,6 +10,7 @@ import java.util.stream.IntStream;
 import java.util.function.Function;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -26,7 +27,10 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.topic.ContextualEvent;
@@ -44,6 +48,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -157,7 +162,12 @@ class DurableTopicContextDeliveryTest {
                                       .toList();
 
         assertThat(published.offset()).as("the retried event is not at offset 0").isEqualTo(1L);
-        assertThat(forTarget).as("1 attempt + 2 injected-failure retries").hasSize(3);
+        // CI at 13cab2ceb: "Expected size: 3 but was: 1" with attempts >= 4, so three attempts carried some OTHER
+        // event; the filtered list hid which. Name them, and the attempt count, so the next red is diagnosable.
+        assertThat(forTarget).as("1 attempt + 2 injected-failure retries; attempts=%d, every contextual delivery=%s",
+                                 contextualAttempts.get(),
+                                 contextualSeen)
+                             .hasSize(3);
         assertThat(forTarget).allSatisfy(contextual -> assertThat(contextual.context()).isEqualTo(expected));
         assertThat(deadLettersFor(ON_PLACED_WITH_CONTEXT)).isEmpty();
     }
@@ -231,8 +241,39 @@ class DurableTopicContextDeliveryTest {
                                                     new SelfOwnsEverything(),
                                                     placement,
                                                     SELF,
-                                                    TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true))
+                                                    TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
+                                                    leaderAuthority())
                              .reconcile();
+    }
+
+    /// #1271: attaching needs a committed assignment for SELF. A leader authority over an in-memory
+    /// committed map commits one on the first pass; the applier records the put the writer proposes.
+    private static StreamConsumerManager.AssignmentAuthority leaderAuthority() {
+        Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments = new ConcurrentHashMap<>();
+        ConsumerAssignmentWriter.CommittedAssignments committed = (stream, partition, group) -> Option.option(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                           partition,
+                                                                                                                                                                           group)));
+
+        return StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committed,
+                                                                             ConsumerAssignmentWriter.consumerAssignmentWriter(() -> true,
+                                                                                                                               () -> 1L,
+                                                                                                                               HlcClock.hlcClock(SELF),
+                                                                                                                               committed),
+                                                                             commands -> applyAssignments(committedAssignments, commands));
+    }
+
+    private static Promise<Unit> applyAssignments(Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments,
+                                                  List<KVCommand<AetherKey>> commands) {
+        commands.forEach(command -> applyAssignment(committedAssignments, command));
+
+        return Promise.unitPromise();
+    }
+
+    private static void applyAssignment(Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments,
+                                        KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.Put<?, ?> put && put.key() instanceof ConsumerAssignmentKey key && put.value() instanceof ConsumerAssignmentValue value) {
+            committedAssignments.put(key, value);
+        }
     }
 
     private static final class SelfOwnsEverything implements StreamConsumerManager.PartitionOwnership {
@@ -279,11 +320,18 @@ class DurableTopicContextDeliveryTest {
                                  new TypeToken<ContextualEvent>() {});
     }
 
+    /// rev1335d M1: the injected outcome is decided BEFORE the attempt is counted. Counted first, the test
+    /// thread's `awaitAttempts(1)` + `contextualFailuresToInject.set(2)` could land between the two statements
+    /// of the WARM-UP's own delivery, so the warm-up absorbed both failures and its two retries were the
+    /// three unexplained attempts of the CI red at `13cab2ceb` ("Expected size: 3 but was: 1"). Test defect,
+    /// product unchanged.
     private Promise<Unit> recordContextual(ContextualEvent contextual) {
-        contextualAttempts.incrementAndGet();
-        contextualSeen.add(ContextualEvent.contextualEvent((AppEvent) contextual.event(), contextual.context()));
+        var injectedFailure = contextualFailuresToInject.getAndUpdate(remaining -> Math.max(0, remaining - 1)) > 0;
 
-        return contextualFailuresToInject.getAndUpdate(remaining -> Math.max(0, remaining - 1)) > 0
+        contextualSeen.add(ContextualEvent.contextualEvent((AppEvent) contextual.event(), contextual.context()));
+        contextualAttempts.incrementAndGet();
+
+        return injectedFailure
                ? Causes.cause("injected failure").<Unit> promise()
                : Promise.unitPromise();
     }

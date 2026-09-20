@@ -9,6 +9,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.cluster.state.kvstore.AssignmentGuarded;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -1270,7 +1271,7 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> STREAM_METADATA_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-meta key format: %s");
 
-    Fn1<Cause, String> STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-assign key format: %s");
+    Fn1<Cause, String> CONSUMER_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid consumer-assign key format: %s");
 
     Fn1<Cause, String> STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-cursor key format: %s");
 
@@ -1308,12 +1309,15 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record StreamPartitionAssignmentKey(String streamName, String consumerGroup) implements AetherKey {
-        private static final String PREFIX = "stream-assign/";
+    /// The committed assignee of one consumer group's partition (#1271) — the authority a
+    /// [StreamCursorCheckpointKey] write is guarded by. Replaces the never-used per-stream
+    /// `StreamPartitionAssignmentKey`, which had no epoch and no reader.
+    record ConsumerAssignmentKey(String streamName, int partitionIndex, String consumerGroup) implements AetherKey {
+        private static final String PREFIX = "consumer-assign/";
 
         @Override
         public String asString() {
-            return PREFIX + streamName + "/" + consumerGroup;
+            return PREFIX + streamName + "/" + partitionIndex + "/" + consumerGroup;
         }
 
         @Override
@@ -1321,32 +1325,36 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
-        public static StreamPartitionAssignmentKey streamPartitionAssignmentKey(String streamName,
-                                                                                String consumerGroup) {
-            return new StreamPartitionAssignmentKey(streamName, consumerGroup);
+        public static ConsumerAssignmentKey consumerAssignmentKey(String streamName,
+                                                                  int partitionIndex,
+                                                                  String consumerGroup) {
+            return new ConsumerAssignmentKey(streamName, partitionIndex, consumerGroup);
         }
 
-        public static Result<StreamPartitionAssignmentKey> streamPartitionAssignmentKey(String key) {
+        public static Result<ConsumerAssignmentKey> consumerAssignmentKey(String key) {
             if (!key.startsWith(PREFIX)) {
-                return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
+                return CONSUMER_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            var content = key.substring(PREFIX.length());
-            var slashIndex = content.indexOf('/');
+            var parts = key.substring(PREFIX.length()).split("/");
 
-            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
-                return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
+            if (parts.length != 3) {
+                return CONSUMER_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            var streamName = content.substring(0, slashIndex);
-            var consumerGroup = content.substring(slashIndex + 1);
-
-            return success(new StreamPartitionAssignmentKey(streamName, consumerGroup));
+            return Number.parseInt(parts[1]).map(partition -> new ConsumerAssignmentKey(parts[0], partition, parts[2]));
         }
     }
 
-    record StreamCursorCheckpointKey(String streamName, int partitionIndex, String consumerGroup) implements AetherKey {
+    /// Consensus-visible consumer cursor (#488), GUARDED by the group-partition's committed
+    /// [ConsumerAssignmentKey] (#1271): the applier admits a checkpoint only from the committed assignee.
+    record StreamCursorCheckpointKey(String streamName, int partitionIndex, String consumerGroup) implements AetherKey, AssignmentGuarded {
         private static final String PREFIX = "stream-cursor/";
+
+        @Override
+        public Object guardKey() {
+            return ConsumerAssignmentKey.consumerAssignmentKey(streamName, partitionIndex, consumerGroup);
+        }
 
         @Override
         public String asString() {

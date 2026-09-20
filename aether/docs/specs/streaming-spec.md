@@ -687,7 +687,34 @@ record StreamMetadataKey(String streamName) implements AetherKey {
 }
 ```
 
-#### StreamPartitionAssignmentKey
+#### ConsumerAssignmentKey (was `StreamPartitionAssignmentKey`)
+
+> **Status (#1271, verified at `13cab2ceb`):** the per-stream `StreamPartitionAssignmentKey` designed
+> below was never written or read by anything; #1271 removed it and reused its tags for the
+> per-PARTITION `ConsumerAssignmentKey`, whose committed value is the one authority for which node
+> delivers a `(group, partition)`. The leader writes it from the same reconcile computation every node
+> used to act on alone; every node attaches only where the record names it; and the consensus applier
+> admits a `StreamCursorCheckpointKey` write only from the record's assignee at the record's epoch
+> (`KVStore.unassignedWrite`). The original design text is kept as history below the shipped shape.
+
+```
+consumer-assign/{streamName}/{partitionIndex}/{consumerGroup}
+```
+
+```java
+record ConsumerAssignmentKey(String streamName,
+                             int partitionIndex,
+                             String consumerGroup) implements AetherKey {
+    private static final String PREFIX = "consumer-assign/";
+
+    @Override
+    public String asString() {
+        return PREFIX + streamName + "/" + partitionIndex + "/" + consumerGroup;
+    }
+}
+```
+
+Original design (not shipped):
 
 ```
 stream-assign/{streamName}/{consumerGroup}
@@ -699,31 +726,7 @@ Maps partitions to consumer nodes for a consumer group.
 record StreamPartitionAssignmentKey(String streamName,
                                      String consumerGroup) implements AetherKey {
     private static final String PREFIX = "stream-assign/";
-
-    @Override
-    public String asString() {
-        return PREFIX + streamName + "/" + consumerGroup;
-    }
-
-    @SuppressWarnings("JBCT-VO-02")
-    public static StreamPartitionAssignmentKey streamPartitionAssignmentKey(String streamName,
-                                                                            String consumerGroup) {
-        return new StreamPartitionAssignmentKey(streamName, consumerGroup);
-    }
-
-    public static Result<StreamPartitionAssignmentKey> streamPartitionAssignmentKey(String key) {
-        if (!key.startsWith(PREFIX)) {
-            return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
-        }
-        var content = key.substring(PREFIX.length());
-        var slashIndex = content.indexOf('/');
-        if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
-            return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
-        }
-        var streamName = content.substring(0, slashIndex);
-        var consumerGroup = content.substring(slashIndex + 1);
-        return success(new StreamPartitionAssignmentKey(streamName, consumerGroup));
-    }
+    // ... one record per (stream, group) holding every partition's assignee
 }
 ```
 
@@ -822,7 +825,22 @@ record StreamMetadataValue(String streamName,
 }
 ```
 
-#### StreamPartitionAssignmentValue
+#### ConsumerAssignmentValue (was `StreamPartitionAssignmentValue`)
+
+> **Status (#1271, verified at `13cab2ceb`):** shipped as one record per partition, epoch-bearing so a
+> deposed assignee cannot commit an old epoch over a newer one, and carrying the `AssignmentToken`
+> (`assignee`, `epoch`) that a `StreamCursorCheckpointValue` must match to be admitted.
+
+```java
+record ConsumerAssignmentValue(NodeId assignee,
+                               Epoch epoch,
+                               long assignmentTerm,
+                               HlcTimestamp assignedAt) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
+    public record AssignmentToken(NodeId assignee, Epoch epoch) {}
+}
+```
+
+Original design (not shipped):
 
 ```java
 record StreamPartitionAssignmentValue(
@@ -831,12 +849,6 @@ record StreamPartitionAssignmentValue(
 ) implements AetherValue {
 
     public record PartitionAssignment(int partition, NodeId consumerNode) {}
-
-    public static StreamPartitionAssignmentValue streamPartitionAssignmentValue(
-            List<PartitionAssignment> assignments) {
-        return new StreamPartitionAssignmentValue(List.copyOf(assignments),
-                                                   System.currentTimeMillis());
-    }
 }
 ```
 
@@ -889,7 +901,7 @@ For a typical deployment:
 | Key Type | Formula | Example (20 streams, 8 partitions, 5 consumer groups) |
 |----------|---------|-------------------------------------------------------|
 | `StreamMetadataKey` | S | 20 |
-| `StreamPartitionAssignmentKey` | S x G | 100 |
+| `ConsumerAssignmentKey` (#1271; the designed `StreamPartitionAssignmentKey` was S x G) | S x P x G | 800 |
 | `StreamCursorCheckpointKey` | S x P x G | 800 |
 | `StreamRegistrationKey` | S x G (one per consumer method) | 100 |
 | **Total** | | **1,020** |
@@ -1204,8 +1216,8 @@ When CDM deploys a stream consumer group:
 1. CDM reads the `StreamMetadataValue` to get partition count.
 2. CDM reads registered consumers from `StreamRegistrationKey` entries.
 3. CDM computes a round-robin assignment: partition N -> consumer N % consumerCount.
-4. CDM writes the assignment to `StreamPartitionAssignmentKey/Value`.
-5. Consumers watch `stream-assign/*` for their group and begin consuming assigned partitions.
+4. CDM writes the assignment to `StreamPartitionAssignmentKey/Value`. *(Shipped, #1271: the LEADER's `StreamConsumerManager` reconcile writes one `ConsumerAssignmentKey/Value` per partition; there is no CDM step.)*
+5. Consumers watch `stream-assign/*` for their group and begin consuming assigned partitions. *(Shipped: every node's reconcile reads the committed `ConsumerAssignmentKey` records and attaches only where they name it.)*
 
 ### 7.4 Rebalancing Protocol
 
@@ -1213,7 +1225,7 @@ When a consumer joins or leaves a group:
 
 1. CDM detects membership change (node join/leave, or slice deployment change).
 2. CDM recomputes partition assignment.
-3. CDM writes new `StreamPartitionAssignmentValue`.
+3. CDM writes new `StreamPartitionAssignmentValue`. *(Shipped, #1271: the leader writes a new `ConsumerAssignmentValue` at the next epoch; the deposed node's checkpoints are refused by the applier from that commit on.)*
 4. Consumers draining old partitions:
    a. Complete in-flight event processing.
    b. Checkpoint cursor.
@@ -1563,14 +1575,14 @@ CDM manages stream lifecycle alongside slices:
 **On blueprint undeploy:**
 1. CDM deletes `StreamMetadataKey` from consensus.
 2. Governors destroy ring buffers and release memory.
-3. CDM deletes associated `StreamPartitionAssignmentKey` and `StreamCursorCheckpointKey` entries.
+3. CDM deletes associated `StreamPartitionAssignmentKey` (shipped as `ConsumerAssignmentKey`, #1271) and `StreamCursorCheckpointKey` entries.
 
 ### 11.2 Consumer Group Management
 
 When CDM detects a slice with stream subscription manifest entries:
 1. CDM reads the `stream.subscriptions.*` properties from the manifest.
 2. CDM writes `StreamRegistrationKey/Value` to consensus.
-3. CDM computes or updates partition assignments (`StreamPartitionAssignmentKey/Value`).
+3. CDM computes or updates partition assignments (`StreamPartitionAssignmentKey/Value`; shipped as the leader's per-partition `ConsumerAssignmentKey/Value`, #1271).
 4. The consumer runtime on the assigned node begins consuming.
 
 ### 11.3 Consumer Lag-Based Autoscaling
