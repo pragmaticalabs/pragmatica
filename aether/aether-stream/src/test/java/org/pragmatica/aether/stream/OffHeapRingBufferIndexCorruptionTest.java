@@ -13,6 +13,8 @@ import org.apache.logging.log4j.core.LoggerContext;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -62,7 +64,7 @@ class OffHeapRingBufferIndexCorruptionTest {
     @Test
     void evictByAge_corruptedIndexEntry_countsCorruption_notClosedUnderReaderRace() {
         var evicted = new CopyOnWriteArrayList<List<OffHeapRingBuffer.RawEvent>>();
-        var buffer = corruptedRing((_, _, events) -> evicted.add(events));
+        var buffer = corruptedRing((_, _, events) -> accepted(evicted.add(events)));
 
         buffer.evictByAge(0);
 
@@ -105,6 +107,11 @@ class OffHeapRingBufferIndexCorruptionTest {
         assertThat(cause).isNotEqualTo(StreamError.General.BUFFER_CLOSED);
         assertThat(cause).isInstanceOf(StreamError.RingIndexCorrupted.class);
         assertThat(cause.message()).startsWith("Ring index corrupted at corrupt[3]: ");
+    }
+
+    /// A listener that records synchronously and takes the events (#1234): the ring reclaims them in the same pass.
+    private static Result<Unit> accepted(boolean recorded) {
+        return Result.unitResult();
     }
 
     private static OffHeapRingBuffer corruptedRing(EvictionListener listener) {
