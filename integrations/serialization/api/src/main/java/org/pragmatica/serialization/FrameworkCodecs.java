@@ -240,12 +240,17 @@ public sealed interface FrameworkCodecs {
     @SuppressWarnings("rawtypes")
     private static void writeSet(SliceCodec codec, ByteBuf buf, Set value) {
         if (codec.canonicalCollections()) {
-            var encoded = ((Set<?>) value).stream().map(codec::encode)
-                .sorted(java.util.Arrays::compareUnsigned).toList();
+            var encoded = ((Set<?>) value).stream()
+                                          .map(codec::encode)
+                                          .sorted(java.util.Arrays::compareUnsigned)
+                                          .toList();
+
             writeCompact(buf, encoded.size());
             encoded.forEach(buf::writeBytes);
+
             return;
         }
+
         writeCompact(buf, value.size());
         for (var elem : value) {
             codec.write(buf, elem);
@@ -268,8 +273,10 @@ public sealed interface FrameworkCodecs {
     private static void writeMap(SliceCodec codec, ByteBuf buf, Map value) {
         if (codec.canonicalCollections()) {
             writeCanonicalMap(codec, buf, value);
+
             return;
         }
+
         writeCompact(buf, value.size());
         for (var entry : ((Map<?, ?>) value).entrySet()) {
             codec.write(buf, entry.getKey());
@@ -280,9 +287,14 @@ public sealed interface FrameworkCodecs {
     record CanonicalEntry(byte[] key, Object value) {}
 
     private static void writeCanonicalMap(SliceCodec codec, ByteBuf buffer, Map<?, ?> value) {
-        var entries = value.entrySet().stream()
-            .map(entry -> new CanonicalEntry(codec.encode(entry.getKey()), entry.getValue()))
-            .sorted((left, right) -> java.util.Arrays.compareUnsigned(left.key(), right.key())).toList();
+        var entries = value.entrySet()
+                           .stream()
+                           .map(entry -> new CanonicalEntry(codec.encode(entry.getKey()),
+                                                            entry.getValue()))
+                           .sorted((left, right) -> java.util.Arrays.compareUnsigned(left.key(),
+                                                                                     right.key()))
+                           .toList();
+
         writeCompact(buffer, entries.size());
         for (var entry : entries) {
             buffer.writeBytes(entry.key());

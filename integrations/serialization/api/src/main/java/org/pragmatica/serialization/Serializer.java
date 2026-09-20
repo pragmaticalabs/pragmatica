@@ -29,7 +29,9 @@ import io.netty.buffer.PooledByteBufAllocator;
 public interface Serializer {
     /// A deterministic view for replicated checkpoints. Custom serializers must already
     /// provide stable bytes; SliceCodec overrides this to order nested maps and sets.
-    default Serializer canonical() { return this; }
+    default Serializer canonical() {
+        return this;
+    }
 
     /// Encode an object to a byte array.
     ///

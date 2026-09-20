@@ -65,8 +65,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return switch (command) {
             case Get<?> get -> handleGet((Get<K>) get);
             case Put<?, ?> put -> put.value() instanceof LeaderAuthorized || storage.get(put.key()) instanceof LeaderAuthorized
-                                ? Option.option(storage.get(put.key()))
-                                : handlePut((Put<K, V>) put);
+                                  ? Option.option(storage.get(put.key()))
+                                  : handlePut((Put<K, V>) put);
             case KVCommand.LeaderPut<?, ?> put -> handleLeaderPut((KVCommand.LeaderPut<K, V>) put);
             case KVCommand.LeaderTransaction<?, ?> transaction -> handleLeaderTransaction((KVCommand.LeaderTransaction<K, V>) transaction);
             case Remove<?> remove -> handleRemove((Remove<K>) remove);
@@ -84,50 +84,77 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     private Option<V> handleLeaderPut(KVCommand.LeaderPut<K, V> put) {
         var current = Option.option(storage.get(put.key()));
-        handleLeaderTransaction(new KVCommand.LeaderTransaction<>(put.key(), "", put.leader(), put.guards(),
-            List.of(new KVCommand.Mutation<>(put.key(), put.expected(), Option.some(put.value())))));
+
+        handleLeaderTransaction(new KVCommand.LeaderTransaction<>(put.key(),
+                                                                  "",
+                                                                  put.leader(),
+                                                                  put.guards(),
+                                                                  List.of(new KVCommand.Mutation<>(put.key(),
+                                                                                                   put.expected(),
+                                                                                                   Option.some(put.value())))));
+
         return current;
     }
 
     /// Validate the complete read/write set before changing storage. Notifications run only after
     /// every change is visible, so a subscriber cannot act on a partially committed reservation.
     private KVCommand.TransactionResult handleLeaderTransaction(KVCommand.LeaderTransaction<K, V> transaction) {
-        var accepted = transaction.leader().equals(storage.get(LeaderKey.INSTANCE))
-                       && transaction.guards().stream().allMatch(this::matchesWitness)
-                       && transaction.mutations().stream().map(KVCommand.Mutation::key).distinct().count() == transaction.mutations().size()
-                       && transaction.mutations().stream().allMatch(this::validMutation);
+        var accepted = transaction.leader().equals(storage.get(LeaderKey.INSTANCE)) && transaction.guards()
+                                                                                                  .stream()
+                                                                                                  .allMatch(this::matchesWitness) && transaction.mutations()
+                                                                                                                                                .stream()
+                                                                                                                                                .map(KVCommand.Mutation::key)
+                                                                                                                                                .distinct()
+                                                                                                                                                .count() == transaction.mutations()
+                                                                                                                                                                       .size() && transaction.mutations()
+                                                                                                                                                                                             .stream()
+                                                                                                                                                                                             .allMatch(this::validMutation);
+
         if (accepted) {
             transaction.mutations().forEach(this::applyMutation);
             transaction.mutations().forEach(this::notifyMutation);
         }
+
         return new KVCommand.TransactionResult(transaction.transactionId(), accepted);
     }
 
     private boolean matchesWitness(KVCommand.ReadWitness<K> witness) {
-        return witness.expected().equals(Option.option(storage.get(witness.key())));
+        return witness.expected()
+                      .equals(Option.option(storage.get(witness.key())));
     }
 
     private boolean validMutation(KVCommand.Mutation<K, V> mutation) {
-        return !(mutation.key() instanceof LeaderKey)
-               && mutation.expected().equals(Option.option(storage.get(mutation.key())))
-               && mutation.replacement().fold(() -> !(storage.get(mutation.key()) instanceof OwnerFenced<?, ?>)
-                                               && (storage.get(mutation.key()) instanceof LeaderAuthorized
-                                                   || !staleRemove(new Remove<>(mutation.key(), mutation.expected().map(value -> (Object) value)))),
-                                               value -> !staleWrite(mutation.key(), value));
+        return ! (mutation.key() instanceof LeaderKey)
+               && mutation.expected()
+                          .equals(Option.option(storage.get(mutation.key())))
+               && mutation.replacement()
+                          .fold(() -> !(storage.get(mutation.key()) instanceof OwnerFenced<?, ?>) && (storage.get(mutation.key()) instanceof LeaderAuthorized || !staleRemove(new Remove<>(mutation.key(),
+                                                                                                                                                                                           mutation.expected()
+                                                                                                                                                                                                   .map(value -> (Object) value)))),
+                                value -> !staleWrite(mutation.key(),
+                                                     value));
     }
 
     private void applyMutation(KVCommand.Mutation<K, V> mutation) {
-        mutation.replacement().fold(() -> storage.remove(mutation.key()), value -> storage.put(mutation.key(), value));
+        mutation.replacement().fold(() -> storage.remove(mutation.key()),
+                                    value -> storage.put(mutation.key(), value));
     }
 
     private void notifyMutation(KVCommand.Mutation<K, V> mutation) {
-        mutation.replacement().fold(() -> {
-            router.route(new ValueRemove<>(new Remove<>(mutation.key()), mutation.expected()));
-            return org.pragmatica.lang.Unit.unit();
-        }, value -> {
-            router.route(new ValuePut<>(new Put<>(mutation.key(), value), mutation.expected()));
-            return org.pragmatica.lang.Unit.unit();
-        });
+        mutation.replacement()
+                .fold(() -> {
+                          router.route(new ValueRemove<>(new Remove<>(mutation.key()),
+                                                         mutation.expected()));
+
+                          return org.pragmatica.lang.Unit.unit();
+                      },
+                      value -> {
+                          router.route(new ValuePut<>(new Put<>(mutation.key(),
+                                                                value),
+                                                      mutation.expected()));
+
+                          return org.pragmatica.lang.Unit.unit();
+                      });
     }
 
     private Option<V> handlePut(Put<K, V> put) {
@@ -152,8 +179,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return dropsOwnerFence(key, incoming) || staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key, incoming) || regressiveWatermarkWrite(key,
-                                                                                                                                                   incoming);
+        return dropsOwnerFence(key, incoming) || staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key,
+                                                                                                                                          incoming) || regressiveWatermarkWrite(key,
+                                                                                                                                                                                incoming);
     }
 
     private boolean dropsOwnerFence(K key, Object incoming) {
@@ -200,9 +228,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private static boolean differentOwner(EpochBearing<?> incoming, EpochBearing<?> stored) {
-        return stored instanceof OwnerFenced<?, ?> owner
-               && (!(incoming instanceof OwnerFenced<?, ?> candidate)
-                   || !owner.fenceOwner().equals(candidate.fenceOwner()));
+        return stored instanceof OwnerFenced<?, ?> owner && (!(incoming instanceof OwnerFenced<?, ?> candidate) || !owner.fenceOwner()
+                                                                                                                         .equals(candidate.fenceOwner()));
     }
 
     /// Lost-update fence (RFC-0018, #570): [VersionFenced] values are compare-and-put on their
@@ -292,7 +319,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     @Override
     public synchronized Result<byte[]> makeSnapshot() {
-        return Result.lift(Causes::fromThrowable, () -> serializer.canonical().encode(new HashMap<>(storage)));
+        return Result.lift(Causes::fromThrowable,
+                           () -> serializer.canonical()
+                                           .encode(new HashMap<>(storage)));
     }
 
     /// The serializer used for snapshot serialization. [StateMachine#createBatch] reuses it to

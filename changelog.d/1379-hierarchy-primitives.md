@@ -1,0 +1,4 @@
+### Added (2026-09-20 — #1379: atomic guarded KV mutations and canonical snapshots)
+- **Leader-guarded multi-key transactions** validate the leader and read/write witnesses before changing any key. Rejected transactions report a correlated refusal. [verified: integrations/cluster/src/test/java/org/pragmatica/cluster/state/kvstore/KVStoreLeaderTransactionTest.java]
+- Opt-in ownership fences reject conflicting owners at the same epoch. [verified: integrations/cluster/src/test/java/org/pragmatica/cluster/state/kvstore/KVStoreOwnerFenceTest.java]
+- Explicit canonical serialization produces stable bytes for unordered maps and sets; KV snapshots use this view. [verified: integrations/serialization/api/src/test/java/org/pragmatica/serialization/CanonicalSliceCodecTest.java] [mechanism: KVStore.makeSnapshot selects serializer.canonical()]
