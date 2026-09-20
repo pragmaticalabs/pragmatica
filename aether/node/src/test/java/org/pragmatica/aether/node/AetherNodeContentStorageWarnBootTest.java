@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -28,7 +29,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -93,6 +96,9 @@ class AetherNodeContentStorageWarnBootTest {
     private Level originalLevel;
     private AetherNode node;
 
+    @TempDir
+    Path tempDir;
+
     @BeforeEach
     void setUp() {
         appender = CapturingAppender.create("AetherNodeContentStorageWarnCapture");
@@ -153,7 +159,7 @@ class AetherNodeContentStorageWarnBootTest {
 
         emitAppenderSentinel();
 
-        node = AetherNode.aetherNode(minimalConfig(environmentWith(Option.some(provider)), encryption), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(environmentWith(Option.some(provider)), encryption, tempDir), () -> {})
                           .onFailure(cause -> fail("boot must succeed: the configured keyring resolves cleanly - " + cause.message()))
                           .unwrap();
 
@@ -171,7 +177,7 @@ class AetherNodeContentStorageWarnBootTest {
     void assembleNode_staysSilentOnContentStorage_whenNoKeyringConfigured() {
         emitAppenderSentinel();
 
-        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none(), tempDir), () -> {})
                           .onFailure(cause -> fail("boot must succeed with no storage encryption configured at all - "
                                                     + cause.message()))
                           .unwrap();
@@ -204,17 +210,23 @@ class AetherNodeContentStorageWarnBootTest {
     ///   `ConfigService`/`ResourceProvider` process-wide static singletons, hence the explicit
     ///   `.clear()` calls in `tearDown`.
     private static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
-                                                   Option<StorageEncryptionConfig> storageEncryption) {
-        return minimalConfig(environment, storageEncryption, ConfigurationProvider.builder().build());
+                                                   Option<StorageEncryptionConfig> storageEncryption,
+                                                   Path storageRoot) {
+        return minimalConfig(environment, storageEncryption, ConfigurationProvider.builder().build(), storageRoot);
     }
 
     /// Same fixture with a caller-supplied `ConfigurationProvider`, for a sibling boot test that needs
     /// a config SECTION to exist (`AetherNodeContentStorageWiringBootTest`): the SPI's config loader
     /// refuses to provision a resource whose section is absent, so "any content works" above holds
     /// only for THIS class.
+    ///
+    /// #1276: node storage is rooted in the caller's `@TempDir` ([HermeticStorage#nodeStorageIn]), never
+    /// the machine-global `/data/aether/...` default. The explicit `artifacts` instance is encrypted
+    /// exactly when a node-wide keyring is configured, which is what the synthesized one would have been.
     static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
                                            Option<StorageEncryptionConfig> storageEncryption,
-                                           ConfigurationProvider configProvider) {
+                                           ConfigurationProvider configProvider,
+                                           Path storageRoot) {
         var self = NodeId.nodeId("content-storage-warn-boot-test").unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -231,6 +243,8 @@ class AetherNodeContentStorageWarnBootTest {
                                 .certificateProvider(Option.none())
                                 .configProvider(Option.some(configProvider))
                                 .environment(environment)
+                                .managementHttpProtocol(HttpProtocol.H1)
+                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, storageEncryption.isPresent()))
                                 .build()
                                 .withStorageEncryption(storageEncryption);
     }
