@@ -10,6 +10,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -23,7 +28,9 @@ import org.pragmatica.aether.node.stream.StreamConsumerManager.SlicePlacement;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
+import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -31,10 +38,15 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
+import org.pragmatica.aether.slice.topic.ContextualEvent;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
+import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
+import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -45,6 +57,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -53,8 +66,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 
@@ -193,10 +209,9 @@ class StreamConsumerManagerTest {
                                                                                  HlcTimestamp.ZERO));
     }
 
-    /// A seam for #545's re-resolution race: `reconcile()` and `declarationFor` each re-read
-    /// declarations independently, and a REAL registry answers both reads identically within one
-    /// synchronous call, so the ambiguity branch cannot be driven from a real registry. A mock that
-    /// answers the two reads DIFFERENTLY reproduces the only interleaving in which it matters.
+    /// A seam for a registry whose answer changes BETWEEN reads — a KV notification landing while a
+    /// pass is in flight. A real registry answers every read from its current state, so only a mock can
+    /// script the change deterministically.
     private StreamConsumerManager managerWithRegistry(StreamConsumerRegistry customRegistry) {
         return StreamConsumerManager.streamConsumerManager(customRegistry,
                                                            runtime,
@@ -720,16 +735,16 @@ class StreamConsumerManagerTest {
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
         }
 
-        /// `reconcile()`'s own guard already keeps a colliding declaration's key out of `desired`, so a
-        /// REAL registry can never drive `declarationFor` into an ambiguous match: both reads it takes
-        /// — the one `reconcile()` uses to build `desired` and the one it makes internally to resolve a
-        /// key back to a declaration — see the same snapshot. The only way the ambiguity branch is
-        /// reachable at all is a THIRD declaration landing between those two reads (a KV notification
-        /// racing a `reconcile()` in flight); a mock registry answering the two reads differently is
-        /// the only way to reproduce that interleaving synchronously. Proves the branch is not dead
-        /// code: it is what keeps that race from picking a side.
+        /// #1267 replaced what this test used to pin. A pass used to read the declarations once to build
+        /// `desired` and again, per key, to resolve each key back to a declaration, so a colliding
+        /// declaration landing between those reads reached `declarationFor`'s refusal branch mid-pass.
+        /// A pass now reads ONE snapshot and resolves every key against it, so that interleaving no
+        /// longer exists: a collision landing mid-pass is invisible to that pass and is acted on by the
+        /// next one. Pinned here: the registry is read exactly once per pass, the first pass acts on
+        /// what it read, and the next pass retracts the attachment the moment the collision is visible —
+        /// fail-closed per pass, never an arbitrary winner.
         @Test
-        void declarationFor_refusesToPickAWinner_whenACollisionAppearsBetweenTheTwoDeclarationReads() {
+        void reconcile_readsOneSnapshotPerPass_andRetractsOnTheNextPass_whenACollisionLandsBetweenPasses() {
             var declarationA = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, ARTIFACT, METHOD, GROUP, false, "java.lang.String");
             var declarationB = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, OTHER_ARTIFACT, METHOD, GROUP, false, "java.lang.String");
             var raceyRegistry = mock(StreamConsumerRegistry.class);
@@ -739,9 +754,17 @@ class StreamConsumerManagerTest {
             deploySliceLocally();
             ownership.ownedBySelf(0, 1, 2, 3);
 
-            managerWithRegistry(raceyRegistry).reconcile();
+            var manager = managerWithRegistry(raceyRegistry);
 
-            assertThat(runtime.subscribedPartitions()).describedAs("the collision surfaced only on re-resolution — `declarationFor` must still refuse to pick a side, never fall back to the first match")
+            manager.reconcile();
+
+            verify(raceyRegistry, times(1)).allDeclarations();
+            assertThat(runtime.subscribedPartitions()).describedAs("the first pass's one snapshot holds no collision — consuming is the correct decision for what it read")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the next pass sees the collision and retracts — never an arbitrary winner")
                       .isEmpty();
         }
 
@@ -834,6 +857,232 @@ class StreamConsumerManagerTest {
         }
     }
 
+    /// #1267: one declaration snapshot per reconcile pass, and passes that never overlap.
+    ///
+    /// The timer tick and the registration-change listener both call `reconcile()`, on different
+    /// threads. Unserialized, a pass that read the declarations BEFORE a registration landed can finish
+    /// AFTER the listener's pass attached that registration's partitions, and its `dropStale` then
+    /// detaches what the newer pass just attached — leaving a desired consumer detached until the next
+    /// tick. The latch parks the older pass inside that window; it widens the window, it does not create
+    /// it.
+    @Nested
+    class ReconcilePasses {
+        private static final long PARK_TIMEOUT_SECONDS = 10;
+        private static final int BURST_SIZE = 5;
+
+        @Test
+        void reconcile_readsTopicDeclarationsExactlyOnce_perPass() {
+            var topicGroups = new CountingTopicGroups();
+
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(topicGroups.calls.get()).describedAs("one declaration snapshot per pass — not one more per desired subscription")
+                                               .isEqualTo(1);
+        }
+
+        @Test
+        void reconcile_keepsAttachedPartitions_whenAnOlderConcurrentPassFinishesLast() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+            var timerPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the timer pass reached the declaration read with the OLD registry snapshot")
+                                                                                   .isTrue();
+            var listenerPass = Thread.ofPlatform().start(ReconcilePasses.this::declareOnListenerThread);
+
+            awaitFinishedOrBlocked(listenerPass);
+            topicGroups.release.countDown();
+            timerPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            listenerPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+
+            assertThat(timerPass.isAlive() || listenerPass.isAlive()).describedAs("both passes completed").isFalse();
+            assertThat(runtime.subscribedPartitions()).describedAs("the newer registration's partitions stay attached once both passes are done")
+                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(manager.activeSubscriptionCount()).isEqualTo(4);
+        }
+
+        /// Coalescing (#1267): every trigger that arrives while a pass is in flight is covered by ONE
+        /// follow-up pass, not one pass per trigger. Counted by declaration reads — one per pass.
+        @Test
+        void reconcile_runsExactlyOneFollowUpPass_forABurstOfTriggersDuringABusyPass() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+            var manager = managerWithTopicGroups(topicGroups);
+            var busyPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the busy pass reached its declaration read")
+                                                                                   .isTrue();
+            var burst = IntStream.range(0, BURST_SIZE)
+                                 .mapToObj(_ -> Thread.ofPlatform().start(manager::reconcile))
+                                 .toList();
+
+            for (var trigger : burst) {
+                awaitFinishedOrBlocked(trigger);
+            }
+            topicGroups.release.countDown();
+            busyPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            for (var trigger : burst) {
+                trigger.join(PARK_TIMEOUT_SECONDS * 1_000);
+            }
+
+            assertThat(topicGroups.calls.get()).describedAs("the busy pass plus ONE follow-up pass for all %d triggers", BURST_SIZE)
+                                               .isEqualTo(2);
+        }
+
+        /// `stop()` waits for an in-flight pass, so a pass parked past its snapshot cannot attach after
+        /// `stop()` returns: the stop's detach sweep runs after that pass has finished.
+        @Test
+        void stop_leavesNothingAttached_whenAPassInFlightFinishesAfterStopWasCalled() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+            var inFlightPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the pass holds its snapshot and has not attached yet")
+                                                                                   .isTrue();
+            var stopping = Thread.ofPlatform().start(manager::stop);
+
+            awaitFinishedOrBlocked(stopping);
+            topicGroups.release.countDown();
+            inFlightPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            stopping.join(PARK_TIMEOUT_SECONDS * 1_000);
+
+            assertThat(inFlightPass.isAlive() || stopping.isAlive()).describedAs("the pass and the stop completed").isFalse();
+            assertThat(runtime.subscribedPartitions()).describedAs("nothing may stay attached once stop() has returned")
+                                                      .isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        /// The lock alone is not enough: a trigger after `stop()` — a queued caller, or a tick that
+        /// outlives it — must not run a pass that re-attaches.
+        @Test
+        void reconcile_attachesNothing_afterStop() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(new CountingTopicGroups());
+
+            manager.reconcile();
+            manager.stop();
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("a stopped manager must not re-attach").isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        /// `stopped` must be set BEFORE the sweep, not after it. A pass triggered while the sweep holds
+        /// the lock — here re-entrantly from inside the sweep, which is the one interleaving a test can
+        /// force without a scheduler — must find the manager already stopped; with the flag set after
+        /// the sweep it runs, re-attaches what the sweep had just detached, and survives `stop()`.
+        @Test
+        void stop_leavesNothingAttached_whenAPassIsTriggeredDuringTheDetachSweep() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(new CountingTopicGroups());
+            var triggered = new AtomicBoolean();
+
+            manager.reconcile();
+            runtime.afterUnsubscribe = () -> triggerOnce(manager, triggered);
+            manager.stop();
+
+            assertThat(triggered.get()).describedAs("a pass was triggered from inside the sweep").isTrue();
+            assertThat(runtime.subscribedPartitions()).describedAs("a pass triggered during stop() must not re-attach")
+                                                      .isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        private static void triggerOnce(StreamConsumerManager manager, AtomicBoolean triggered) {
+            if (triggered.compareAndSet(false, true)) {
+                manager.reconcile();
+            }
+        }
+
+        private void declareOnListenerThread() {
+            declareStringConsumer();
+        }
+
+        /// The listener pass either ran to completion (unserialized) or is waiting for the parked pass
+        /// (serialized); only then is the parked pass released, so the older pass finishes LAST.
+        private static void awaitFinishedOrBlocked(Thread thread) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(PARK_TIMEOUT_SECONDS);
+
+            while (thread.isAlive() && !isWaiting(thread) && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+        }
+
+        private static boolean isWaiting(Thread thread) {
+            return switch (thread.getState()) {
+                case BLOCKED, WAITING, TIMED_WAITING -> true;
+                default -> false;
+            };
+        }
+
+        private StreamConsumerManager managerWithTopicGroups(TopicGroupDeclarationSource topicGroups) {
+            return StreamConsumerManager.streamConsumerManager(registry,
+                                                               runtime,
+                                                               invoker,
+                                                               invocationHandler,
+                                                               FrameworkCodecs.frameworkCodecs(),
+                                                               ownership,
+                                                               placement,
+                                                               SELF,
+                                                               topicGroups);
+        }
+    }
+
+    /// Counts declaration reads; synthesizes no topic declarations.
+    private static final class CountingTopicGroups implements TopicGroupDeclarationSource {
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public List<StreamConsumerRegistry.ConsumerDeclaration> declarations() {
+            calls.incrementAndGet();
+
+            return List.of();
+        }
+    }
+
+    /// Parks the FIRST declaration read until released. `allDeclarations()` reads the registry before
+    /// the topic source, so the parked pass holds the registry snapshot taken before the park.
+    private static final class ParkingTopicGroups implements TopicGroupDeclarationSource {
+        private static final long PARK_SECONDS = 10;
+
+        private final CountDownLatch parked = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public List<StreamConsumerRegistry.ConsumerDeclaration> declarations() {
+            if (calls.getAndIncrement() == 0) {
+                parked.countDown();
+                awaitRelease();
+            }
+
+            return List.of();
+        }
+
+        private void awaitRelease() {
+            try {
+                release.await(PARK_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     @Nested
     class Lifecycle {
         @Test
@@ -849,6 +1098,27 @@ class StreamConsumerManagerTest {
             assertThat(runtime.subscribedPartitions()).describedAs("a stopped node must leave nothing attached — #499 zombie lesson")
                       .isEmpty();
             assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        /// rev1272 F7 follow-up: the "not started, retrying its cursor fetch" state reaches the
+        /// per-partition status the declarative-consumers route renders.
+        @Test
+        void statuses_carryAwaitingCursorFetch_fromTheSnapshot() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.reconcile();
+            runtime.awaitingCursorFetch(true);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                     .satisfies(cursor -> assertThat(cursor.awaitingCursorFetch()).isTrue()));
+            runtime.awaitingCursorFetch(false);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                     .satisfies(cursor -> assertThat(cursor.awaitingCursorFetch()).isFalse()));
         }
 
         @Test
@@ -1112,6 +1382,14 @@ class StreamConsumerManagerTest {
         private final List<Integer> abandoned = new CopyOnWriteArrayList<>();
         private final List<Integer> gracefullyUnsubscribed = new CopyOnWriteArrayList<>();
         private int subscribeCalls;
+        private volatile boolean awaitingCursorFetch;
+        // Runs on the unsubscribing thread after each unsubscribe — lets a test trigger a pass from INSIDE
+        // the stop sweep, while that thread holds the pass lock. Inert by default.
+        private volatile Runnable afterUnsubscribe = () -> {};
+
+        void awaitingCursorFetch(boolean awaiting) {
+            awaitingCursorFetch = awaiting;
+        }
 
         Option<ConsumerFence> fenceOf(int partition) {
             return Option.option(fences.get(new StreamPartition(STREAM, partition)));
@@ -1173,6 +1451,7 @@ class StreamConsumerManagerTest {
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
             gracefullyUnsubscribed.add(partition);
             subscriptions.remove(new StreamPartition(streamName, partition));
+            afterUnsubscribe.run();
 
             return Result.unitResult();
         }
@@ -1202,7 +1481,8 @@ class StreamConsumerManagerTest {
                                                                        0L,
                                                                        false,
                                                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
-                                                                       Option.none()))
+                                                                       Option.none(),
+                                                                       awaitingCursorFetch))
                                 .toList();
         }
 
@@ -1228,6 +1508,8 @@ class StreamConsumerManagerTest {
         private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
         private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
         private static final String TOPIC_GROUP = "org.example:orders#" + METHOD.name();
+        private static final MethodName ON_PLACED = MethodName.methodName("onPlaced").unwrap();
+        private static final MethodName ON_PLACED_WITH_CONTEXT = MethodName.methodName("onPlacedWithContext").unwrap();
 
         private org.pragmatica.aether.endpoint.TopicSubscriptionRegistry topicRegistry;
         private CapturingRuntime capturingRuntime;
@@ -1242,10 +1524,14 @@ class StreamConsumerManagerTest {
         }
 
         private void subscribeTopic(Artifact artifact) {
+            subscribeTopic(artifact, METHOD);
+        }
+
+        private void subscribeTopic(Artifact artifact, MethodName method) {
             var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
             var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address,
                                                                                                               artifact,
-                                                                                                              METHOD);
+                                                                                                              method);
             var value = org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF);
 
             topicRegistry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
@@ -1314,36 +1600,131 @@ class StreamConsumerManagerTest {
         }
 
         /// The unwrap seam end to end at the delivery boundary: the captured callback receives a
-        /// node-codec-encoded [TopicEventEnvelope]; the slice's invoker must see the DECODED
-        /// application payload — never the envelope, never raw bytes.
+        /// node-codec-encoded [TopicEventEnvelope]; the slice must be handed the APPLICATION payload —
+        /// never the envelope — together with the envelope's delivery context (#1295: before it, the
+        /// node decoded the payload and invoked with the bare event, so no context ever existed). The
+        /// subscribing slice's own bridge decodes the payload bytes.
         @Test
-        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayload() {
+        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayloadAndContext() {
             subscribeTopic(ARTIFACT);
             deployDecodingSliceLocally();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
-            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
             topicManager().reconcile();
-            var appEvent = new AppEvent("order-42");
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
-            var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
-                                                                                     1234L,
-                                                                                     sliceCodec.encode(appEvent));
+            var appPayload = sliceCodec.encode(new AppEvent("order-42"));
+            var envelope = new TopicEventEnvelope("msg-1", 1234L, appPayload);
 
             capturingRuntime.callbackFor(TOPIC_STREAM, 0)
-                            .onEvent(0L,
+                            .onEvent(3L,
                                      topicAwareCodec.encode(envelope),
                                      1234L)
                             .await()
-                            .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            var payload = org.mockito.ArgumentCaptor.forClass(Object.class);
+                            .onFailure(cause -> fail(cause.message()));
+            var payload = org.mockito.ArgumentCaptor.forClass(byte[].class);
+            var context = org.mockito.ArgumentCaptor.forClass(MessageContext.class);
 
             org.mockito.Mockito.verify(invoker)
-                               .invokeLocal(org.mockito.ArgumentMatchers.eq(ARTIFACT),
-                                            org.mockito.ArgumentMatchers.eq(METHOD),
-                                            payload.capture(),
-                                            any());
-            assertThat(payload.getValue()).isEqualTo(appEvent);
+                               .invokeLocalWithContext(org.mockito.ArgumentMatchers.eq(ARTIFACT),
+                                                       org.mockito.ArgumentMatchers.eq(METHOD),
+                                                       payload.capture(),
+                                                       context.capture());
+            assertThat(payload.getValue()).isEqualTo(appPayload);
+            assertThat(context.getValue()).isEqualTo(MessageContext.messageContext("msg-1", TOPIC_ADDRESS, 0, 3L));
+        }
+
+        /// #1295, end to end at the node boundary: a REAL [DurableTopicPublisher]
+        /// stamps the envelope's messageId; the manager's dispatch delivers it through a REAL
+        /// [DefaultSliceBridge] holding a 1-arg subscriber and a 2-arg subscriber
+        /// in the exact adapter shape the slice processor generates, both on the SAME topic. The 2-arg
+        /// subscriber must observe the PUBLISHER's messageId with the topic, partition and offset of the
+        /// delivery; the 1-arg subscriber must receive the bare event, as before. Before #1295 the 2-arg
+        /// subscriber failed every delivery with a ClassCastException and never saw anything.
+        @Test
+        void delivery_givesTwoArgSubscriberThePublishersMessageId_andOneArgSubscriberTheBareEvent() {
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var bare = new AtomicReference<Object>();
+            var contextual = new AtomicReference<ContextualEvent>();
+            var subscriber = DefaultSliceBridge.defaultSliceBridge(ARTIFACT,
+                                                                                                () -> List.of(bareSubscriber(bare),
+                                                                                                              contextualSubscriber(contextual)),
+                                                                                                sliceCodec);
+
+            subscribeTopic(ARTIFACT, ON_PLACED);
+            subscribeTopic(ARTIFACT, ON_PLACED_WITH_CONTEXT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(call -> subscriber.invokeWithContext(call.<MethodName> getArgument(1)
+                                                                                                                                  .name(),
+                                                                                                                              call.getArgument(2),
+                                                                                                                              call.getArgument(3))
+                                                                                                                          .mapToUnit());
+            topicManager().reconcile();
+
+            var published = publishThroughTheRealPublisher(sliceCodec, new AppEvent("order-42"));
+
+            deliver(ON_PLACED, published, 5L);
+            deliver(ON_PLACED_WITH_CONTEXT, published, 5L);
+
+            assertThat(bare.get()).isEqualTo(new AppEvent("order-42"));
+            assertThat(contextual.get()).isEqualTo(ContextualEvent.contextualEvent(new AppEvent("order-42"),
+                                                                                                                      MessageContext.messageContext(published.messageId(),
+                                                                                                                                                                                      TOPIC_ADDRESS,
+                                                                                                                                                                                      0,
+                                                                                                                                                                                      5L)));
+        }
+
+        private void deliver(MethodName method,
+                             TopicEventEnvelope envelope,
+                             long offset) {
+            capturingRuntime.callbackFor(TOPIC_STREAM,
+                                         0,
+                                         DurableGroupIdentity.groupId(ARTIFACT, method))
+                            .onEvent(offset, topicAwareCodec.encode(envelope), 1234L)
+                            .await()
+                            .onFailure(cause -> fail(method.name() + " delivery failed: "
+                                                                                      + cause.message()));
+        }
+
+        private static TopicEventEnvelope publishThroughTheRealPublisher(SliceCodec sliceCodec,
+                                                                                                            AppEvent event) {
+            var captured = new AtomicReference<TopicEventEnvelope>();
+
+            new DurableTopicPublisher<AppEvent>(sliceCodec, envelope -> capture(captured, envelope))
+                .publish(event)
+                .await();
+
+            return captured.get();
+        }
+
+        private static Promise<Unit> capture(AtomicReference<TopicEventEnvelope> captured,
+                                             TopicEventEnvelope envelope) {
+            captured.set(envelope);
+            return Promise.unitPromise();
+        }
+
+        private static SliceMethod<Unit, AppEvent> bareSubscriber(AtomicReference<Object> seen) {
+            return new SliceMethod<>(ON_PLACED,
+                                                                 event -> record(seen, event),
+                                                                 new TypeToken<Unit>() {},
+                                                                 new TypeToken<AppEvent>() {});
+        }
+
+        /// The exact adapter `FactoryClassGenerator` emits for `onPlacedWithContext(AppEvent, MessageContext)`.
+        private static SliceMethod<Unit, ContextualEvent> contextualSubscriber(AtomicReference<ContextualEvent> seen) {
+            return new SliceMethod<>(ON_PLACED_WITH_CONTEXT,
+                                                                 contextual -> record(seen,
+                                                                                      ContextualEvent.contextualEvent((AppEvent) contextual.event(),
+                                                                                                                                                        contextual.context())),
+                                                                 new TypeToken<Unit>() {},
+                                                                 new TypeToken<ContextualEvent>() {});
+        }
+
+        private static <T> Promise<Unit> record(AtomicReference<T> seen, T value) {
+            seen.set(value);
+            return Promise.unitPromise();
         }
 
         /// #1238: the runtime runs ONE serial delivery loop per (group, partition), so a handler that
@@ -1357,7 +1738,9 @@ class StreamConsumerManagerTest {
             deployDecodingSliceLocally();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
-            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            // The durable-topic path invokes through invokeLocalWithContext (#1295); the never-resolving
+            // promise is the hung handler this pin bounds.
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
             new StreamConsumerManager.ManagerState(registry,
                                                    capturingRuntime,
                                                    invoker,
@@ -1436,11 +1819,17 @@ class StreamConsumerManagerTest {
 
         private static final class CapturingRuntime implements StreamConsumerRuntime {
             private final Map<String, ConsumerCallback> callbacks = new ConcurrentHashMap<>();
+            private final Map<String, ConsumerCallback> callbacksByGroup = new ConcurrentHashMap<>();
             private final Map<String, ConsumerConfig> byKey = new ConcurrentHashMap<>();
             private final Map<String, Integer> subscribeCalls = new ConcurrentHashMap<>();
 
             ConsumerCallback callbackFor(String streamName, int partition) {
                 return callbacks.get(streamName + "[" + partition + "]");
+            }
+
+            /// Two topic groups share one `stream[partition]` key; this resolves a group's own callback.
+            ConsumerCallback callbackFor(String streamName, int partition, String groupId) {
+                return callbacksByGroup.get(streamName + "[" + partition + "]#" + groupId);
             }
 
             List<String> streams() {
@@ -1486,6 +1875,7 @@ class StreamConsumerManagerTest {
 
                 subscribeCalls.merge(key, 1, Integer::sum);
                 callbacks.put(key, callback);
+                callbacksByGroup.put(key + "#" + config.groupId(), callback);
                 byKey.put(key, config);
 
                 return Result.unitResult();
