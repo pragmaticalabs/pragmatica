@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -25,6 +26,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -114,7 +116,33 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                                                   .map(StreamError.WalRecoveryGap.class::cast)
                                                   .toList()).as("typed refusal inside %s", cause.message())
                                                             .singleElement()
-                                                            .satisfies(gap -> assertGap(gap, sealedThrough + 1)));
+                                                            .satisfies(gap -> assertGap(gap, 0L, sealedThrough + 1)));
+    }
+
+    /// The tripwire past the first record: a WAL whose records run 0,1,2 then 4,5 (a mid-log hole — nothing
+    /// in the truncate path produces one, so it is a corruption signature). The ring would assign 4's record
+    /// offset 3; recovery must refuse naming exactly that.
+    @Test
+    void restart_walWithMidLogHole_refusesLoudly() {
+        var wal = PartitionWal.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
+                              .onFailure(cause -> fail(cause.message()))
+                              .unwrap();
+
+        LongStream.of(0, 1, 2, 4, 5).forEach(offset -> wal.append(offset, payload((int) offset), 1000L + offset)
+                                                          .await()
+                                                          .onFailure(cause -> fail(cause.message())));
+        wal.close();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), new SegmentIndex()::lastSealedOffset);
+        var create = createStream(recovered);
+
+        recovered.close();
+
+        assertThat(create.isFailure()).as("a mid-log hole was renumbered silently").isTrue();
+        create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalRecoveryGap.class::isInstance)
+                                                  .map(StreamError.WalRecoveryGap.class::cast)
+                                                  .toList()).singleElement()
+                                                            .satisfies(gap -> assertGap(gap, 3L, 4L)));
     }
 
     /// Control for the tripwire: the snapshot DID cover the seals (durable == live), the tick compacted the WAL
@@ -210,12 +238,14 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                .onSuccess(offset -> assertThat(offset).isEqualTo((long) i));
     }
 
-    private static void assertGap(StreamError.WalRecoveryGap gap, long firstSurvivor) {
+    /// The rebuilt watermark is `-1` in every refusal here (an empty index), so `expected` names the offset the
+    /// ring would have assigned and `found` the record's own.
+    private static void assertGap(StreamError.WalRecoveryGap gap, long expected, long found) {
         assertThat(gap.streamName()).isEqualTo(STREAM);
         assertThat(gap.partition()).isEqualTo(PARTITION);
         assertThat(gap.base()).isEqualTo(-1L);
-        assertThat(gap.expected()).isEqualTo(0L);
-        assertThat(gap.found()).isEqualTo(firstSurvivor);
+        assertThat(gap.expected()).isEqualTo(expected);
+        assertThat(gap.found()).isEqualTo(found);
     }
 
     private static BlockId blockId(int seed) {
