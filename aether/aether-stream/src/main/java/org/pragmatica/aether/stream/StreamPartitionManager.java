@@ -1146,7 +1146,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// epoch) propagates UNCHANGED — no lazy create, no retry. `minAcks` is the #1236 replica floor, checked
     /// through {@link #publishLocalAtFloor} — AFTER the owner admission, so a forward that lands on a
     /// non-owner is answered with the retryable [StreamError.NotOwnerAppend], never with a
-    /// `NOT_ENOUGH_REPLICAS` about replication this node does not own.
+    /// `NOT_ENOUGH_REPLICAS` about replication this node does not own. The caller reads `minAcks` from the
+    /// stream it knows; on the lazy-materialization path that stream was unknown (`min-sync` 0), so the
+    /// retry takes its floor from the committed config it materializes from (#1290 review M1).
     public Result<Long> publishForwarded(String streamName,
                                          int partition,
                                          byte[] payload,
@@ -1156,8 +1158,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                              streamName,
                                                                                                                              partition,
                                                                                                                              payload,
-                                                                                                                             timestamp,
-                                                                                                                             minAcks),
+                                                                                                                             timestamp),
                                                                                             Result::success);
     }
 
@@ -1165,42 +1166,37 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                  String streamName,
                                                  int partition,
                                                  byte[] payload,
-                                                 long timestamp,
-                                                 int minAcks) {
+                                                 long timestamp) {
         return cause instanceof StreamError.StreamNotFound
-               ? materializeThenRetryPublish(streamName, partition, payload, timestamp, minAcks)
+               ? materializeThenRetryPublish(streamName, partition, payload, timestamp)
                : cause.result();
     }
 
     /// Lazily materialize from the locally-visible committed config, then retry the append once. When the
     /// committed config is not yet visible on this node the append cannot be recovered here, so the
     /// retryable {@link StreamError.StreamConfigNotYetVisible} is returned for the forwarder to back off on.
-    private Result<Long> materializeThenRetryPublish(String streamName,
-                                                     int partition,
-                                                     byte[] payload,
-                                                     long timestamp,
-                                                     int minAcks) {
+    private Result<Long> materializeThenRetryPublish(String streamName, int partition, byte[] payload, long timestamp) {
         return committedConfigSource.committedConfig(streamName)
                                     .fold(() -> new StreamError.StreamConfigNotYetVisible(streamName).result(),
                                           config -> materializeThenPublish(config,
                                                                            streamName,
                                                                            partition,
                                                                            payload,
-                                                                           timestamp,
-                                                                           minAcks));
+                                                                           timestamp));
     }
 
+    /// The retry's replica floor is the committed config's own `min-sync - 1`: the caller's floor was read
+    /// before the stream existed here and is therefore always 0 on this path.
     private Result<Long> materializeThenPublish(StreamConfig config,
                                                 String streamName,
                                                 int partition,
                                                 byte[] payload,
-                                                long timestamp,
-                                                int minAcks) {
+                                                long timestamp) {
         return ensureStreamMaterialized(config).flatMap(_ -> publishLocalAtFloor(streamName,
                                                                                  partition,
                                                                                  payload,
                                                                                  timestamp,
-                                                                                 minAcks));
+                                                                                 config.minSyncReplicas() - 1));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {

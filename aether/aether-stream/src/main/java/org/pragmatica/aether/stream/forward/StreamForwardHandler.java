@@ -122,10 +122,10 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// #1236: the replica floor (`min-sync - 1` peers) is checked BEFORE the owner appends, so a forwarded
     /// publish refused with `NOT_ENOUGH_REPLICAS` is genuinely not in the log — and AFTER the #1230 owner
     /// admission, so a forward that lands on a non-owner is answered retryable ([StreamError.NotOwnerAppend])
-    /// rather than with a floor verdict this node does not own. One window stays open by construction: a
-    /// stream this owner has not yet materialized reports `min-sync` 0 here, [StreamPartitionManager#publishForwarded]
-    /// then materializes and appends, and a floor that cannot be met surfaces from [#awaitMinSync] as an
-    /// unknown outcome — which is what it is, since the event was appended.
+    /// rather than with a floor verdict this node does not own. A stream this owner has not yet materialized
+    /// reports `min-sync` 0 here; [StreamPartitionManager#publishForwarded] then materializes it from the
+    /// committed config and checks THAT config's floor before appending (#1290 review M1), so the refusal
+    /// is clean on that path too.
     @Contract
     @Override
     @SuppressWarnings("JBCT-RET-01")
