@@ -96,6 +96,38 @@ Installed-voter changes also update leader eligibility. Expected election member
 candidate pools, and committed/KV leader adoption are restricted to the installed roster. Health
 can suppress reachability or trigger recovery, but cannot substitute a new electorate.
 
+## Excluded core leadership and cleanup authority
+
+A verified installed configuration that excludes the local CORE identity moves its leader FSM into
+passive observation of that configuration's members. Rabia's observer state and leader observation
+are separate: exclusion must not leave the leader FSM in `QuorumLost`, where committed leader replay
+would be rejected. Subsequent local quorum notifications cannot invalidate passive observation or
+start an election. The excluded core may therefore authenticate cleanup instructions from its
+observed committed leader while awaiting retirement; admission as CORE alone is not cleanup authority.
+
+Committed leader adoption requires an installed-member identity and a positive, non-regressing
+sequence. Quorum loss may clear the current leader before configuration installation. Retain the last
+adopted identity solely to accept replay of that same identity at the same sequence; a different
+identity at that sequence remains rejected. This retained identity does not independently authorize
+cleanup: the leader must be adopted again and belong to the installed electorate.
+
+Snapshot notification replay is a delta and can omit an unchanged `LeaderValue`. After a verified
+restore has persisted the checkpoint, installed voter authority, updated engine participation and
+replayed the KV delta, the production state-restored listener explicitly reads the committed
+`LeaderValue` and refreshes leader observation with its actual stored sequence. It neither invents a
+sequence nor relaxes installed-member or sequence fences. This refresh applies to excluded observers
+and surviving voters; an absent value supplies no leadership authority. `CommittedLeaderRefreshTest`
+covers an unchanged second replay and an absent committed leader.
+
+If a later verified configuration re-admits the local identity, passive observation transitions
+through `QuorumWaiting`. Configuration installation precedes Rabia becoming active, so membership
+alone must not begin an election. The existing consensus-readiness gate and subsequent committed-KV
+synchronization gate remain in force. Shutdown remains terminal.
+
+Regression coverage in `LeaderAdoptionSequenceGateTest` verifies exclusion after quorum loss,
+committed replay, rejection of unauthorized and conflicting equal-sequence leaders, and readmission
+without premature election.
+
 ## Passive worker routing after a handoff
 
 A worker's configured bootstrap electorate is not its current routing directory. A verified scoped
