@@ -1043,6 +1043,13 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements AetherKey {
+        @Override
+        public String asString() {
+            return "community-placement-availability/" + communityId + "/" + source + "/" + zone.or("");
+        }
+    }
+
     record CommunityPlacementOperationKey(String communityId) implements AetherKey {
         @Override
         public String asString() {

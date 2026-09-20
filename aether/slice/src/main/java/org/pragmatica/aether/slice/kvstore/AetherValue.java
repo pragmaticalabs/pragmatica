@@ -1993,6 +1993,12 @@ public sealed interface AetherValue {
         UNKNOWN
     }
 
+    /// A definitive no-create refusal. The operation itself is the exclusive recovery-probe token.
+    record CommunityPlacementAvailabilityValue(String policyIdentity,
+                                               String sourceBinding,
+                                               long refusedAt,
+                                               int attempts) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
     record CommunityPlacementOperationValue(String operationId,
                                             String communityId,
                                             NodeId targetNode,

@@ -262,7 +262,7 @@ public final class WorkerMetadataIndex {
             case AetherKey.EntityCheckpointKey entry -> Set.of("entity:" + entry.keyspace());
             case AetherKey.StorageBlockKey entry -> Set.of("storage:" + entry.instanceName());
             case AetherKey.StorageRefKey entry -> Set.of("storage:" + entry.instanceName());
-            case AetherKey.DeploymentOutcomeKey _, AetherKey.DeploymentKey _, AetherKey.AbTestKey _, AetherKey.ApiKeyAuditKey _, AetherKey.CloudCredentialsKey _, AetherKey.ClusterConfigKey _, AetherKey.CapacityLedgerKey _, AetherKey.CapacityReservationKey _, AetherKey.ProvisioningSlotKey _, AetherKey.AutoHealStateKey _ -> Set.of();
+            case AetherKey.DeploymentOutcomeKey _, AetherKey.DeploymentKey _, AetherKey.AbTestKey _, AetherKey.ApiKeyAuditKey _, AetherKey.CloudCredentialsKey _, AetherKey.ClusterConfigKey _, AetherKey.CapacityLedgerKey _, AetherKey.CapacityReservationKey _, AetherKey.CommunityPlacementAvailabilityKey _, AetherKey.ProvisioningSlotKey _, AetherKey.AutoHealStateKey _ -> Set.of();
             case AetherKey.LogLevelKey _, AetherKey.ObservabilityConfigKey _, AetherKey.AlertThresholdKey _, AetherKey.SchemaVersionKey _, AetherKey.SchemaMigrationLockKey _, AetherKey.GossipKeyRotationKey _, AetherKey.StreamMetadataKey _, AetherKey.StreamConfigKey _, AetherKey.ApiKeyKey _, AetherKey.DhtPartitionOwnershipKey _, AetherKey.StreamPartitionOwnershipKey _, AetherKey.SpokesmanKey _, AetherKey.ClusterPhaseKey _, AetherKey.StreamRegistryKey _ -> Set.of(GLOBAL);
         };
     }

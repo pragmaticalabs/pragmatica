@@ -509,7 +509,9 @@ public interface SystemTags {
         pin(table, 1697, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ScopeContent");
         pin(table, 1698, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ChunkRequest");
         pin(table, 1699, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.Chunk");
-        // ---- 2112..16383 RESERVED ----
+        pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
+        pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
+        // ---- 2114..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

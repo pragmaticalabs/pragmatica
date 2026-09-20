@@ -339,10 +339,9 @@ record PlacementReconciler(NodeId self,
         }
 
         return switch (operation.phase()) {
-            case RESERVED -> beginCreate(operation, leader);
+            case RESERVED -> beginCreate(config, operation, leader);
             case CREATE_REQUESTED -> observedTarget(operation).isPresent()
-                                     ? transition(operation,
-                                                  operation.withPhase(PlacementOperationPhase.AWAITING_READY, leader, "")).mapToUnit()
+                                     ? createAccepted(config, operation, leader)
                                      : uncertain(operation,
                                                  leader,
                                                  PlacementOperationPhase.CREATE_UNCERTAIN,
@@ -366,10 +365,7 @@ record PlacementReconciler(NodeId self,
             case DRAINED -> beginTerminate(operation, leader);
             case TERMINATING -> finishTermination(operation, leader);
             case CREATE_UNCERTAIN -> observedTarget(operation).isPresent()
-                                     ? transition(operation,
-                                                  operation.withPhase(PlacementOperationPhase.AWAITING_READY,
-                                                                      leader,
-                                                                      "Provider inventory recovered the reserved node")).mapToUnit()
+                                     ? createAccepted(config, operation, leader)
                                      : Promise.unitPromise();
             case COMPLETE, DRAIN_UNCERTAIN, BLOCKED, UNKNOWN -> Promise.unitPromise();
         };
@@ -385,10 +381,12 @@ record PlacementReconciler(NodeId self,
         return System.currentTimeMillis() - operation.phaseChangedAt() > timeout;
     }
 
-    private Promise<Unit> beginCreate(CommunityPlacementOperationValue operation, LeaderValue leader) {
+    private Promise<Unit> beginCreate(ClusterBootstrapConfig config,
+                                      CommunityPlacementOperationValue operation,
+                                      LeaderValue leader) {
         if (store.get(new AetherKey.NodePlacementKey(operation.targetNode())).isPresent()) {
             return observedTarget(operation).isPresent()
-                   ? transition(operation, operation.withPhase(PlacementOperationPhase.AWAITING_READY, leader, "")).mapToUnit()
+                   ? createAccepted(config, operation, leader)
                    : uncertain(operation,
                                leader,
                                PlacementOperationPhase.BLOCKED,
@@ -400,20 +398,148 @@ record PlacementReconciler(NodeId self,
         return transition(operation, requested).flatMap(accepted -> accepted && currentLeader().filter(leader::equals)
                                                                                              .isPresent()
                                                                     ? actuator.create(requested)
-                                                                              .flatMap(_ -> transition(requested,
-                                                                                                       requested.withPhase(PlacementOperationPhase.AWAITING_READY,
-                                                                                                                           leader,
-                                                                                                                           "")).mapToUnit())
+                                                                              .flatMap(_ -> createAccepted(config,
+                                                                                                           requested,
+                                                                                                           leader))
                                                                               .fold(result -> result.fold(cause -> cause == CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE
                                                                                                                    ? deferCapacity(requested,
                                                                                                                                    leader,
                                                                                                                                    cause.message())
-                                                                                                                   : uncertain(requested,
-                                                                                                                               leader,
-                                                                                                                               PlacementOperationPhase.CREATE_UNCERTAIN,
-                                                                                                                               cause.message()),
+                                                                                                                   : definitiveRefusal(cause)
+                                                                                                                     ? capacityRefused(config,
+                                                                                                                                       requested,
+                                                                                                                                       leader)
+                                                                                                                     : uncertain(requested,
+                                                                                                                                 leader,
+                                                                                                                                 PlacementOperationPhase.CREATE_UNCERTAIN,
+                                                                                                                                 cause.message()),
                                                                                                           Promise::success))
                                                                     : Promise.unitPromise());
+    }
+
+    private static boolean definitiveRefusal(org.pragmatica.lang.Cause cause) {
+        return cause instanceof org.pragmatica.aether.environment.EnvironmentError.CapacityUnavailable || cause instanceof org.pragmatica.aether.environment.EnvironmentError.NodeCapExceeded;
+    }
+
+    private static Comparator<CommunityPlacement.Location> locationOrder() {
+        return Comparator.comparing(CommunityPlacement.Location::source).thenComparing(location -> location.zone()
+                                                                                                           .or(""));
+    }
+
+    private static AetherKey.CommunityPlacementAvailabilityKey availabilityKey(String community,
+                                                                               String source,
+                                                                               Option<String> zone) {
+        return new AetherKey.CommunityPlacementAvailabilityKey(community, source, zone);
+    }
+
+    private Option<AetherValue.CommunityPlacementAvailabilityValue> availability(CommunityPlacement policy,
+                                                                                 CommunityPlacement.Location location) {
+        return store.getTyped(availabilityKey(policy.id(),
+                                              location.source(),
+                                              location.zone()),
+                              AetherValue.CommunityPlacementAvailabilityValue.class)
+                    .filter(value -> value.policyIdentity()
+                                          .equals(CommunityPlacementAvailability.policyIdentity(policy)));
+    }
+
+    private boolean probeDue(ClusterBootstrapConfig config,
+                             CommunityPlacement policy,
+                             CommunityPlacement.Location location) {
+        return availability(policy, location).filter(value -> System.currentTimeMillis() - value.refusedAt() >= CommunityPlacementAvailability.retryDelay(value.attempts()).millis())
+                           .filter(value -> actuator.sourceBinding(config.sources().get(location.source()).name())
+                                                    .option()
+                                                    .filter(value.sourceBinding()::equals)
+                                                    .isPresent())
+                           .isPresent();
+    }
+
+    private Promise<Unit> capacityRefused(ClusterBootstrapConfig config,
+                                          CommunityPlacementOperationValue operation,
+                                          LeaderValue leader) {
+        var reservationKey = new AetherKey.CapacityReservationKey(operation.targetNode());
+        var reservation = store.getTyped(reservationKey, AetherValue.CapacityReservationValue.class);
+
+        if (reservation.filter(value -> value.phase() != AetherValue.CapacityReservationPhase.RELEASED || !value.sourceName()
+                                                                                                                .equals(operation.targetSource()) || !value.sourceBinding()
+                                                                                                                                                           .equals(operation.sourceBinding()))
+                       .isPresent()) {
+            return uncertain(operation,
+                             leader,
+                             PlacementOperationPhase.CREATE_UNCERTAIN,
+                             "Definitive refusal has unresolved capacity accounting");
+        }
+
+        var policy = Option.option(config.communities().get(operation.communityId()));
+
+        if (policy.isEmpty()) return Promise.unitPromise();
+
+        var key = availabilityKey(operation.communityId(), operation.targetSource(), operation.targetZone());
+        var before = store.getTyped(key, AetherValue.CommunityPlacementAvailabilityValue.class);
+        var identity = CommunityPlacementAvailability.policyIdentity(policy.unwrap());
+        int attempts = before.filter(value -> value.policyIdentity()
+                                                   .equals(identity) && value.sourceBinding()
+                                                                             .equals(operation.sourceBinding()))
+                             .map(value -> Math.min(31,
+                                                    value.attempts() + 1))
+                             .or(1);
+        var refused = new AetherValue.CommunityPlacementAvailabilityValue(identity,
+                                                                          operation.sourceBinding(),
+                                                                          System.currentTimeMillis(),
+                                                                          attempts);
+        var completed = operation.withPhase(PlacementOperationPhase.COMPLETE,
+                                            leader,
+                                            "Provider definitively refused capacity; eligible discretionary capacity may fall back");
+
+        return commitAvailability(operation,
+                                  completed,
+                                  key,
+                                  before,
+                                  Option.some(refused),
+                                  List.of(new KVCommand.ReadWitness<AetherKey>(reservationKey,
+                                                                               reservation.map(value -> (Object) value)),
+                                          new KVCommand.ReadWitness<AetherKey>(AetherKey.ClusterConfigKey.CURRENT,
+                                                                               store.get(AetherKey.ClusterConfigKey.CURRENT)))).onSuccess(accepted -> {
+                                                                                                                                              if (accepted) escalation.accept(completed);
+                                                                                                                                          })
+                                 .mapToUnit();
+    }
+
+    private Promise<Unit> createAccepted(ClusterBootstrapConfig config,
+                                         CommunityPlacementOperationValue operation,
+                                         LeaderValue leader) {
+        var key = availabilityKey(operation.communityId(), operation.targetSource(), operation.targetZone());
+        var before = store.getTyped(key, AetherValue.CommunityPlacementAvailabilityValue.class);
+        var next = operation.withPhase(PlacementOperationPhase.AWAITING_READY, leader, "");
+
+        if (before.isEmpty()) return transition(operation, next).mapToUnit();
+
+        if (before.filter(value -> value.sourceBinding()
+                                        .equals(operation.sourceBinding())).isEmpty()) {
+            return uncertain(operation, leader, PlacementOperationPhase.BLOCKED, "Capacity recovery binding changed");
+        }
+
+        return commitAvailability(operation, next, key, before, Option.none(), List.of()).mapToUnit();
+    }
+
+    private Promise<Boolean> commitAvailability(CommunityPlacementOperationValue before,
+                                                CommunityPlacementOperationValue after,
+                                                AetherKey.CommunityPlacementAvailabilityKey availabilityKey,
+                                                Option<AetherValue.CommunityPlacementAvailabilityValue> expected,
+                                                Option<AetherValue.CommunityPlacementAvailabilityValue> replacement,
+                                                List<KVCommand.ReadWitness<AetherKey>> guards) {
+        var key = new AetherKey.CommunityPlacementOperationKey(before.communityId());
+        var id = UUID.randomUUID().toString();
+        var mutations = List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                               Option.some(before),
+                                                                               Option.some(after)),
+                                new KVCommand.Mutation<AetherKey, AetherValue>(availabilityKey,
+                                                                               expected.map(value -> value),
+                                                                               replacement.map(value -> value)));
+        // A failed create must never run COMPLETE's normal previous-worker removal side effect.
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, id, after.issuer(), guards, mutations);
+
+        return apply.apply(List.of(command))
+                    .map(results -> accepted(results, id));
     }
 
     private Promise<Unit> deferCapacity(CommunityPlacementOperationValue operation, LeaderValue leader, String detail) {
@@ -624,13 +750,34 @@ record PlacementReconciler(NodeId self,
                                                                                      member));
         }
 
-        var desired = policy.desiredCounts();
-        var deficit = policy.locations()
+        var unavailable = policy.locations()
+                                .stream()
+                                .filter(location -> availability(policy, location).isPresent())
+                                .collect(Collectors.toSet());
+        var effective = CommunityPlacementAvailability.effectiveCounts(policy, unavailable);
+        var ordinary = policy.locations()
+                             .stream()
+                             .filter(location -> !unavailable.contains(location))
+                             .filter(location -> matching(members, location).size() < effective.get(location))
+                             .sorted(locationOrder())
+                             .findFirst();
+        var probe = ordinary.isPresent()
+                    ? java.util.Optional.<CommunityPlacement.Location> empty()
+                    : policy.locations()
                             .stream()
-                            .filter(location -> matching(members, location).size() < desired.get(location))
-                            .sorted(Comparator.comparing(CommunityPlacement.Location::source).thenComparing(location -> location.zone()
-                                                                                                                                .or("")))
+                            .filter(unavailable::contains)
+                            .filter(location -> probeDue(config, policy, location))
+                            .filter(location -> matching(members, location).size() < policy.desiredCounts()
+                                                                                           .get(location))
+                            .sorted(locationOrder())
                             .findFirst();
+        var probingUnavailable = new HashSet<>(unavailable);
+
+        probe.ifPresent(probingUnavailable::remove);
+        var desired = CommunityPlacementAvailability.effectiveCounts(policy, probingUnavailable);
+        var deficit = ordinary.isPresent()
+                      ? ordinary
+                      : probe;
         var previous = members.entrySet()
                               .stream()
                               .filter(entry -> policy.locations()
@@ -646,6 +793,8 @@ record PlacementReconciler(NodeId self,
                               .findFirst();
 
         if (deficit.isEmpty()) {
+            if (!unavailable.isEmpty()) return Promise.unitPromise();
+
             return previous.map(entry -> reserveReduction(config, policy, leader, snapshot, members, entry))
                            .orElseGet(Promise::unitPromise);
         }
@@ -846,6 +995,11 @@ record PlacementReconciler(NodeId self,
 
             guards.add(new KVCommand.ReadWitness<>(key,
                                                    Option.option(snapshot.get(key))));
+            for (var location : config.communities().get(community).locations()) {
+                var availabilityKey = availabilityKey(community, location.source(), location.zone());
+
+                guards.add(new KVCommand.ReadWitness<>(availabilityKey, store.get(availabilityKey)));
+            }
         }
 
         return guards;

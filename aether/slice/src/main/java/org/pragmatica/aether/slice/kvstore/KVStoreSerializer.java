@@ -181,6 +181,7 @@ public final class KVStoreSerializer {
             case AetherKey.NodePlacementKey _ -> "node-placement";
             case AetherKey.CapacityLedgerKey _ -> "capacity-ledger";
             case AetherKey.CapacityReservationKey _ -> "capacity-reservation";
+            case AetherKey.CommunityPlacementAvailabilityKey _ -> "community-placement-availability";
             case AetherKey.CommunityPlacementOperationKey _ -> "community-placement-operation";
             case NodeArtifactKey _ -> "node-artifact";
             case NodeRoutesKey _ -> "node-routes";
@@ -258,6 +259,7 @@ public final class KVStoreSerializer {
             case CommunityValue v -> serializeCommunity(v);
             case AetherValue.NodePlacementValue _ -> "";
             case AetherValue.CapacityLedgerValue _, AetherValue.CapacityReservationValue _ -> "";
+            case AetherValue.CommunityPlacementAvailabilityValue _ -> "";
             case AetherValue.CommunityPlacementOperationValue _ -> "";
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);

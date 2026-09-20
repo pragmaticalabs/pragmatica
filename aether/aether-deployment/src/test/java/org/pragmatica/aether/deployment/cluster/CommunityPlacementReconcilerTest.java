@@ -59,14 +59,17 @@ class CommunityPlacementReconcilerTest {
     private final List<String> effects = new ArrayList<>();
     private final List<NodeId> retirementRefusals = new ArrayList<>();
     private final List<CommunityPlacementOperationValue> escalations = new ArrayList<>();
+    private final List<CommunityPlacementOperationValue> providerOperations = new ArrayList<>();
+    private String binding = "binding";
     private boolean oldExists = true;
     private boolean safeToRetire = true;
     private Promise<Unit> createOutcome = Promise.unitPromise();
     private Runnable beforeCommit = () -> {};
     private final CommunityPlacementReconciler.Actuator actuator = new CommunityPlacementReconciler.Actuator() {
-        @Override public org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source) { return org.pragmatica.lang.Result.success("binding"); }
+        @Override public org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source) { return org.pragmatica.lang.Result.success(binding); }
         @Override public Promise<Unit> create(CommunityPlacementOperationValue operation) {
             assertThat(current().phase()).isEqualTo(PlacementOperationPhase.CREATE_REQUESTED);
+            providerOperations.add(operation);
             effects.add("create");
             return createOutcome;
         }
@@ -78,6 +81,7 @@ class CommunityPlacementReconcilerTest {
         }
         @Override public Promise<Unit> terminate(CommunityPlacementOperationValue operation) {
             assertThat(current().phase()).isEqualTo(PlacementOperationPhase.TERMINATING);
+            providerOperations.add(operation);
             effects.add("terminate");
             oldExists = false;
             return Promise.unitPromise();
@@ -288,8 +292,9 @@ class CommunityPlacementReconcilerTest {
         initialize();
         reconciler.reconcile().await().unwrap();
         var reserved = current();
-        seed(new KVCommand.LeaderPut<>(new AetherKey.CommunityPlacementOperationKey("stable"), Option.some(reserved),
-            reserved.withPhase(PlacementOperationPhase.CREATE_REQUESTED, reserved.issuer(), ""), reserved.issuer(), List.of()));
+        seed(new KVCommand.LeaderTransaction<>(new AetherKey.CommunityPlacementOperationKey("stable"), java.util.UUID.randomUUID().toString(), reserved.issuer(), List.of(),
+            List.of(new KVCommand.Mutation<>(new AetherKey.CommunityPlacementOperationKey("stable"), Option.some(reserved),
+                Option.some(reserved.withPhase(PlacementOperationPhase.CREATE_REQUESTED, reserved.issuer(), ""))))));
         controller(10, 60_000).reconcile().await().unwrap();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.CREATE_UNCERTAIN);
         assertThat(effects).isEmpty();
@@ -335,14 +340,85 @@ class CommunityPlacementReconcilerTest {
             draining.targetNode(), draining.targetSource(), draining.targetZone(), draining.sourceBinding(),
             draining.previousNode(), draining.previousSource(), PlacementOperationPhase.DRAIN_REQUESTED,
             draining.issuer(), draining.startedAt(), 0, "");
-        seed(new KVCommand.LeaderPut<>(new AetherKey.CommunityPlacementOperationKey("stable"), Option.some(draining),
-            expired, draining.issuer(), List.of()));
+        seed(new KVCommand.LeaderTransaction<>(new AetherKey.CommunityPlacementOperationKey("stable"), java.util.UUID.randomUUID().toString(), draining.issuer(), List.of(),
+            List.of(new KVCommand.Mutation<>(new AetherKey.CommunityPlacementOperationKey("stable"), Option.some(draining), Option.some(expired)))));
         reconciler.reconcile().await().unwrap();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.DRAIN_UNCERTAIN);
         assertThat(effects).doesNotContain("terminate");
         assertThat(reconciler.onDrainCompleted(OLD, current().operationId()).await().unwrap()).isTrue();
         reconciler.reconcile().await().unwrap();
         assertThat(effects).contains("terminate");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = PlacementOperationPhase.class,
+        names = {"RESERVED", "CREATE_REQUESTED", "CREATE_UNCERTAIN", "AWAITING_READY", "DRAIN_REQUESTED",
+                 "DRAIN_UNCERTAIN", "DRAINED", "TERMINATING", "BLOCKED"})
+    void freshLeaderResumesEveryPersistedWindowWithoutUnsafeProviderEffects(PlacementOperationPhase phase) {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        var reserved = current();
+        var interrupted = reserved.withPhase(phase, reserved.issuer(), "interrupted");
+        var key = new AetherKey.CommunityPlacementOperationKey("stable");
+        seed(new KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), reserved.issuer(), List.of(),
+            List.of(new KVCommand.Mutation<>(key, Option.some(reserved), Option.some(interrupted)))));
+        var successor = new NodeId("restarted-core");
+        var authority = new LeaderValue(successor, 2);
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, authority));
+        reconciler.reconcile().await().unwrap();
+        assertThat(effects).as("stale controller at %s", phase).isEmpty();
+        var restarted = controller(successor, 10, 60_000);
+        restarted.reconcile().await().unwrap();
+        assertThat(current().issuer()).isEqualTo(authority);
+        assertThat(effects).doesNotContain("terminate", "drain");
+        assertThat(effects.stream().filter("create"::equals).count()).isEqualTo(phase == PlacementOperationPhase.RESERVED ? 1 : 0);
+        var target = current().targetNode();
+        replacementReady();
+        controller(successor, 10, 60_000).reconcile().await().unwrap();
+        if (phase == PlacementOperationPhase.DRAINED || phase == PlacementOperationPhase.TERMINATING) {
+            assertThat(effects).containsExactly("terminate");
+            controller(successor, 10, 60_000).reconcile().await().unwrap();
+            assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+            assertThat(effects).containsExactly("terminate");
+        } else {
+            assertThat(effects).doesNotContain("terminate");
+        }
+        assertThat(effects.stream().filter("create"::equals).count()).isEqualTo(phase == PlacementOperationPhase.RESERVED ? 1 : 0);
+        assertThat(current().targetNode()).isEqualTo(target);
+        assertThat(providerOperations).allSatisfy(operation -> {
+            assertThat(operation.targetSource()).isEqualTo("pool");
+            assertThat(operation.sourceBinding()).isEqualTo("binding");
+            assertThat(operation.previousSource()).isEqualTo(reserved.previousSource());
+            assertThat(operation.operationId()).isEqualTo(reserved.operationId());
+        });
+    }
+
+    @Test
+    void restartCannotRebindRecordedCreateToChangedProviderIdentity() {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        var reserved = current();
+        binding = "different-provider-account";
+        controller(10, 60_000).reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.BLOCKED);
+        assertThat(current().sourceBinding()).isEqualTo(reserved.sourceBinding());
+        assertThat(effects).isEmpty();
+    }
+
+    @Test
+    void restartAfterProviderTerminationConfirmsAbsenceWithoutDuplicateEffect() {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        reconciler.reconcile().await().unwrap();
+        replacementReady();
+        reconciler.reconcile().await().unwrap();
+        reconciler.onDrainCompleted(OLD, current().operationId()).await().unwrap();
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.TERMINATING);
+        assertThat(effects).containsExactly("create", "drain", "terminate");
+        controller(10, 60_000).reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(effects).containsExactly("create", "drain", "terminate");
     }
 
 }

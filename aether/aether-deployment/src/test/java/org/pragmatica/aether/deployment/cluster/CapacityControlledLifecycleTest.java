@@ -62,8 +62,7 @@ class CapacityControlledLifecycleTest {
 
     private void initialize(int allocated) {
         seed(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
-        seed(new KVCommand.LeaderPut<>(AetherKey.CapacityLedgerKey.INSTANCE, Option.none(),
-            new AetherValue.CapacityLedgerValue(allocated, 1, true), LEADER, List.of()));
+        seed(new KVCommand.LeaderTransaction<>(AetherKey.CapacityLedgerKey.INSTANCE, java.util.UUID.randomUUID().toString(), LEADER, List.of(), java.util.List.of(new KVCommand.Mutation<>(AetherKey.CapacityLedgerKey.INSTANCE, Option.none(), org.pragmatica.lang.Option.some(new AetherValue.CapacityLedgerValue(allocated, 1, true))))));
     }
 
     private AetherValue.CapacityLedgerValue ledger() {
@@ -100,8 +99,8 @@ class CapacityControlledLifecycleTest {
     void confirmedAbsenceOfPreviouslyObservedNode_releasesExactlyOneSlot() {
         initialize(1);
         var key = new AetherKey.CapacityReservationKey(new NodeId("first"));
-        seed(new KVCommand.LeaderPut<>(key, Option.none(), new AetherValue.CapacityReservationValue("east", "binding", "worker",
-            AetherValue.CapacityReservationPhase.OBSERVED), LEADER, List.of()));
+        seed(new KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), LEADER, List.of(), java.util.List.of(new KVCommand.Mutation<>(key, Option.none(), org.pragmatica.lang.Option.some(new AetherValue.CapacityReservationValue("east", "binding", "worker",
+            AetherValue.CapacityReservationPhase.OBSERVED))))));
         lifecycle.instancesForNode(new NodeId("first"), SourceName.sourceName("east").unwrap()).await().unwrap();
         lifecycle.instancesForNode(new NodeId("first"), SourceName.sourceName("east").unwrap()).await().unwrap();
         assertThat(ledger().allocated()).isZero();
