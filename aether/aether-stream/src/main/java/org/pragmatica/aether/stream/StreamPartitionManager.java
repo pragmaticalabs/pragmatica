@@ -1589,9 +1589,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                 partition)));
     }
 
-    /// #1262 fail-closed guard, applied by every write entry point (`PartitionedStreamAccess`,
-    /// `StreamWriteRouter`) and by the owner-side {@link #publishForwarded}: a stream whose declared
-    /// consistency no write path can honour is refused rather than appended as EVENTUAL.
+    /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind
+    /// `DefaultStreamPublisher`, `PartitionedStreamAccess` and the management publish (#1263) — and by the
+    /// owner-side {@link #publishForwarded}: a stream whose declared consistency no write path can honour is
+    /// refused rather than appended as EVENTUAL. The entity-log substrate's direct {@link #publishLocal} is
+    /// outside it (EVENTUAL by construction).
     ///   - `STRONG` promises consensus-ordered acknowledgement, and `ConsensusPublishPath` has no production
     ///     caller → [StreamError.General#CONSENSUS_PATH_UNAVAILABLE], the cause `DefaultStreamPublisher`
     ///     already used.
@@ -2303,8 +2305,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         queuedMaterializations.clear();
         releaseCandidacy.clear();
         // #642: this manager owns the replication manager, and the batcher underneath it arms a
-        // fixed-rate flush on the process-wide SharedScheduler. Nothing else called its close(), so a
-        // stopped node kept flushing replication batches at its peers.
+        // one-shot flush per batch (#1246) on the process-wide SharedScheduler. Nothing else called its
+        // close(), so a stopped node kept flushing replication batches at its peers.
         replicationManager.close();
     }
 

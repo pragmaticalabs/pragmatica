@@ -8,6 +8,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.lang.Cause;
@@ -27,7 +28,8 @@ import org.slf4j.LoggerFactory;
 ///
 /// The report is issued for a `Persisted` AND a `LocalOnly` outcome: the in-memory cursor has moved past
 /// the acknowledged or dead-lettered event either way, which is the fact the skip signal states, and the
-/// cluster checkpoint's retry is the runtime's business. It is never issued for a FAILED commit.
+/// cluster checkpoint's retry is the runtime's business. It is never issued for a FAILED commit, nor for
+/// a `Fenced` one (#1271: the assignment moved away, this node's projection is no longer the consumer).
 ///
 /// The hook never fails, delays or reorders the commit: the report hangs off the commit's own promise,
 /// its failure is absorbed — logged once per `(group, partition)`, counted on [#reportFailures] — and the
@@ -43,9 +45,10 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
         return new ProjectionAwareCursorStore(delegate, registry, new AtomicLong(), ConcurrentHashMap.newKeySet());
     }
 
+    /// Unfenced commit (pull API): no managed group, so no projection to report to — passed through.
     @Override
     public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
-        return commit(consumerGroup, streamName, partition, offset, RewindEpoch.NONE);
+        return delegate.commit(consumerGroup, streamName, partition, offset);
     }
 
     @Override
@@ -53,9 +56,21 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                          String streamName,
                                          int partition,
                                          long offset,
-                                         RewindEpoch epoch) {
-        return delegate.commit(consumerGroup, streamName, partition, offset, epoch)
-                       .onSuccess(_ -> report(consumerGroup, streamName, partition, offset, epoch));
+                                         Epoch assignmentEpoch) {
+        return commit(consumerGroup, streamName, partition, offset, assignmentEpoch, RewindEpoch.NONE);
+    }
+
+    /// #1271: a `Fenced` outcome is not reported — the assignment moved away, so the projection on this
+    /// node is no longer the group's live consumer and nothing cluster-visible moved.
+    @Override
+    public Promise<CommitOutcome> commit(String consumerGroup,
+                                         String streamName,
+                                         int partition,
+                                         long offset,
+                                         Epoch assignmentEpoch,
+                                         RewindEpoch rewindEpoch) {
+        return delegate.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch)
+                       .onSuccess(outcome -> reportUnlessFenced(outcome, consumerGroup, streamName, partition, offset, rewindEpoch));
     }
 
     @Override
@@ -64,8 +79,24 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
     }
 
     @Override
-    public Promise<Option<Cursor>> fetchCursor(String consumerGroup, String streamName, int partition) {
-        return delegate.fetchCursor(consumerGroup, streamName, partition);
+    public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
+        return delegate.fetch(consumerGroup, streamName, partition, assignmentEpoch);
+    }
+
+    @Override
+    public Promise<Option<Cursor>> fetchCursor(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
+        return delegate.fetchCursor(consumerGroup, streamName, partition, assignmentEpoch);
+    }
+
+    private void reportUnlessFenced(CommitOutcome outcome,
+                                    String consumerGroup,
+                                    String streamName,
+                                    int partition,
+                                    long offset,
+                                    RewindEpoch epoch) {
+        if (!(outcome instanceof CommitOutcome.Fenced)) {
+            report(consumerGroup, streamName, partition, offset, epoch);
+        }
     }
 
     @Contract

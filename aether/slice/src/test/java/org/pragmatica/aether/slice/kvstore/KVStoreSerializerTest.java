@@ -18,10 +18,11 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionAssignmentValue.PartitionAssignment;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
@@ -29,6 +30,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -1149,25 +1151,24 @@ class KVStoreSerializerTest {
     /// These pin the two types the declarative stream-consumer path depends on. A sweep of the
     /// serialize switch found nine further key types with the same asymmetry; they are reported
     /// separately rather than fixed here.
+    private static final AssignmentToken TOKEN = AssignmentToken.assignmentToken(NodeId.nodeId("node-a").unwrap(),
+                                                                                 Epoch.epoch(7L, 1L));
+
     @Nested
     class RoundTripSymmetry {
 
         @Test
         void fromToml_streamCursorCheckpoint_recoversKeyAndOffset() {
             var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("orders", 2, "orders-onOrderEvent");
-            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L, 3L, 2L, true);
+            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L, TOKEN, 3L, 2L, true);
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(entries -> {
                                  assertThat(entries).containsKey(key);
-                                 assertThat(entries.get(key)).isInstanceOfSatisfying(StreamCursorCheckpointValue.class,
-                                                                                     recovered -> {
-                                                                                         assertThat(recovered.committedOffset()).isEqualTo(4321L);
-                                                                                         assertThat(recovered.rewindGeneration()).isEqualTo(3L);
-                                                                                         assertThat(recovered.rewindSequence()).isEqualTo(2L);
-                                                                                     });
+                                 assertThat(entries.get(key)).describedAs("offset, the assignment token (#1271) AND the rewind epoch + rewind flag (#1333) survive the round-trip")
+                                                             .isEqualTo(value);
                              });
         }
 
@@ -1210,7 +1211,7 @@ class KVStoreSerializerTest {
                                                                         "orders-onOrderEvent",
                                                                         false,
                                                                         "java.lang.String"));
-            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L, 0L, 0L, false));
+            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L, TOKEN, 0L, 0L, false));
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)
@@ -1239,37 +1240,21 @@ class KVStoreSerializerTest {
                              });
         }
 
+        /// #1271: the assignment record is the authority the checkpoint guard reads — a snapshot restore
+        /// that lost it would refuse every consumer's checkpoint until the leader re-minted it.
         @Test
-        void fromToml_streamPartitionAssignment_recoversPartitionsAndNodes() {
-            var key = StreamPartitionAssignmentKey.streamPartitionAssignmentKey("orders", "orders-onOrderEvent");
-            var assignments = List.of(new PartitionAssignment(0, NodeId.nodeId("node-a").unwrap()),
-                                      new PartitionAssignment(3, NodeId.nodeId("node-b").unwrap()));
-            var value = new StreamPartitionAssignmentValue(assignments, 1710072000000L);
+        void fromToml_consumerAssignment_recoversAssigneeEpochAndTerm() {
+            var key = ConsumerAssignmentKey.consumerAssignmentKey("orders", 3, "orders-onOrderEvent");
+            var value = ConsumerAssignmentValue.consumerAssignmentValue(NodeId.nodeId("node-b").unwrap(),
+                                                                        Epoch.epoch(7L, 2L),
+                                                                        2L,
+                                                                        new HlcTimestamp(123456789L,
+                                                                                         NodeId.nodeId("node-a").unwrap()));
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)
                              .onFailureRun(Assertions::fail)
-                             .onSuccess(entries -> {
-                                 assertThat(entries).containsKey(key);
-                                 assertThat(entries.get(key)).isEqualTo(value);
-                                 var rk = (StreamPartitionAssignmentKey) entries.keySet().iterator().next();
-                                 assertThat(rk.streamName()).isEqualTo("orders");
-                                 assertThat(rk.consumerGroup()).isEqualTo("orders-onOrderEvent");
-                             });
-        }
-
-        @Test
-        void fromToml_streamPartitionAssignmentWithoutAssignments_recoversEmptyList() {
-            var key = StreamPartitionAssignmentKey.streamPartitionAssignmentKey("orders", "idle-group");
-            var value = new StreamPartitionAssignmentValue(List.of(), 1710072000000L);
-
-            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .flatMap(KVStoreSerializer::fromToml)
-                             .onFailureRun(Assertions::fail)
-                             .onSuccess(entries -> {
-                                 assertThat(entries.get(key)).isEqualTo(value);
-                                 assertThat(((StreamPartitionAssignmentValue) entries.get(key)).assignments()).isEmpty();
-                             });
+                             .onSuccess(entries -> assertThat(entries).containsExactly(Map.entry(key, value)));
         }
     }
 

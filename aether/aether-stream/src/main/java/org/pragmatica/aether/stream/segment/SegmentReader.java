@@ -8,8 +8,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -64,25 +66,130 @@ public final class SegmentReader {
                                                         List<SegmentIndex.SegmentRef> refs,
                                                         long fromOffset,
                                                         int maxEvents) {
-        return readNextSegment(streamName, partition, refs, 0, fromOffset, maxEvents, new ArrayList<>());
+        var output = Promise.<List<RawEvent>> promise();
+
+        readSegments(streamName, partition, refs, 0, fromOffset, maxEvents, new ArrayList<>(), output);
+
+        return output;
     }
 
     /// #1265: `accumulated` is ONE mutable list threaded through the whole read and flattened once at
     /// the end, instead of an immutable concatenation per segment (n·(k+1) reference copies for n events
     /// across k segments). It is confined to this read: segments are fetched strictly one after another,
     /// each step running only once the previous one completed, and the list escapes only as the final copy.
-    private Promise<List<RawEvent>> readNextSegment(String streamName,
-                                                    int partition,
-                                                    List<SegmentIndex.SegmentRef> refs,
-                                                    int refIndex,
-                                                    long fromOffset,
-                                                    int remaining,
-                                                    List<RawEvent> accumulated) {
-        if (refIndex >= refs.size() || remaining <= 0) {
-            return Promise.success(List.copyOf(accumulated));
+    ///
+    /// #1392: a LOOP, not a `flatMap` per segment. A segment read that is already settled when it returns
+    /// (a memory tier answers synchronously, and `StorageInstance.get` hands that answer back as a resolved
+    /// promise) used to run its continuation inline, so a read across k segments nested k frame groups on
+    /// the calling thread — 7 frames per segment, and the sealer seals one evicted record per segment, so a
+    /// 512-record replay batch was ~3,600 frames deep. On a 1 MB thread stack that overflowed at about 480
+    /// segments, inside the per-segment `.timeout()` bookkeeping, and the `StackOverflowError` surfaced as a
+    /// failed fold. Here a settled step is consumed in place and the loop moves to the next segment; only a
+    /// step that is still pending suspends the loop, which resumes on the thread that settles it. Stack
+    /// depth no longer depends on the segment count — the same property [SegmentSealer]'s drain got in #1234.
+    private void readSegments(String streamName,
+                              int partition,
+                              List<SegmentIndex.SegmentRef> refs,
+                              int firstRef,
+                              long fromOffset,
+                              int maxEvents,
+                              List<RawEvent> accumulated,
+                              Promise<List<RawEvent>> output) {
+        var refIndex = firstRef;
+        var remaining = maxEvents;
+
+        while (refIndex < refs.size() && remaining > 0) {
+            var step = containedStep(streamName, partition, refs.get(refIndex), fromOffset, remaining);
+
+            if (!step.isResolved()) {
+                var nextRef = refIndex + 1;
+                var left = remaining;
+
+                step.onResult(result -> resume(result,
+                                               streamName,
+                                               partition,
+                                               refs,
+                                               nextRef,
+                                               fromOffset,
+                                               left,
+                                               accumulated,
+                                               output));
+
+                return;
+            }
+
+            switch (settledResult(step)) {
+                case Result.Failure<List<RawEvent>>(var cause) -> {
+                    output.fail(cause);
+
+                    return;
+                }
+                case Result.Success<List<RawEvent>>(var events) -> {
+                    accumulated.addAll(events);
+                    remaining -= events.size();
+                    refIndex++;
+                }
+            }
         }
 
-        var ref = refs.get(refIndex);
+        output.succeed(List.copyOf(accumulated));
+    }
+
+    /// Continues the loop after a step that settled off-thread; a failed step fails the whole read.
+    private void resume(Result<List<RawEvent>> result,
+                        String streamName,
+                        int partition,
+                        List<SegmentIndex.SegmentRef> refs,
+                        int nextRef,
+                        long fromOffset,
+                        int remaining,
+                        List<RawEvent> accumulated,
+                        Promise<List<RawEvent>> output) {
+        switch (result) {
+            case Result.Failure<List<RawEvent>>(var cause) -> output.fail(cause);
+            case Result.Success<List<RawEvent>>(var events) -> {
+                accumulated.addAll(events);
+                readSegments(streamName,
+                             partition,
+                             refs,
+                             nextRef,
+                             fromOffset,
+                             remaining - events.size(),
+                             accumulated,
+                             output);
+            }
+        }
+    }
+
+    /// The result of a promise the caller has checked is resolved: `Promise.onResult` runs its consumer
+    /// inline on a settled promise, so the holder is filled before this returns. Not `await()` — that is
+    /// the blocking join, and this loop never blocks.
+    private static <T> Result<T> settledResult(Promise<T> resolved) {
+        var holder = new AtomicReference<Result<T>>();
+
+        resolved.onResult(holder::set);
+
+        return holder.get();
+    }
+
+    /// A step that THROWS instead of returning a promise (the ref lookup is the only call outside the step's own
+    /// `flatMap`s) is a failed step, so the loop fails `output` exactly once on both paths. Without this the
+    /// inline path let the exception escape `readEvents` and the resume path lost it in `onResult`'s catch,
+    /// leaving the read never settled — the `flatMap`-per-segment shape had contained it (rev1394 M1).
+    private Promise<List<RawEvent>> containedStep(String streamName,
+                                                  int partition,
+                                                  SegmentIndex.SegmentRef ref,
+                                                  long fromOffset,
+                                                  int remaining) {
+        return Result.lift(() -> readSegment(streamName, partition, ref, fromOffset, remaining)).fold(Cause::promise,
+                                                                                                      step -> step);
+    }
+
+    private Promise<List<RawEvent>> readSegment(String streamName,
+                                                int partition,
+                                                SegmentIndex.SegmentRef ref,
+                                                long fromOffset,
+                                                int remaining) {
         var refName = buildRefName(streamName, partition, ref);
 
         return storage.resolveRef(refName)
@@ -90,15 +197,7 @@ public final class SegmentReader {
                       .flatMap(storage::get)
                       .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
                       .map(bytes -> decryptAndDecompress(bytes, ref))
-                      .flatMap(bytes -> deserializeAndFilter(refName, bytes, fromOffset, remaining).async())
-                      .flatMap(events -> continueWithAccumulation(streamName,
-                                                                  partition,
-                                                                  refs,
-                                                                  refIndex,
-                                                                  fromOffset,
-                                                                  remaining,
-                                                                  accumulated,
-                                                                  events));
+                      .flatMap(bytes -> deserializeAndFilter(refName, bytes, fromOffset, remaining).async());
     }
 
     private byte[] decryptAndDecompress(byte[] data, SegmentIndex.SegmentRef ref) {
@@ -167,25 +266,6 @@ public final class SegmentReader {
         }
 
         return Compression.NONE;
-    }
-
-    private Promise<List<RawEvent>> continueWithAccumulation(String streamName,
-                                                             int partition,
-                                                             List<SegmentIndex.SegmentRef> refs,
-                                                             int refIndex,
-                                                             long fromOffset,
-                                                             int remaining,
-                                                             List<RawEvent> accumulated,
-                                                             List<RawEvent> events) {
-        accumulated.addAll(events);
-
-        return readNextSegment(streamName,
-                               partition,
-                               refs,
-                               refIndex + 1,
-                               fromOffset,
-                               remaining - events.size(),
-                               accumulated);
     }
 
     private static String buildRefName(String streamName, int partition, SegmentIndex.SegmentRef ref) {

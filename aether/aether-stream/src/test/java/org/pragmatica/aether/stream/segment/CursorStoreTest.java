@@ -9,10 +9,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.BlockLifecycle;
@@ -48,6 +50,49 @@ class CursorStoreTest {
     void setUp() {
         storage = StorageInstance.storageInstance("test", List.of(MemoryTier.memoryTier(ONE_GB)));
         store = cursorStore(storage);
+    }
+
+    /// #1271: a cursor written under a consumer assignment records the assignment's epoch, and a fenced
+    /// fetch returns it only for THAT epoch — a node regaining a partition must not resume from its own
+    /// earlier tenure's cursor, which can be ahead of what the successor committed (skipping events).
+    @Nested
+    class AssignmentEpoch {
+        private static final Epoch FIRST_TENURE = Epoch.epoch(1L, 1L);
+        private static final Epoch SECOND_TENURE = Epoch.epoch(1L, 3L);
+
+        @Test
+        void fencedFetch_returnsTheCursor_forTheEpochItWasWrittenUnder() {
+            store.commit(GROUP, STREAM, PARTITION, 42L, FIRST_TENURE).await();
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION, FIRST_TENURE).await())
+                    .isEqualTo(Result.success(Option.some(42L)));
+        }
+
+        @Test
+        void fencedFetch_ignoresTheCursor_fromAnEarlierTenure() {
+            store.commit(GROUP, STREAM, PARTITION, 900L, FIRST_TENURE).await();
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION, SECOND_TENURE).await())
+                    .describedAs("resuming at 900 would skip whatever the other node's tenure had not yet committed")
+                    .isEqualTo(Result.success(Option.none()));
+        }
+
+        @Test
+        void fencedFetch_ignoresAnUnfencedCursor() {
+            store.commit(GROUP, STREAM, PARTITION, 7L).await();
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION, FIRST_TENURE).await())
+                    .isEqualTo(Result.success(Option.none()));
+        }
+
+        /// The pull API reads any recorded cursor, fenced or not — its rewinds stay legitimate.
+        @Test
+        void unfencedFetch_readsAFencedCursor() {
+            store.commit(GROUP, STREAM, PARTITION, 42L, FIRST_TENURE).await();
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION).await())
+                    .isEqualTo(Result.success(Option.some(42L)));
+        }
     }
 
     @Nested
@@ -389,20 +434,27 @@ class CursorStoreTest {
         }
     }
 
-    /// #1333 (rev1369 MEDIUM-2) — the 24-byte block `offset | rewindGeneration | rewindSequence` is what
-    /// lets a same-node restart resume under the epoch the consumer committed with. Every other test in
-    /// this class goes through the offset-only `commit`/`fetch`, so before these three pins a decode that
-    /// DROPPED the epoch left the whole repo green (rev1369's mutation M7').
+    /// #1333 (rev1369 MEDIUM-2) — the 40-byte block `offset | rabiaTerm | localCounter | rewindGeneration |
+    /// rewindSequence` is what lets a same-node restart resume under the rewind epoch the consumer committed
+    /// with. Every other test in this class goes through the offset-only or assignment-only `commit`/`fetch`,
+    /// so before these pins a decode that DROPPED the rewind epoch left the whole repo green (rev1369's
+    /// mutation M7'). Layout after the #1335 merge: 8 = unfenced (pull API), 24 = fenced without a rewind
+    /// epoch (#1271, written by rc4 builds between #1335 and #1333), 40 = fenced with one (every fenced
+    /// commit from #1333 on); anything else absent.
     @Nested
     class RewindEpochLayout {
+        private static final Epoch TENURE = Epoch.epoch(1L, 1L);
+        private static final Epoch OTHER_TENURE = Epoch.epoch(1L, 3L);
         private static final RewindEpoch EPOCH = RewindEpoch.rewindEpoch(7L, 3L);
 
         @Test
-        void encodeCursor_decodeCursor_roundTrip_carriesTheEpoch() {
-            var encoded = CursorStore.encodeCursor(Long.MAX_VALUE, EPOCH);
+        void encodeRewoundCursor_decodeCursor_roundTrip_carriesBothEpochs() {
+            var encoded = CursorStore.encodeRewoundCursor(Long.MAX_VALUE, TENURE, EPOCH);
 
-            assertThat(encoded).hasSize(CursorStore.CURSOR_BYTES);
-            assertThat(CursorStore.decodeCursor(encoded)).isEqualTo(Cursor.cursor(Long.MAX_VALUE, EPOCH));
+            assertThat(encoded).hasSize(CursorStore.REWOUND_CURSOR_BYTES);
+            assertThat(CursorStore.decodeCursor(encoded)).isEqualTo(Option.some(new CursorStore.StoredCursor(Long.MAX_VALUE,
+                                                                                                             Option.some(TENURE),
+                                                                                                             EPOCH)));
             assertThat(CursorStore.decodeOffset(encoded)).as("the offset-only reader still sees the offset in the first eight bytes")
                       .isEqualTo(Long.MAX_VALUE);
         }
@@ -410,38 +462,36 @@ class CursorStoreTest {
         /// The epoch must live in the BLOCK on disk, not in the store object: the storage is closed and
         /// reopened over the same directory the way `StorageFactory` restores a node (fresh metadata store
         /// with the refs restored, fresh disk tier, fresh [CursorStore]) and the cursor resumes under the
-        /// epoch that was committed.
+        /// rewind epoch that was committed — for the tenure it was committed under, and for no other.
         @Test
         void commitUnderAnEpoch_thenReopenTheStorage_resumesUnderThePersistedEpoch(@TempDir Path dir) {
             var firstMetadata = MetadataStore.inMemoryMetadataStore("first");
             var first = cursorStore(diskStorage("first", dir, firstMetadata));
 
-            first.commit(GROUP, STREAM, PARTITION, 42L, EPOCH).await();
+            first.commit(GROUP, STREAM, PARTITION, 42L, TENURE, EPOCH).await();
             var reopenedMetadata = MetadataStore.inMemoryMetadataStore("reopened");
 
             reopenedMetadata.restoreRefs(firstMetadata.listAllRefs());
             var reopened = cursorStore(diskStorage("reopened", dir, reopenedMetadata));
 
-            assertThat(reopened.fetchCursor(GROUP, STREAM, PARTITION).await()).as("the reopened store must resume under the epoch the first one committed")
-                      .isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.cursor(42L, EPOCH))));
-            assertThat(reopened.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(org.pragmatica.lang.Result.success(Option.some(42L)));
+            assertThat(reopened.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await()).as("the reopened store must resume under the rewind epoch the first one committed")
+                      .isEqualTo(Result.success(Option.some(Cursor.cursor(42L, EPOCH))));
+            assertThat(reopened.fetch(GROUP, STREAM, PARTITION, TENURE).await()).isEqualTo(Result.success(Option.some(42L)));
+            assertThat(reopened.fetchCursor(GROUP, STREAM, PARTITION, OTHER_TENURE).await()).as("#1271's tenure rule holds for the rewound layout too")
+                      .isEqualTo(Result.success(Option.none()));
         }
 
-        /// The pre-#1333 8-byte offset-only block is REFUSED, not upgraded: it reads as absent (resume from
-        /// the earliest retained offset, once), and the next commit rewrites the ref in the 24-byte layout.
-        /// Upgrading it in place would have to invent an epoch, and `NONE` is exactly the value a resume
-        /// ranks BELOW a rewound cluster cursor — so the redelivery is the honest outcome.
+        /// A fenced block written WITHOUT a rewind epoch (the 24-byte #1271 layout, on rc4 before this
+        /// change) reads as that tenure's cursor at [RewindEpoch#NONE]: not refused, since the group it
+        /// belongs to has never been rewound and `NONE` is exactly its epoch. The next fenced commit
+        /// rewrites the ref in the 40-byte layout.
         @Test
-        void legacyEightByteBlock_readsAsAbsent_andTheNextCommitRewritesItInTheNewLayout() {
+        void fencedBlockWithoutARewindEpoch_readsAsUnrewound_andTheNextCommitRewritesItInTheNewLayout() {
             var refName = CursorStore.buildRefName(GROUP, STREAM, PARTITION);
-            var legacyBlock = ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN).putLong(99L).array();
 
-            storage.putRef(refName, legacyBlock).await();
-            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await()).as("an 8-byte block is the pre-#1333 layout and must read as absent, never as offset 99")
-                      .isEqualTo(org.pragmatica.lang.Result.success(Option.empty()));
-            assertThat(store.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(org.pragmatica.lang.Result.success(Option.empty()));
-            store.commit(GROUP, STREAM, PARTITION, 7L).await();
-            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await()).isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.unrewound(7L))));
+            storage.putRef(refName, CursorStore.encodeFencedOffset(99L, TENURE)).await();
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await()).isEqualTo(Result.success(Option.some(Cursor.unrewound(99L))));
+            store.commit(GROUP, STREAM, PARTITION, 7L, TENURE, RewindEpoch.NONE).await();
             var rewritten = storage.resolveRef(refName)
                                    .flatMap(id -> storage.get(id)
                                                          .await()
@@ -449,8 +499,31 @@ class CursorStoreTest {
                                                          .flatMap(block -> block))
                                    .or(new byte[0]);
 
-            assertThat(rewritten).as("the rewritten ref points at a 24-byte block")
-                      .isEqualTo(CursorStore.encodeOffset(7L));
+            assertThat(rewritten).as("every fenced commit now writes the 40-byte block")
+                      .isEqualTo(CursorStore.encodeRewoundCursor(7L, TENURE, RewindEpoch.NONE));
+        }
+
+        /// The 8-byte unfenced block (pull API) is a legitimate cursor for the unfenced `fetch` (#1271's
+        /// rule, kept) and invisible to a fenced one — it belongs to no tenure, so it reads as absent there.
+        @Test
+        void unfencedEightByteBlock_isReadByTheUnfencedFetch_andInvisibleToAFencedOne() {
+            var refName = CursorStore.buildRefName(GROUP, STREAM, PARTITION);
+            var legacyBlock = ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN).putLong(99L).array();
+
+            storage.putRef(refName, legacyBlock).await();
+            assertThat(store.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(Result.success(Option.some(99L)));
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await()).as("an unfenced block belongs to no tenure")
+                      .isEqualTo(Result.success(Option.none()));
+        }
+
+        /// A block of any other length is unreadable and reads as absent, never as a garbled cursor.
+        @Test
+        void blockOfAnUnknownLength_readsAsAbsent() {
+            var refName = CursorStore.buildRefName(GROUP, STREAM, PARTITION);
+
+            storage.putRef(refName, new byte[4 * Long.BYTES]).await();
+            assertThat(store.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(Result.success(Option.none()));
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await()).isEqualTo(Result.success(Option.none()));
         }
 
         private static StorageInstance diskStorage(String name, Path dir, MetadataStore metadataStore) {

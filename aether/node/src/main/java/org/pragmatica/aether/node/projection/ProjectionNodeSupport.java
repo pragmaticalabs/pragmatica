@@ -4,10 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.projection;
 
+import java.util.List;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.node.projection.ProjectionRegistry.Registration;
+import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
 import org.pragmatica.aether.resource.projection.Projection;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
@@ -41,14 +43,16 @@ public interface ProjectionNodeSupport {
                                                        LongSupplier cursorReportFailures,
                                                        Fn1<Option<Integer>, String> partitionCount,
                                                        PartitionBounds bounds,
-                                                       Fn1<Promise<Unit>, KVCommand<AetherKey>> commandWriter,
-                                                       Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader) {
+                                                       Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
+                                                       Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
+                                                       CommittedAssignments committedAssignments) {
         record projectionNodeSupport(ProjectionRegistry registry,
                                      LongSupplier reportFailures,
                                      Fn1<Option<Integer>, String> partitionCount,
                                      PartitionBounds bounds,
-                                     Fn1<Promise<Unit>, KVCommand<AetherKey>> commandWriter,
-                                     Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader) implements ProjectionNodeSupport {
+                                     Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
+                                     Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
+                                     CommittedAssignments committedAssignments) implements ProjectionNodeSupport {
             @Override
             public long cursorReportFailures() {
                 return reportFailures.getAsLong();
@@ -66,7 +70,8 @@ public interface ProjectionNodeSupport {
                                                                              () -> partitionCount.apply(topicStream),
                                                                              bounds,
                                                                              commandWriter,
-                                                                             committedReader));
+                                                                             committedReader,
+                                                                             committedAssignments));
 
                 return registry.register(new Registration(slice,
                                                           topicStream,
@@ -81,6 +86,7 @@ public interface ProjectionNodeSupport {
                                          partitionCount,
                                          bounds,
                                          commandWriter,
-                                         committedReader);
+                                         committedReader,
+                                         committedAssignments);
     }
 }

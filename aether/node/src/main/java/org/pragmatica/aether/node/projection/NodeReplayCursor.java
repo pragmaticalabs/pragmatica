@@ -11,6 +11,7 @@ import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.node.projection.PartitionBounds.Bounds;
+import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
 import org.pragmatica.aether.resource.projection.Projection.ReplayCursor;
 import org.pragmatica.aether.resource.projection.ProjectionStore.PartitionRange;
 import org.pragmatica.aether.resource.projection.ProjectionStore.ReplayRange;
@@ -18,6 +19,8 @@ import org.pragmatica.aether.resource.projection.ProjectionStore.RewindToken;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -41,21 +44,25 @@ import org.slf4j.LoggerFactory;
 /// **mintRewindToken** — from COMMITTED state: strictly newer than every checkpoint epoch the group holds.
 ///
 /// **rewind** — for every captured partition, PUT the group's `StreamCursorCheckpointKey` to the REWIND
-/// RECORD `(fromOffset, epoch = token, rewind = true)`. The value is `EpochBearing` and MINTS its epoch, so
-/// the applier refuses it unless strictly newer than the committed record, and refuses every later
-/// checkpoint stamped with an older epoch — the zombie fence. The group id is resolved NOW (an inferred
-/// subscriber that turned out ambiguous refuses the rewind rather than rewinding a guess). Then the
-/// committed value is READ BACK and the rewind fails unless it IS the record put: a refused mint (another
-/// rebuild of the group committed first) would otherwise leave the store REBUILDING with nothing saying
-/// why. The consumer restart is level-triggered from the committed epoch (`StreamConsumerManager`), so the
-/// rewind is complete when the records are committed; the rewound consumer resumes at `fromOffset` under
-/// the token.
+/// RECORD `(fromOffset, token = the committed assignee's, epoch = token, rewind = true)`. The value is
+/// `EpochBearing` and MINTS its epoch, so the applier refuses it unless strictly newer than the committed
+/// record, and refuses every later checkpoint stamped with an older epoch — the zombie fence. The key is
+/// also `AssignmentGuarded` (#1271): the record carries the token of the partition's COMMITTED assignment,
+/// read here at put time — no committed assignment refuses the rewind before anything is put, and an
+/// assignment that moves between the read and the apply is refused by the applier's guard. The group id is
+/// resolved NOW (an inferred subscriber that turned out ambiguous refuses the rewind rather than rewinding
+/// a guess). Then the committed value is READ BACK and the rewind fails unless it IS the record put: a
+/// refused mint (another rebuild of the group committed first, or a moved assignment) would otherwise
+/// leave the store REBUILDING with nothing saying why. The consumer restart is level-triggered from the
+/// committed epoch (`StreamConsumerManager`), so the rewind is complete when the records are committed;
+/// the rewound consumer resumes at `fromOffset` under the token.
 public record NodeReplayCursor(String topicStream,
                                Supplier<Result<String>> groupId,
                                Supplier<Option<Integer>> partitionCount,
                                PartitionBounds bounds,
-                               Fn1<Promise<Unit>, KVCommand<AetherKey>> commandWriter,
-                               Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader) implements ReplayCursor {
+                               Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
+                               Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
+                               CommittedAssignments committedAssignments) implements ReplayCursor {
     private static final Logger log = LoggerFactory.getLogger(NodeReplayCursor.class);
 
     sealed interface RewindError extends Cause {
@@ -64,6 +71,19 @@ public record NodeReplayCursor(String topicStream,
             public String message() {
                 return "Topic stream " + topicStream
                      + " is not known to this node yet, so its partitions cannot be captured";
+            }
+        }
+
+        /// #1271: the partition has no committed consumer assignment, so no write to its cursor can pass
+        /// the applier's guard — the rewind is refused before anything is put.
+        record NoCommittedAssignment(String topicStream, String groupId, int partition) implements RewindError {
+            @Override
+            public String message() {
+                return "Rewind of group " + groupId
+                     + " on " + topicStream
+                     + "[" + partition
+                     + "] refused: the partition has no committed consumer assignment, and the cluster cursor"
+                     + " admits writes only from the committed assignee";
             }
         }
 
@@ -81,8 +101,8 @@ public record NodeReplayCursor(String topicStream,
                      + " was not committed: the cluster cursor carries epoch " + committed.map(RewindEpoch::toString)
                                                                                           .or("<absent>")
                      + ". The applier refuses a rewind record unless its epoch is strictly newer than the committed"
-                     + " one: another rebuild of this group committed first (retry to mint past it), or the put"
-                     + " did not apply";
+                     + " one and its assignment token is the committed assignee's: another rebuild of this group"
+                     + " committed first (retry to mint past it), the assignment moved, or the put did not apply";
             }
         }
     }
@@ -151,31 +171,64 @@ public record NodeReplayCursor(String topicStream,
     }
 
     /// One REWIND RECORD per partition — `rewind = true`, so the applier refuses it unless its epoch is
-    /// STRICTLY newer than the committed one. The record instances are kept so the read-back can compare
-    /// the whole committed value, not just the epoch: a refused mint leaves the previous record in place.
+    /// STRICTLY newer than the committed one — under the partition's committed assignment token. The
+    /// record instances are kept so the read-back can compare the whole committed value, not just the
+    /// epoch: a refused mint leaves the previous record in place. All records go in ONE apply.
     private Promise<Unit> rewindAll(String group, ReplayRange range, RewindToken token) {
         var epoch = epochOf(token);
+
+        return Result.allOf(range.partitions()
+                                 .entrySet()
+                                 .stream()
+                                 .map(entry -> rewindRecord(group, entry.getKey(), entry.getValue().fromOffset(), epoch))
+                                 .toList())
+                     .async()
+                     .flatMap(records -> put(group, toRecords(records), range, token, epoch));
+    }
+
+    private Result<Map.Entry<Integer, StreamCursorCheckpointValue>> rewindRecord(String group,
+                                                                                int partition,
+                                                                                long fromOffset,
+                                                                                RewindEpoch epoch) {
+        return assignmentToken(group, partition).map(assignment -> Map.entry(partition,
+                                                                             StreamCursorCheckpointValue.rewindRecord(fromOffset,
+                                                                                                                      assignment,
+                                                                                                                      epoch)));
+    }
+
+    private Result<AssignmentToken> assignmentToken(String group, int partition) {
+        return committedAssignments.assignmentOf(topicStream, partition, group)
+                                   .map(ConsumerAssignmentValue::token)
+                                   .toResult(new RewindError.NoCommittedAssignment(topicStream, group, partition));
+    }
+
+    private static Map<Integer, StreamCursorCheckpointValue> toRecords(List<Map.Entry<Integer, StreamCursorCheckpointValue>> entries) {
         var records = new HashMap<Integer, StreamCursorCheckpointValue>();
 
-        range.partitions()
-             .forEach((partition, span) -> records.put(partition,
-                                                       StreamCursorCheckpointValue.rewindRecord(span.fromOffset(),
-                                                                                                epoch)));
+        entries.forEach(entry -> records.put(entry.getKey(), entry.getValue()));
+
+        return records;
+    }
+
+    private Promise<Unit> put(String group,
+                              Map<Integer, StreamCursorCheckpointValue> records,
+                              ReplayRange range,
+                              RewindToken token,
+                              RewindEpoch epoch) {
         var puts = records.entrySet()
                           .stream()
-                          .map(entry -> commandWriter.apply(new KVCommand.Put<AetherKey, AetherValue>(checkpointKey(group,
-                                                                                                                    entry.getKey()),
-                                                                                                      entry.getValue())))
+                          .map(entry -> (KVCommand<AetherKey>) new KVCommand.Put<AetherKey, AetherValue>(checkpointKey(group,
+                                                                                                                       entry.getKey()),
+                                                                                                         entry.getValue()))
                           .toList();
 
-        return Promise.allOf(puts)
-                      .flatMap(results -> Result.allOf(results).async())
-                      .flatMap(_ -> verifyCommitted(group, records, token))
-                      .onSuccess(_ -> log.info("Rewound group {} on {} to {} under epoch {}",
-                                               group,
-                                               topicStream,
-                                               range.partitions(),
-                                               epoch));
+        return commandWriter.apply(puts)
+                            .flatMap(_ -> verifyCommitted(group, records, token))
+                            .onSuccess(_ -> log.info("Rewound group {} on {} to {} under epoch {}",
+                                                     group,
+                                                     topicStream,
+                                                     range.partitions(),
+                                                     epoch));
     }
 
     /// The put resolved, which says the command was APPLIED, not that it was ACCEPTED — a fenced refusal is

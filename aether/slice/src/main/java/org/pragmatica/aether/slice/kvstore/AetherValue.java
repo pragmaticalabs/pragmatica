@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.cluster.state.kvstore.AssignmentTokenBearing;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -1406,51 +1407,91 @@ public sealed interface AetherValue {
         }
     }
 
-    record StreamPartitionAssignmentValue(List<PartitionAssignment> assignments, long updatedAt) implements AetherValue {
-        public record PartitionAssignment(int partition, NodeId consumerNode) {
-            public static PartitionAssignment partitionAssignment(int partition, NodeId consumerNode) {
-                return new PartitionAssignment(partition, consumerNode);
+    /// Committed assignee of one consumer group's partition (#1271). Written by the leader-only
+    /// `ConsumerAssignmentWriter`; read by every node's attach admission and by the applier's cross-key
+    /// guard on [StreamCursorCheckpointValue] writes. `epoch` is `Epoch(rabiaTerm, assignmentTerm)`, so it
+    /// advances on a leader change and on every same-term reassignment; [EpochBearing] fences a deposed
+    /// leader's stale write to this record. Replaces the never-used `StreamPartitionAssignmentValue`.
+    record ConsumerAssignmentValue(NodeId assignee, Epoch epoch, long assignmentTerm, HlcTimestamp assignedAt) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
+        /// The token a checkpoint must carry to be admitted: this exact assignee at this exact epoch.
+        /// Equality on both halves is what makes an A→B→A flap refuse A's writes from its FIRST tenure.
+        @Codec
+        public record AssignmentToken(NodeId assignee, Epoch epoch) {
+            public static AssignmentToken assignmentToken(NodeId assignee, Epoch epoch) {
+                return new AssignmentToken(assignee, epoch);
             }
         }
 
-        public static StreamPartitionAssignmentValue streamPartitionAssignmentValue(List<PartitionAssignment> assignments) {
-            return new StreamPartitionAssignmentValue(List.copyOf(assignments), System.currentTimeMillis());
+        @Override
+        public Epoch fenceEpoch() {
+            return epoch;
+        }
+
+        @Override
+        public Object guardToken() {
+            return token();
+        }
+
+        public AssignmentToken token() {
+            return AssignmentToken.assignmentToken(assignee, epoch);
+        }
+
+        public static ConsumerAssignmentValue consumerAssignmentValue(NodeId assignee,
+                                                                      Epoch epoch,
+                                                                      long assignmentTerm,
+                                                                      HlcTimestamp assignedAt) {
+            return new ConsumerAssignmentValue(assignee, epoch, assignmentTerm, assignedAt);
         }
     }
 
-    /// Consensus-visible consumer cursor (#488), FENCED on the group's rewind epoch (#1333).
+    /// Consensus-visible consumer cursor (#488), guarded TWICE by the applier: `token` names the committed
+    /// assignment it was written under (#1271 — admitted only while that token is the committed
+    /// [ConsumerAssignmentValue]'s, `AssignmentGuarded`), and `rewindGeneration`/`rewindSequence` are the
+    /// [RewindEpoch] it was committed under (#1333 — through [EpochBearing] a put stamped with a STRICTLY
+    /// older epoch is refused, so a zombie consumer's pre-rewind checkpoint cannot move the cursor forward
+    /// again; `0/0` for a group never rewound). The two arms are pure predicates the applier ORs, so a
+    /// checkpoint lands only when BOTH admit it, whichever is evaluated first.
     ///
-    /// `rewindGeneration`/`rewindSequence` are the [RewindEpoch] this checkpoint was committed under —
-    /// `0/0` for a group never rewound. A projection rebuild rewinds the group by putting
-    /// `(fromOffset, epoch')` here; through [EpochBearing] the KV applier then refuses any later put
-    /// stamped with a STRICTLY older epoch, so a zombie consumer's pre-rewind checkpoint cannot move the
-    /// cursor forward again. Same-epoch puts are accepted, which is every ordinary checkpoint. The two
-    /// longs are carried flat rather than as a nested record so the value needs no new codec pin.
     /// `rewind` marks the REWIND RECORD itself — the put a projection rebuild makes to move the group's
     /// cursor under a freshly minted epoch. It MINTS that epoch ([EpochBearing#mintsEpoch]), so the applier
     /// refuses it unless strictly newer than the committed record; a consumer's checkpoint (`rewind = false`)
-    /// at the SAME epoch stays accepted.
+    /// at the SAME epoch stays accepted. The rewind record carries the committed assignee's token like any
+    /// other write to this key — a rebuild on a node the record does not name is refused by the guard.
     record StreamCursorCheckpointValue(long committedOffset,
                                        long commitTimestamp,
+                                       ConsumerAssignmentValue.AssignmentToken token,
                                        long rewindGeneration,
                                        long rewindSequence,
-                                       boolean rewind) implements AetherValue, EpochBearing<RewindEpoch> {
-        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset) {
-            return streamCursorCheckpointValue(committedOffset, RewindEpoch.NONE);
+                                       boolean rewind) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
+        @Override
+        public Object guardToken() {
+            return token;
         }
 
-        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset, RewindEpoch epoch) {
+        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
+                                                                              ConsumerAssignmentValue.AssignmentToken token) {
+            return streamCursorCheckpointValue(committedOffset, token, RewindEpoch.NONE);
+        }
+
+        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
+                                                                              ConsumerAssignmentValue.AssignmentToken token,
+                                                                              RewindEpoch epoch) {
             return new StreamCursorCheckpointValue(committedOffset,
                                                    System.currentTimeMillis(),
+                                                   token,
                                                    epoch.generation(),
                                                    epoch.rewind(),
                                                    false);
         }
 
-        /// The rewind record: the group's cursor moved to `fromOffset` under the minted `epoch`.
-        public static StreamCursorCheckpointValue rewindRecord(long fromOffset, RewindEpoch epoch) {
+        /// The rewind record: the group's cursor moved to `fromOffset` under the minted `epoch`, written
+        /// under the committed assignment `token`.
+        public static StreamCursorCheckpointValue rewindRecord(long fromOffset,
+                                                               ConsumerAssignmentValue.AssignmentToken token,
+                                                               RewindEpoch epoch) {
             return new StreamCursorCheckpointValue(fromOffset,
                                                    System.currentTimeMillis(),
+                                                   token,
                                                    epoch.generation(),
                                                    epoch.rewind(),
                                                    true);

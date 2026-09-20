@@ -9,19 +9,30 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
 import com.sun.management.ThreadMXBean;
 
 import java.lang.management.ManagementFactory;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -295,6 +306,233 @@ class SegmentReaderTest {
             var threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
 
             return threads.getThreadAllocatedBytes(Thread.currentThread().threadId());
+        }
+    }
+
+    /// #1392: a read across k segments must not nest a frame group per segment. With a memory tier every
+    /// `storage.get` settles synchronously, and the `flatMap`-per-segment chain then ran each continuation
+    /// inline: 7 frames per segment, ~3,600 for a 512-segment replay batch — and the sealer seals one evicted
+    /// record per segment, so that is the production shape. On CI's 1 MB x64 thread stack the entity replay
+    /// overflowed at about 480 segments. Depth is measured with `StackWalker`, which `MaxJavaStackTraceDepth`
+    /// does not cap.
+    @Nested
+    class StackDepthAcrossSegments {
+        private static final int MANY_SEGMENTS = 2_000;
+        private static final int SOME_SEGMENTS = 200;
+        private static final int FAILING_SEGMENT = 5;
+        /// Well under one segment's worth of nesting (7 frames) times any small constant, and four orders of
+        /// magnitude under the 13,993 frames the recursion grew by before the fix.
+        private static final long MAX_DEPTH_GROWTH = 50;
+        /// Every off-thread read awaits with a budget: a read that never settles must FAIL, not park the suite
+        /// (rev1394 measured 9+ minutes parked under an ignored-failure mutation with an unbounded await).
+        private static final TimeSpan READ_BUDGET = TimeSpan.timeSpan(10).seconds();
+        private static final int RECORDS_PER_SEGMENT = 3;
+        private static final int BOUNDARY_SEGMENTS = 5;
+        private static final long CROSSING_FROM = 4;
+        /// `from + max - 1` must land INSIDE a segment, not on its end: the ref range is already bounded by that
+        /// offset, so a limit on a segment end is met by the ref list alone and an un-decremented `remaining` on the
+        /// resume path reads the same records (a first draft used max 5 over 3-record segments and pinned nothing).
+        private static final int CROSSING_MAX = 4;
+        private static final int THROWING_SEGMENT = 3;
+        private static final String THROWN_MESSAGE = "metadata store exploded synchronously";
+
+        /// RED before the fix: the last segment's `get` ran 7 × 1,999 frames deeper than the first's.
+        @Test
+        void readEvents_keepsStackDepthFlat_acrossTwoThousandSynchronouslySettlingSegments() {
+            var depths = new ArrayList<Long>();
+            var probedReader = segmentReader(recordingDepthOnGet(storage, depths), index);
+
+            sealOneEventSegments(MANY_SEGMENTS);
+            var events = probedReader.readEvents(STREAM, PARTITION, 0, MANY_SEGMENTS).await();
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(offsets(MANY_SEGMENTS)));
+            assertThat(depths).as("control: every segment was fetched through the probe").hasSize(MANY_SEGMENTS);
+            assertThat(depths.getLast() - depths.getFirst()).as("stack depth at the last segment's get relative to the first's")
+                                                              .isLessThan(MAX_DEPTH_GROWTH);
+        }
+
+        /// The suspended branch: a `get` that settles on another thread parks the loop, which resumes there.
+        @Test
+        void readEvents_readsEverySegmentInOrder_whenEachGetSettlesOffThread() {
+            var offThreadReader = segmentReader(settlingOffThread(storage), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = offThreadReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(offsets(SOME_SEGMENTS)));
+        }
+
+        /// The resume path's failure branch, DETERMINISTICALLY: the held step's promise is handed to the test, which
+        /// fails it only after `readEvents` has returned — so the loop has already found it pending and suspended
+        /// on it, and the inline branch cannot have taken it. A step failed on a racing thread instead lands in
+        /// whichever branch scheduling picks: under a mutation that ignores a failed resumed step the racing shape
+        /// passed 31/31 on one run and reddened on the next (rev1394 N5, shape adopted from
+        /// `oss/internal/probes/s25-rev1394/Rev1394ProbeTest.failedStepSettledAfterTheLoopSuspended_failsTheReadOnce`).
+        @Test
+        void readEvents_failsTheReadOnce_whenAHeldStepFailsAfterTheLoopSuspendedOnIt() {
+            var failure = SegmentError.General.SEGMENT_DATA_NOT_FOUND;
+            var held = new AtomicReference<Promise<Option<byte[]>>>();
+            var settled = new AtomicInteger();
+            var heldReader = segmentReader(holdingGetAt(storage, FAILING_SEGMENT, held), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var read = heldReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).onResult(_ -> settled.incrementAndGet());
+
+            assertThat(held.get()).as("control: the loop reached the held step").isNotNull();
+            assertThat(read.isResolved()).as("control: the read is suspended on the held step").isFalse();
+            held.get().fail(failure);
+            var events = read.await(READ_BUDGET);
+
+            events.onSuccess(list -> fail("a failed segment read must fail the whole read, not return " + list.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(failure));
+            assertThat(settled.get()).as("the read settles exactly once").isEqualTo(1);
+        }
+
+        /// `maxEvents` crossing a segment boundary after a resume, ending mid-segment. The suspended path carries
+        /// `remaining` forward itself; passing it unchanged over-reads the rest of the next segment, which no
+        /// `maxEvents == segments` read sees.
+        @Test
+        void readEvents_stopsAtMaxEvents_whenTheLimitFallsMidSegmentAfterAnOffThreadResume() {
+            var offThreadReader = segmentReader(settlingOffThread(storage), index);
+
+            sealSegmentsOf(RECORDS_PER_SEGMENT, BOUNDARY_SEGMENTS);
+            var events = offThreadReader.readEvents(STREAM, PARTITION, CROSSING_FROM, CROSSING_MAX).await(READ_BUDGET);
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(LongStream.range(CROSSING_FROM, CROSSING_FROM + CROSSING_MAX)
+                                                                                          .boxed()
+                                                                                          .toList()));
+        }
+
+        /// M1: a step that THROWS (a ref lookup that explodes) on the inline path fails the read — it neither escapes
+        /// `readEvents` as an exception nor leaves the read unsettled.
+        @Test
+        void readEvents_failsTheRead_whenARefLookupThrowsOnTheInlinePath() {
+            var throwingReader = segmentReader(throwingRefAt(storage, THROWING_SEGMENT), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = throwingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
+
+            assertThrownRefFailed(events);
+        }
+
+        /// M1, resume path: the throw lands inside the resumed loop, whose enclosing `onResult` would otherwise swallow it.
+        @Test
+        void readEvents_failsTheRead_whenARefLookupThrowsAfterAnOffThreadResume() {
+            var throwingReader = segmentReader(throwingRefAt(settlingOffThread(storage), THROWING_SEGMENT), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = throwingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
+
+            assertThrownRefFailed(events);
+        }
+
+        private static void assertThrownRefFailed(Result<List<RawEvent>> events) {
+            events.onSuccess(list -> fail("a throwing ref lookup must fail the read, not return " + list.size() + " events"))
+                  .onFailure(cause -> assertThat(cause.message()).as("the read's failure is the throw itself, not a timeout of a read that never settled")
+                                                                .contains(THROWN_MESSAGE));
+        }
+
+        private void sealSegmentsOf(int recordsPerSegment, int segments) {
+            for (var segment = 0; segment < segments; segment++) {
+                var start = (long) segment * recordsPerSegment;
+                var end = start + recordsPerSegment - 1;
+                var records = LongStream.rangeClosed(start, end)
+                                        .mapToObj(offset -> RawEvent.rawEvent(offset, ("e" + offset).getBytes(), offset))
+                                        .toList();
+
+                sink.seal(sealedSegment(STREAM, PARTITION, start, end, recordsPerSegment, start, end, serializeEvents(records))).await();
+            }
+        }
+
+        /// The real storage, whose `resolveRef` THROWS on its `nth` call (1-based).
+        private static StorageInstance throwingRefAt(StorageInstance delegate, int nth) {
+            var calls = new AtomicInteger();
+
+            return proxy(delegate, (method, args) -> {
+                if (method.getName().equals("resolveRef") && calls.incrementAndGet() == nth) {
+                    throw new IllegalStateException(THROWN_MESSAGE);
+                }
+
+                return Option.none();
+            });
+        }
+
+        private void sealOneEventSegments(int count) {
+            for (long offset = 0; offset < count; offset++) {
+                var serialized = serializeEvents(List.of(RawEvent.rawEvent(offset, ("e" + offset).getBytes(), offset)));
+
+                sink.seal(sealedSegment(STREAM, PARTITION, offset, offset, 1, offset, offset, serialized)).await();
+            }
+        }
+
+        private static List<Long> offsets(int count) {
+            return LongStream.range(0, count).boxed().toList();
+        }
+
+        /// The real storage, with the calling thread's stack depth recorded at every `get`.
+        private static StorageInstance recordingDepthOnGet(StorageInstance delegate, List<Long> depths) {
+            return proxy(delegate, (method, args) -> {
+                if (method.getName().equals("get")) {
+                    depths.add(StackWalker.getInstance().walk(Stream::count));
+                }
+
+                return Option.none();
+            });
+        }
+
+        /// The real storage, except that the `nth` `get` (1-based) returns a promise the TEST holds in `held`.
+        private static StorageInstance holdingGetAt(StorageInstance delegate, int nth, AtomicReference<Promise<Option<byte[]>>> held) {
+            var gets = new AtomicInteger();
+
+            return proxy(delegate, (method, args) -> {
+                if (!method.getName().equals("get") || gets.incrementAndGet() != nth) {
+                    return Option.none();
+                }
+
+                var step = Promise.<Option<byte[]>> promise();
+
+                held.set(step);
+
+                return Option.some(step);
+            });
+        }
+
+        /// The real storage, every `get` settling on a fresh virtual thread.
+        private static StorageInstance settlingOffThread(StorageInstance delegate) {
+            return proxy(delegate, (method, args) -> {
+                if (!method.getName().equals("get")) {
+                    return Option.none();
+                }
+
+                var id = (BlockId) args[0];
+
+                return Option.some(Promise.<Option<byte[]>> promise()
+                                          .async(promise -> delegate.get(id).onResult(promise::resolve)));
+            });
+        }
+
+        /// `intercept` answers a call itself or returns none to pass it to `delegate`.
+        private static StorageInstance proxy(StorageInstance delegate, BiFunction<Method, Object[], Option<Object>> intercept) {
+            return (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
+                                                            new Class<?>[]{StorageInstance.class},
+                                                            (_, method, args) -> intercept.apply(method, args)
+                                                                                          .or(() -> invoke(delegate, method, args)));
+        }
+
+        private static Object invoke(StorageInstance delegate, Method method, Object[] args) {
+            try {
+                return method.invoke(delegate, args);
+            } catch (InvocationTargetException e) {
+                throw new IllegalStateException(e.getCause());
+            } catch (IllegalAccessException e) {
+                throw new IllegalStateException(e);
+            }
         }
     }
 
