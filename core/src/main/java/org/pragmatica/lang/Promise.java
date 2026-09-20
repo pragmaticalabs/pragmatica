@@ -87,11 +87,27 @@ import static org.pragmatica.lang.utils.ResultCollector.resultCollector;
 ///
 /// **Total-mapper contract.** Functions passed to transformation methods (`map`, `flatMap`,
 /// `fold`, `filter`, `replaceResult` and their arity/`With` variants) must be total: they must
-/// return normally for every input. A throw inside a mapper is NOT converted into a failed
-/// promise — the resolution machinery does not catch it, so the resulting promise may never
-/// resolve and every dependent promise (joins, `await` callers) hangs with it. Partial
-/// operations (`getFirst()`, `orElseThrow()`, `Optional.get()`, …) must be lifted to a typed
-/// `Cause` before entering a chain. Enforced statically by the jbct-lint mapper-safety rules.
+/// return normally for every input. Partial operations (`getFirst()`, `orElseThrow()`,
+/// `Optional.get()`, …) must be lifted to a typed `Cause` before entering a chain. Enforced
+/// statically by the jbct-lint mapper-safety rules.
+///
+/// **What happens when a continuation breaks that contract (#1311).** A `Throwable` escaping any
+/// continuation — a mapper, a `fold`, an `onResult`/`onSuccess`/`onFailure` handler, or the consumer
+/// given to `async`/`Promise.promise(consumer)` — is not lost: the dependent promise (for `async`,
+/// the promise the consumer was given) fails with a [CoreError.Exception] whose message names the
+/// continuation and the first non-JDK, non-`org.pragmatica.lang` frame of the escape and whose
+/// `cause()` is the Throwable; the escape is logged at ERROR by the `org.pragmatica.lang.Promise`
+/// logger with its stack trace; and a [VirtualMachineError] is rethrown after both, so an exhausted
+/// stack or heap is never hidden behind a failed `Result`. The behaviour is the same whether the
+/// source resolved before or after the continuation was attached. Every other completion claimed in
+/// the same resolution batch — sibling dependents, handlers queued behind the thrower, threads parked
+/// in `await()` — still runs before the error is rethrown. Where the rethrow goes depends on the
+/// thread: the caller of `succeed()`/`map()`, the virtual thread's uncaught-exception handler for
+/// event handlers and `async` consumers, or — absorbed — the `ScheduledFuture` of the timeout
+/// scheduler for a promise resolved by `.timeout()`/`async(delay, …)`.
+/// `Promise.lift*` map ordinary exceptions through their mapper as before; a `VirtualMachineError` is
+/// rethrown by [Result#lift] and takes the same route as any other escape. This is containment of a
+/// bug, not an error channel: a mapper that relies on it is still wrong.
 /* Implementation notes: this version of the implementation is heavily inspired by the implementation of
 the CompletableFuture. There are several differences, though:
 - Method naming consistent with widely used Optional and Streams.
@@ -705,7 +721,7 @@ public sealed interface Promise<T> permits PromiseImpl {
     ///
     /// @return Current promise instance.
     default Promise<T> async(Consumer<Promise<T>> consumer) {
-        AsyncExecutor.INSTANCE.runAsync(() -> consumer.accept(this));
+        AsyncExecutor.INSTANCE.runAsync(() -> PromiseImpl.runContained(this, consumer));
 
         return this;
     }
@@ -728,7 +744,7 @@ public sealed interface Promise<T> permits PromiseImpl {
     ///
     /// @return Current promise instance.
     default Promise<T> async(TimeSpan delay, Consumer<Promise<T>> action) {
-        AsyncExecutor.INSTANCE.runAsync(delay, () -> action.accept(this));
+        AsyncExecutor.INSTANCE.runAsync(delay, () -> PromiseImpl.runContained(this, action));
 
         return this;
     }
@@ -3203,8 +3219,10 @@ enum AsyncExecutor {
     @Contract
     void runAsync(Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
-
-        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable));
+        // #1311: execute, not submit. submit() wrapped the task in a Future nobody read, so a Throwable
+        // leaving the task was silently kept there. Continuations now contain their own escapes and
+        // rethrow only a VirtualMachineError, which execute() lets reach the thread's uncaught handler.
+        executor.execute(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable));
     }
     @Contract
     ScheduledFuture<?> runAsync(TimeSpan delay, Runnable runnable) {
@@ -3250,9 +3268,12 @@ final class PromiseImpl<T> implements Promise<T> {
     @Override
     public Promise<T> onResult(Consumer<Result<T>> action) {
         if (result != null) {
-            action.accept(result);
-
-            return this;
+            try {
+                action.accept(result);
+            } catch (Throwable escape) {
+                escaped(ON_RESULT, escape);
+                rethrowIfFatal(escape);
+            }
         } else {
             push(new CompletionOnResult<>(action));
         }
@@ -3263,7 +3284,15 @@ final class PromiseImpl<T> implements Promise<T> {
     @Override
     public <U> Promise<U> fold(Fn1<Promise<U>, Result<T>> action) {
         if (result != null) {
-            return action.apply(result);
+            try {
+                return action.apply(result);
+            } catch (Throwable escape) {
+                var cause = escaped(FOLD, escape);
+
+                rethrowIfFatal(escape);
+
+                return new PromiseImpl<>(cause.result());
+            }
         } else {
             return chain(action);
         }
@@ -3272,7 +3301,15 @@ final class PromiseImpl<T> implements Promise<T> {
     @Override
     public <U> Promise<U> replaceResult(Fn1<Result<U>, Result<T>> transformation) {
         if (result != null) {
-            return new PromiseImpl<>(transformation.apply(result));
+            try {
+                return new PromiseImpl<>(transformation.apply(result));
+            } catch (Throwable escape) {
+                var cause = escaped(REPLACE_RESULT, escape);
+
+                rethrowIfFatal(escape);
+
+                return new PromiseImpl<>(cause.result());
+            }
         } else {
             var dependency = new PromiseImpl<U>(null);
 
@@ -3379,9 +3416,22 @@ final class PromiseImpl<T> implements Promise<T> {
     @Override
     public Promise<T> resolve(Result<T> value) {
         if (RESULT.compareAndSet(this, null, value)) {
+            VirtualMachineError fatal = null;
+            // #1311, defensive and NOT exercised by a test (rev1362 R2-M2 reddened nothing): a completion
+            // pushed while a batch was running is drained by push()'s own lost-wakeup guard, so this loop
+            // rarely has a second round to protect. It stays so that a VME out of one round cannot orphan a
+            // round that does exist.
             do {
-                processActions();
+                try {
+                    processActions();
+                } catch (VirtualMachineError escape) {
+                    fatal = fatal == null
+                            ? escape
+                            : fatal;
+                }
             } while (this.stack != null);
+
+            rethrowIfFatal(fatal);
         }
 
         return this;
@@ -3439,24 +3489,33 @@ final class PromiseImpl<T> implements Promise<T> {
         }
 
         runEventHandlers(events);
-        runSequentialActions(actions);
-        runJoins(joins);
+        rethrowIfFatal(runAll(joins, runAll(actions, null)));
     }
 
+    /// #1311: a VirtualMachineError rethrown by one completion must not abandon the rest of the batch this
+    /// call CAS-claimed — the sibling dependents would never resolve and a thread parked in `await()` would
+    /// never be unparked, which is the ticket's own wedge re-created for a StackOverflowError in one mapper.
+    /// Every completion of the batch runs; the first error is returned and rethrown by the caller once the
+    /// joins have been unparked, so "rethrown after logging" still holds, one batch later. The call site
+    /// nests the two calls: the inner (argument) runs the sequential actions first, the outer the joins
+    /// after — the original order.
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private void runJoins(Completion current) {
-        while (current != null) {
-            current.complete(result);
-            current = current.next;
-        }
-    }
+    private VirtualMachineError runAll(Completion current, VirtualMachineError first) {
+        var fatal = first;
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private void runSequentialActions(Completion current) {
         while (current != null) {
-            current.complete(result);
+            try {
+                current.complete(result);
+            } catch (VirtualMachineError escape) {
+                fatal = fatal == null
+                        ? escape
+                        : fatal;
+            }
+
             current = current.next;
         }
+
+        return fatal;
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -3465,14 +3524,7 @@ final class PromiseImpl<T> implements Promise<T> {
             return;
         }
 
-        AsyncExecutor.INSTANCE.runAsync(() -> {
-            var current = asyncEvents;
-
-            while (current != null) {
-                current.complete(result);
-                current = current.next;
-            }
-        });
+        AsyncExecutor.INSTANCE.runAsync(() -> rethrowIfFatal(runAll(asyncEvents, null)));
     }
 
     private <U> Promise<U> chain(Fn1<Promise<U>, Result<T>> transformer) {
@@ -3509,6 +3561,82 @@ final class PromiseImpl<T> implements Promise<T> {
         }
     }
 
+    static final String FOLD = "fold";
+    static final String REPLACE_RESULT = "replaceResult";
+    static final String ON_RESULT = "onResult";
+    static final String ASYNC = "async";
+
+    /// #1311: the one place a Throwable escaping a continuation is handled. Before it, an escape on an
+    /// executor thread vanished into the Future that [AsyncExecutor#runAsync(Runnable)] discarded: the
+    /// dependent promise never resolved, nothing was logged, and every completion claimed in the same
+    /// batch — handlers behind the thrower, joins of threads already parked in `await()` — was skipped.
+    ///
+    /// Logs the escape at ERROR with its origin and returns the cause the dependent promise fails
+    /// with. The origin is the top frame of the escape's own stack trace: for a mapper that is the
+    /// line that threw, which the continuation's class name (a `Promise$$Lambda` for `map`/`flatMap`)
+    /// could not give. The caller resolves the dependent, THEN calls [#rethrowIfFatal(Throwable)]:
+    /// a [VirtualMachineError] must not be hidden behind a failed Result, but the dependent must not
+    /// stay wedged either, so both happen, in that order. Not classified [Cause.Terminal] or
+    /// [Cause.Transient]: an escape is a bug, and whether a retry can help is the caller's call
+    /// (#1297's sealer retries its drain after a pause by design).
+    static Cause escaped(String continuation, Throwable escape) {
+        var cause = new CoreError.Exception("Throwable escaped " + continuation
+                                           + " continuation at " + originOf(escape)
+                                           + ": " + escape,
+                                            escape);
+
+        log.error("{}", cause.message(), escape);
+
+        return cause;
+    }
+
+    /// The origin named in the Cause is the first frame that belongs to neither the JDK nor this library:
+    /// a mapper that calls `Integer.parseInt` throws from `NumberFormatException.forInputString`, and that
+    /// frame would tell a reader nothing about which continuation broke. This finds the continuation's own
+    /// line only when the continuation HAS a frame — a method reference straight into the JDK
+    /// (`map(Integer::parseInt)`) has none, so the frame named is the next caller below: the line that
+    /// RESOLVED the source (or the executor's frame when that was the timeout scheduler), not the `map`
+    /// line. Falls back to the top frame when every frame is framework (a JDK-internal recursion), and
+    /// says so when the trace is empty.
+    private static String originOf(Throwable escape) {
+        var trace = escape.getStackTrace();
+
+        if (trace.length == 0) {
+            return "unknown origin (empty stack trace)";
+        }
+
+        for (var frame : trace) {
+            if (!isFrameworkFrame(frame.getClassName())) {
+                return frame.toString();
+            }
+        }
+
+        return trace[0].toString();
+    }
+
+    private static boolean isFrameworkFrame(String className) {
+        return className.startsWith("java.") || className.startsWith("jdk.") || className.startsWith("sun.") || className.startsWith("org.pragmatica.lang.");
+    }
+
+    /// Also the rethrow-after-the-batch primitive: `Causes.rethrowIfFatal(null)` is a no-op, so the
+    /// batch loops hand it whatever they collected without a null check of their own.
+    private static void rethrowIfFatal(Throwable escape) {
+        Causes.rethrowIfFatal(escape);
+    }
+
+    /// The consumer given to `async`/`Promise.promise(consumer)` is entrusted with resolving the promise
+    /// it receives, so an escape fails that promise (a no-op if the consumer already resolved it).
+    static <T> Unit runContained(Promise<T> promise, Consumer<Promise<T>> consumer) {
+        try {
+            consumer.accept(promise);
+        } catch (Throwable escape) {
+            promise.resolve(escaped(ASYNC, escape).result());
+            rethrowIfFatal(escape);
+        }
+
+        return Unit.unit();
+    }
+
     sealed interface CompletionMarker permits CompletionOnResult, CompletionFold, CompletionMap, CompletionResolve, CompletionJoin {}
 
     abstract static class Completion<T> {
@@ -3531,7 +3659,16 @@ final class PromiseImpl<T> implements Promise<T> {
         @SuppressWarnings("unchecked")
         @Contract
         public void complete(Result<T> value) {
-            var inner = transformer.apply(value);
+            Promise<U> inner;
+
+            try {
+                inner = transformer.apply(value);
+            } catch (Throwable escape) {
+                dependency.resolve(escaped(FOLD, escape).result());
+                rethrowIfFatal(escape);
+
+                return;
+            }
 
             if (inner instanceof PromiseImpl<?> impl) {
                 if (impl.result != null) {
@@ -3557,7 +3694,18 @@ final class PromiseImpl<T> implements Promise<T> {
         @Override
         @Contract
         public void complete(Result<T> value) {
-            dependency.resolve(transformer.apply(value));
+            Result<U> mapped;
+
+            try {
+                mapped = transformer.apply(value);
+            } catch (Throwable escape) {
+                dependency.resolve(escaped(REPLACE_RESULT, escape).result());
+                rethrowIfFatal(escape);
+
+                return;
+            }
+
+            dependency.resolve(mapped);
         }
     }
 
@@ -3585,7 +3733,12 @@ final class PromiseImpl<T> implements Promise<T> {
         @Override
         @Contract
         public void complete(Result<T> value) {
-            consumer.accept(value);
+            try {
+                consumer.accept(value);
+            } catch (Throwable escape) {
+                escaped(ON_RESULT, escape);
+                rethrowIfFatal(escape);
+            }
         }
     }
 

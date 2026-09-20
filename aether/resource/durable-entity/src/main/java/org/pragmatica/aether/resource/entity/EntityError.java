@@ -94,7 +94,8 @@ public sealed interface EntityError extends Cause {
     }
 
     /// A timer operation reached a backing that has no durable log to hold a pending timer in — the
-    /// HA-only in-memory cut ([InMemoryDurableEntity], [FencedDurableEntity]). It declines with this typed
+    /// HA-only in-memory cut (`InMemoryDurableEntity`, `FencedDurableEntity`, both test-only fixtures in this
+    /// module's test sources since #1270). It declines with this typed
     /// cause rather than silently no-op'ing, because a timer that is accepted and never fires is worse than
     /// one that is refused.
     ///

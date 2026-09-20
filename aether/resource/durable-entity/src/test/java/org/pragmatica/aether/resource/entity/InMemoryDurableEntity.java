@@ -41,7 +41,7 @@ import static org.pragmatica.lang.Promise.unitPromise;
 ///
 /// Neither form reaches a running node: [DurableEntityFactory] provisions only the fenced-log
 /// [PartitionFencedDurableEntity] and refuses without its fence collaborators. This entity is
-/// constructed directly, by tests and harnesses.
+/// constructed directly by tests, and lives in test sources for that reason (#1270).
 ///
 /// @param <K> entity key type
 /// @param <S> entity state type (immutable)
