@@ -3417,7 +3417,10 @@ final class PromiseImpl<T> implements Promise<T> {
     public Promise<T> resolve(Result<T> value) {
         if (RESULT.compareAndSet(this, null, value)) {
             VirtualMachineError fatal = null;
-
+            // #1311, defensive and NOT exercised by a test (rev1362 R2-M2 reddened nothing): a completion
+            // pushed while a batch was running is drained by push()'s own lost-wakeup guard, so this loop
+            // rarely has a second round to protect. It stays so that a VME out of one round cannot orphan a
+            // round that does exist.
             do {
                 try {
                     processActions();
@@ -3589,8 +3592,12 @@ final class PromiseImpl<T> implements Promise<T> {
 
     /// The origin named in the Cause is the first frame that belongs to neither the JDK nor this library:
     /// a mapper that calls `Integer.parseInt` throws from `NumberFormatException.forInputString`, and that
-    /// frame would tell a reader nothing about which continuation broke. Falls back to the top frame when
-    /// every frame is framework (a JDK-internal recursion), and says so when the trace is empty.
+    /// frame would tell a reader nothing about which continuation broke. This finds the continuation's own
+    /// line only when the continuation HAS a frame — a method reference straight into the JDK
+    /// (`map(Integer::parseInt)`) has none, so the frame named is the next caller below: the line that
+    /// RESOLVED the source (or the executor's frame when that was the timeout scheduler), not the `map`
+    /// line. Falls back to the top frame when every frame is framework (a JDK-internal recursion), and
+    /// says so when the trace is empty.
     private static String originOf(Throwable escape) {
         var trace = escape.getStackTrace();
 
