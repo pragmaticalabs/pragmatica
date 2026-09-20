@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -53,6 +54,10 @@ final class EntityFold {
     private final String keyspace;
     private final EntityLogSubstrate substrate;
     private final ConcurrentHashMap<Integer, PartitionFold> partitions = new ConcurrentHashMap<>();
+
+    /// See [#readyWindowProbe(Consumer)]. Deliberately NOT volatile: it is set before any concurrent caller
+    /// starts, and `Thread.start` publishes it.
+    private Consumer<ReadyWindow> readyWindowProbe = _ -> {};
 
     private EntityFold(String keyspace, EntityLogSubstrate substrate) {
         this.keyspace = keyspace;
@@ -142,15 +147,43 @@ final class EntityFold {
             return existing;
         }
 
+        readyWindowProbe.accept(ReadyWindow.EMPTY_SLOT_READ);
         var started = Promise.<Unit> promise();
-
+        // Lost the CAS: the winner's rebuild may ALREADY have failed and cleared the slot — synchronously,
+        // inside its own call, for a partition not held — so re-reading it here could return null (#1268,
+        // the sibling of #701's fix in caughtUp). Re-entering re-reads under the same guards as a fresh call.
         if (!fold.rebuild.compareAndSet(null, started)) {
-            return fold.rebuild.get();
-        }
+            readyWindowProbe.accept(ReadyWindow.CAS_LOST);
 
-        rebuild(partition, fold).onResult(result -> completeRebuild(fold, started, result));
+            return ready(partition);
+        }
+        // A synchronous throw out of rebuild would otherwise escape BETWEEN the won CAS and the onResult
+        // attach, leaving the slot holding a promise nothing will ever resolve — every later caller then
+        // waits on it forever (#1268). Lifting converts the throw into a resolved failure through the same
+        // completion, which also clears the slot.
+        Result.lift(() -> rebuild(partition, fold))
+              .onSuccess(run -> run.onResult(result -> completeRebuild(fold, started, result)))
+              .onFailure(cause -> completeRebuild(fold,
+                                                  started,
+                                                  cause.result()));
 
         return started;
+    }
+
+    /// The two points inside [#ready] a test needs to stand in: after the slot was read EMPTY (so the
+    /// caller will attempt the compare-and-set), and after that compare-and-set was LOST.
+    enum ReadyWindow {
+        EMPTY_SLOT_READ,
+        CAS_LOST
+    }
+
+    /// Test-only seam (#1268): lets a test hold a caller inside [#ready]'s windows while another caller
+    /// wins the memo and its rebuild fails, which makes the lost-CAS race deterministic instead of
+    /// scheduler-dependent. Must be installed before any concurrent caller starts. Production never
+    /// touches it.
+    @Contract
+    void readyWindowProbe(Consumer<ReadyWindow> probe) {
+        readyWindowProbe = probe;
     }
 
     private static void completeRebuild(PartitionFold fold, Promise<Unit> started, Result<Unit> result) {
@@ -446,9 +479,14 @@ final class EntityFold {
     /// @param snapshot      the encoded contents, folded at or beyond that offset
     record CheckpointCandidate(long throughOffset, byte[] snapshot) {}
 
-    /// A checkpoint for `partition`, or [Option#none] when this node has nothing to say about it — a
-    /// partition never folded here answers a watermark of `-1`, which correctly means "no claim", not
-    /// "checkpointed through offset 0".
+    /// A checkpoint for `partition` that claims MORE than `notAbove`, or [Option#none] when there is none —
+    /// either because the fold has not advanced past `notAbove`, or because this node has nothing to say
+    /// about the partition at all: a partition never folded here answers a watermark of `-1`, which
+    /// correctly means "no claim", not "checkpointed through offset 0". A caller with no floor passes `-1`.
+    ///
+    /// The floor is checked BEFORE the contents are copied and encoded (#1269). Checked after, as the
+    /// driver's advancement guard alone did, every tick paid a full copy and encode of every folded
+    /// partition — owner and replica alike — only to discard it whenever the partition was idle.
     ///
     /// The offset and the contents come from the SAME [FoldedPartition], and that is the entire reason this
     /// exists beside [#checkpointableThrough] and [#snapshot]. Read as two calls, a rebuild publishing
@@ -467,7 +505,7 @@ final class EntityFold {
     /// It also sweeps the per-key offsets the settled watermark now covers — the entries of offsets that
     /// PARKED when applied, which [#forgetCovered] could not drop at the time. Periodic like the re-drain,
     /// so such an entry outlives its coverage by at most one checkpoint interval.
-    Option<CheckpointCandidate> checkpointCandidate(int partition) {
+    Option<CheckpointCandidate> checkpointCandidate(int partition, long notAbove) {
         var data = publishedFold(partition);
 
         drain(data);
@@ -475,7 +513,7 @@ final class EntityFold {
 
         data.keyApplied.values().removeIf(applied -> applied <= through);
 
-        return through < 0L
+        return through < 0L || through <= notAbove
                ? Option.none()
                : Option.some(new CheckpointCandidate(through, encodedFold(data)));
     }

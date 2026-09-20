@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.entity;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -103,6 +104,9 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// Consecutive consume-append failures per stuck timer, so the ERROR that reports one can be
     /// rate-limited while still carrying how long it has been stuck. See [#failedConsumes].
     private final Map<TimerId, AtomicLong> unconsumedFires = new ConcurrentHashMap<>();
+    /// Timers with a fire queued or running on their key's tail, so a tick does not queue another behind
+    /// it (#1269). See [#submitFire].
+    private final Set<TimerId> firesInFlight = ConcurrentHashMap.newKeySet();
     private Option<EntityOwnerForward> forward = Option.none();
     private final AtomicReference<Option<Runnable>> closeHook = new AtomicReference<>(Option.none());
     private final Option<LinearizableEntityServe<K, S>> linearizableServe;
@@ -517,8 +521,9 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
     /// An entity built WITHOUT admission (the unwired fence-test form) owns everything, matching
     /// [#admitWrite]'s permissive fallback — the two must agree, or a unit-test entity would schedule
-    /// timers it then refuses to fire.
-    private boolean isPartitionOwned(int partition) {
+    /// timers it then refuses to fire. Package-visible: the checkpoint driver asks the same question to
+    /// decide which partitions carry a checkpoint lag (#1330).
+    boolean isPartitionOwned(int partition) {
         return admission.fold(() -> true, gate -> gate.isPartitionOwner(partition));
     }
 
@@ -638,12 +643,35 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// concurrent create / update / delete on that key — the same guarantee an external update gets, which
     /// is what spec §4.5 means by "applies the scheduled operation via the same path as an external
     /// update". [Deadline#unbounded()] because there is no caller whose budget could bound it.
+    ///
+    /// At most ONE fire per timer is queued at a time (#1269). The tick runs every second and a fire can
+    /// sit behind a slow or stalled operation on its key; queuing one per tick grew that key's queue by
+    /// the number of due timers every second, and [#fireStillPending] discarded the extras only once they
+    /// finally ran. The in-tail re-checks stay — the mark only stops duplicates from being QUEUED. See
+    /// [#fireReleasing] for where the mark is cleared, and why there.
     @Contract
     private void submitFire(int partition, EntityFold.DueTimer due) {
+        var id = fireKey(due);
+
+        if (!firesInFlight.add(id)) {
+            return;
+        }
+
         perKey.submit(due.key(),
                       () -> Deadline.runWith(Deadline.unbounded(),
-                                             () -> fireAdmitted(partition, due)))
+                                             () -> fireReleasing(partition, due, id)))
               .onFailure(cause -> logFireDeferred(due, cause));
+    }
+
+    /// The fire, with its in-flight mark cleared as a STEP of the fire's own chain — success, failure or a
+    /// synchronous throw alike — so the mark is gone before the key's next operation can start. Cleared
+    /// from an observer on the executor's promise instead, it ran on another thread and could still be set
+    /// when the next tick came: a fire deferred by a fence was then skipped as "in flight" after the fence
+    /// had cleared.
+    private Promise<Unit> fireReleasing(int partition, EntityFold.DueTimer due, TimerId id) {
+        return Result.lift(() -> fireAdmitted(partition, due))
+                     .<Promise<Unit>> fold(Cause::promise, fire -> fire)
+                     .withResult(_ -> firesInFlight.remove(id));
     }
 
     private Promise<Unit> fireAdmitted(int partition, EntityFold.DueTimer due) {

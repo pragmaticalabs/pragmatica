@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.entity;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Promise;
@@ -172,7 +173,14 @@ final class PerKeySerialExecutor<K> {
     }
 
     private static <R> Promise<Object> launch(Fn0<Promise<R>> operation) {
-        return promise(target -> erase(operation.apply()).onResult(target::resolve));
+        return promise(target -> erase(started(operation)).onResult(target::resolve));
+    }
+
+    /// An operation that THROWS instead of returning a failed promise becomes a failed promise here
+    /// (#1268). Unlifted, the throw escaped the launch task, the operation's promise was never resolved,
+    /// and every later operation on the key — chained behind it — never ran.
+    private static <R> Promise<R> started(Fn0<Promise<R>> operation) {
+        return Result.lift(operation::apply).fold(Cause::promise, promise -> promise);
     }
 
     @SuppressWarnings("unchecked")

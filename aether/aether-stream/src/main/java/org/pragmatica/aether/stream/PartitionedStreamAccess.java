@@ -38,6 +38,7 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
+import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"})
@@ -850,9 +851,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// Continue a cold read into the ring (#1234). With nothing sealed at `fromOffset` the ring is the only
     /// remaining source, so its failure — `CursorExpired` for an offset held by neither tier — is returned
     /// as-is: answering `[]` here stalled the consumer at that cursor forever. After a sealed prefix, a ring
-    /// failure is absorbed by FER (degrade forward): the sealed prefix is returned and the next read, which
-    /// starts right after it, reaches this method with nothing sealed and surfaces the failure then — the
-    /// consumer makes progress and still sees the error at the exact offset it occurs.
+    /// failure is absorbed by FER (degrade forward, [#bufferReadFallback]): the sealed prefix is returned and
+    /// the next read, which starts right after it, reaches this method with nothing sealed and surfaces the
+    /// failure then — the consumer makes progress and still sees the error at the exact offset it occurs.
+    /// The one exception is a corrupted ring (#1247 review M2), which fails the read on either path.
     private Promise<List<StreamEvent<T>>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
                                                                   int partition,
                                                                   long fromOffset,
@@ -868,16 +870,29 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
             return readBufferEvents(partition, fromOffset, remaining).async();
         }
 
-        var bufferEvents = readBufferEvents(partition,
-                                            sealedEvents.getLast().offset() + 1,
-                                            remaining).or(List.of());
-
-        return Promise.success(List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList()));
+        return readBufferEvents(partition,
+                                sealedEvents.getLast().offset() + 1,
+                                remaining).fold(this::bufferReadFallback, Result::success)
+                               .map(bufferEvents -> List.copyOf(Stream.concat(sealed.stream(),
+                                                                              bufferEvents.stream())
+                                                                      .toList()))
+                               .async();
     }
 
     private Result<List<StreamEvent<T>>> readBufferEvents(int partition, long fromOffset, int maxEvents) {
         return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
                                .map(rawEvents -> toStreamEvents(rawEvents, partition));
+    }
+
+    /// FER (degrade forward) for the ring tail after a segment fallback: any buffer failure except a
+    /// corrupted ring returns the sealed events alone — a short read the consumer continues from its next
+    /// offset, which is what this path always did. A corrupted ring is the exception (#1247 review M2): its
+    /// events cannot be trusted and "no buffer events" would silently truncate the read, so
+    /// [StreamError.RingIndexCorrupted] reaches the caller.
+    private Result<List<StreamEvent<T>>> bufferReadFallback(Cause cause) {
+        return cause instanceof StreamError.RingIndexCorrupted
+               ? cause.result()
+               : success(List.of());
     }
 
     private List<StreamEvent<T>> toStreamEvents(List<OffHeapRingBuffer.RawEvent> rawEvents, int partition) {

@@ -21,4 +21,13 @@ public interface CstLintRule {
     /// @param ctx    the lint context providing configuration
     /// @return stream of diagnostics found
     Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx);
+
+    /// Whether the linter's generic line-range suppression (`@SuppressWarnings`, `@Contract`,
+    /// `@TerminalOperation`, `@NullReturn` on ANY enclosing declaration) applies to this rule's
+    /// diagnostics. A rule that resolves its own, narrower exemption returns `false` — JBCT-EX-03
+    /// accepts a mark only on the catch's nearest enclosing method (#1247), so a class-level,
+    /// local-variable or parameter mark must not silence it.
+    default boolean usesScopedSuppression() {
+        return true;
+    }
 }
