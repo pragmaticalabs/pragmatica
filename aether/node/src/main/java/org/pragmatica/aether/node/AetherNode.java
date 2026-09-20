@@ -165,6 +165,7 @@ import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
+import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
@@ -914,7 +915,7 @@ public interface AetherNode extends ManageableNode {
     ///
     /// An UNWRITABLE dir is a BOOT ERROR by default (#634 item 2). The old behaviour — one startup WARN,
     /// then every publish acks with no fsync — silently converted "durable entity" into "in-memory
-    /// entity": the ack path (`durablyLog`) degrades to `success(offset)` when the WAL is absent, and
+    /// entity": the ack path (`awaitDurable`) passes an already-resolved barrier when the WAL is absent, and
     /// nothing downstream can tell. A node that cannot honour the durability its streams declare must
     /// say so at the moment an operator is looking at it, not in a log line nobody reads back.
     ///
@@ -3728,6 +3729,9 @@ public interface AetherNode extends ManageableNode {
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
         // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
+        // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
+        // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
+        // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
         // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex),
@@ -3739,7 +3743,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
                                                                                    resolveStreamWalDir(config),
-                                                                                   streamSegmentIndex::lastSealedOffset);
+                                                                                   streamSegmentIndex::lastSealedOffset,
+                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
 
         streamPartitionManagerRef.set(streamPartitionManager);
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
@@ -4103,11 +4108,13 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::synchronizeNow,
                                                                       config.timeouts().dht().antiEntropyInterval()));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
-        // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
-        // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
-        // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
-        // cheap when nothing new has sealed. Driven off the durable, CONTIGUOUS sealed bound (#1234: it
-        // never passes a segment that failed to seal) to avoid any truncated-before-durable window.
+        // last-sealed offset so the WAL does not grow unbounded. Records <= that offset are already in
+        // cold segments whose refs are in the metadata snapshot on disk (served post-restart by the tiered
+        // reader), so dropping them from the WAL loses nothing; the un-sealed tail stays in the WAL.
+        // truncate is threshold-lazy, so this tick is cheap when nothing new has sealed. Driven off the
+        // CONTIGUOUS sealed bound (#1234: it never passes a segment that failed to seal) as REBUILT from
+        // the latest snapshot file (#1345: never the live index, which runs ahead of disk until the next
+        // snapshot — a crash in that window used to lose the refs and renumber the survivors).
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed,
                                                                       WAL_TRUNCATE_INTERVAL));
         // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Promise;
@@ -20,5 +22,12 @@ record SystemStreamPublisher<T>(ResourceAddress address, StreamPublisher<T> tran
     @Override
     public Promise<Unit> publish(T event) {
         return transport.publish(event);
+    }
+
+    /// Delegates the BATCH, not each event: the transport's batch path groups by partition and reports per-event
+    /// outcomes (#1342); the inherited per-event fold had acknowledged refused events as success.
+    @Override
+    public Promise<List<PublishOutcome>> publishBatch(List<T> events) {
+        return transport.publishBatch(events);
     }
 }

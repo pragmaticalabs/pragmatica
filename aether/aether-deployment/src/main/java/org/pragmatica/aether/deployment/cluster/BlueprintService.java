@@ -46,7 +46,6 @@ import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidat
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
 import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
 import org.pragmatica.aether.deployment.validation.StreamValidationFailures;
-import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.topology.SliceTopology;
@@ -70,8 +69,11 @@ import org.slf4j.LoggerFactory;
 
 
 public interface BlueprintService {
-    Promise<ExpandedBlueprint> publish(String dsl);
-    Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords);
+    /// #1336: the answer carries the stream declarations the publish did not bind, by field and rule —
+    /// see [PublishedBlueprint]. A rule whose violation leaves nothing to bind fails the publish instead
+    /// ([org.pragmatica.aether.deployment.validation.StreamResourceValidator#partition]).
+    Promise<PublishedBlueprint> publish(String dsl);
+    Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords);
     /// Publish an artifact-based blueprint with explicit register-only semantics.
     /// When `registerOnly == true`, the blueprint definition is stored in KV (so the
     /// strategy-based deploy can later locate the upgrade target), but the
@@ -82,7 +84,7 @@ public interface BlueprintService {
     /// (register-only cannot suppress fresh-slice bootstrap).
     /// When `registerOnly == false`, behaves as the default `publishFromArtifact` —
     /// the new version is immediately activated.
-    Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
+    Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
     Option<ExpandedBlueprint> get(BlueprintId id);
     /// Durable terminal outcome of `id`'s last deployment attempt (#759 review, BLOCKING 3). Bounded
     /// to exactly one record per blueprint id: the FSM writes via `KVCommand.Put` at
@@ -214,7 +216,7 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     @Override
-    public Promise<ExpandedBlueprint> publish(String dsl) {
+    public Promise<PublishedBlueprint> publish(String dsl) {
         return BlueprintParser.parse(dsl)
                               .async()
                               .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
@@ -225,12 +227,12 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     @Override
-    public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
+    public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords) {
         return publishFromArtifact(artifactCoords, false);
     }
 
     @Override
-    public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
+    public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
         var parsed = parseArtifactWithClassifier(artifactCoords);
 
         return parsed.artifact()
@@ -433,9 +435,9 @@ class BlueprintServiceInstance implements BlueprintService {
         return BlueprintParser.parse(dsl);
     }
 
-    private Promise<ExpandedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
-                                                              String artifactCoords,
-                                                              boolean registerOnly) {
+    private Promise<PublishedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
+                                                               String artifactCoords,
+                                                               boolean registerOnly) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
                                         repository)
                                 .flatMap(expanded -> applyResourcesConfig(expanded,
@@ -449,33 +451,43 @@ class BlueprintServiceInstance implements BlueprintService {
                                                                            registerOnly));
     }
 
-    private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
-                                                             Option<String> resourcesConfig,
-                                                             Map<String, String> roleHints,
-                                                             Map<String, List<MigrationEntry>> migrations,
-                                                             String artifactCoords,
-                                                             boolean registerOnly) {
+    /// #1336: the stream bindings are derived BEFORE any command is built, so a gating stream rule
+    /// refuses the publish with its named cause and nothing is applied; the rejected declarations
+    /// ride out on the answer.
+    private Promise<PublishedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
+                                                              Option<String> resourcesConfig,
+                                                              Map<String, String> roleHints,
+                                                              Map<String, List<MigrationEntry>> migrations,
+                                                              String artifactCoords,
+                                                              boolean registerOnly) {
         return ensureMigrationOwnership(expanded.id(),
                                         migrations).flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
+                                       .flatMap(_ -> streamBindings(expanded.id(),
+                                                                    resourcesConfig,
+                                                                    roleHints))
                                        .async()
-                                       .flatMap(_ -> applyAllCommands(expanded,
-                                                                      resourcesConfig,
-                                                                      roleHints,
-                                                                      migrations,
-                                                                      artifactCoords,
-                                                                      registerOnly));
+                                       .flatMap(bindings -> applyAllCommands(expanded,
+                                                                             bindings,
+                                                                             migrations,
+                                                                             artifactCoords,
+                                                                             registerOnly));
     }
 
-    private Promise<ExpandedBlueprint> applyAllCommands(ExpandedBlueprint expanded,
-                                                        Option<String> resourcesConfig,
-                                                        Map<String, String> roleHints,
-                                                        Map<String, List<MigrationEntry>> migrations,
-                                                        String artifactCoords,
-                                                        boolean registerOnly) {
-        var commands = buildAllCommands(expanded, resourcesConfig, roleHints, migrations, artifactCoords, registerOnly);
+    private Promise<PublishedBlueprint> applyAllCommands(ExpandedBlueprint expanded,
+                                                         StreamBindings bindings,
+                                                         Map<String, List<MigrationEntry>> migrations,
+                                                         String artifactCoords,
+                                                         boolean registerOnly) {
+        var commands = buildAllCommands(expanded,
+                                        streamBindingsPut(expanded.id(), bindings.bound()),
+                                        migrations,
+                                        artifactCoords,
+                                        registerOnly);
 
         return cluster.apply(commands)
-                      .flatMap(_ -> confirmOutcomeStart(expanded, 0));
+                      .flatMap(_ -> confirmOutcomeStart(expanded, 0))
+                      .map(stored -> PublishedBlueprint.publishedBlueprint(stored,
+                                                                           bindings.rejected()));
     }
 
     /// Deploy-time single-migrator gate. Every datasource this artifact declares migrations for must
@@ -518,8 +530,7 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
-                                                        Option<String> resourcesConfig,
-                                                        Map<String, String> roleHints,
+                                                        KVCommand<AetherKey> streamBindings,
                                                         Map<String, List<MigrationEntry>> migrations,
                                                         String artifactCoords,
                                                         boolean registerOnly) {
@@ -550,14 +561,13 @@ class BlueprintServiceInstance implements BlueprintService {
         //
         // Stage-3 (stream-namespaces §8.5): the per-blueprint alias→ResourceAddress bindings ARE
         // published to KV (replicated), so the per-slice runtime FSM can resolve refcount targets.
-        // rc1's deploy chain has no stream-resource validation gate, so the resolved resource map is
-        // (re-)derived here from the embedded resources.toml + roleHints. Derivation is best-effort:
-        // on validation failure an empty bindings entry is still written, preserving rc1's deploy
-        // semantics (the gate that would HTTP-422 on bad stream config is a separate stage).
-        // #1262 exception: a STRONG-consistency declaration is refused BEFORE this point
-        // (StreamResourceValidator.ensureHonourableConsistency in storeAllInSingleBatch), failing the deploy —
-        // registerOnly included: a STRONG blueprint is not even registered.
-        commands.add(buildStreamBindingsCommand(expanded, resourcesConfig, roleHints));
+        // #1336: the bindings were derived from the embedded resources.toml + roleHints by
+        // `streamBindings` before this batch was built. A section failing a per-alias rule is left
+        // out of the entry and reported on the answer; a rule leaving nothing to bind has already
+        // refused the publish, so no batch reaches here for it. #1262's STRONG refusal
+        // (StreamResourceValidator.ensureHonourableConsistency in storeAllInSingleBatch) runs before
+        // that derivation — registerOnly included: a STRONG blueprint is not even registered.
+        commands.add(streamBindings);
         if (!migrations.isEmpty()) {
             commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords, expanded.id()));
         }
@@ -565,24 +575,33 @@ class BlueprintServiceInstance implements BlueprintService {
         return commands;
     }
 
-    private static KVCommand<AetherKey> buildStreamBindingsCommand(ExpandedBlueprint expanded,
-                                                                   Option<String> resourcesConfig,
-                                                                   Map<String, String> roleHints) {
-        return streamBindingsPut(expanded.id(), streamBindings(expanded.id(), resourcesConfig, roleHints));
+    /// #1336 — one derivation's answer: the aliases that bind and the declarations that did not, by
+    /// field and rule.
+    private record StreamBindings(List<NamedAddress> bound, List<StreamValidationFailure> rejected) {
+        static StreamBindings streamBindings(List<NamedAddress> bound, List<StreamValidationFailure> rejected) {
+            return new StreamBindings(bound, rejected);
+        }
     }
 
     /// The ONE derivation of a blueprint's alias→address bindings, shared by both publish paths (#1066).
     /// `publishFromArtifact` feeds it the blueprint jar's `resources.toml`; the body publish feeds it each
     /// distinct slice-jar `resources.toml` (see [#sliceStreamBindingsCommand]). Both paths calling one
     /// function is what makes them store the same bindings for the same declaration by construction.
-    private static List<NamedAddress> streamBindings(BlueprintId blueprintId,
-                                                     Option<String> resourcesConfig,
-                                                     Map<String, String> roleHints) {
-        return StreamResourceValidator.validate(resourcesConfig,
-                                                blueprintId.artifact(),
-                                                roleHints)
-                                      .map(validated -> toNamedAddresses(blueprintId, validated))
-                                      .or(List.<NamedAddress> of());
+    ///
+    /// #1336: this used to fold the validator's all-or-nothing result with `.or(List.of())`, so ONE
+    /// invalid section emptied the whole entry and every slice then failed with a generic
+    /// `UnboundStreamAlias`. It now partitions: a section failing a per-alias rule is dropped and
+    /// returned in `rejected`; a rule leaving nothing to bind is the `Result` failure and refuses the
+    /// publish — see [StreamResourceValidator#partition] for which rules are which.
+    private static Result<StreamBindings> streamBindings(BlueprintId blueprintId,
+                                                         Option<String> resourcesConfig,
+                                                         Map<String, String> roleHints) {
+        return StreamResourceValidator.partition(resourcesConfig,
+                                                 blueprintId.artifact(),
+                                                 roleHints)
+                                      .map(partition -> StreamBindings.streamBindings(toNamedAddresses(blueprintId,
+                                                                                                       partition.accepted()),
+                                                                                      partition.rejected()));
     }
 
     private static KVCommand<AetherKey> streamBindingsPut(BlueprintId blueprintId, List<NamedAddress> bindings) {
@@ -590,12 +609,11 @@ class BlueprintServiceInstance implements BlueprintService {
                          BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
     }
 
-    private static List<NamedAddress> toNamedAddresses(BlueprintId blueprintId, ValidatedStreamResources validated) {
+    private static List<NamedAddress> toNamedAddresses(BlueprintId blueprintId, Map<String, StreamResource> resources) {
         var namespace = BlueprintNamespace.deriveNamespace(blueprintId).or("");
         var collected = new ArrayList<NamedAddress>();
 
-        validated.resources()
-                 .forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
+        resources.forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
 
         return List.copyOf(collected);
     }
@@ -757,10 +775,12 @@ class BlueprintServiceInstance implements BlueprintService {
                                  SliceStore.readSliceResourcesToml(location.url()));
     }
 
-    private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
-        return sliceStreamBindingsCommand(expanded).flatMap(streamBindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                                                                                    expanded,
-                                                                                                    streamBindings));
+    private Promise<PublishedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
+        return sliceStreamBindings(expanded).flatMap(bindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                                                                       expanded,
+                                                                                       streamBindingsPut(expanded.id(),
+                                                                                                         bindings.bound())).map(stored -> PublishedBlueprint.publishedBlueprint(stored,
+                                                                                                                                                                                bindings.rejected())));
     }
 
     /// #1066 — the TOML body publish's stream bindings, derived from its slice jars.
@@ -791,11 +811,8 @@ class BlueprintServiceInstance implements BlueprintService {
     /// bindings are unioned, and an alias bound to two different addresses refuses the publish
     /// ([#ensureUnambiguousAliases]): `BlueprintStreamBindingsValue.addressFor` would otherwise answer
     /// with whichever came first and silently misbind the other slice.
-    private Promise<KVCommand<AetherKey>> sliceStreamBindingsCommand(ExpandedBlueprint expanded) {
-        return loadSliceDeclarations(expanded).flatMap(declarations -> sliceBindings(expanded.id(),
-                                                                                     declarations).async())
-                                    .map(bindings -> streamBindingsPut(expanded.id(),
-                                                                       bindings));
+    private Promise<StreamBindings> sliceStreamBindings(ExpandedBlueprint expanded) {
+        return loadSliceDeclarations(expanded).flatMap(declarations -> sliceBindings(expanded.id(), declarations).async());
     }
 
     private Promise<List<Option<String>>> loadSliceDeclarations(ExpandedBlueprint expanded) {
@@ -814,23 +831,37 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     /// #1262: every slice declaration passes the STRONG-consistency deploy gate before any binding is derived
-    /// — the same gate the artifact path runs — so a STRONG stream refuses the publish with its named cause
-    /// instead of degrading to empty bindings.
-    private static Result<List<NamedAddress>> sliceBindings(BlueprintId blueprintId,
-                                                            List<Option<String>> declarations) {
-        return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList()).flatMap(_ -> unambiguousBindings(blueprintId,
-                                                                                                                                                       declarations));
+    /// — the same gate the artifact path runs — so a STRONG stream refuses the publish with its named cause.
+    /// #1336: each declaration is then derived on its own; the bound aliases are unioned as before and the
+    /// rejections are unioned with them, de-duplicated because slices packaged from one module ship the
+    /// same text. A gating failure in any declaration refuses the publish.
+    private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId, List<Option<String>> declarations) {
+        return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList()).flatMap(_ -> derivedSliceBindings(blueprintId,
+                                                                                                                                                        declarations));
     }
 
-    private static Result<List<NamedAddress>> unambiguousBindings(BlueprintId blueprintId,
-                                                                  List<Option<String>> declarations) {
-        return ensureUnambiguousAliases(declarations.stream()
-                                                    .flatMap(Option::stream)
-                                                    .flatMap(toml -> streamBindings(blueprintId,
-                                                                                    Option.some(toml),
-                                                                                    Map.of()).stream())
-                                                    .distinct()
-                                                    .toList());
+    /// A blueprint whose slices ship no `resources.toml` at all still runs the derivation once, with no
+    /// document: `partition` owns the blueprint-namespace guard, and skipping it here left the body path
+    /// silent about a reserved namespace the artifact path reports (#1336 review, NIT-5).
+    private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId,
+                                                               List<Option<String>> declarations) {
+        var present = declarations.stream().flatMap(Option::stream).toList();
+        var perSlice = present.isEmpty()
+                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of()))
+                       : present.stream().map(toml -> streamBindings(blueprintId, Option.some(toml), Map.of())).toList();
+
+        return Result.allOf(perSlice).flatMap(BlueprintServiceInstance::unionSliceBindings);
+    }
+
+    private static Result<StreamBindings> unionSliceBindings(List<StreamBindings> perSlice) {
+        var rejected = perSlice.stream().flatMap(bindings -> bindings.rejected()
+                                                                     .stream()).distinct().toList();
+
+        return ensureUnambiguousAliases(perSlice.stream()
+                                                .flatMap(bindings -> bindings.bound()
+                                                                             .stream())
+                                                .distinct()
+                                                .toList()).map(bound -> StreamBindings.streamBindings(bound, rejected));
     }
 
     private static Result<List<NamedAddress>> ensureUnambiguousAliases(List<NamedAddress> bindings) {

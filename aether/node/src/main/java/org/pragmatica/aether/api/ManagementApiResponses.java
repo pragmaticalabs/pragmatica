@@ -184,12 +184,20 @@ public sealed interface ManagementApiResponses {
     /// filter client-side on `details.artifact`]; `statusUrl`'s outcome record is the durable summary,
     /// not a replacement for the timeline. See `aether/docs/reference/management-api.md`
     /// `POST /api/blueprints/deploy`.
+    /// #1336: `rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
+    /// blueprint WITHOUT binding — each by its TOML `field`, the `rule` it failed and the diagnostic.
+    /// Empty when every declaration bound. A slice using a rejected alias fails to load naming that
+    /// alias; this is where the operator learns why, at the point where it is actionable. Rules whose
+    /// violation leaves nothing to bind refuse the publish instead (`422`), so they never appear here.
     record BlueprintResponse(String status,
                              String blueprint,
                              int targetInstances,
                              int activeInstances,
                              int failedInstances,
-                             String statusUrl) {}
+                             String statusUrl,
+                             List<RejectedStreamBinding> rejectedStreamBindings) {}
+
+    record RejectedStreamBinding(String field, String rule, String message) {}
 
     record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 
