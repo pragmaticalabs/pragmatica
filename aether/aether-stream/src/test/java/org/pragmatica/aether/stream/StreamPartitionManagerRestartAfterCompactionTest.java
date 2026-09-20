@@ -342,7 +342,9 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                       .or(-1L);
     }
 
-    /// Capture WARN lines of the manager's logger; the returned runnable detaches the appender.
+    /// Capture WARN lines of the manager's logger; the returned runnable detaches the appender. The manager has no
+    /// dedicated logger config, so the appender lands on the root config and sees every logger — the filter on
+    /// the logger NAME is what keeps another test's background sealer retry out of the assertions.
     private static Runnable capturingWarnings(List<String> sink) {
         var context = (LoggerContext) LogManager.getContext(false);
         var config = context.getConfiguration();
@@ -350,7 +352,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         var appender = new AbstractAppender("held-back-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
             @Override
             public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN) {
+                if (event.getLevel() == Level.WARN && StreamPartitionManager.class.getName().equals(event.getLoggerName())) {
                     sink.add(event.getMessage().getFormattedMessage());
                 }
             }
