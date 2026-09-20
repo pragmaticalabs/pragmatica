@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -11,6 +12,7 @@ import java.util.Locale;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.routes.RetentionRoutes.RetentionInvariantWatch;
 import org.pragmatica.aether.api.routes.RetentionRoutes.RetentionInvariantWatch.AlertSink;
@@ -29,6 +31,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager.PartitionWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.WalSnapshot;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalStats;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -224,6 +227,39 @@ class RetentionRoutesTest {
             assertThat(RetentionRoutes.walTotalBytes(snapshot))
                 .as("a partition with no WAL contributes nothing rather than skewing the node's disk total")
                 .isEqualTo(390L);
+        }
+
+        /// #1258: the node-wide count of WAL recoveries that accepted a head gap as reclaimed history
+        /// reaches the operator surface, not only the WARN log.
+        @Test
+        void assembleRetention_reportsWalRecoveryHeadGapsAccepted() {
+            var response = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore(), 7L);
+
+            assertThat(response.walRecoveryHeadGapsAccepted()).isEqualTo(7L);
+        }
+
+        /// #1258 round 3 nit: pins the PRODUCTION overload the route calls. A real WAL recovery accepts a
+        /// head gap (a WAL starting at offset 5 with nothing sealed), and the three-argument assembler must
+        /// report the node-wide count — forcing it to 0 there used to leave every test green.
+        @Test
+        void assembleRetention_productionOverload_reportsTheRealRecoveryCounter(@TempDir Path walDir) {
+            var wal = PartitionWal.open(walDir.resolve("gapped").resolve("0.wal")).unwrap();
+
+            wal.append(5L, new byte[]{1}, 1L).await().onFailure(cause -> fail(cause.message()));
+            wal.close();
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+            manager.createStream(StreamConfig.streamConfig("gapped",
+                                                           1,
+                                                           RetentionPolicy.retentionPolicy(1_000, 1024L * 1024, 3_600_000),
+                                                           "earliest"))
+                   .onFailure(cause -> fail(cause.message()));
+            manager.close();
+
+            var reported = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore())
+                                          .walRecoveryHeadGapsAccepted();
+
+            assertThat(reported).isPositive().isEqualTo(StreamPartitionManager.walRecoveryHeadGapsAccepted());
         }
 
         @Test
@@ -467,7 +503,7 @@ class RetentionRoutesTest {
     }
 
     private static RetentionResponse responseOf(RetentionPartitionView row) {
-        return new RetentionResponse(0L, List.of(row));
+        return new RetentionResponse(0L, List.of(row), 0L);
     }
 
     private static RetentionPartitionView violatedRow() {
