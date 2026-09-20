@@ -170,7 +170,41 @@ class HierarchicalDecisionReplayTest {
     }
 
     private void write(long revision) {
-        leader().<Object>apply(List.of(new KVCommand.Put<>(KEY, value(revision)))).await(REQUEST).unwrap();
+        leader().<Object>apply(List.of(new KVCommand.Put<>(KEY, value(revision)))).await(REQUEST)
+            .onFailure(cause -> {
+                System.err.println("HIERARCHY_REPLAY_WRITE_FAILURE revision=" + revision + " cause=" + cause.message());
+                cluster.allNodes().forEach(node -> System.err.println(replayState(node)));
+            }).unwrap();
+    }
+
+    private static String replayState(AetherNode node) {
+        return Result.lift(() -> {
+            var runtime = HierarchyAuthorityAcceptanceTest.runtime(node);
+            var accessor = runtime.getClass().getDeclaredMethod("consensus");
+            accessor.setAccessible(true);
+            var engine = accessor.invoke(runtime);
+            var phase = ((AtomicReference<?>) field(engine, "currentPhase").unwrap()).get();
+            var state = ((AtomicReference<?>) field(engine, "engineState").unwrap()).get();
+            var phases = (Map<?, ?>) field(engine, "phases").unwrap();
+            var data = phases.get(phase);
+            String round = "absent";
+            if (data != null) {
+                var method = data.getClass().getDeclaredMethod("round");
+                method.setAccessible(true);
+                round = String.valueOf(method.invoke(data));
+            }
+            return "HIERARCHY_REPLAY_STATE node=" + node.self().id() + " phase=" + phase
+                   + " state=" + state + " round=" + round + " retained=" + phases.size()
+                   + " pending=" + ((Map<?, ?>) field(engine, "pendingBatches").unwrap()).size();
+        }).fold(cause -> "HIERARCHY_REPLAY_STATE_FAILED " + cause.message(), value -> value);
+    }
+
+    private static Result<Object> field(Object owner, String name) {
+        return Result.lift(() -> {
+            var field = owner.getClass().getDeclaredField(name);
+            field.setAccessible(true);
+            return field.get(owner);
+        });
     }
 
     private void replay(AetherNode receiver, Decision<?> decision) {
