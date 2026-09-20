@@ -9,8 +9,8 @@
   Ember cluster; aether/node DurableProjectionRebuildTest carries the mutation table]`.
 - **The rewind is fenced in KV.** `StreamCursorCheckpointValue` carries the group's rewind epoch and is
   `EpochBearing`, so the applier refuses a checkpoint stamped with a strictly older epoch — a consumer
-  still committing its pre-rewind position cannot move a rewound cursor forward `[mechanism:
-  KVStore.staleEpochWrite; pinned by DurableProjectionRebuildTest]`. Resume order is `(rewind epoch,
+  still committing its pre-rewind position cannot move a rewound cursor forward `[verified: aether/node
+  DurableProjectionRebuildTest zombieCheckpoint_atTheOldEpoch_isRefusedByTheApplier on the real KVStore applier]`. Resume order is `(rewind epoch,
   offset)`, so a node that crashed before applying a rewind cannot resurrect its stale-high local cursor.
   The group identity a projection reports for is the runtime's `artifactBase#method`, inferred when the
   slice has exactly one durable subscriber on the topic and refused loudly otherwise.
