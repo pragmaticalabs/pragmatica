@@ -5613,8 +5613,9 @@ When the stream's partition count cannot be determined — the auto-create guard
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
 cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
-ProblemResponses HttpStatusAware dispatch]` That `409` is the single publish; the batch form reports the
-same condition per item as `NOT_ATTEMPTED` with `200` — see below.
+ProblemResponses HttpStatusAware dispatch]` The batch form answers the same way: a stream-level `409` (or a
+reserved-name `400`) is the batch's own status, checked once before any item is written; per-item
+`NOT_ATTEMPTED` is partition-level only — see below.
 
 The auto-create never fabricates a stream under a reserved stream-kind prefix: a publish to a `topic`
 or `entity` namespace address with no committed config is refused with `400 Bad Request`
