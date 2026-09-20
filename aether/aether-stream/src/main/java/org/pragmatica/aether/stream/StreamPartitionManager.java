@@ -408,6 +408,23 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           lastSealedOffset);
     }
 
+    /// Test/standalone factory wiring an eviction listener (the segment sealer) together with a per-partition
+    /// WAL root and a last-sealed source, with the no-replication / no-cluster / fence-free defaults — the
+    /// seal → sealed-watermark → WAL-truncation → recovery chain end to end without a cluster (#1234).
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          ReplicationManager.NONE,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero(),
+                                          walBaseDir,
+                                          lastSealedOffset);
+    }
+
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode) {
         return new StreamPartitionManager(maxTotalBytes,
@@ -1785,6 +1802,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return current;
     }
 
+    /// Whether `offset` of `(streamName, partition)` has been evicted and handed to the eviction listener but
+    /// is not yet durably sealed (#1234) — a read of it is IN FLIGHT and succeeds once the seal lands.
+    public boolean sealInFlight(String streamName, int partition, long offset) {
+        return evictionListener.holdsUnsealed(streamName, partition, offset);
+    }
+
     /// Periodically reclaim WAL disk by truncating each partition's write-ahead log up to its DURABLE
     /// last-sealed offset (streaming-persistence W5). For every live stream and each partition that has a
     /// [PartitionWal], `base = lastSealedOffset.lastSealedOffset(stream, partition)` is computed and, when
@@ -1898,6 +1921,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> closeAndRelease(StreamEntry entry) {
         releaseEntry(entry);
         entry.deleteWals();
+        evictionListener.onStreamDeleted(entry.config().name());
 
         return success(unit());
     }
@@ -2896,14 +2920,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         /// Replay one partition's WAL tail into its ring, or a no-op when the partition has no WAL
-        /// ([Option#none]). The fresh ring is seeded above the durable last-sealed offset and only records
+        /// ([Option#none]). The WAL is attached to the ring's eviction listener FIRST (#1234): replay can evict,
+        /// and those hand-overs must already see the partition as WAL-backed. The fresh ring is seeded above the durable last-sealed offset and only records
         /// with `offset > lastSealedOffset` are appended (PartitionWal.replay already filters them).
         private static Result<Unit> recoverPartition(String streamName,
                                                      int partition,
                                                      OffHeapRingBuffer ring,
                                                      Option<PartitionWal> wal,
                                                      LastSealedOffsetSource lastSealedOffset) {
-            return wal.map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
+            return wal.onPresent(ring::attachWal)
+                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
                       .or(() -> success(unit()));
         }
 
