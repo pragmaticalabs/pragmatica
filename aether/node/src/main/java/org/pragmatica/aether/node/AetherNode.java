@@ -3732,10 +3732,12 @@ public interface AetherNode extends ManageableNode {
         // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
         // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
         // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
+        // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
+        var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
+                                                                                                    streamSegmentIndex),
+                                                              streamMaxMemoryBytes);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
-                                                                                   SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
-                                                                                                                                                     streamSegmentIndex),
-                                                                                                               streamMaxMemoryBytes),
+                                                                                   streamSegmentSealer,
                                                                                    streamReplicationManager,
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
@@ -3974,7 +3976,8 @@ public interface AetherNode extends ManageableNode {
                                                                           streamingConfig.backfillSourceWaitBound(),
                                                                           () -> streamPlacementMembers(clusterEventsControllerRef,
                                                                                                        clusterTopologyManager),
-                                                                          streamCommittedOwnerSource);
+                                                                          streamCommittedOwnerSource,
+                                                                          streamPartitionManager::syncReplicated);
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
@@ -4395,6 +4398,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                             config.self(),
                                                                                                                             stream,
                                                                                                                             partition),
+                                                                                   streamTieredReader,
+                                                                                   streamSegmentIndex,
+                                                                                   streamSegmentSealer,
                                                                                    streamStorage,
                                                                                    kvStore,
                                                                                    clusterCommandApplier);

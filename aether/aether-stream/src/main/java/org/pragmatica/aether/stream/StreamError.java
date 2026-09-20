@@ -30,6 +30,8 @@ public sealed interface StreamError extends Cause {
         CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed"),
         STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded"),
         CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream"),
+        UNREADABLE_CONSISTENCY_MODE("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
+                                   + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG"),
         BUFFER_FULL("Ring buffer is full, STRONG consistency prevents eviction"),
         EVENT_DROPPED("Event dropped: larger than the ring's allocation, and the ring cannot grow"),
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),

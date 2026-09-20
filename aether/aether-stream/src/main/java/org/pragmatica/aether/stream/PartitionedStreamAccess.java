@@ -306,7 +306,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         var cursorWriter = cursorStore.map(cs -> (CursorCheckpointWriter)(stream, group, partition, offset) -> cs.commit(group,
                                                                                                                          stream,
                                                                                                                          partition,
-                                                                                                                         offset))
+                                                                                                                         offset)
+                                                                                                                 .mapToUnit())
                                       .or(NOOP_WRITER);
 
         return new PartitionedStreamAccess<>(partitionManager,
@@ -597,12 +598,22 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// a steady-state single-node cluster is always its own owner, and dropping the write would be
     /// worse than landing it on the only node that can serve it; once placement is known, subsequent
     /// publishes route correctly. This mirrors the B3 owner-gate's bootstrap-window tolerance.
+    ///
+    /// **STRONG (#1262):** a stream declared `STRONG` is refused with `CONSENSUS_PATH_UNAVAILABLE` before
+    /// routing — no consensus path is wired, and writing it as EVENTUAL would silently weaken the declared
+    /// guarantee (see {@link StreamPartitionManager#ensureWritableConsistency}).
     @Override
     public Promise<Long> publish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
 
+        return partitionManager.ensureWritableConsistency(streamName)
+                               .async()
+                               .flatMap(_ -> routePublish(partition, bytes, timestamp));
+    }
+
+    private Promise<Long> routePublish(int partition, byte[] bytes, long timestamp) {
         return resolveOwner(partition).map(owner -> routeToOwner(owner, partition, bytes, timestamp))
                            .or(() -> publishLocal(partition, bytes, timestamp));
     }

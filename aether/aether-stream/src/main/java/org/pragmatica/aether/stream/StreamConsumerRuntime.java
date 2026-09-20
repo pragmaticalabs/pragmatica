@@ -26,7 +26,7 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// [`Contract`].
     ///
     /// Closing flushes every consumer's cursor before removing push listeners. That flush is
-    /// `ConsumerCursorStore.commit(...)` — a `Promise<Unit>` consensus write that can fail, or simply
+    /// `ConsumerCursorStore.commit(...)` — a `Promise<CommitOutcome>` consensus write that can fail, or simply
     /// not settle before shutdown needs to proceed. #654: the batch of final commits is bound-await
     /// for up to 5 seconds so a wedged or slow write cannot hold node stop; a commit that has not
     /// settled within the bound counts as failed for THIS shutdown even if it later succeeds. Every
@@ -34,7 +34,8 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// consumer stays attached, visible on [SubscriptionSnapshot#lastCursorCommitFailure]. A store
     /// composed of sub-stages (#654 round 2, e.g. the node's cluster-aware store chaining a consensus
     /// checkpoint publish onto the local write) may recover an inner failure rather than fail
-    /// `commit(...)` itself — that case is logged by the STORE at its own level, not here, but is
+    /// `commit(...)` itself, reporting it as that commit's `LocalOnly` outcome (#1239) — that case is
+    /// logged by the STORE at its own level, not here, but is
     /// still folded into the same counter/detail, prefixed `checkpoint publish:` to distinguish it from
     /// a `local commit:` failure, which this runtime logs at ERROR (consumer group, stream, partition,
     /// cause) directly. **Redelivery contract**: a consumer whose final flush failed or did not settle
@@ -80,14 +81,22 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// One live subscription. `cursor` is the next offset this consumer will read, i.e. one past the
     /// last delivered offset. `lastCursorCommitFailure` (#654) is the detail of this consumer's most
     /// recent cursor commit failure, cleared on its next successful commit; [Option#none] when its
-    /// last commit succeeded or none has been attempted yet.
+    /// last commit succeeded or none has been attempted yet. `deadLetterInFlight` / `retryInFlight`
+    /// (#1266) are the holds that stop the delivery loop while a failed head event is being resolved —
+    /// a dead-letter append outstanding, or a retry scheduled — so a HELD partition never reads as an
+    /// idle one (both are `false` with the cursor frozen when the partition is merely quiet).
+    /// `awaitingCursorFetch` (rev1272 F7 follow-up) is the third non-delivering state: this subscription
+    /// has not STARTED, because its cursor fetch keeps failing and is being retried.
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,
                                 long cursor,
                                 boolean stalled,
                                 IdlePolicy idlePolicy,
-                                Option<String> lastCursorCommitFailure) {}
+                                Option<String> lastCursorCommitFailure,
+                                boolean deadLetterInFlight,
+                                boolean retryInFlight,
+                                boolean awaitingCursorFetch) {}
 
     /// Whether the idle reaper may unsubscribe a consumer that has not polled recently.
     ///

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -35,8 +36,8 @@ import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLo
 /// `StreamPartitionManager` is a concrete `final` class with no test seam of its own, but the collaborator
 /// that actually receives the barrier count — `ReplicationManager` — is an interface the manager is built
 /// with, so a capturing fake there observes the exact argument `awaitBarrier` passes without needing to
-/// fake `StreamPartitionManager` itself. `storage`, `kvStore`, and `applier` are real constructor
-/// parameters of `StreamEntityLogSubstrate` but are never touched by `ensureLog`/`append` — both methods
+/// fake `StreamPartitionManager` itself. `tieredReader`, `segmentIndex`, `storage`, `kvStore`, and `applier` are real
+/// constructor parameters of `StreamEntityLogSubstrate` but are never touched by `ensureLog`/`append` — both methods
 /// go through `partitionManager` alone — so they are passed as `null` rather than built for no purpose.
 class StreamEntityLogSubstrateTest {
 
@@ -49,6 +50,9 @@ class StreamEntityLogSubstrateTest {
         var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
                                                  null,
                                                  null,
                                                  null);
@@ -72,6 +76,9 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
                                                  null);
 
         substrate.ensureLog("orders", 8, 3, 2).unwrap();
@@ -91,6 +98,9 @@ class StreamEntityLogSubstrateTest {
         var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
                                                  null,
                                                  null,
                                                  null);
@@ -117,6 +127,9 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
                                                  null);
 
         // minSyncReplicas=2 ("owner plus one peer") must await exactly ONE non-self ack.
@@ -136,6 +149,9 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
                                                  null);
 
         // minSyncReplicas=3 ("owner plus two peers") must await exactly TWO non-self acks — guards
@@ -144,6 +160,32 @@ class StreamEntityLogSubstrateTest {
         substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
 
         assertThat(capturedMinAcks.get()).isEqualTo(2);
+    }
+
+    /// #1235: the fold replays up to `headOffset` — the APPENDED head — and reads a short batch below it as
+    /// a truncated log, so the substrate's read must reach records that are not yet consumer-visible. The
+    /// fake reports the barrier met (so the append returns) while acknowledging nothing in `replicatedThrough`
+    /// (so the record stays invisible to a stream consumer).
+    @Test
+    void read_servesAnAppendedRecord_beforeItIsConsumerVisible() {
+        var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024,
+                                                                              EvictionListener.NOOP,
+                                                                              capturingReplicationManager(new AtomicInteger(),
+                                                                                                          -1L));
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("orders", 1, 2, 2).unwrap();
+        substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
+
+        assertThat(substrate.headOffset("orders", 0)).isEqualTo(0L);
+        assertThat(substrate.read("orders", 0, 0L, 10).await().map(List::size).or(-1)).isEqualTo(1);
     }
 
     /// #1233: an entity keyspace log is durable state even at replicationFactor = 1 with no WAL (Forge,
@@ -161,6 +203,9 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
                                                  null);
 
         substrate.ensureLog("ledger", 1, 1, 1).unwrap();
@@ -173,6 +218,10 @@ class StreamEntityLogSubstrateTest {
     }
 
     private static ReplicationManager capturingReplicationManager(AtomicInteger capturedMinAcks) {
+        return capturingReplicationManager(capturedMinAcks, Long.MAX_VALUE);
+    }
+
+    private static ReplicationManager capturingReplicationManager(AtomicInteger capturedMinAcks, long acknowledgedThrough) {
         var registry = ReplicaRegistry.replicaRegistry();
 
         return new ReplicationManager() {
@@ -198,6 +247,19 @@ class StreamEntityLogSubstrateTest {
 
                 return Promise.success(Unit.unit());
             }
+
+            @Override
+            public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return acknowledgedThrough;
+            }
+
+            @Override
+            public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+                return acknowledgedThrough;
+            }
+
+            @Override
+            public void observeAcks(AckObserver observer) {}
         };
     }
 }

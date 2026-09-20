@@ -1121,7 +1121,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private List<ReactiveManifestEntry> readReactiveBindingsFromManifest(Slice slice) {
+        private List<ReactiveManifestEntry> readReactiveBindingsFromManifest(Artifact artifact, Slice slice) {
             var result = new ArrayList<ReactiveManifestEntry>();
             var classLoader = slice.getClass().getClassLoader();
 
@@ -1132,14 +1132,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
 
-                readReactiveEntriesFromManifest(classLoader, manifestPath, result);
+                readReactiveEntriesFromManifest(artifact, classLoader, manifestPath, result);
             }
 
             return result;
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private void readReactiveEntriesFromManifest(ClassLoader classLoader,
+        private void readReactiveEntriesFromManifest(Artifact artifact,
+                                                     ClassLoader classLoader,
                                                      String manifestPath,
                                                      List<ReactiveManifestEntry> result) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
@@ -1161,13 +1162,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     result.add(new ReactiveManifestEntry(category, method, config, props, prefix));
                 }
             } catch (Exception e) {
-                log.debug("Could not read reactive manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read reactive manifest {} of {}: {}", manifestPath, artifact, e.toString());
             }
         }
 
         @SuppressWarnings("JBCT-EX-01")
         private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Artifact artifact, Slice slice) {
-            var reactive = readReactiveBindingsFromManifest(slice);
+            var reactive = readReactiveBindingsFromManifest(artifact, slice);
             var result = new ArrayList<SubscriptionManifestEntry>();
 
             for (var entry : reactive) {
@@ -1244,7 +1245,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// `ClusterEventAggregator.handleDeploymentFailed` already surfaces as a WARNING-severity
         /// `DeploymentFailed` event naming the task, the offending string, and the parser's message.
         private Promise<Unit> doPublishScheduledTasks(Artifact artifact, Slice slice) {
-            var entries = readScheduledTasksFromManifest(slice);
+            var entries = readScheduledTasksFromManifest(artifact, slice);
 
             if (entries.isEmpty()) {
                 return Promise.unitPromise();
@@ -1325,7 +1326,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private Promise<Unit> doUnpublishScheduledTasks(Artifact artifact, Slice slice) {
-            var entries = readScheduledTasksFromManifest(slice);
+            var entries = readScheduledTasksFromManifest(artifact, slice);
 
             if (entries.isEmpty()) {
                 return Promise.unitPromise();
@@ -1379,7 +1380,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void registerSliceForConfigUpdates(Artifact artifact, Slice slice) {
-            var entries = readConfigUpdateEntriesFromManifest(slice);
+            var entries = readConfigUpdateEntriesFromManifest(artifact, slice);
 
             if (entries.isEmpty()) {
                 return;
@@ -1410,7 +1411,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private List<ConfigUpdateManifestEntry> readConfigUpdateEntriesFromManifest(Slice slice) {
+        private List<ConfigUpdateManifestEntry> readConfigUpdateEntriesFromManifest(Artifact artifact, Slice slice) {
             var result = new ArrayList<ConfigUpdateManifestEntry>();
             var classLoader = slice.getClass().getClassLoader();
 
@@ -1421,14 +1422,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
 
-                readConfigUpdateEntries(classLoader, manifestPath, result);
+                readConfigUpdateEntries(artifact, classLoader, manifestPath, result);
             }
 
             return result;
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private void readConfigUpdateEntries(ClassLoader classLoader,
+        private void readConfigUpdateEntries(Artifact artifact,
+                                             ClassLoader classLoader,
                                              String manifestPath,
                                              List<ConfigUpdateManifestEntry> result) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
@@ -1460,7 +1462,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     }
                 }
             } catch (Exception e) {
-                log.debug("Could not read config update manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read config update manifest {} of {}: {}", manifestPath, artifact, e.toString());
             }
         }
 
@@ -1471,8 +1473,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
-            var reactive = readReactiveBindingsFromManifest(slice);
+        private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Artifact artifact, Slice slice) {
+            var reactive = readReactiveBindingsFromManifest(artifact, slice);
             var result = new ArrayList<ScheduledTaskManifestEntry>();
 
             for (var entry : reactive) {
@@ -1591,7 +1593,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         @SuppressWarnings("JBCT-EX-01")
         private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Artifact artifact,
                                                                                           Slice slice) {
-            var reactive = readReactiveBindingsFromManifest(slice);
+            var reactive = readReactiveBindingsFromManifest(artifact, slice);
             var result = new ArrayList<StreamSubscriptionManifestEntry>();
 
             for (var entry : reactive) {
@@ -1744,7 +1746,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return List.of();
             }
 
-            var declarations = readStreamRoleDeclarationsFromManifest(loaded.unwrap().slice());
+            var declarations = readStreamRoleDeclarationsFromManifest(sliceKey.artifact(),
+                                                                      loaded.unwrap().slice());
 
             if (declarations.isEmpty()) {
                 return List.of();
@@ -1813,7 +1816,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private record StreamRoleDeclaration(String alias, @SuppressWarnings("unused") String role) {}
 
         @SuppressWarnings("JBCT-EX-01")
-        private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Slice slice) {
+        private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Artifact artifact, Slice slice) {
             var result = new ArrayList<StreamRoleDeclaration>();
             var classLoader = slice.getClass().getClassLoader();
 
@@ -1822,7 +1825,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     continue;
                 }
 
-                appendStreamRoleDeclarations(classLoader,
+                appendStreamRoleDeclarations(artifact,
+                                             classLoader,
                                              "META-INF/slice/" + iface.getSimpleName() + ".manifest",
                                              result);
             }
@@ -1831,7 +1835,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private void appendStreamRoleDeclarations(ClassLoader classLoader,
+        private void appendStreamRoleDeclarations(Artifact artifact,
+                                                  ClassLoader classLoader,
                                                   String manifestPath,
                                                   List<StreamRoleDeclaration> sink) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
@@ -1845,7 +1850,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 appendRoleEntries(props, "stream.publisher.", "stream.publishers.count", "producer", sink);
                 appendRoleEntries(props, "stream.access.", "stream.access.count", "consumer", sink);
             } catch (Exception e) {
-                log.debug("Could not read stream role declarations from manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read stream role declarations from manifest {} of {}: {}",
+                         manifestPath,
+                         artifact,
+                         e.toString());
             }
         }
 

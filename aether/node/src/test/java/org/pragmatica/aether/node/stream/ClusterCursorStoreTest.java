@@ -13,10 +13,12 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -138,72 +140,50 @@ class ClusterCursorStoreTest {
                     .isEqualTo(5L);
         }
 
-        /// #654 round 2: `commit(...)`'s own Promise settles successfully even though the consensus
-        /// publish failed — [#lastRecoveredFailure] is the only way the runtime can still learn that,
-        /// since `onFailure` on `commit(...)` never fires for this case.
+        /// #654 round 2 / #1239: `commit(...)`'s own Promise settles successfully even though the
+        /// consensus publish failed — its OUTCOME is how the runtime still learns that, since `onFailure`
+        /// on `commit(...)` never fires for this case.
         @Test
-        void commit_recordsRecoveredFailure_whenConsensusProposalFails() {
+        void commit_reportsLocalOnly_carryingTheCause_whenConsensusProposalFails() {
             var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
                                                               _ -> Option.none(),
                                                               _ -> CheckpointRejected.INSTANCE.promise());
 
-            store.commit(GROUP, STREAM, PARTITION, 5L).await();
-
-            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION))
-                    .describedAs("the recovered failure's detail must be readable right after commit(...) resolves")
-                    .isEqualTo(Option.some(CheckpointRejected.INSTANCE.message()));
+            assertThat(store.commit(GROUP, STREAM, PARTITION, 5L).await())
+                    .describedAs("the recovered failure travels on this commit's own outcome")
+                    .isEqualTo(Result.success(CommitOutcome.localOnly(CheckpointRejected.INSTANCE)));
         }
 
         @Test
-        void commit_reportsNoRecoveredFailure_whenConsensusProposalSucceeds() {
+        void commit_reportsPersisted_whenConsensusProposalSucceeds() {
             var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
                                                               _ -> Option.none(),
                                                               _ -> Promise.unitPromise());
 
-            store.commit(GROUP, STREAM, PARTITION, 5L).await();
-
-            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION)).isEqualTo(Option.none());
+            assertThat(store.commit(GROUP, STREAM, PARTITION, 5L).await())
+                    .isEqualTo(Result.success(CommitOutcome.persisted()));
         }
 
-        /// A stale detail from an earlier attempt must not linger once the store recovers — otherwise a
-        /// transient consensus hiccup would keep reporting "failed" forever after it actually cleared.
+        /// #1239 (review claim P2): two overlapping commits for ONE key. A's publish fails LATE, B's
+        /// succeeds EARLY. The per-key side map this replaces let B report A's cause (misattribution) or
+        /// let B's success clear A's entry before A read it (loss). Each commit must carry only its own
+        /// outcome.
         @Test
-        void commit_clearsRecoveredFailure_onASubsequentSuccessfulProposal() {
-            var attempt = new AtomicReference<>(CheckpointRejected.INSTANCE.<Unit>promise());
+        void overlappingCommits_forOneKey_eachReportOnlyTheirOwnOutcome() {
+            Promise<Unit> publishA = Promise.promise();
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
             var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
                                                               _ -> Option.none(),
-                                                              _ -> attempt.get());
+                                                              _ -> calls.incrementAndGet() == 1 ? publishA : Promise.unitPromise());
 
-            store.commit(GROUP, STREAM, PARTITION, 5L).await();
-            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION)).isNotEqualTo(Option.none());
+            var commitA = store.commit(GROUP, STREAM, PARTITION, 5L);
+            var commitB = store.commit(GROUP, STREAM, PARTITION, 6L);
 
-            attempt.set(Promise.unitPromise());
-            store.commit(GROUP, STREAM, PARTITION, 6L).await();
-
-            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION))
-                    .describedAs("a clean publish clears the previously recorded failure for this key")
-                    .isEqualTo(Option.none());
-        }
-
-        /// A separate (group, stream, partition) key must not see another key's recovered failure — the
-        /// map is keyed by the full checkpoint identity, not a single shared slot. Pinned against BOTH
-        /// keys in the same assertion: checking only the sibling key passes vacuously if the primary
-        /// key's failure was never recorded at all (caught by mutation probe on #654 round 2 — deleting
-        /// the `recoveredFailures.put(...)` call left this test green).
-        @Test
-        void lastRecoveredFailure_isScopedPerKey() {
-            var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
-                                                              _ -> Option.none(),
-                                                              _ -> CheckpointRejected.INSTANCE.promise());
-
-            store.commit(GROUP, STREAM, PARTITION, 5L).await();
-
-            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION))
-                    .describedAs("the committed key must actually carry the recorded failure")
-                    .isEqualTo(Option.some(CheckpointRejected.INSTANCE.message()));
-            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION + 1))
-                    .describedAs("a different partition's key must read empty")
-                    .isEqualTo(Option.none());
+            assertThat(commitB.await()).describedAs("B succeeded early and reports its own success")
+                                      .isEqualTo(Result.success(CommitOutcome.persisted()));
+            publishA.fail(CheckpointRejected.INSTANCE);
+            assertThat(commitA.await()).describedAs("A failed late and reports its own cause, not lost to B")
+                                      .isEqualTo(Result.success(CommitOutcome.localOnly(CheckpointRejected.INSTANCE)));
         }
     }
 
@@ -216,10 +196,10 @@ class ClusterCursorStoreTest {
     private static ConsumerCursorStore recordingLocal(AtomicReference<Long> sink) {
         record recordingLocal(AtomicReference<Long> sink) implements ConsumerCursorStore {
             @Override
-            public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
                 sink.set(offset);
 
-                return Promise.unitPromise();
+                return Promise.success(CommitOutcome.persisted());
             }
 
             @Override
@@ -234,8 +214,8 @@ class ClusterCursorStoreTest {
     private static ConsumerCursorStore fixedLocal(Option<Long> offset) {
         record fixedLocal(Option<Long> offset) implements ConsumerCursorStore {
             @Override
-            public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long value) {
-                return Promise.unitPromise();
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long value) {
+                return Promise.success(CommitOutcome.persisted());
             }
 
             @Override

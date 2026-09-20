@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>pragmatica</artifactId>
+        <version>1.0.0-rc4</version>
+    </parent>
+
+    <artifactId>test-plan-witness</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Test Plan Witness</name>
+    <description>
+        A JUnit Platform listener that leaves a marker file in the reports directory for as long as a
+        test plan is executing. A marker that outlives the fork is proof the plan never finished.
+    </description>
+
+    <!--
+        WHY THIS MODULE EXISTS (#1344).
+
+        A surefire fork can end a test plan early and still exit 0 with a clean goodbye. Observed on
+        2026-09-19: a StackOverflowError bottomed out inside java.lang.StringBuffer's static
+        initialiser, poisoning the class for the JVM's lifetime; when the failing test was later
+        reported, surefire's own listener threw NoClassDefFoundError while writing the failure, JUnit's
+        attempt to log THAT threw the same error, the Throwable escaped the launcher, and
+        ForkedBooter.execute() caught it, failed to report it (the report path needs the same class)
+        and then said goodbye from its finally block: BYE, System.exit(0), BUILD SUCCESS. Five classes
+        never ran. Neither surefire 3.5.1 nor 3.5.4 has a setting for "the fork said goodbye before
+        the plan finished".
+
+        The witness turns that silence into evidence that is present BEFORE anything can go wrong:
+        the marker is written when the plan starts and removed only when
+        TestExecutionListener.testPlanExecutionFinished is reached, which JUnit does not call from a
+        finally block. Whatever kills the plan, the marker stays. The root pom's test-plan-gate
+        profile fails the module when a marker or a fork dump survives the test phase.
+
+        This module must depend on NOTHING in this repository: every module with src/test pulls it
+        in at test scope through that profile, so a dependency on core would be a reactor cycle. For
+        the same reason it has no src/test of its own (the profile would make it depend on itself);
+        its pins live in script-gate.
+    -->
+
+    <properties>
+        <!-- Build-instrument module: never published. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <gpg.skip>true</gpg.skip>
+        <jbct.skip>false</jbct.skip>
+    </properties>
+
+    <dependencies>
+        <!-- Surefire and failsafe put the launcher on the fork's classpath themselves. -->
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+</project>
