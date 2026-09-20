@@ -88,8 +88,7 @@ public class SliceClassLoader extends UncachedResourceClassLoader {
 
     /// The slice's own jar: the FIRST url, by construction at every production site
     /// (`SharedDependencyLoader.createSliceClassLoader` puts the slice jar before the conflicting
-    /// shared jars, `DependencyResolver.createTempLoader` and `RepositoryDependencyLoader` build over
-    /// the jar alone) and because [#addSliceDependencyUrl] only ever appends. None for a loader built
+    /// shared jars, `DependencyFile.loadFromJar` builds over the jar alone) and because [#addSliceDependencyUrl] only ever appends. None for a loader built
     /// without one. This is what separates the slice's own `META-INF/resources.toml` from a
     /// dependency slice's copy: a resource lookup through the loader answers from the first jar that
     /// ships one, whichever slice it belongs to (#1067).

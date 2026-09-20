@@ -4,13 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -143,6 +146,27 @@ public record DependencyFile(List<ArtifactDependency> shared,
                         .orElse(success(new DependencyFile(List.of(),
                                                            List.of(),
                                                            List.of())));
+    }
+
+    /// Read the dependency file straight from the slice jar at `jarUrl`, through a throwaway
+    /// [SliceClassLoader] over that jar alone that is CLOSED before this returns (#1357). The loader
+    /// serves exactly this one resource read; left open, it holds the jar's file handle until it is
+    /// garbage-collected. The resource is read fully inside [#load], so nothing outlives the close.
+    public static Result<DependencyFile> loadFromJar(String sliceClassName, URL jarUrl, ClassLoader parent) {
+        return loadClosing(sliceClassName, new SliceClassLoader(new URL[]{jarUrl}, parent));
+    }
+
+    /// The closing half of [#loadFromJar], separable so a test can hand in a loader that records its
+    /// own close. A failed close is a failed load.
+    static Result<DependencyFile> loadClosing(String sliceClassName, SliceClassLoader loader) {
+        return Result.lift(Causes::fromThrowable, () -> loadAndClose(sliceClassName, loader)).flatMap(Fn1.id());
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<DependencyFile> loadAndClose(String sliceClassName, SliceClassLoader loader) throws IOException {
+        try (loader) {
+            return load(sliceClassName, loader);
+        }
     }
 
     public boolean hasSharedDependencies() {
