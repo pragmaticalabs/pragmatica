@@ -1143,45 +1143,64 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// on this node it returns the RETRYABLE {@link StreamError.StreamConfigNotYetVisible} so the forwarder
     /// backs off and retries rather than surfacing a spurious permanent failure. Any OTHER `publishLocal`
     /// failure (event too large, partition out of range, a genuine non-owner `PARTITION_NOT_LOCAL`, a stale
-    /// epoch) propagates UNCHANGED — no lazy create, no retry.
-    public Result<Long> publishForwarded(String streamName, int partition, byte[] payload, long timestamp) {
-        return publishLocal(streamName, partition, payload, timestamp).fold(cause -> recoverForwardedPublish(cause,
-                                                                                                             streamName,
-                                                                                                             partition,
-                                                                                                             payload,
-                                                                                                             timestamp),
-                                                                            Result::success);
+    /// epoch) propagates UNCHANGED — no lazy create, no retry. `minAcks` is the #1236 replica floor, checked
+    /// through {@link #publishLocalAtFloor} — AFTER the owner admission, so a forward that lands on a
+    /// non-owner is answered with the retryable [StreamError.NotOwnerAppend], never with a
+    /// `NOT_ENOUGH_REPLICAS` about replication this node does not own.
+    public Result<Long> publishForwarded(String streamName,
+                                         int partition,
+                                         byte[] payload,
+                                         long timestamp,
+                                         int minAcks) {
+        return publishLocalAtFloor(streamName, partition, payload, timestamp, minAcks).fold(cause -> recoverForwardedPublish(cause,
+                                                                                                                             streamName,
+                                                                                                                             partition,
+                                                                                                                             payload,
+                                                                                                                             timestamp,
+                                                                                                                             minAcks),
+                                                                                            Result::success);
     }
 
     private Result<Long> recoverForwardedPublish(Cause cause,
                                                  String streamName,
                                                  int partition,
                                                  byte[] payload,
-                                                 long timestamp) {
+                                                 long timestamp,
+                                                 int minAcks) {
         return cause instanceof StreamError.StreamNotFound
-               ? materializeThenRetryPublish(streamName, partition, payload, timestamp)
+               ? materializeThenRetryPublish(streamName, partition, payload, timestamp, minAcks)
                : cause.result();
     }
 
     /// Lazily materialize from the locally-visible committed config, then retry the append once. When the
     /// committed config is not yet visible on this node the append cannot be recovered here, so the
     /// retryable {@link StreamError.StreamConfigNotYetVisible} is returned for the forwarder to back off on.
-    private Result<Long> materializeThenRetryPublish(String streamName, int partition, byte[] payload, long timestamp) {
+    private Result<Long> materializeThenRetryPublish(String streamName,
+                                                     int partition,
+                                                     byte[] payload,
+                                                     long timestamp,
+                                                     int minAcks) {
         return committedConfigSource.committedConfig(streamName)
                                     .fold(() -> new StreamError.StreamConfigNotYetVisible(streamName).result(),
                                           config -> materializeThenPublish(config,
                                                                            streamName,
                                                                            partition,
                                                                            payload,
-                                                                           timestamp));
+                                                                           timestamp,
+                                                                           minAcks));
     }
 
     private Result<Long> materializeThenPublish(StreamConfig config,
                                                 String streamName,
                                                 int partition,
                                                 byte[] payload,
-                                                long timestamp) {
-        return ensureStreamMaterialized(config).flatMap(_ -> publishLocal(streamName, partition, payload, timestamp));
+                                                long timestamp,
+                                                int minAcks) {
+        return ensureStreamMaterialized(config).flatMap(_ -> publishLocalAtFloor(streamName,
+                                                                                 partition,
+                                                                                 payload,
+                                                                                 timestamp,
+                                                                                 minAcks));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {

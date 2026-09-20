@@ -10,6 +10,8 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamForwardHandler;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
@@ -35,6 +37,7 @@ import java.util.function.Function;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
 
@@ -279,6 +282,23 @@ class OwnerAuthorizedWritesTest {
                                    .onFailure(cause -> Assertions.fail(cause.message()))
                                    .onSuccess(offset -> assertThat(offset).isEqualTo(FORWARDED_OFFSET));
             assertThat(forwardClient.owners).containsExactly(OWNER);
+            assertThat(localHead()).isEqualTo(-1L);
+        }
+
+        /// The owner side of a forward (`StreamForwardHandler.onPublishForward`): a forward landing on a
+        /// non-owner is answered RETRYABLE, so the forwarder's bounded retry re-sends, instead of a permanent
+        /// `NOT_ENOUGH_REPLICAS` about replication this node does not own.
+        @Test
+        void forwardHandler_repliesRetryable_ratherThanAnsweringNotEnoughReplicas() {
+            var responses = new ArrayList<StreamForwardMessage>();
+
+            StreamForwardHandler.streamForwardHandler(SELF, partitionManager, (_, message) -> responses.add(message))
+                                .onPublishForward(publishForward(OWNER, "c-1", STREAM, PARTITION, "e0".getBytes(), 1L));
+
+            assertThat(responses).hasSize(1);
+            assertThat(responses.getFirst()).isInstanceOfSatisfying(PublishForwardResponse.class,
+                                                                    response -> assertThat(response.retryable()).as(response.errorMessage())
+                                                                                                                .isTrue());
             assertThat(localHead()).isEqualTo(-1L);
         }
 

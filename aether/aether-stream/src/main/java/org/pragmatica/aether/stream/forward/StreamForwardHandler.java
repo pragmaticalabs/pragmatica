@@ -22,7 +22,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -120,18 +119,26 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.ownerServe = ownerServe;
     }
 
+    /// #1236: the replica floor (`min-sync - 1` peers) is checked BEFORE the owner appends, so a forwarded
+    /// publish refused with `NOT_ENOUGH_REPLICAS` is genuinely not in the log — and AFTER the #1230 owner
+    /// admission, so a forward that lands on a non-owner is answered retryable ([StreamError.NotOwnerAppend])
+    /// rather than with a floor verdict this node does not own. One window stays open by construction: a
+    /// stream this owner has not yet materialized reports `min-sync` 0 here, [StreamPartitionManager#publishForwarded]
+    /// then materializes and appends, and a floor that cannot be met surfaces from [#awaitMinSync] as an
+    /// unknown outcome — which is what it is, since the event was appended.
     @Contract
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onPublishForward(PublishForward request) {
-        ensureReplicaFloor(request).flatMap(_ -> partitionManager.publishForwarded(request.streamName(),
-                                                                                   request.partition(),
-                                                                                   request.payload(),
-                                                                                   request.timestamp()))
-                          .async()
-                          .flatMap(offset -> awaitMinSync(request, offset))
-                          .onSuccess(offset -> sendSuccessResponse(request, offset))
-                          .onFailure(cause -> sendPublishFailure(request, cause));
+        partitionManager.publishForwarded(request.streamName(),
+                                          request.partition(),
+                                          request.payload(),
+                                          request.timestamp(),
+                                          partitionManager.minSyncReplicasFor(request.streamName()) - 1)
+                        .async()
+                        .flatMap(offset -> awaitMinSync(request, offset))
+                        .onSuccess(offset -> sendSuccessResponse(request, offset))
+                        .onFailure(cause -> sendPublishFailure(request, cause));
     }
 
     /// The min-sync barrier belongs HERE, on the owner, because this is where the ack for a forwarded
@@ -146,7 +153,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// writer paths at once and makes a forwarded ack mean exactly what a local ack means.
     ///
     /// #1236: this barrier runs AFTER the append, so a failure here is an unknown outcome
-    /// ([PublishOutcomeUnknown]), never a clean failure — the clean refusal is [#ensureReplicaFloor].
+    /// ([PublishOutcomeUnknown]), never a clean failure — the clean refusal is the pre-append floor in [#onPublishForward].
     private Promise<Long> awaitMinSync(PublishForward request, long offset) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(request.streamName());
 
@@ -158,17 +165,6 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                  .mapError(PublishOutcomeUnknown.FACTORY)
                                  .map(_ -> offset)
                : Promise.success(offset);
-    }
-
-    /// #1236: the replica floor is checked BEFORE the owner appends, so a forwarded publish refused with
-    /// `NOT_ENOUGH_REPLICAS` is genuinely not in the log. One window stays open by construction: a
-    /// stream this owner has not yet materialized reports `min-sync` 0 here, [StreamPartitionManager#publishForwarded]
-    /// then materializes and appends, and a floor that cannot be met surfaces from [#awaitMinSync] as an
-    /// unknown outcome — which is what it is, since the event was appended.
-    private Result<Unit> ensureReplicaFloor(PublishForward request) {
-        return partitionManager.ensureReplicaFloor(request.streamName(),
-                                                   request.partition(),
-                                                   partitionManager.minSyncReplicasFor(request.streamName()) - 1);
     }
 
     @Contract
