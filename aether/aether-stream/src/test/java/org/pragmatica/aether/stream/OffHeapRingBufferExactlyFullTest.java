@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.Test;
@@ -78,9 +79,14 @@ class OffHeapRingBufferExactlyFullTest {
 
     private static long carriedAt(OffHeapRingBuffer buffer, long offset) {
         return buffer.read(offset, 1)
-                     .map(events -> events.isEmpty()
-                                    ? -1L
-                                    : stamped(events.getFirst().data()))
+                     .map(OffHeapRingBufferExactlyFullTest::firstStamp)
                      .or(-2L);
+    }
+
+    private static long firstStamp(List<OffHeapRingBuffer.RawEvent> events) {
+        return events.stream()
+                     .findFirst()
+                     .map(event -> stamped(event.data()))
+                     .orElse(-1L);
     }
 }
