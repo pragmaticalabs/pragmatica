@@ -177,7 +177,10 @@ public sealed interface Verify {
     ///
     /// @return a success result containing the value if the predicate is satisfied,
     ///         or a failure result with the generated cause if not
-    static <T, P1> Result<T> ensure(T value, Fn2<Boolean, T, P1> predicate, P1 param1, Fn1<? extends Cause, ? super T> causeProvider) {
+    static <T, P1> Result<T> ensure(T value,
+                                    Fn2<Boolean, T, P1> predicate,
+                                    P1 param1,
+                                    Fn1<? extends Cause, ? super T> causeProvider) {
         return ensure(value, v -> predicate.apply(v, param1), causeProvider);
     }
 
@@ -312,7 +315,9 @@ public sealed interface Verify {
     ///
     /// @return success with Option.none() if empty, success with Option.some(value) if present and valid,
     ///         or failure with the generated cause if present and invalid
-    static <T> Result<Option<T>> ensureOption(Option<T> value, Predicate<T> predicate, Fn1<? extends Cause, ? super T> causeProvider) {
+    static <T> Result<Option<T>> ensureOption(Option<T> value,
+                                              Predicate<T> predicate,
+                                              Fn1<? extends Cause, ? super T> causeProvider) {
         return value.fold(() -> Result.success(Option.none()),
                           v -> ensure(v, predicate, causeProvider).map(Option::some));
     }
@@ -591,6 +596,8 @@ public sealed interface Verify {
         /// @param value The value to check
         /// @param <T>   The type of the value
         /// @return true if the value is not null, false otherwise
+        // JBCT-RET-06 waived: this predicate exists to test for null at the validation boundary (#1356).
+        @SuppressWarnings("JBCT-RET-06")
         static <T> boolean notNull(T value) {
             return value != null;
         }
@@ -617,6 +624,8 @@ public sealed interface Verify {
         /// @param <T> the type of char sequence being checked
         /// @param value the char sequence to check
         /// @return true if the char sequence is blank, false otherwise
+        // JBCT-RET-06 waived: a validation predicate that must answer for a null input as well (#1356).
+        @SuppressWarnings("JBCT-RET-06")
         static <T extends CharSequence> boolean blank(T value) {
             return value == null || value.isEmpty() || value.chars()
                                                             .allMatch(Character::isWhitespace);
