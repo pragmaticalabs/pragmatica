@@ -10,10 +10,12 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -76,6 +78,34 @@ class ClusterCursorStoreTest {
         void resumeOffset_isStable_whenBothAgree() {
             assertThat(ClusterCursorStore.resumeOffset(Option.some(7L), Option.some(7L)))
                     .isEqualTo(Option.some(7L));
+        }
+
+        /// #1333: the epoch ranks FIRST. A rewind puts `(epoch', fromOffset)` into KV; the local cursor
+        /// from before it is higher but older, and must lose — otherwise a node that crashed before
+        /// applying the rewind would resurrect its stale-high cursor and replay nothing.
+        @Test
+        void resumeCursor_prefersTheRewoundClusterCursor_overAHigherLocalOneAtAnOlderEpoch() {
+            var local = Cursor.cursor(900L, RewindEpoch.NONE);
+            var cluster = Cursor.cursor(0L, RewindEpoch.rewindEpoch(1L, 1L));
+
+            assertThat(ClusterCursorStore.resumeCursor(Option.some(local), Option.some(cluster)))
+                    .isEqualTo(Option.some(cluster));
+        }
+
+        /// And in the other direction: a local cursor committed under the NEWER epoch (this node applied
+        /// the rewind and progressed, the cluster checkpoint lags) is kept over a lower cluster cursor at
+        /// that same epoch, and over a higher cluster cursor at an older one.
+        @Test
+        void resumeCursor_prefersTheLocalCursor_whenItsEpochIsNewerOrEqualAndItIsAhead() {
+            var rewound = RewindEpoch.rewindEpoch(1L, 1L);
+
+            assertThat(ClusterCursorStore.resumeCursor(Option.some(Cursor.cursor(5L, rewound)),
+                                                       Option.some(Cursor.cursor(2L, rewound))))
+                    .isEqualTo(Option.some(Cursor.cursor(5L, rewound)));
+            assertThat(ClusterCursorStore.resumeCursor(Option.some(Cursor.cursor(5L, rewound)),
+                                                       Option.some(Cursor.cursor(900L, RewindEpoch.NONE))))
+                    .describedAs("a stale-epoch cluster cursor never outranks a rewound local one, however high")
+                    .isEqualTo(Option.some(Cursor.cursor(5L, rewound)));
         }
     }
 
