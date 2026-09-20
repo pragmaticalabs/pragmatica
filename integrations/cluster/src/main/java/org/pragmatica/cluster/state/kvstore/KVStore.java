@@ -29,11 +29,17 @@ import org.pragmatica.serialization.Serializer;
 
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
+    private final Object mutationLock = new Object();
+
+    private record Notification(org.pragmatica.messaging.Message message, boolean replay) {}
+
+    private final java.util.ArrayDeque<Notification> notifications = new java.util.ArrayDeque<>();
+    private boolean dispatching;
     private final Map<K, V> storage = new ConcurrentHashMap<>();
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final MessageRouter router;
-    /// The view that was last DELIVERED to subscribers via [#replayNotifications()]. Used to
+    /// The view that was last QUEUED for subscribers via [#replayNotifications()]. Used to
     /// compute the DIFF-replay on a mid-life snapshot install (cluster-topology-overhaul §5.8,
     /// AMENDED 2026-06-11): only keys that are new/changed/vanished relative to this view emit a
     /// notification. Empty until the first replay (cold boot fires one put per restored key).
@@ -53,11 +59,66 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     @Override
-    public synchronized <R> List<R> process(Batch<KVCommand<K>> batch) {
+    public <R> List<R> process(Batch<KVCommand<K>> batch) {
+        synchronized (mutationLock) {
+            List<R> result = applyBatch(batch);
+
+            drainNotifications();
+
+            return result;
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private synchronized <R> List<R> applyBatch(Batch<KVCommand<K>> batch) {
         return batch.commands()
                     .stream()
                     .map(command -> (R) processCommand(command))
                     .toList();
+    }
+
+    private Unit enqueue(org.pragmatica.messaging.Message message) {
+        notifications.addLast(new Notification(message, false));
+
+        return Unit.unit();
+    }
+
+    private Unit enqueueReplay(org.pragmatica.messaging.Message message) {
+        notifications.addLast(new Notification(message, true));
+
+        return Unit.unit();
+    }
+
+    /// The mutation guard orders callbacks, but readers never acquire it. Reentrant mutations
+    /// append after the current notification batch instead of overtaking its remaining events.
+    private Unit drainNotifications() {
+        if (dispatching) {
+            return Unit.unit();
+        }
+
+        dispatching = true;
+        try {
+            while (!notifications.isEmpty()) {
+                dispatchNotification(notifications.removeFirst());
+            }
+        } finally {
+            dispatching = false;
+        }
+
+        return Unit.unit();
+    }
+
+    private Unit dispatchNotification(Notification notification) {
+        var previous = replaying.get();
+
+        replaying.set(notification.replay());
+        try {
+            router.route(notification.message());
+        } finally {
+            replaying.set(previous);
+        }
+
+        return Unit.unit();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -77,7 +138,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private Option<V> handleGet(Get<K> get) {
         var value = Option.option(storage.get(get.key()));
 
-        router.route(new ValueGet<>(get, value));
+        enqueue(new ValueGet<>(get, value));
 
         return value;
     }
@@ -143,15 +204,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void notifyMutation(KVCommand.Mutation<K, V> mutation) {
         mutation.replacement()
                 .fold(() -> {
-                          router.route(new ValueRemove<>(new Remove<>(mutation.key()),
-                                                         mutation.expected()));
+                          enqueue(new ValueRemove<>(new Remove<>(mutation.key()),
+                                                    mutation.expected()));
 
                           return org.pragmatica.lang.Unit.unit();
                       },
                       value -> {
-                          router.route(new ValuePut<>(new Put<>(mutation.key(),
-                                                                value),
-                                                      mutation.expected()));
+                          enqueue(new ValuePut<>(new Put<>(mutation.key(),
+                                                           value),
+                                                 mutation.expected()));
 
                           return org.pragmatica.lang.Unit.unit();
                       });
@@ -164,7 +225,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
         var oldValue = Option.option(storage.put(put.key(), put.value()));
 
-        router.route(new ValuePut<>(put, oldValue));
+        enqueue(new ValuePut<>(put, oldValue));
 
         return oldValue;
     }
@@ -270,7 +331,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
         var oldValue = Option.option(storage.remove(remove.key()));
 
-        router.route(new ValueRemove<>(remove, oldValue));
+        enqueue(new ValueRemove<>(remove, oldValue));
 
         return oldValue;
     }
@@ -337,7 +398,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// a KV notification before the engine is operational.
     @SuppressWarnings("unchecked")
     @Override
-    public synchronized Result<Unit> restoreSnapshot(byte[] snapshot) {
+    public Result<Unit> restoreSnapshot(byte[] snapshot) {
+        synchronized (mutationLock) {
+            return installSnapshot(snapshot);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private synchronized Result<Unit> installSnapshot(byte[] snapshot) {
         return Result.lift(Causes::fromThrowable,
                            () -> deserializer.decode(snapshot))
                      .map(map -> (Map<K, V>) map)
@@ -366,18 +434,20 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// already-ACTIVE lagging node fires only the delta. MUTATION-FREE: it reads `storage` and
     /// routes notifications, never touching `storage` itself (the H4 `LeaderKey` fence in
     /// [#handlePut] is never exercised — replay does not go through the apply path). The
-    /// last-replayed view is advanced to the current storage afterwards so the next install
+    /// last-replayed view is advanced when the notification batch is captured so the next install
     /// diffs correctly.
     @Override
-    public synchronized Unit replayNotifications() {
-        replaying.set(Boolean.TRUE);
-        try {
-            replayRemovedKeys();
-            replayPutKeys();
-        } finally {
-            replaying.set(Boolean.FALSE);
-        }
+    public Unit replayNotifications() {
+        synchronized (mutationLock) {
+            captureReplay();
 
+            return drainNotifications();
+        }
+    }
+
+    private synchronized Unit captureReplay() {
+        replayRemovedKeys();
+        replayPutKeys();
         lastReplayedView.clear();
         lastReplayedView.putAll(storage);
 
@@ -397,7 +467,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void replayRemovedKeys() {
         lastReplayedView.forEach((key, value) -> {
             if (!storage.containsKey(key)) {
-                router.route(new ValueRemove<>(new Remove<>(key), Option.some(value)));
+                enqueueReplay(new ValueRemove<>(new Remove<>(key), Option.some(value)));
             }
         });
     }
@@ -408,14 +478,22 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void replayPutKeys() {
         storage.forEach((key, value) -> {
             if (!value.equals(lastReplayedView.get(key))) {
-                router.route(new ValuePut<>(new Put<>(key, value),
-                                            Option.option(lastReplayedView.get(key))));
+                enqueueReplay(new ValuePut<>(new Put<>(key, value),
+                                             Option.option(lastReplayedView.get(key))));
             }
         });
     }
 
     @Override
-    public synchronized Unit reset() {
+    public Unit reset() {
+        synchronized (mutationLock) {
+            clearState();
+
+            return drainNotifications();
+        }
+    }
+
+    private synchronized Unit clearState() {
         notifyRemoveAll();
         storage.clear();
         lastReplayedView.clear();
@@ -424,7 +502,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private void notifyRemoveAll() {
-        storage.forEach((key, value) -> router.route(new ValueRemove<>(new Remove<>(key), Option.some(value))));
+        storage.forEach((key, value) -> enqueue(new ValueRemove<>(new Remove<>(key), Option.some(value))));
     }
 
     public synchronized Map<K, V> snapshot() {
@@ -462,8 +540,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// @param <VV>       the value type
     @SuppressWarnings("unchecked")
     @Contract
-    public synchronized <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
-        storage.forEach((key, value) -> {
+    public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
+        snapshot().forEach((key, value) -> {
             if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
                 consumer.accept((KK) key, (VV) value);
             }
