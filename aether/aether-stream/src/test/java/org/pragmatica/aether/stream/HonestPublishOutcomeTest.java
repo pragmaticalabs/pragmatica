@@ -160,8 +160,7 @@ class HonestPublishOutcomeTest {
                                                                           Option.none(),
                                                                           SELF,
                                                                           Option.none(),
-                                                                          Option.none(),
-                                                                          MIN_SYNC);
+                                                                          Option.none());
 
                 var result = access.publish("order-1").await();
 
@@ -233,8 +232,7 @@ class HonestPublishOutcomeTest {
                                                                           Option.none(),
                                                                           SELF,
                                                                           Option.none(),
-                                                                          Option.none(),
-                                                                          MIN_SYNC);
+                                                                          Option.none());
 
                 access.publish("order-1")
                       .await()
@@ -326,8 +324,7 @@ class HonestPublishOutcomeTest {
                                                                           Option.none(),
                                                                           SELF,
                                                                           Option.none(),
-                                                                          Option.none(),
-                                                                          MIN_SYNC);
+                                                                          Option.none());
 
                 access.publish("order-1")
                       .await()
@@ -485,8 +482,7 @@ class HonestPublishOutcomeTest {
                                                       1,
                                                       Option.none(),
                                                       ConsistencyMode.EVENTUAL,
-                                                      Option.none(),
-                                                      MIN_SYNC);
+                                                      Option.none());
     }
 
     private static long ringHead(StreamPartitionManager manager) {

@@ -97,7 +97,6 @@ public final class SystemStreamFactories {
                                                                    Option.none(),
                                                                    ConsistencyMode.EVENTUAL,
                                                                    Option.none(),
-                                                                   0,
                                                                    forwardClient,
                                                                    Option.none(),
                                                                    partitionOwnerResolver,
