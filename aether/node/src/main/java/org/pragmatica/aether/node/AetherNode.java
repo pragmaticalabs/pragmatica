@@ -1656,7 +1656,7 @@ public interface AetherNode extends ManageableNode {
                           QuorumLossDetector quorumLossDetector,
                           CoreAbsenceDetector coreAbsenceDetector,
                           TransitionJournal transitionJournal,
-                          Runnable startSwimTrigger,
+                          Consumer<Promise<Unit>> startSwimTrigger,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
@@ -1725,9 +1725,9 @@ public interface AetherNode extends ManageableNode {
                                        // resolves, because clusterNode.start() resolves only on consensus
                                        // quorum, which itself needs the peers SWIM discovers (the deadlock
                                        // §5.4 exposed once the static dial-set seed was removed).
-                                       .onSuccess(_ -> clusterNode.network()
-                                                                  .whenReady(startSwimTrigger))
-                                       .flatMap(_ -> startClusterAsync())
+                                       // #1308: the SWIM start's outcome is joined into this start —
+                                       // see startClusterUnlessSwimFails.
+                                       .flatMap(_ -> startClusterUnlessSwimFails())
                                        // #644: arm the deferred periodic tasks only now, once cluster
                                        // formation has resolved — a created-but-unstarted node performs
                                        // no periodic work, and none of the deferred tasks participates
@@ -1897,6 +1897,24 @@ public interface AetherNode extends ManageableNode {
                 } catch (RuntimeException e) {
                     log.warn("Storage instance '{}' failed to shut down cleanly: {}", name, e.getMessage());
                 }
+            }
+
+            /// #1308: register the SWIM start on transport-ready and JOIN its outcome into the node's
+            /// start. `startSwim` fails the node through `failNode` (production: `Runtime.halt(2)`),
+            /// but in a single-JVM host (Ember/Forge) `failNode` only stops this node, and a stopped
+            /// node's `clusterNode.start()` never resolves — so a start chain that only observed
+            /// formation hung forever on a SWIM bind failure (rev1343 BLOCKING-1: `EmberCluster.start()`
+            /// sat on a 90 s bound with node 1 stopped and the other two formed). The host's start
+            /// now settles with the SWIM failure itself, and takes its own abort path. The trigger fails
+            /// `outcome` INLINE, before `failNode` runs (rev1343 NIT-R2): in Ember `failNode` blocks for
+            /// the node's own stop, and peers' hellos can complete formation inside that window — a
+            /// formation success landing first would report a started node that is being stopped.
+            private Promise<Unit> startClusterUnlessSwimFails() {
+                var outcome = Promise.<Unit> promise();
+
+                clusterNode.network().whenReady(() -> startSwimTrigger.accept(outcome));
+
+                return formationUnlessSwimFails(startClusterAsync(), outcome);
             }
 
             private Promise<Unit> startClusterAsync() {
@@ -3160,13 +3178,16 @@ public interface AetherNode extends ManageableNode {
                                                                                swimConfig.clusterName(),
                                                                                bootIncarnation,
                                                                                swimSeeds);
-        // SWIM start is deferred to transport-ready (invoked from the boot chain after
+        // SWIM start is deferred to transport-ready (invoked from the boot chain alongside
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
-        // closes over the encryptor + announce trigger that are only in scope here.
-        Runnable startSwimTrigger = () -> startSwim(swimHealthDetector,
-                                                    clusterNode.network(),
-                                                    rotatingEncryptor,
-                                                    announceJoinTrigger);
+        // closes over the encryptor + announce trigger that are only in scope here. It fails the
+        // node's start outcome it is handed when SWIM cannot start (#1308).
+        Consumer<Promise<Unit>> startSwimTrigger = startOutcome -> startSwim(swimHealthDetector,
+                                                                             clusterNode.network(),
+                                                                             rotatingEncryptor,
+                                                                             announceJoinTrigger,
+                                                                             jvmExit,
+                                                                             startOutcome);
         // ---------------------------------------------------------------------
         // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
         // observation unconditional: NTT + QuorumLossDetector + LeaderReconciler are
@@ -5620,15 +5641,56 @@ public interface AetherNode extends ManageableNode {
     /// target, so an applied rotation is picked up through the delegate and disarms the guard.
     /// `System.exit(1)` mirrors `Main`'s other boot gates: the failure surfaces at deployment time
     /// rather than as a silent, permanently unjoinable node.
-    private static void startSwim(CoreSwimHealthDetector swimHealthDetector,
-                                  ClusterNetwork network,
-                                  RotatingGossipEncryptor encryptor,
-                                  Runnable announceJoinTrigger) {
+    ///
+    /// #1308: the join is announced only once SWIM has STARTED, and a failed start (typically the
+    /// SWIM UDP port already bound) fails the node through `failNode`. A node without its SWIM
+    /// listener neither answers peers' probes nor probes them, so it must not keep running as a
+    /// cluster member. The caller passes the node's `jvmExit`: `Runtime.halt(2)` in production, a
+    /// graceful per-node stop in single-JVM hosts (Ember/Forge), where `System.exit` would take every
+    /// co-hosted node down. Skipping shutdown hooks is judged acceptable here because SWIM starts at
+    /// transport-ready, before this node has joined or consensus has formed, so it has acknowledged
+    /// no cluster write a hook would need to flush (design intent, not measured).
+    ///
+    /// `startOutcome` is the node's start outcome ([#formationUnlessSwimFails]): a failed start fails it
+    /// FIRST, inline on the resolved start promise, and only then runs `failNode`. Ordered so because
+    /// `failNode` may block (Ember awaits the node's stop) while formation can still resolve, and
+    /// the outcome is first-settlement-wins.
+    static Promise<Unit> startSwim(CoreSwimHealthDetector swimHealthDetector,
+                                   ClusterNetwork network,
+                                   RotatingGossipEncryptor encryptor,
+                                   Runnable announceJoinTrigger,
+                                   Runnable failNode,
+                                   Promise<Unit> startOutcome) {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, () -> System.exit(1));
 
-        swimHealthDetector.start(workerGroup, guarded);
-        announceJoinTrigger.run();
+        return swimHealthDetector.start(workerGroup, guarded)
+                                 .onFailure(startOutcome::fail)
+                                 .onSuccessRun(announceJoinTrigger)
+                                 .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
+                                                                            cause,
+                                                                            failNode));
+    }
+
+    /// #1308: the node's start outcome, given consensus formation and the outcome promise that
+    /// [#startSwim] fails inline when SWIM cannot start. Formation settles it either way — first
+    /// settlement wins (`resolve` is compare-and-set), so a SWIM failure that has already landed is
+    /// never overridden by a later formation success. A SWIM start SUCCESS settles nothing: the
+    /// node has started only once formation resolves. A SWIM failure that lands after formation is
+    /// moot for the outcome — in production `failNode` has already halted the JVM, in a single-JVM
+    /// host it has already stopped this node.
+    static Promise<Unit> formationUnlessSwimFails(Promise<Unit> formation, Promise<Unit> outcome) {
+        formation.onResult(outcome::resolve);
+
+        return outcome;
+    }
+
+    private static void refuseToRunWithoutSwim(int swimPort, Cause cause, Runnable failNode) {
+        LOG.error("SWIM failed to start on UDP port {}: {} — this node cannot answer or send failure-detection "
+                 + "probes, so it will not announce its join and is exiting instead of running without SWIM",
+                  swimPort,
+                  cause.message());
+        failNode.run();
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
