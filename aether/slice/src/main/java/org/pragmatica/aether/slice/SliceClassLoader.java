@@ -6,13 +6,12 @@ package org.pragmatica.aether.slice;
 
 import java.io.IOException;
 import java.net.URL;
-import java.net.URLClassLoader;
 
 import org.pragmatica.lang.Option;
 
 
 @SuppressWarnings("JBCT-UTIL-02")
-public class SliceClassLoader extends URLClassLoader {
+public class SliceClassLoader extends UncachedResourceClassLoader {
     private static final String JAVA_PREFIX = "java.";
     private static final String JAVAX_PREFIX = "javax.";
     private static final String JDK_PREFIX = "jdk.";
