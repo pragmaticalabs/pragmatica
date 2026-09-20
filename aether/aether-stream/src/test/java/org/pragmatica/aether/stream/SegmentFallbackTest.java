@@ -238,6 +238,7 @@ class SegmentFallbackTest {
         @Test
         void fetch_mixedRange_corruptedRing_failsWithRingIndexCorrupted_notTruncated() {
             publishEvents(10);
+            awaitSealedThrough(RING_CAPACITY - 1);
             corruptEveryIndexSlot(partitionManager.partitionBuffer(STREAM, PARTITION)
                                                   .fold(() -> org.junit.jupiter.api.Assertions.fail("no ring"),
                                                         ring -> ring));
