@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -84,7 +85,12 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         var sealedThrough = publishSealAndTruncate(new SegmentIndex(), DurableSealedOffsetSource.same(neverSnapshotted::lastSealedOffset));
 
         assertThat(sealedThrough).as("pre-crash sealed watermark").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
+        // (a) itself: the WAL was NOT compacted — its first stored record is still offset 0. Under a live-index
+        // truncation the survivors would still come back at 196..199 (head-gap acceptance, #1258), so the ring
+        // alone cannot tell the two apart; the file and the head-gap counter can.
+        assertThat(firstStoredOffset()).as("WAL still starts at offset 0: nothing was compacted").isZero();
 
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
         var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), neverSnapshotted::lastSealedOffset);
 
         createStream(recovered).onFailure(cause -> fail("recovery refused: " + cause.message()));
@@ -99,6 +105,8 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                                      .isEqualTo(EVENTS - 1L);
         assertThat(tail).isNotEmpty();
         tail.forEach(StreamPartitionManagerRestartAfterCompactionTest::assertOffsetMatchesPayload);
+        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).as("the whole log replayed from 0: no head gap to accept")
+                                                                                          .isZero();
     }
 
     /// (b) The index IS treated as durable, so the tick compacts the WAL past 195; then the refs are lost
@@ -133,19 +141,20 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         }
     }
 
-    /// The tripwire past the first record: a WAL whose records run 0,1,2 then 4..8 (a mid-log hole — nothing
-    /// in the truncate path produces one, so it is a corruption signature). The ring would assign 4's record
-    /// offset 3; recovery must refuse naming exactly that, and it must refuse BEFORE appending anything: the
-    /// recovered manager carries a recording sealer and the 8 records overflow the 4-slot ring, so an
-    /// append-then-check ordering would evict, seal, and hand the sink segments carrying renumbered records
-    /// (rev1349 F2 — `[0-0, 1-1, 2-2, 3-3]` with 3-3 holding record 4's payload). Nothing may reach the sink.
+    /// A mid-log hole — records 0..5 then 7,8 (nothing in the truncate path produces one, so it is a corruption
+    /// signature). The ring would assign 7's record offset 6; recovery must refuse naming exactly that, and it
+    /// must refuse BEFORE appending anything (rev1349 F2): the recovered manager carries a recording sealer and
+    /// the six records before the hole overflow the 4-slot ring, so a per-record check alone (#1258's
+    /// `placeRecord`, which refuses AT the bad record) would already have evicted and sealed `[0-0, 1-1]` from a
+    /// recovery about to be refused. Nothing may reach the sink. The hole sits past ring capacity on purpose: a
+    /// hole at 3 is refused by the per-record check before any eviction and cannot see the ordering.
     @Test
     void restart_walWithMidLogHole_refusesLoudly_andSealsNothing() {
         var wal = PartitionWal.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
                               .onFailure(cause -> fail(cause.message()))
                               .unwrap();
 
-        LongStream.of(0, 1, 2, 4, 5, 6, 7, 8).forEach(offset -> wal.append(offset, payload((int) offset), 1000L + offset)
+        LongStream.of(0, 1, 2, 3, 4, 5, 7, 8).forEach(offset -> wal.append(offset, payload((int) offset), 1000L + offset)
                                                                    .await()
                                                                    .onFailure(cause -> fail(cause.message())));
         wal.close();
@@ -168,7 +177,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalReplayMismatch.class::isInstance)
                                                   .map(StreamError.WalReplayMismatch.class::cast)
                                                   .toList()).singleElement()
-                                                            .satisfies(mismatch -> assertMismatch(mismatch, 3L, 4L)));
+                                                            .satisfies(mismatch -> assertMismatch(mismatch, 6L, 7L)));
     }
 
     /// #1278 shape, pinned as it stands: the snapshot covered every seal, so the tick legitimately compacted the
@@ -398,6 +407,19 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         recovered.readLocal(STREAM, PARTITION, 0, 1)
                  .onSuccess(events -> fail("offset 0 must be absent, but read " + (events.isEmpty() ? "[]" : "payloadIndex=" + payloadIndex(events.getFirst().data()))))
                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+    }
+
+    /// Lowest stored offset in the partition WAL file, read back through a fresh [PartitionWal] (`-1` when empty).
+    private long firstStoredOffset() {
+        var wal = PartitionWal.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
+                              .onFailure(cause -> fail(cause.message()))
+                              .unwrap();
+        var first = new AtomicLong(-1L);
+
+        wal.replay(-1L, record -> first.compareAndSet(-1L, record.offset())).onFailure(cause -> fail(cause.message()));
+        wal.close();
+
+        return first.get();
     }
 
     private static void assertMismatch(StreamError.WalReplayMismatch mismatch, long expected, long found) {
