@@ -17,6 +17,7 @@ import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
@@ -68,6 +69,36 @@ class UncachedResourceClassLoaderTest {
         assertSharedJarSurvivesLoaderClose(jar, new UncachedResourceClassLoader(new URL[]{jar}, PLATFORM));
     }
 
+    /// The second half of "never touches the shared cache": a read through the loader does not POPULATE
+    /// it either, so the loader can never be the opener that re-caches a closed jar in the JDK's
+    /// `connect` race. Observable: a cached read keeps answering from the inode it opened first; an
+    /// uncached one sees the jar that is on disk now.
+    @Test
+    void resourceRead_afterTheJarIsReplacedOnDisk_seesTheNewContent() throws IOException {
+        var path = tempDir.resolve("replaced.jar");
+
+        writeJar(path, "slice.name=v1\n");
+
+        try (var loader = new UncachedResourceClassLoader(new URL[]{path.toUri().toURL()}, PLATFORM)) {
+            assertThat(read(loader)).isEqualTo("slice.name=v1\n");
+
+            var next = tempDir.resolve("replaced.jar.next");
+
+            writeJar(next, "slice.name=v2\n");
+            Files.move(next, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+
+            assertThat(read(loader)).describedAs("cached: still v1 from the replaced inode").isEqualTo("slice.name=v2\n");
+        }
+    }
+
+    private static String read(URLClassLoader loader) throws IOException {
+        try (var in = loader.getResourceAsStream(ENTRY)) {
+            assertThat(in).isNotNull();
+
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
     private static void assertSharedJarSurvivesLoaderClose(URL jar, URLClassLoader loader) throws IOException {
         var shared = sharedJarFile(jar);
 
@@ -111,12 +142,16 @@ class UncachedResourceClassLoaderTest {
     private URL sliceJar(String name) throws IOException {
         var path = tempDir.resolve(name);
 
-        try (var out = new JarOutputStream(Files.newOutputStream(path))) {
-            out.putNextEntry(new JarEntry(ENTRY));
-            out.write("slice.name=echo\n".getBytes(StandardCharsets.UTF_8));
-            out.closeEntry();
-        }
+        writeJar(path, "slice.name=echo\n");
 
         return path.toUri().toURL();
+    }
+
+    private static void writeJar(Path path, String manifestText) throws IOException {
+        try (var out = new JarOutputStream(Files.newOutputStream(path))) {
+            out.putNextEntry(new JarEntry(ENTRY));
+            out.write(manifestText.getBytes(StandardCharsets.UTF_8));
+            out.closeEntry();
+        }
     }
 }
