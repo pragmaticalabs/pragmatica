@@ -701,6 +701,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
+                case LeaderElectionEvents.VoterReadmitted _ -> tx.transitionTo(ctx.quorumWaiting());
                 case LeaderCommitted committed -> tx.handle(() -> observeCommittedLeader(ctx, committed));
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
@@ -709,7 +710,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     private static void observeCommittedLeader(LeaderElectionContext ctx, LeaderCommitted committed) {
-        if (!ctx.isEligible(committed.leader()) || committed.leader().equals(ctx.self()) || committed.viewSequence() <= LeaderCommitted.NO_SEQUENCE || committed.viewSequence() < ctx.adoptedViewSequence() || (committed.viewSequence() == ctx.adoptedViewSequence() && ctx.currentLeader()
+        if (!ctx.isEligible(committed.leader()) || committed.leader().equals(ctx.self()) || committed.viewSequence() <= LeaderCommitted.NO_SEQUENCE || committed.viewSequence() < ctx.adoptedViewSequence() || (committed.viewSequence() == ctx.adoptedViewSequence() && ctx.lastAdoptedLeader()
                                                                                                                                                                                                                                                                             .filter(committed.leader()::equals)
                                                                                                                                                                                                                                                                             .isEmpty())) {
             return;

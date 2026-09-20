@@ -43,6 +43,93 @@ class AdmittedSliceBridgeTest {
         assertThat(gate.count.get()).isZero();
     }
 
+    @Test
+    void callerTimeout_doesNotCompleteApplicationOrReleaseDrainCount() {
+        assertCallerAbandonmentRetainsExecution(result -> result.timeout(TimeSpan.timeSpan(10).millis()));
+    }
+
+    @Test
+    void callerCancellation_doesNotCompleteApplicationOrReleaseDrainCount() {
+        assertCallerAbandonmentRetainsExecution(Promise::cancel);
+    }
+
+    private void assertCallerAbandonmentRetainsExecution(
+        java.util.function.Function<Promise<byte[]>, Promise<byte[]>> abandon) {
+        var completion = Promise.<byte[]>promise();
+        var gate = new Gate();
+        var bridge = new AdmittedSliceBridge(new Bridge(new AtomicInteger(), completion), () -> gate);
+        var result = bridge.invoke("call", new byte[0]);
+        assertThat(result).isNotSameAs(completion);
+        assertThat(abandon.apply(result).await(TimeSpan.timeSpan(1).seconds()).isFailure()).isTrue();
+        assertThat(completion.isResolved()).isFalse();
+        assertThat(gate.count.get()).isEqualTo(1);
+        assertThat(gate.drained.isResolved()).isFalse();
+        gate.open.set(false);
+        completion.succeed(new byte[0]);
+        assertThat(gate.drained.await(TimeSpan.timeSpan(1).seconds()).isSuccess()).isTrue();
+        assertThat(gate.count.get()).isZero();
+        assertThat(completion.await(TimeSpan.timeSpan(1).seconds()).isSuccess()).isTrue();
+    }
+
+    @Test
+    void replyCompletionRunsBeforeDrainReleaseWithoutReadmission() {
+        var execution = Promise.<byte[]>promise();
+        var gate = new Gate();
+        var replies = new AtomicInteger();
+        var bridge = new AdmittedSliceBridge(new Bridge(new AtomicInteger(), execution), () -> gate);
+        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(1).seconds(), result -> {
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(gate.count.get()).isEqualTo(1);
+            assertThat(gate.drained.isResolved()).isFalse();
+            replies.incrementAndGet();
+        });
+        gate.open.set(false);
+        execution.succeed(new byte[0]);
+        assertThat(gate.drained.await(TimeSpan.timeSpan(1).seconds()).isSuccess()).isTrue();
+        assertThat(replies.get()).isEqualTo(1);
+        assertThat(gate.count.get()).isZero();
+    }
+
+    @Test
+    void replyTimeoutEmitsOnceButRetainsAdmissionUntilActualExecutionSettles() {
+        var execution = Promise.<byte[]>promise();
+        var gate = new Gate();
+        var replies = new AtomicInteger();
+        var replied = Promise.<Unit>promise();
+        var bridge = new AdmittedSliceBridge(new Bridge(new AtomicInteger(), execution), () -> gate);
+        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(10).millis(), result -> {
+            assertThat(result.isFailure()).isTrue();
+            replies.incrementAndGet();
+            replied.succeed(Unit.unit());
+        });
+        assertThat(replied.await(TimeSpan.timeSpan(1).seconds()).isSuccess()).isTrue();
+        assertThat(execution.isResolved()).isFalse();
+        assertThat(gate.count.get()).isEqualTo(1);
+        assertThat(gate.drained.isResolved()).isFalse();
+        gate.open.set(false);
+        execution.succeed(new byte[0]);
+        assertThat(gate.drained.await(TimeSpan.timeSpan(1).seconds()).isSuccess()).isTrue();
+        assertThat(replies.get()).isEqualTo(1);
+        assertThat(gate.count.get()).isZero();
+    }
+
+    @Test
+    void replyAdmissionRefusalEmitsOnceWithoutExecutionOrExit() {
+        var calls = new AtomicInteger();
+        var replies = new AtomicInteger();
+        var gate = new Gate();
+        gate.open.set(false);
+        var bridge = new AdmittedSliceBridge(new Bridge(calls, Promise.success(new byte[0])), () -> gate);
+        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(1).seconds(), result -> {
+            assertThat(result.isFailure()).isTrue();
+            replies.incrementAndGet();
+        });
+        assertThat(replies.get()).isEqualTo(1);
+        assertThat(calls.get()).isZero();
+        assertThat(gate.count.get()).isZero();
+        assertThat(gate.drained.isResolved()).isFalse();
+    }
+
     static final class Gate implements InvocationAdmission {
         final AtomicBoolean open = new AtomicBoolean(true);
         final AtomicInteger count = new AtomicInteger();

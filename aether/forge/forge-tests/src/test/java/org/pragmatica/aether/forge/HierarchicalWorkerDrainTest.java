@@ -124,10 +124,11 @@ class HierarchicalWorkerDrainTest {
             });
         });
         barrier.start();
-        var heldRequest = HttpRequest.newBuilder(URI.create("http://localhost:" + (APP + core.port() - BASE)
+        var heldRequest = HttpRequest.newBuilder(URI.create("http://localhost:" + (APP + workerStatus.port() - BASE)
             + "/hold/" + barrier.getAddress().getPort())).timeout(TimeSpan.timeSpan(40).seconds().duration()).GET().build();
         var held = jdkHttpOperations().sendString(heldRequest);
         assertThat(entered.await(REQUEST).isSuccess()).as("actual worker method entered external barrier").isTrue();
+        assertThat(cluster.getNode(serving.id()).unwrap().inFlightRequestTracker().count()).as("serving worker accounts for held execution").isPositive();
         var drainLeader = leader().self();
         var drainPort = cluster.status().nodes().stream().filter(status -> status.id().equals(drainLeader.id())).findFirst().orElseThrow().mgmtPort();
         var drain = HttpRequest.newBuilder(URI.create("http://localhost:" + drainPort + "/api/v1/nodes/drain/" + serving.id()))

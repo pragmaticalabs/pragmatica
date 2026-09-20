@@ -34,6 +34,11 @@ H03. Desired core capacity, admitted core identity, live reachability and active
 configuration are different facts. Local health cannot independently change a committed
 quorum denominator. Voter changes require an agreed activation boundary and intersecting
 old/new quorums; changing an integer alone is not such a protocol.
+Provisioning and disruption guards intersect counted live membership with the installed voter roster;
+nonvoting CORE candidates cannot supply quorum evidence. Desired capacity remains the scaling
+target, including changes larger than one pair of cores. Missing installed authority fails closed.
+Operator drain and shutdown share the voter disruption budget, and concurrent operator requests
+must reserve that budget atomically. Worker removal does not consume the core voter budget.
 
 H04. A community has one committed authority owner and monotonically advancing generation.
 Local election proposes a candidate; committed acquisition authorizes effects. Stale owners
@@ -257,6 +262,9 @@ not a claim that any requirement is already verified.
   are ACTIVE, and waits for its workload entries to be removed before closing node admission.
   Drain completion is acknowledged only after quiescence and successful departure transfer,
   then committed by the current leader before the worker receives `DrainAccepted`.
+  HTTP and QUIC execution accounting outlives caller timeout or cancellation. A terminal reply
+  must be enqueued before its admission is released; timeout replies do not release unfinished
+  execution. This ordering does not promise network delivery after transport or peer failure.
 - With explicit communities configured, community target sizes are the worker capacity intent.
   Legacy per-source worker count reconciliation must not recreate a location that a community
   has left. Core count remains a separate aggregate capacity intent; the existing reactive

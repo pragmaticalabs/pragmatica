@@ -219,35 +219,50 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
-        return checkDisruptionBudget(nodeIdStr).map(TransitionResult::message)
-                                    .flatMap(guardNote -> guardAndRequestDrain(nodeIdStr, guardNote));
-    }
-
-    private Promise<TransitionResult> guardAndRequestDrain(String nodeIdStr, String guardNote) {
-        return resolveLifecycleState(nodeIdStr).flatMap(state -> guardDrainState(nodeIdStr, state, guardNote));
-    }
-
-    private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeReportedState current, String guardNote) {
-        if (current != NodeReportedState.READY) {
-            return HttpError.httpError(HttpStatus.CONFLICT,
-                                       Causes.cause("Cannot drain node " + nodeIdStr
-                                                   + " from " + current
-                                                   + " (must be READY)"))
-                            .promise();
-        }
-
         return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(nodeId -> enqueueDrainCommand(nodeId, guardNote));
+                     .flatMap(node -> admitOperatorDrain(node, true))
+                     .async();
     }
 
-    private Promise<TransitionResult> enqueueDrainCommand(NodeId nodeId, String guardNote) {
-        drainCommandSink.accept(nodeId);
-        var result = drainInitiatedResult(nodeId.id(), guardNote);
+    /// One routes instance is installed per management server. Check and reserve synchronously:
+    /// no Promise callback may interleave another operator admission before the sink updates its set.
+    private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady) {
+        return checkDisruptionBudgetForTarget(node.id(),
+                                              node).flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
+                                             .map(budget -> enqueueOperatorDrain(node,
+                                                                                 budget.message(),
+                                                                                 requireReady));
+    }
 
-        auditAndEmitLifecycleTransition(result, NodeReportedState.DRAINING.name());
+    private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {
+        return requireReady
+               ? readLifecycleState(node).toResult(LIFECYCLE_NOT_FOUND)
+                                   .flatMap(state -> requireReadyState(node, state))
+               : Result.success(org.pragmatica.lang.Unit.unit());
+    }
 
-        return Promise.success(result);
+    private Result<org.pragmatica.lang.Unit> requireReadyState(NodeId node, NodeReportedState state) {
+        return state == NodeReportedState.READY
+               ? Result.success(org.pragmatica.lang.Unit.unit())
+               : HttpError.httpError(HttpStatus.CONFLICT,
+                                     Causes.cause("Cannot drain node " + node.id()
+                                                 + " from " + state
+                                                 + " (must be READY)"))
+                          .result();
+    }
+
+    private TransitionResult enqueueOperatorDrain(NodeId node, String guardNote, boolean requireReady) {
+        drainCommandSink.accept(node);
+        var result = requireReady
+                     ? drainInitiatedResult(node.id(), guardNote)
+                     : shutdownInitiatedResult(node.id(), guardNote);
+
+        auditAndEmitLifecycleTransition(result,
+                                        requireReady
+                                        ? NodeReportedState.DRAINING.name()
+                                        : STOPPED_STATE);
+
+        return result;
     }
 
     /// `guardNote` is the disruption-budget guard's own visible decision (see
@@ -269,9 +284,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// post-drain operational count shrank in lockstep and the guard could NEVER reject sequential
     /// in-flight drains, admitting a quorum-losing cascade.
     ///
-    /// Fix: threshold against a STABLE intended size (the configured/peak CORE count, not the live
-    /// present count), and subtract the leader's commanded-but-not-departed CORE drains plus this
-    /// drain from the present CORE set. The current target is removed from the pending set before
+    /// Fix: threshold against installed voting authority and subtract the leader's pending drains
+    /// plus this target from counted members of that exact electorate. Provisioned CORE observers
+    /// carry no votes until installed and cannot inflate availability. The current target is removed from the pending set before
     /// counting so it is charged exactly once even if a prior call already registered it.
     ///
     /// A second, independent defect: the count on both sides was role-blind (`presentMembers()`
@@ -283,67 +298,35 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// needed, is a new feature with its own semantics — not a side effect of this fix. A CORE
     /// target is still checked, now counting CORES ONLY on both sides of the inequality so a
     /// connected worker population never inflates the quorum floor or the post-drain count.
-    private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(nodeId -> checkDisruptionBudgetForTarget(nodeIdStr, nodeId));
-    }
+    private Result<TransitionResult> checkDisruptionBudgetForTarget(String nodeIdStr, NodeId nodeId) {
+        var node = nodeSupplier.get();
+        var voters = Set.copyOf(node.coreNodeIds());
 
-    private Promise<TransitionResult> checkDisruptionBudgetForTarget(String nodeIdStr, NodeId nodeId) {
-        if (isWorkerRole(nodeId)) {
-            return Promise.success(new TransitionResult(true, nodeIdStr, "", "core-guard skipped (role=worker)"));
+        if (!voters.contains(nodeId) && isWorkerRole(nodeId)) {
+            return Result.success(new TransitionResult(true, nodeIdStr, "", "core-guard skipped (role=worker)"));
         }
 
-        var intendedSize = stableIntendedSize();
-        var minAvailable = (intendedSize / 2) + 1;
-        var availableAfterThisDrain = availableAfterDrain(nodeIdStr);
-
-        if (availableAfterThisDrain >= minAvailable) {
-            return Promise.success(new TransitionResult(true,
-                                                        nodeIdStr,
-                                                        "",
-                                                        "core-guard applied (role=core, available=" + availableAfterThisDrain
-                                                       + ", min=" + minAvailable
-                                                       + ")"));
+        if (voters.isEmpty()) {
+            return HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
+                                       Causes.cause("Installed voter authority is unavailable; cannot admit core drain"))
+                            .result();
         }
 
-        return budgetExceededError(nodeIdStr, availableAfterThisDrain, minAvailable).promise();
-    }
+        var available = new java.util.HashSet<>(node.membershipFsm().coreCountedMembers());
 
-    /// Stable size basis for the budget threshold: the configured core count (`initialTopology`,
-    /// already core-scoped — seeded from `config.topology().coreNodes()`), widened to the live
-    /// CORE-counted present set if that is larger (peak membership), so the threshold does not
-    /// shrink in lockstep with sequential drains. `coreCountedMembers()` (not `presentMembers()`)
-    /// so a connected worker population never inflates the core-quorum floor. Never below 1.
-    private int stableIntendedSize() {
-        var configured = nodeSupplier.get().initialTopology().size();
-        var presentCores = nodeSupplier.get().membershipFsm().coreCountedMembers().size();
+        available.retainAll(voters);
+        available.removeAll(pendingDrainsSupplier.get());
+        available.remove(nodeId);
+        var minimum = voters.size() / 2 + 1;
 
-        return Math.max(Math.max(configured, presentCores), 1);
-    }
-
-    /// Present CORES minus the leader's already-commanded-but-not-departed CORE drains minus this
-    /// drain. `coreCountedMembers()` (not `presentMembers()`) so a connected worker population
-    /// never counts toward the core-quorum floor it doesn't protect. The current target is
-    /// excluded from the pending set first so it is charged exactly once.
-    private int availableAfterDrain(String nodeIdStr) {
-        var presentCores = nodeSupplier.get().membershipFsm().coreCountedMembers().size();
-        var pendingExcludingTarget = pendingCoreDrainsExcluding(nodeIdStr);
-        var available = presentCores - pendingExcludingTarget - 1;
-
-        return Math.max(available, 0);
-    }
-
-    /// Count of leader-commanded pending drains scoped to CORE targets, excluding the current
-    /// target so it is not double-counted (it may already be in the pending set from a retried
-    /// call). A pending WORKER drain carries no core-quorum weight and must not deflate this count.
-    private int pendingCoreDrainsExcluding(String nodeIdStr) {
-        return (int) pendingDrainsSupplier.get()
-                                          .stream()
-                                          .filter(node -> !node.id()
-                                                               .equals(nodeIdStr))
-                                          .filter(node -> !isWorkerRole(node))
-                                          .count();
+        return available.size() >= minimum
+               ? Result.success(new TransitionResult(true,
+                                                     nodeIdStr,
+                                                     "",
+                                                     "core-guard applied (role=core, available=" + available.size()
+                                                    + ", min=" + minimum
+                                                    + ")"))
+               : budgetExceededError(nodeIdStr, available.size(), minimum).result();
     }
 
     private static Cause budgetExceededError(String nodeIdStr, int availableAfterDrain, int minAvailable) {
@@ -355,27 +338,17 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return HttpError.httpError(HttpStatus.CONFLICT, Causes.cause(message));
     }
 
-    /// Disruption-budget role check: label first (present for every node, including cluster-minted
-    /// workers that never receive an `ActivationDirective` entry), the KV override on top for an
-    /// operator's explicit demotion/promotion — mirrors `ClusterConfigRoutes.resolveNodeRole` (same
-    /// KV table, same "not a general role map" caveat: `ActivationDirectivePutReceived` updates only
-    /// `ClusterDeploymentState`'s own worker-set bookkeeping, never `MembershipFsm`'s per-member
-    /// descriptor, so the label remains the only source for a node that was never promoted/demoted).
-    /// The label comes from `MembershipFsm.memberDescriptor` — the SAME source `coreCountedMembers()`
-    /// classifies from, so this per-node check can never diverge from the aggregate count above.
-    /// Unknown/absent role defaults to core: an unclassifiable node is never exempted from the guard
-    /// it might actually need.
+    /// Committed activation role, falling back to the immutable membership descriptor.
+    /// Installed voters are never exempted by this check; the caller checks authority first.
     private boolean isWorkerRole(NodeId nodeId) {
         var label = nodeSupplier.get().membershipFsm().memberDescriptor(nodeId).map(MemberDescriptor::role);
 
         return directiveRoleOverride(nodeId).orElse(label)
-                                    .map(String::toLowerCase)
-                                    .or("core")
-                                    .equals("worker");
+                                    .map(role -> Set.of("worker", "spot").contains(role.toLowerCase(Locale.ROOT)))
+                                    .or(false);
     }
 
-    /// The `ActivationDirective` override only (demotions and manual promotions) — `none()` when
-    /// the node was never promoted/demoted, so callers can fall back to the self-asserted label.
+    /// Committed activation role when assigned; absent before assignment.
     private Option<String> directiveRoleOverride(NodeId nodeId) {
         return nodeSupplier.get()
                            .kvStore()
@@ -389,24 +362,20 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// backstop reaps the container. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
         return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(this::enqueueShutdownCommand);
+                     .flatMap(node -> admitOperatorDrain(node, false))
+                     .async();
     }
 
-    private Promise<TransitionResult> enqueueShutdownCommand(NodeId nodeId) {
-        drainCommandSink.accept(nodeId);
-        var result = shutdownInitiatedResult(nodeId.id());
-
-        auditAndEmitLifecycleTransition(result, STOPPED_STATE);
-
-        return Promise.success(result);
+    Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr) {
+        return shutdownNode(nodeIdStr);
     }
 
-    private TransitionResult shutdownInitiatedResult(String nodeIdStr) {
+    private TransitionResult shutdownInitiatedResult(String nodeIdStr, String guardNote) {
         return new TransitionResult(true,
                                     nodeIdStr,
                                     STOPPED_STATE,
-                                    "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command");
+                                    "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command (" + guardNote
+                                   + ")");
     }
 
     /// Promote a node from its current role to `targetRole` (CORE or WORKER) by

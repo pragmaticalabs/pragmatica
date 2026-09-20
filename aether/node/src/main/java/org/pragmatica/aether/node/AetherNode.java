@@ -2416,6 +2416,9 @@ public interface AetherNode extends ManageableNode {
         // pong fan + self-state holder are constructed further below.
         var communityRetirements = CommunityRetirementIndex.communityRetirementIndex();
 
+        // Snapshot replay emits only changed KV entries. Leadership must also be refreshed when
+        // an unchanged committed LeaderValue survives a voter handoff that cleared local leadership.
+        clusterNode.onStateRestored(() -> refreshCommittedLeader(kvStore, clusterNode.leaderManager()));
         clusterNode.onStateRestored(() -> restoreRetirementIndex(kvStore, communityRetirements));
         restoreRetirementIndex(kvStore, communityRetirements);
         var cdmDrainingNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
@@ -3103,6 +3106,10 @@ public interface AetherNode extends ManageableNode {
                                                         Option.empty(),
                                                         Option.some(taskGroupOwnerResolver),
                                                         accessibilityFilter);
+
+        appHttpServer.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
+                                                                                                    () -> workerProjectionFreshRef.get()
+                                                                                                                                  .getAsBoolean()));
         // #231 Step 1: ClusterSyncScheduler (metricsScheduler) is quorum-driven via its
         // onQuorumStateChange route below; task-assignment registration was redundant AND harmful
         // (deactivate() drove the FSM to Dormant on METRICS-group reassignment even while quorum
@@ -7460,6 +7467,13 @@ public interface AetherNode extends ManageableNode {
             case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP response for {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
                                                                            response.correlationId());
         }
+    }
+
+    static Unit refreshCommittedLeader(KVStore<?, ?> kvStore, LeaderManager leaderManager) {
+        kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+               .onPresent(value -> leaderManager.onLeaderCommitted(value.leader(), value.viewSequence()));
+
+        return Unit.unit();
     }
 
     private static void handleLeaderCommit(KVStoreNotification.ValuePut<?, ?> notification,

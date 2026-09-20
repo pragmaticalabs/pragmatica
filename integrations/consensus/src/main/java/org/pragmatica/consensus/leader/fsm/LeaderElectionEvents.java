@@ -43,6 +43,10 @@ public final class LeaderElectionEvents {
         }
     }
 
+    /// A verified electorate includes this former observer again. Consensus readiness remains
+    /// a separate gate; installing membership alone never authorizes an election.
+    public record VoterReadmitted() implements ClusterFsmEvent {}
+
     /// Consensus sync has completed and the node is ready to propose a leader. Sent by
     /// `AetherNode.startClusterAsync` after `clusterNode.start()` succeeds.
     public record ConsensusReady() implements ClusterFsmEvent {}

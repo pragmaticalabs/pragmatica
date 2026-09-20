@@ -62,6 +62,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
     private KVStore<AetherKey, AetherValue> kvStore;
     private MembershipFsm fsm;
     private Set<NodeId> allPresent;
+    private Set<NodeId> installedVoters;
 
     @BeforeEach
     void setUp() {
@@ -70,6 +71,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
         kvStore = new KVStore<>(router, noopSerializer(), null);
         fsm = fsmAllCore(presentMembers());
         allPresent = presentMembers();
+        installedVoters = presentMembers();
     }
 
     /// No-op serializer: this test seeds the KV store directly (not via consensus dedup), so
@@ -140,6 +142,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
             (_, method, args) -> switch (method.getName()) {
                 case "membershipView" -> membershipView();
                 case "metricsCollector" -> metricsCollector();
+                case "coreNodeIds" -> installedVoters;
                 case "initialTopology" -> presentMembers().stream().toList();
                 case "membershipFsm" -> fsm;
                 case "kvStore" -> kvStore;
@@ -181,6 +184,76 @@ class NodeLifecycleRoutesDrainBudgetTest {
 
     private static NodeInfo labeledInfo(NodeId id, Map<String, String> labels) {
         return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("host-x", 6000).unwrap(), labels);
+    }
+
+    @Test
+    void spotHasNoVoterWeightEvenWhenAuthorityIsUnavailable() {
+        var spot = new NodeId("spot-node");
+        fsm.onMemberDescriptor(labeledInfo(spot, Map.of(NodeInfo.LABEL_ROLE, "spot")));
+        fsm.onSwimHealthy(spot, 1L);
+        allPresent = Set.of(spot);
+        installedVoters = Set.of();
+        assertThat(routes().drainNodeForTest(spot.id()).await().isSuccess()).isTrue();
+        assertThat(routes().shutdownNodeForTest(spot.id()).await().isSuccess()).isTrue();
+        installedVoters = Set.of(spot);
+        assertThat(routes().shutdownNodeForTest(spot.id()).await().isFailure()).isTrue();
+    }
+
+    @Test
+    void nonVotingCandidatesCannotHideInstalledVoterDeficit() {
+        fsm = fsmAllCore(Set.of(node(1), node(2), node(3), node(6), node(7)));
+        assertThat(routes().drainNodeForTest(node(1).id()).await().isFailure()).isTrue();
+        assertThat(pendingDrains).isEmpty();
+    }
+
+    @Test
+    void resizedElectorateReplacesBootstrapThreshold() {
+        installedVoters = Set.of(node(1), node(2), node(3));
+        fsm = fsmAllCore(installedVoters);
+        assertThat(routes().drainNodeForTest(node(1).id()).await().isSuccess()).isTrue();
+    }
+
+    @Test
+    void pendingDepartingVoterIsNotSubtractedTwice() {
+        pendingDrains.add(node(1));
+        fsm.onDrainRequested(node(1));
+        assertThat(fsm.coreCountedMembers()).doesNotContain(node(1));
+        assertThat(routes().drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+    }
+
+    @Test
+    void shutdownUsesSameBudgetAndMissingAuthorityFailsClosed() {
+        pendingDrains.add(node(1));
+        pendingDrains.add(node(2));
+        assertThat(routes().shutdownNodeForTest(node(3).id()).await().isFailure()).isTrue();
+        pendingDrains.clear();
+        installedVoters = Set.of();
+        assertThat(routes().shutdownNodeForTest(node(1).id()).await().isFailure()).isTrue();
+        assertThat(pendingDrains).isEmpty();
+    }
+
+    @Test
+    void concurrentOperatorRequestsCannotBothReserveLastSafeDrain() {
+        installedVoters = Set.of(node(1), node(2), node(3));
+        fsm = fsmAllCore(installedVoters);
+        var entered = org.pragmatica.lang.Promise.<org.pragmatica.lang.Unit>promise();
+        var release = org.pragmatica.lang.Promise.<org.pragmatica.lang.Unit>promise();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var routes = NodeLifecycleRoutes.nodeLifecycleRoutes(this::nodeProxy, target -> {
+            calls.incrementAndGet();
+            entered.succeed(org.pragmatica.lang.Unit.unit());
+            release.await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+            pendingDrains.add(target);
+        }, () -> Set.copyOf(pendingDrains));
+        var first = java.util.concurrent.CompletableFuture.supplyAsync(() -> routes.drainNodeForTest(node(1).id()).await());
+        assertThat(entered.await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds()).isSuccess()).isTrue();
+        var second = java.util.concurrent.CompletableFuture.supplyAsync(() -> routes.shutdownNodeForTest(node(2).id()).await());
+        java.util.concurrent.locks.LockSupport.parkNanos(org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis().nanos());
+        assertThat(calls).hasValue(1);
+        release.succeed(org.pragmatica.lang.Unit.unit());
+        assertThat(first.orTimeout(5, java.util.concurrent.TimeUnit.SECONDS).join().isSuccess()).isTrue();
+        assertThat(second.orTimeout(5, java.util.concurrent.TimeUnit.SECONDS).join().isFailure()).isTrue();
+        assertThat(pendingDrains).containsExactly(node(1));
     }
 
     @Nested

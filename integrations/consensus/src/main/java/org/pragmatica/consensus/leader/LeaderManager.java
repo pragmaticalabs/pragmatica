@@ -334,7 +334,12 @@ public interface LeaderManager {
                                   boolean localMode) implements LeaderManager {
         @Override
         public org.pragmatica.lang.Unit installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration configuration) {
-            installLeaderEligibility(configuration.members());
+            if (configuration.contains(context.self())) {
+                installLeaderEligibility(configuration.members());
+                fsm.dispatch(new LeaderElectionEvents.VoterReadmitted());
+            } else {
+                fsm.dispatch(new LeaderElectionEvents.PassiveDirectory(configuration.members()));
+            }
 
             return org.pragmatica.lang.Unit.unit();
         }

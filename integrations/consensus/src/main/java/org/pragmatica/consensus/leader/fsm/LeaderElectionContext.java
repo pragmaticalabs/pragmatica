@@ -192,6 +192,7 @@ public final class LeaderElectionContext {
     // factory. Replaces the global static FSM_REF.
     private final Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
+    private final AtomicReference<Option<NodeId>> lastAdoptedLeader = new AtomicReference<>(Option.none());
 
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
 
@@ -651,6 +652,12 @@ public final class LeaderElectionContext {
     @Contract
     public void setCurrentLeader(Option<NodeId> leader) {
         currentLeader.set(leader);
+        leader.onPresent(node -> lastAdoptedLeader.set(Option.some(node)));
+    }
+
+    /// Retained across quorum loss solely to validate an equal-sequence committed replay.
+    public Option<NodeId> lastAdoptedLeader() {
+        return lastAdoptedLeader.get();
     }
 
     /// Dedup helper: returns `true` iff `leader` differs from the last notified leader and
