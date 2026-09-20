@@ -109,4 +109,73 @@ class KVStoreNotificationIsolationTest {
         assertThat(lockHeld).containsExactly(false, false);
         assertThat(store.snapshot()).isEmpty();
     }
+    @Test
+    void reentrantNotificationSeesStoreAfterAllNestedApplies() {
+        var router = MessageRouter.mutable();
+        var store = store(router);
+        var seen = new ArrayList<Object>();
+        router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> put) -> {
+            if (put.cause().key().equals(A)) {
+                store.process(store.createBatch(List.of(new KVCommand.Put<>(B, "first"))));
+                store.process(store.createBatch(List.of(new KVCommand.Put<>(B, "second"))));
+            } else {
+                seen.add(store.get(B).unwrap());
+            }
+        });
+        store.process(store.createBatch(List.of(new KVCommand.Put<>(A, "start"))));
+        assertThat(seen).containsExactly("second", "second");
+    }
+
+    @Test
+    void plainMarkedPutIsDroppedWithoutMutationOrNotification() {
+        record Protected(String value) implements LeaderAuthorized {}
+        var router = MessageRouter.mutable();
+        var store = store(router);
+        var notifications = new java.util.concurrent.atomic.AtomicInteger();
+        router.addRoute(KVStoreNotification.ValuePut.class, _ -> notifications.incrementAndGet());
+        store.process(store.createBatch(List.of(new KVCommand.Put<>(A, new Protected("forbidden")))));
+        assertThat(store.get(A).isEmpty()).isTrue();
+        assertThat(notifications.get()).isZero();
+    }
+
+    @Test
+    void snapshotCannotObserveHalfAppliedBatch() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var armed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        record BlockingKey(CountDownLatch entered, CountDownLatch release,
+                           java.util.concurrent.atomic.AtomicBoolean armed) implements StructuredKey {
+            @Override public int hashCode() {
+                if (armed.get() && Thread.currentThread().getName().equals("batch-writer")) {
+                    entered.countDown();
+                    Result.lift(Causes::fromThrowable, () -> release.await(5, TimeUnit.SECONDS)).unwrap();
+                }
+                return 42;
+            }
+        }
+        var store = store(MessageRouter.mutable());
+        var second = new BlockingKey(entered, release, armed);
+        var batch = store.createBatch(List.of(new KVCommand.Put<>(A, "first"), new KVCommand.Put<>(second, "second")));
+        armed.set(true);
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var writer = executor.submit(() -> {
+                Thread.currentThread().setName("batch-writer");
+                return store.process(batch);
+            });
+            try {
+                assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+                var reading = new CountDownLatch(1);
+                var reader = executor.submit(() -> { reading.countDown(); return store.snapshot(); });
+                assertThat(reading.await(2, TimeUnit.SECONDS)).isTrue();
+                org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> reader.get(200, TimeUnit.MILLISECONDS));
+                release.countDown();
+                assertThat(reader.get(2, TimeUnit.SECONDS)).containsEntry(A, "first").containsEntry(second, "second");
+            } finally {
+                release.countDown();
+            }
+            writer.get(2, TimeUnit.SECONDS);
+        }
+    }
+
 }

@@ -215,7 +215,7 @@ public interface SystemTags {
         // window (`SystemCodecPinningTest.hotProtocolTypes_fitInTheOneByteWindow`).
         pin(table, 112, "org.pragmatica.consensus.rabia.ResponderState");
         // Guarded KV mutation primitives. Remaining 113..122 slots stay reserved.
-        pin(table, 123, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderPut");
+        // Tag 123 retired: uncorrelated LeaderPut. Do not reuse.
         pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
         pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
         pin(table, 126, "org.pragmatica.cluster.state.kvstore.KVCommand.Mutation");
