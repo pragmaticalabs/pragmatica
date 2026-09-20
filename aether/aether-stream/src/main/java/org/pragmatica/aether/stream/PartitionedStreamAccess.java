@@ -14,6 +14,7 @@ import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -647,13 +648,16 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
             return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
                                    .async();
         }
-
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
+        // #1236: floor before the append (a refusal is not in the log); after it, an unconfirmed
+        // barrier is an unknown outcome.
+        return partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
+                               .flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
                                .async()
                                .flatMap(offset -> partitionManager.awaitReplication(streamName,
                                                                                     partition,
                                                                                     offset,
                                                                                     minSyncReplicas - 1)
+                                                                  .mapError(PublishOutcomeUnknown.FACTORY)
                                                                   .map(_ -> offset));
     }
 

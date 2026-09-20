@@ -1317,17 +1317,23 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
     /// Append, then apply the record to the fold at the offset the log assigned it.
     ///
-    /// `onSuccess` rather than `map` is deliberate: the fold must be updated for a record that reached the
-    /// log even when the promise afterwards carries [EntityLogError.ReplicationBarrierUnmet]. That cause
-    /// is raised by the substrate AFTER the offset exists and the record is durable, so refusing to apply
-    /// it here would leave this node serving a view that disagrees with the log it recovers from.
+    /// The apply is a step of the chain (`withSuccess`), not an `onSuccess` observer (#1241). On a pending
+    /// append promise `onSuccess` runs on another thread while the dependent steps run inline, so the
+    /// key's serialization tail could resolve — and the key's next operation start — before the fold held
+    /// this record. In the chain, the fold holds it before anything downstream of the append runs.
+    ///
+    /// The fold must also take a record that reached the log when the promise carries
+    /// [EntityLogError.ReplicationBarrierUnmet]. That cause is raised by the substrate AFTER the offset
+    /// exists and the record is durable, so refusing to apply it would leave this node serving a view that
+    /// disagrees with the log it recovers from. `withSuccess` does not run on a failure; that apply is
+    /// [#translateAppendFailure]'s, which is equally a synchronous step of the chain.
     private Promise<Long> appendAndApply(Object key, EntityLogRecord record) {
         var partition = partitionOf(key);
 
         return substrate.append(keyspace,
                                 partition,
                                 record.encode())
-                        .onSuccess(offset -> fold.apply(partition, offset, record))
+                        .withSuccess(offset -> fold.apply(partition, offset, record))
                         .mapError(cause -> translateAppendFailure(key, partition, record, cause));
     }
 
