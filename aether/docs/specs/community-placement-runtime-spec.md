@@ -30,7 +30,7 @@ minimum = 3
 weight = 1
 ```
 
-Targets and weights must be positive; minimums must be nonnegative and sum to no more than
+Targets and minimums must be nonnegative; weights must be positive. Minimums sum to no more than
 the target. Sources must declare workers. Explicit zones must belong to the source's
 configured zone set. Duplicate locations, and unzoned locations overlapping a zoned
 location of the same source, are rejected.
@@ -58,7 +58,14 @@ The probe requires the same resolved source binding as the refusal and a fresh s
 identity. Retry delay starts at 30 seconds, doubles, and caps at 10 minutes; attempt count caps
 at 31. A successful create or verified inventory recovery clears matching refusal evidence
 atomically with `AWAITING_READY`, then normal make-before-break movement restores preferences.
-Refusals survive leader changes. Policy changes invalidate only evidence for the old policy;
+Refusals survive leader changes. Each refusal also retains its failed attempt's node identity.
+Planning reads refusal records and their old capacity reservations from one committed snapshot;
+those exact values are transaction witnesses. When resolved provider binding changes, old
+refusal evidence becomes inapplicable only if its failed attempt's reservation is absent or
+explicitly released with the original source/binding. A fresh attempt may then use the newly
+resolved binding. Success clears the old evidence under the same proof; a new definitive
+refusal replaces it. Active or uncertain operations remain subject to their original binding
+and cannot use this completed-attempt rule to escape unresolved effects. Policy changes invalidate only evidence for the old policy;
 they do not erase unresolved operations. UTC retry timestamps require the deployment clock
 assumption; clock rollback delays probes rather than allowing earlier retries.
 
