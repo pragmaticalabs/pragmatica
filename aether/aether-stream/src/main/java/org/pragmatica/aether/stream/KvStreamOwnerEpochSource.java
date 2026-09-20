@@ -12,8 +12,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.cluster.state.kvstore.KVStore;
 
 
-/// Reads this node's CURRENT owner epoch for a `(stream, partition)` from the committed CP ownership
-/// record, to stamp outgoing LOCAL stream appends with a fencing token (#345 item 1d-ii). The
+/// Reads the partition's CURRENT committed owner epoch for a `(stream, partition)` from the committed CP
+/// ownership record, to stamp outgoing LOCAL stream appends with a fencing token (#345 item 1d-ii). It
+/// reads the epoch WHOEVER owns the arc and carries no identity: that a local append comes from the
+/// committed owner at all is enforced separately by `StreamPartitionManager.OwnerWriteAdmission` (#1230),
+/// and the replica-side backfill stamp (#336) relies on this source answering on non-owners too. The
 /// committed `StreamPartitionOwnershipValue.ownerEpoch` (Rabia-backed, leader-fenced — the
 /// authoritative epoch, written by the 1d-i `StreamPartitionOwnershipWriter`) is the source of truth;
 /// an append is stamped with whatever epoch is currently committed for its `(stream, partition)` arc.

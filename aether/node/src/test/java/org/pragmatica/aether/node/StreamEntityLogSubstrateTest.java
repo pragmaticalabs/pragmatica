@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.resource.entity.EntityLogError;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
@@ -15,6 +16,9 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -31,8 +35,8 @@ import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLo
 /// `StreamPartitionManager` is a concrete `final` class with no test seam of its own, but the collaborator
 /// that actually receives the barrier count — `ReplicationManager` — is an interface the manager is built
 /// with, so a capturing fake there observes the exact argument `awaitBarrier` passes without needing to
-/// fake `StreamPartitionManager` itself. `storage`, `kvStore`, and `applier` are real constructor
-/// parameters of `StreamEntityLogSubstrate` but are never touched by `ensureLog`/`append` — both methods
+/// fake `StreamPartitionManager` itself. `tieredReader`, `segmentIndex`, `storage`, `kvStore`, and `applier` are real
+/// constructor parameters of `StreamEntityLogSubstrate` but are never touched by `ensureLog`/`append` — both methods
 /// go through `partitionManager` alone — so they are passed as `null` rather than built for no purpose.
 class StreamEntityLogSubstrateTest {
 
@@ -45,6 +49,9 @@ class StreamEntityLogSubstrateTest {
         var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
                                                  null,
                                                  null,
                                                  null);
@@ -68,6 +75,9 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
                                                  null);
 
         substrate.ensureLog("orders", 8, 3, 2).unwrap();
@@ -75,6 +85,35 @@ class StreamEntityLogSubstrateTest {
         assertThat(substrate.ensureLog("orders", 8, 3, 2).isSuccess())
             .as("the same declaration must keep re-ensuring cleanly — every node hosting the keyspace calls it")
             .isTrue();
+    }
+
+    /// #1230: the stream's owner admission can refuse an entity append in the race after
+    /// `EntityOwnerAdmission` passed — the committed record moved to another node between the two reads.
+    /// That is a stale-owner condition the entity caller can act on (re-resolve and go to the owner), so it
+    /// must arrive in the entity vocabulary as [EntityLogError.StaleOwnerAppend], naming the committed owner,
+    /// not fall through untranslated and surface as `StorageFailed`.
+    @Test
+    void append_translatesNotOwnerAppend_toStaleOwnerAppend_namingTheCommittedOwner() {
+        var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("orders", 1, 1, 0).unwrap();
+        partitionManager.ownerWriteAdmission((_, _) -> Option.some(new NodeId("node-owner")));
+
+        var refusal = substrate.append("orders", 0, new byte[] {1, 2, 3}).await();
+
+        assertThat(refusal.isFailure()).isTrue();
+        refusal.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.StaleOwnerAppend.class)
+                                                    .extracting(Cause::message)
+                                                    .asString()
+                                                    .contains("node-owner"));
     }
 
     @Test
@@ -85,6 +124,9 @@ class StreamEntityLogSubstrateTest {
                                                                               capturingReplicationManager(capturedMinAcks));
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
                                                  null,
                                                  null,
                                                  null);
@@ -104,6 +146,9 @@ class StreamEntityLogSubstrateTest {
                                                                               capturingReplicationManager(capturedMinAcks));
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
                                                  null,
                                                  null,
                                                  null);
@@ -129,6 +174,9 @@ class StreamEntityLogSubstrateTest {
         var partitionManager = StreamPartitionManager.streamPartitionManager(floor);
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
                                                  null,
                                                  null,
                                                  null);

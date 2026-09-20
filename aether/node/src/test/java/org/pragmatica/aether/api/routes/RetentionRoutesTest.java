@@ -159,7 +159,12 @@ class RetentionRoutesTest {
         void assembleRetention_includesSegmentOnlyPartitions() {
             var segmentIndex = new SegmentIndex();
 
+            // History tiered away the way it happens on a live node: [0-99] and [100-200] seal, then
+            // retention reclaims [0-99]. Since #1234 the sealed-through bound is CONTIGUOUS, so a lone
+            // segment starting at 100 would (correctly) report -1 — offsets 0-99 never sealed.
+            segmentIndex.addSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 0L, 99L);
             segmentIndex.addSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 100L, 200L);
+            segmentIndex.removeSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 0L);
 
             var response = RetentionRoutes.assembleRetention(snapshot(PLAIN_STREAM,
                                                                       PARTITION,
