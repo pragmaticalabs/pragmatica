@@ -11,6 +11,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -37,12 +38,15 @@ class StrongConsistencyFailClosedTest {
     private static final String UNKNOWN_STREAM = "unknown-mode-stream";
     private static final int PARTITION = 0;
 
+    /// The forward handler passes `min-sync - 1`; these streams carry no peer-ack barrier, so the floor is 0.
+    private static final int NO_FLOOR = 0;
+
     private StreamPartitionManager partitionManager;
 
     @BeforeEach
     void setUp() {
         // STRONG needs a non-NOOP eviction listener to be created at all (AHSE_REQUIRED_FOR_STRONG).
-        partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {});
+        partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> Result.unitResult());
         partitionManager.createStream(config(STRONG_STREAM, ConsistencyMode.STRONG)).onFailureRun(Assertions::fail);
         partitionManager.createStream(config(EVENTUAL_STREAM, ConsistencyMode.EVENTUAL)).onFailureRun(Assertions::fail);
         partitionManager.createStream(config(UNKNOWN_STREAM, ConsistencyMode.UNKNOWN)).onFailureRun(Assertions::fail);
@@ -76,7 +80,7 @@ class StrongConsistencyFailClosedTest {
     /// refuse (an older node, or any future path) must not get a STRONG append landed as EVENTUAL here.
     @Test
     void publishForwarded_refusesWithConsensusPathUnavailable_forStrongStream() {
-        partitionManager.publishForwarded(STRONG_STREAM, PARTITION, "e0".getBytes(), 1L)
+        partitionManager.publishForwarded(STRONG_STREAM, PARTITION, "e0".getBytes(), 1L, NO_FLOOR)
                         .onSuccessRun(Assertions::fail)
                         .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
         assertThat(partitionManager.nextExpectedOffset(STRONG_STREAM, PARTITION)).isZero();
@@ -106,7 +110,7 @@ class StrongConsistencyFailClosedTest {
 
     @Test
     void publishForwarded_refusesUnreadableConsistencyMode() {
-        partitionManager.publishForwarded(UNKNOWN_STREAM, PARTITION, "e0".getBytes(), 1L)
+        partitionManager.publishForwarded(UNKNOWN_STREAM, PARTITION, "e0".getBytes(), 1L, NO_FLOOR)
                         .onSuccessRun(Assertions::fail)
                         .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
         assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
@@ -155,13 +159,13 @@ class StrongConsistencyFailClosedTest {
     /// retries. That retry is guarded too — a STRONG committed config is refused, never appended.
     @Test
     void publishForwarded_refusesStrongStream_onTheMaterializeAndRetryAttempt() {
-        var owner = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {});
+        var owner = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> Result.unitResult());
         var lagging = config("lagging-strong-stream", ConsistencyMode.STRONG);
         owner.committedConfigSource(name -> name.equals(lagging.name())
                                             ? Option.some(lagging)
                                             : Option.none());
 
-        owner.publishForwarded(lagging.name(), PARTITION, "e0".getBytes(), 1L)
+        owner.publishForwarded(lagging.name(), PARTITION, "e0".getBytes(), 1L, NO_FLOOR)
              .onSuccessRun(Assertions::fail)
              .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
         assertThat(owner.nextExpectedOffset(lagging.name(), PARTITION)).isZero();
