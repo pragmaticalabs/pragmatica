@@ -62,6 +62,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// No-op release (default seam).
     private static final LongConsumer NOOP_RELEASE = _ -> {};
 
+    /// No-op read-window probe (default seam — production never parks a reader).
+    private static final Runnable NO_READ_WINDOW_PROBE = () -> {};
+
     /// Test-only floor-allocation fault-injection seam (bug #6 partial-construction coverage). Consulted
     /// by the GUARDED seam factory with each buffer's partition index BEFORE the native floor allocation;
     /// when it returns false the factory behaves exactly as a native floor OOM would — it closes the
@@ -107,6 +110,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Reads refused because the arena was closed UNDER an in-flight reader (#999) — the genuine race, not
     /// the benign late arrival the `closed` fast path absorbs.
     private final AtomicLong closedUnderReader = new AtomicLong(0);
+    /// Native accesses refused because index or offset arithmetic went out of bounds (#1247) — a ring
+    /// defect, never the close race.
+    private final AtomicLong indexCorruption = new AtomicLong(0);
+    /// Test-only seam (#1253), run by [#guardedRead] between its `closed` fast-path check and the native read.
+    /// Deliberately NOT volatile: it is set before any reader thread starts, and `Thread.start` publishes it.
+    private Runnable readWindowProbe = NO_READ_WINDOW_PROBE;
     private volatile long lastSealedOffset = -1;
     /// Serializes every read-modify-write of the header (#1231): offset assignment (`head + 1`), the data
     /// write position, the event count and the tail. Held by the append paths, [#seedHead], the retention
@@ -245,11 +254,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                  release);
     }
 
-    /// The single justified try/catch for floor allocation (bug #6 sibling of `allocateGuarded`): the
+    /// JDK boundary for floor allocation (bug #6 sibling of `allocateGuarded`) — one of the four marked
+    /// `catch` sites in this file, with [#allocateGuarded], [#guardedAccess] and [#guardedRead]: the
     /// floor `arena.allocate` calls can fail with native `OutOfMemoryError`. On failure the arena is
     /// CLOSED (no leak) and a `Result` failure is returned. On success a fully-initialized buffer is
     /// handed back. See spec §4.3.
-    @SuppressWarnings("JBCT-EX-01")
+    @SuppressWarnings("JBCT-EX-03")
     private static Result<OffHeapRingBuffer> buildFloorGuarded(Arena arena,
                                                                String streamName,
                                                                int partition,
@@ -416,9 +426,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///   - REJECT_WHEN_FULL (STRONG) and does not fit — the same loud `STREAM_MEMORY_EXCEEDED` it returns
     ///     when it cannot make room by growing.
     ///   - DROP_OLDEST (EVENTUAL) and does not fit — the event genuinely cannot be stored in the frozen
-    ///     ring; drop it (NO write, no corruption) and report success at the current head, mirroring the
-    ///     existing non-fatal EVENTUAL contract (EVENTUAL appends never fail; the exhaustion event was
-    ///     already emitted via the growth seam). See spec §4.2 / bug #7.
+    ///     ring; drop it (NO write, no corruption) and report the distinct `EVENT_DROPPED` outcome. Never
+    ///     success at the current head (#1233): that offset belongs to an already-stored event, and a
+    ///     caller treating it as the new event's offset WAL-writes and replicates a phantom under it. The
+    ///     publish path decides whether the stream may absorb the drop. See spec §4.2 / bug #7.
     private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
         if (payload.length <= allocatedDataBytes) {
             return appendWritten(payload, timestamp);
@@ -428,7 +439,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        return success(rawHeadOffset());
+        return StreamError.General.EVENT_DROPPED.result();
     }
 
     /// Runs AFTER growth so the REJECT_WHEN_FULL fullness check is evaluated against the grown
@@ -492,7 +503,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Batch analogue of `appendIfFitsAllocated` (bug #7): after growth was attempted, the batch total
     /// must still fit the **allocated** data bytes, otherwise a frozen-ring batch write would overflow
     /// the ring (corruption / segment overrun). STRONG rejects loud; EVENTUAL drops the whole batch (no
-    /// write) and reports success at the current head. See spec §4.2 / bug #7.
+    /// write) and reports `EVENT_DROPPED`, never success at the current head (#1233, same reason as the
+    /// single-event gate). See spec §4.2 / bug #7.
     private Result<Long> appendBatchIfFitsAllocated(List<byte[]> payloads, long[] timestamps, long totalSize) {
         if (totalSize <= allocatedDataBytes) {
             return appendBatchWritten(payloads, timestamps);
@@ -502,7 +514,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        return success(rawHeadOffset());
+        return StreamError.General.EVENT_DROPPED.result();
     }
 
     private Result<Long> appendBatchWritten(List<byte[]> payloads, long[] timestamps) {
@@ -625,10 +637,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         accountedBytes += segment.byteSize();
     }
 
-    /// The single justified try/catch in this file: native off-heap allocation (`Arena.allocate`)
-    /// can fail with `OutOfMemoryError`. We isolate it here and convert to a `Result` failure so the
-    /// caller releases the just-reserved bytes (accounting never leaks). See spec §4.3.
-    @SuppressWarnings("JBCT-EX-01")
+    /// JDK boundary for segment growth — one of the four marked `catch` sites in this file (see
+    /// [#buildFloorGuarded]): native off-heap allocation (`Arena.allocate`) can fail with
+    /// `OutOfMemoryError`. We isolate it here and convert to a `Result` failure so the caller releases
+    /// the just-reserved bytes (accounting never leaks). See spec §4.3.
+    @SuppressWarnings("JBCT-EX-03")
     private Result<MemorySegment> allocateGuarded(long bytes) {
         try {
             return success(arena.allocate(bytes, 64));
@@ -643,14 +656,21 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// public path and close the arena mid-`MemorySegment` access. The JDK keeps this memory-safe (no
     /// use-after-free) by throwing `IllegalStateException` ("already closed"), but that exception would
     /// otherwise ESCAPE the `Result` contract. Isolating the native access here converts that race into a
-    /// clean `BUFFER_CLOSED` failure. The same boundary also catches a frozen-ring `IndexOutOfBounds`
-    /// belt-and-braces, though bug #7's allocated-bytes gate prevents that on every legitimate path.
-    @SuppressWarnings("JBCT-EX-01")
+    /// clean `BUFFER_CLOSED` failure.
+    ///
+    /// An `IndexOutOfBoundsException` is NOT that race: it is an index or offset-arithmetic defect (bug #7's
+    /// allocated-bytes gate prevents it on every legitimate path). #1247: it used to share the
+    /// `BUFFER_CLOSED` mapping, which reported a corrupted ring as a benign release with no log. It is now
+    /// logged at ERROR, counted by [#indexCorruptionCount], and surfaced as its own
+    /// [StreamError.RingIndexCorrupted] cause.
+    @SuppressWarnings("JBCT-EX-03")
     private <T> Result<T> guardedAccess(Supplier<Result<T>> access) {
         try {
             return access.get();
-        } catch (IllegalStateException | IndexOutOfBoundsException _) {
+        } catch (IllegalStateException _) {
             return StreamError.General.BUFFER_CLOSED.result();
+        } catch (IndexOutOfBoundsException e) {
+            return reportIndexCorruption(e).result();
         }
     }
 
@@ -838,16 +858,25 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// converge on the behaviour the non-racy path has always had (the ring is removed from the entry's
     /// `materialized` map BEFORE it is closed, so a later resolution returns [Option#none] and yields the
     /// same values), rather than inventing a third outcome.
-    @SuppressWarnings("JBCT-EX-01")
+    ///
+    /// An `IndexOutOfBoundsException` here is a ring defect, not the close race (#1247): it is logged at
+    /// ERROR and counted by [#indexCorruptionCount] instead of [#closedUnderReaderCount], and the read still
+    /// reports the refusal sentinel because these accessors have no failure channel.
+    @SuppressWarnings("JBCT-EX-03")
     private long guardedRead(long refused, LongSupplier read) {
         if (closed.get()) {
             return refused;
         }
 
+        readWindowProbe.run();
         try {
             return read.getAsLong();
-        } catch (IllegalStateException | IndexOutOfBoundsException _) {
+        } catch (IllegalStateException _) {
             reportClosedUnderReader();
+
+            return refused;
+        } catch (IndexOutOfBoundsException e) {
+            reportIndexCorruption(e);
 
             return refused;
         }
@@ -895,6 +924,39 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     public long closedUnderReaderCount() {
         return closedUnderReader.get();
+    }
+
+    /// Count of native accesses refused because index or offset arithmetic went out of bounds (#1247).
+    /// Zero on every healthy ring; non-zero is a ring defect, never a release race.
+    public long indexCorruptionCount() {
+        return indexCorruption.get();
+    }
+
+    /// Report an out-of-bounds native access (#1247) distinctly from [#reportClosedUnderReader]: the arena
+    /// was open, so the index or offset arithmetic is wrong and the ring's contents cannot be trusted.
+    private StreamError.RingIndexCorrupted reportIndexCorruption(IndexOutOfBoundsException fault) {
+        var occurrence = indexCorruption.incrementAndGet();
+
+        log.error("OffHeapRingBuffer {}[{}]: out-of-bounds native access — ring index or offset arithmetic is "
+                 + "corrupted, NOT a concurrent close (occurrence {} for this ring)",
+                  streamName,
+                  partition,
+                  occurrence,
+                  fault);
+
+        return new StreamError.RingIndexCorrupted(streamName,
+                                                  partition,
+                                                  String.valueOf(fault.getMessage()));
+    }
+
+    /// Test-only seam (#1253): install a probe that [#guardedRead] runs AFTER its `closed` fast-path check and
+    /// BEFORE the native read — exactly the window a concurrent `close()` must land in for the reader to be
+    /// refused by the JDK rather than by the flag. A probe that parks one reader there until `close()` has
+    /// completed makes that race deterministic instead of scheduler-dependent. Must be installed before any
+    /// reader thread starts. Production never touches it.
+    @Contract
+    void readWindowProbe(Runnable probe) {
+        readWindowProbe = probe;
     }
 
     public long allocatedBytes() {

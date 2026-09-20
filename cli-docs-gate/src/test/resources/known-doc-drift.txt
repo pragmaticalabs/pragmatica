@@ -60,7 +60,7 @@
 #     instruction.
 #
 # Current composition: 86 entries - 32 absent commands, 54 absent options - across
-# 36 files, of which 15 are under aether/docs/specs/**.
+# 37 files, of which 16 are under aether/docs/specs/**.
 #
 # #676 added waivers for the backup commands it removed (MAILBOX.md and
 # management-api-versioning-spec.md still cite them).
@@ -178,6 +178,11 @@ aether/docs/specs/cluster-management-spec.md	option: --keep-instances on aether 
 aether/docs/specs/cluster-management-spec.md	option: --overlay on aether cluster apply
 aether/docs/specs/cluster-management-spec.md	option: --overlay on aether cluster bootstrap
 aether/docs/specs/cluster-management-spec.md	option: --strategy on aether cluster upgrade
+
+# --- aether/docs/specs/cluster-supervision-spec.md ---
+# PLANNED for 1.0.0-rc5 (#1251): design-only spec naming a CLI surface that does not exist yet. Self-expiring —
+# once `aether supervision` ships this line matches nothing and fails the build, forcing its removal.
+aether/docs/specs/cluster-supervision-spec.md	command: aether supervision
 
 # --- aether/docs/specs/durable-entity-primitive-spec.md ---
 aether/docs/specs/durable-entity-primitive-spec.md	command: aether workflows

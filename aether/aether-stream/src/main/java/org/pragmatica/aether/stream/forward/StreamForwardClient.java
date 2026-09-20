@@ -11,8 +11,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
@@ -291,11 +293,16 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
 
     /// Rebuild the typed forward-publish cause from the wire response, preserving the owner's
     /// retryable/permanent classification (write-forward race fix): a `retryable` response becomes
-    /// {@link StreamForwardError.RemotePublishRetryable} so the forwarder bounded-retries, otherwise a
-    /// permanent {@link StreamForwardError.RemotePublishFailed}.
-    private static StreamForwardError publishFailureCause(PublishForwardResponse response) {
-        return response.retryable()
-               ? new StreamForwardError.RemotePublishRetryable(response.errorMessage())
+    /// {@link StreamForwardError.RemotePublishRetryable} so the forwarder bounded-retries, an
+    /// `outcomeUnknown` response (#1236 — the owner appended, its barrier did not confirm) becomes
+    /// [PublishOutcomeUnknown], otherwise a permanent {@link StreamForwardError.RemotePublishFailed}.
+    private static Cause publishFailureCause(PublishForwardResponse response) {
+        if (response.retryable()) {
+            return new StreamForwardError.RemotePublishRetryable(response.errorMessage());
+        }
+
+        return response.outcomeUnknown()
+               ? PublishOutcomeUnknown.FACTORY.apply(new StreamForwardError.RemotePublishFailed(response.errorMessage()))
                : new StreamForwardError.RemotePublishFailed(response.errorMessage());
     }
 
@@ -308,8 +315,10 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         }
     }
 
+    /// #1236: the forward was SENT, so the owner may have appended it before the response was lost or
+    /// late — a publish-forward timeout is an unknown outcome, never a clean failure.
     private void timeoutRequest(String correlationId) {
-        option(pendingRequests.remove(correlationId)).onPresent(promise -> promise.resolve(FORWARD_TIMEOUT.result()));
+        option(pendingRequests.remove(correlationId)).onPresent(promise -> promise.resolve(PublishOutcomeUnknown.FACTORY.apply(FORWARD_TIMEOUT).result()));
     }
 
     private void timeoutRead(String correlationId) {

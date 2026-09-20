@@ -74,24 +74,35 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// partition was capacity-deferred — so the forwarder re-attempts a BOUNDED number of times with short
     /// backoff instead of surfacing it as permanent. A `false` value (the default `failureResponse`
     /// factory) means a permanent failure, served exactly as before.
+    ///
+    /// `outcomeUnknown` (#1236) marks a failure the owner reported AFTER appending — its min-sync barrier
+    /// did not confirm — so the event may be in the log. Without it the sender could only rebuild a
+    /// permanent failure and would report "not in the log" for an event that is.
     record PublishForwardResponse(NodeId sender,
                                   String correlationId,
                                   boolean success,
                                   long offset,
                                   String errorMessage,
-                                  boolean retryable) implements StreamForwardMessage {
+                                  boolean retryable,
+                                  boolean outcomeUnknown) implements StreamForwardMessage {
         public static PublishForwardResponse successResponse(NodeId sender, String correlationId, long offset) {
-            return new PublishForwardResponse(sender, correlationId, true, offset, "", false);
+            return new PublishForwardResponse(sender, correlationId, true, offset, "", false, false);
         }
 
         public static PublishForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
-            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, false);
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, false, false);
         }
 
         public static PublishForwardResponse retryableResponse(NodeId sender,
                                                                String correlationId,
                                                                String errorMessage) {
-            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, true);
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, true, false);
+        }
+
+        public static PublishForwardResponse outcomeUnknownResponse(NodeId sender,
+                                                                    String correlationId,
+                                                                    String errorMessage) {
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, false, true);
         }
     }
 

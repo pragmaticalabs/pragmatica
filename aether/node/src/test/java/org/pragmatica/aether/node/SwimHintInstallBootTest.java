@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -28,7 +29,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -68,6 +71,10 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// binding at the `attachQuicPeerStateListener` call — reaching it needs a second QUIC peer completing
 /// a handshake, and the epoch it advances is not observable from outside the node.
 class SwimHintInstallBootTest {
+    /// #1276: node storage lives here, never under the machine-global `/data/aether/...` default.
+    @TempDir
+    Path tempDir;
+
     private static final String LOGGER_NAME = SwimProtocol.class.getName();
     private static final NodeId PEER = NodeId.nodeId("node-peer").unwrap();
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
@@ -116,7 +123,7 @@ class SwimHintInstallBootTest {
     @Test
     @Timeout(value = 90, unit = SECONDS)
     void assembleNode_installsPingTimeoutReporterAndPongRetraction_onTheCollector() {
-        node = AetherNode.aetherNode(minimalConfig(), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(tempDir), () -> {})
                           .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                           .unwrap();
         node.start()
@@ -155,7 +162,7 @@ class SwimHintInstallBootTest {
 
     /// The #858 single-node boot fixture: `self` in `coreNodes` (TopologyObserver requires it), mutual
     /// self-signed QUIC TLS (server and client contexts), management and app HTTP off.
-    private static AetherNodeConfig minimalConfig() {
+    private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("swim-hint-install-boot-" + UUID.randomUUID()).unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -172,6 +179,8 @@ class SwimHintInstallBootTest {
                                 .certificateProvider(Option.none())
                                 .configProvider(Option.none())
                                 .environment(Option.none())
+                                .managementHttpProtocol(HttpProtocol.H1)
+                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
     }
 
