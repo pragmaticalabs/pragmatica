@@ -10,11 +10,15 @@
   [verified: `SegmentReaderTest$StackDepthAcrossSegments.readEvents_failsTheRead_whenARefLookupThrowsOnTheInlinePath`
   (red on #1394: `IllegalStateException` escapes) and `…whenARefLookupThrowsAfterAnOffThreadResume`
   (red on #1394: the read times out, never settled)]
-- **The off-thread reader pins await with a budget, and one crosses `maxEvents` mid-segment after a
-  resume.** An ignored-failure mutation used to park the suite indefinitely; it now fails in seconds.
+- **The off-thread reader pins await with a budget, the resume-failure pin holds its step, and one
+  case crosses `maxEvents` mid-segment after a resume.** An ignored-failure mutation used to park the
+  suite indefinitely; it now fails in seconds. The failed step is held by the test and failed only after
+  `readEvents` has returned, so the loop has provably suspended on it — a step failed on a racing
+  thread lands in whichever branch scheduling picks (the racing shape passed 31/31 under the mutation
+  on one run and reddened on the next; shape from rev1394's probe).
   The resume path's `remaining` bookkeeping was unpinned — `from=4, max=4` over 3-record segments
   returns exactly `[4..7]`; an un-decremented `remaining` returns `[4..8]`. The limit must land inside
   a segment, not on its end, or the bounded ref range pins nothing.
   [verified: `readEvents_stopsAtMaxEvents_whenTheLimitFallsMidSegmentAfterAnOffThreadResume`, red
-  under the `remaining`-unchanged mutation; `readEvents_failsTheWholeRead_whenAGetSettlingOffThreadFails`
-  red in 21 s under the ignored-failure mutation]
+  under the `remaining`-unchanged mutation; `readEvents_failsTheReadOnce_whenAHeldStepFailsAfterTheLoopSuspendedOnIt`
+  red 3/3 under the ignored-failure mutation, within the budget]
