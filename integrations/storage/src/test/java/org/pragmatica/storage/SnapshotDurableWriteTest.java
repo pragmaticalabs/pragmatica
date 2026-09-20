@@ -215,7 +215,11 @@ class SnapshotDurableWriteTest {
                                                      .or(false))
                             .toList();
         // Fewer than 100 files is expected: the name comes from the epoch at capture time, so two
-        // callers that both mutated before either captured write the same name with the same bytes.
+        // callers that both mutated before either captured write the SAME NAME -- and not the same
+        // bytes (the header carries the capture's timestamp, and `createLifecycle` puts before it
+        // increments, so two same-epoch captures can differ). Under the lock the later complete
+        // write atomically replaces the earlier; neither torn nor misnamed is possible. The file
+        // count is the number of distinct epochs captured (90 of 100 measured).
         assertThat(files).as("the writers wrote something").isNotEmpty();
         assertThat(torn).as("torn snapshot files under a final name").isEmpty();
         assertThat(misnamed).as("files whose content epoch differs from the name").isEmpty();
