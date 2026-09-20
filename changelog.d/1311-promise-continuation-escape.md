@@ -17,4 +17,15 @@
   is the same whether the source resolved before or after the continuation was attached.
   `[verified: core/src/test/java/org/pragmatica/lang/PromiseContinuationEscapeTest.java]` — real
   recursion for `StackOverflowError`, an unaddressable array for `OutOfMemoryError`.
+- **No lift in `core` converts a `VirtualMachineError` any more.** `Result.lift` ×2, `Unit.lift`,
+  `Tuple.lift` ×15 and `Option.lift` (which turned an `OutOfMemoryError` into `Option.empty()`) all
+  caught every `Throwable`, so a `StackOverflowError` inside a lifted call — including every
+  `Promise.lift*` — became a plausible-looking failed value that no guard could see. They now go through
+  one helper, `Causes.rethrowIfFatal(Throwable)`, first; so does the Promise continuation guard and the
+  `VirtualThreadScheduler` task guard (after its WARN line). Ordinary exceptions are still the mapper's.
+  The one named exception is the scheduler's timer-loop dispatch catch, which keeps the JVM's single
+  timer thread alive by design; the comment there says why.
+  `[verified: core/src/test/java/org/pragmatica/lang/utils/LiftFamilyVirtualMachineErrorTest.java]` (one
+  row per site, real recursion) and
+  `[verified: core/src/test/java/org/pragmatica/lang/ResultLiftVirtualMachineErrorTest.java]`.
 - Phase 2 of #1311 — removing the per-PR guards added by #1258 and #1297 — stays open.

@@ -99,7 +99,9 @@ import static org.pragmatica.lang.utils.ResultCollector.resultCollector;
 /// escape is logged at ERROR by the `org.pragmatica.lang.Promise` logger with its stack trace; and a
 /// [VirtualMachineError] is rethrown after both, so an exhausted stack or heap is never hidden
 /// behind a failed `Result`. Handlers queued behind the thrower on the same promise still run.
-/// This is containment of a bug, not an error channel: a mapper that relies on it is still wrong.
+/// `Promise.lift*` map ordinary exceptions through their mapper as before; a `VirtualMachineError` is
+/// rethrown by [Result#lift] and takes the same route as any other escape. This is containment of a
+/// bug, not an error channel: a mapper that relies on it is still wrong.
 /* Implementation notes: this version of the implementation is heavily inspired by the implementation of
 the CompletableFuture. There are several differences, though:
 - Method naming consistent with widely used Optional and Streams.
@@ -3563,13 +3565,8 @@ final class PromiseImpl<T> implements Promise<T> {
         return cause;
     }
 
-    /// The `throw` is the #1311 ruling's own mechanism (a VirtualMachineError is rethrown after
-    /// logging), not a business exception; `@Contract` for the same reason [#lookupHandle] carries it.
-    @Contract
     private static void rethrowIfFatal(Throwable escape) {
-        if (escape instanceof VirtualMachineError fatal) {
-            throw fatal;
-        }
+        Causes.rethrowIfFatal(escape);
     }
 
     /// The consumer given to `async`/`Promise.promise(consumer)` is entrusted with resolving the promise

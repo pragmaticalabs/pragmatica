@@ -350,6 +350,38 @@ class PromiseContinuationEscapeTest {
         assertErrorLogged("replaceResult", "OutOfMemoryError");
     }
 
+    // ---- 3. Promise.lift*: the mapper converts exceptions, a VirtualMachineError still escapes --------
+
+    /// `Promise.lift` routes through `Result.lift`, whose `catch (Throwable)` used to convert a
+    /// StackOverflowError into a Cause with no guard ever seeing it: no log, no rethrow, a plausible-looking
+    /// failed promise. `Result.lift` now rethrows a VirtualMachineError (`ResultLiftVirtualMachineErrorTest`),
+    /// so the error leaves the lift into the `async` guard like any other escape.
+    @Test
+    void stackOverflowInLift_failsPromiseLogsAndIsNotConvertedSilently() {
+        var promise = Promise.lift(() -> recurseForever(0));
+
+        assertVmeEscape(promise.await(timeSpan(2).seconds()), "async", StackOverflowError.class);
+        assertErrorLogged("async", "StackOverflowError");
+    }
+
+    /// Control for the test above: an ordinary exception inside `lift` is still the mapper's business —
+    /// converted by `Causes::fromThrowable`, not logged, not treated as an escape.
+    @Test
+    void exceptionInLift_isStillMappedByTheLiftMapper_andNotLogged() {
+        var promise = Promise.lift(() -> {
+            throw new IllegalStateException("lift-control");
+        });
+
+        var result = promise.await(timeSpan(2).seconds());
+
+        assertThat(result).isInstanceOf(Result.Failure.class);
+        assertThat(((Result.Failure<?>) result).cause()).isNotInstanceOf(CoreError.Exception.class);
+        assertThat(((Result.Failure<?>) result).cause().message()).contains("lift-control");
+        assertThat(appender.events().stream().filter(event -> event.level() == Level.ERROR).toList())
+            .as("a mapped exception is not an escape and must not be logged")
+            .isEmpty();
+    }
+
     // ---- helpers --------------------------------------------------------------------------------------
 
     private static int recurseForever(int depth) {
