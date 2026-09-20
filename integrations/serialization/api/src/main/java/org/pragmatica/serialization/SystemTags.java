@@ -227,7 +227,12 @@ public interface SystemTags {
         // window (`SystemCodecPinningTest.hotProtocolTypes_fitInTheOneByteWindow`).
         pin(table, 112, "org.pragmatica.consensus.rabia.ResponderState");
 
-        // ---- 113..127 RESERVED: the last free 1-byte slots. Spend them on hot types only. ----
+        // Guarded KV mutation primitives. Remaining 113..122 slots stay reserved.
+        pin(table, 123, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderPut");
+        pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
+        pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
+        pin(table, 126, "org.pragmatica.cluster.state.kvstore.KVCommand.Mutation");
+        pin(table, 127, "org.pragmatica.cluster.state.kvstore.KVCommand.TransactionResult");
         // ---- 128..16383: two-byte system tags. ----
 
         // worker bootstrap (rare, large payloads)  [base 128]

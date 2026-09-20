@@ -2,6 +2,7 @@ package org.pragmatica.cluster.state.kvstore;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.lang.Option;
+import java.util.List;
 import org.pragmatica.serialization.Codec;
 
 
@@ -10,6 +11,33 @@ public sealed interface KVCommand<K extends StructuredKey> extends Command {
     K key();
 
     record Put<K extends StructuredKey, V>(K key, V value) implements KVCommand<K> {}
+
+    /// Atomically changes a value only while both its previous value and the core leader match.
+    record LeaderPut<K extends StructuredKey, V>(K key, Option<V> expected, V value,
+                                               LeaderValue leader, List<ReadWitness<K>> guards) implements KVCommand<K> {
+        public LeaderPut { guards = List.copyOf(guards); }
+    }
+
+    @Codec
+    record ReadWitness<K extends StructuredKey>(K key, Option<Object> expected) {}
+
+    /// One all-or-nothing mutation, authorized by the committed core leader and a complete read set.
+    record LeaderTransaction<K extends StructuredKey, V>(K key, String transactionId, LeaderValue leader,
+                                                         List<ReadWitness<K>> guards,
+                                                         List<Mutation<K, V>> mutations) implements KVCommand<K> {
+        public LeaderTransaction {
+            guards = List.copyOf(guards);
+            mutations = List.copyOf(mutations);
+        }
+    }
+
+    /// An absent replacement deletes the key. Every mutation carries its exact previous value.
+    @Codec
+    record Mutation<K extends StructuredKey, V>(K key, Option<V> expected, Option<V> replacement) {}
+
+    /// Correlation survives consensus batch merging; callers must select their own transaction ID.
+    @Codec
+    record TransactionResult(String transactionId, boolean accepted) {}
 
     record Get<K extends StructuredKey>(K key) implements KVCommand<K> {}
 

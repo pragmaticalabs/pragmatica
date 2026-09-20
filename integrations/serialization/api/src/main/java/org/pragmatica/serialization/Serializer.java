@@ -27,6 +27,10 @@ import io.netty.buffer.PooledByteBufAllocator;
 /// Such failures are fatal and should result in immediate application shutdown rather than
 /// attempting graceful error handling.
 public interface Serializer {
+    /// A deterministic view for replicated checkpoints. Custom serializers must already
+    /// provide stable bytes; SliceCodec overrides this to order nested maps and sets.
+    default Serializer canonical() { return this; }
+
     /// Encode an object to a byte array.
     ///
     /// @param object the object to serialize
