@@ -758,6 +758,13 @@ class DurableTopicDeliveryForgeTest {
                                                                     "/api/durable-topic/publish-order",
                                                                     "{\"orderId\":\"" + id + "\",\"sequence\":0}")));
         var observedInFlight = observeAppendBeforeAttach(publisher, headBefore);
+
+        // The sampler returns at its first qualifying sample, which can precede the call's return; the
+        // outcome below must be the call's, not the placeholder.
+        while (publisher.isAlive()) {
+            sleep(IN_FLIGHT_SAMPLE_INTERVAL);
+        }
+
         var response = responseRef.get();
         var forcedUnknown = attempt == 0 && Boolean.getBoolean(FORCE_UNKNOWN_FIRST_WARMUP);
         var definiteSuccess = !forcedUnknown && !response.contains("\"error\"") && response.contains("published");
