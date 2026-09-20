@@ -230,6 +230,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return option(consumers.get(key)).map(ConsumerState::cursor);
     }
 
+    /// Test seam (rev1285d F1): whether this consumer's retry hold is set. Package-private for
+    /// [StreamConsumerRuntimeTest], whose dead-letter sink reads it at append time — the only moment
+    /// at which the hold ordering in [#handleRetryFailureAgain] is observable.
+    boolean isRetryInFlight(String streamName, int partition, String consumerGroup) {
+        var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
+
+        return option(consumers.get(key)).map(ConsumerState::isRetryInFlight)
+                     .or(false);
+    }
+
     @Override
     public Option<TransactionalCursorCommit> transactionalCursorCommit() {
         return transactionalCommit;
@@ -417,8 +427,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         consumers.forEach((key, state) -> reapIfIdleConsumer(key, state, now));
     }
 
+    /// rev1285d N1: a consumer still retrying its subscribe-time cursor fetch has not STARTED, so its
+    /// `lastPollTime` is the construction time — without the flag check it reads as idle after 60s and
+    /// is reaped, which also stops the fetch retry ([#retryCursorFetch] checks `isCancelled`).
     private void reapIfIdleConsumer(ConsumerKey key, ConsumerState state, long now) {
-        if (state.idlePolicy() == IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED) {
+        if (state.idlePolicy() == IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED || state.isAwaitingCursorFetch()) {
             return;
         }
 
@@ -1041,10 +1054,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var attempt = state.incrementRetryCount();
 
         if (attempt >= state.maxRetries()) {
-            // The dead-letter hold is taken before the retry hold is released, so the loop is never
-            // unheld in between.
-            appendDeadLetterThenAdvance(key, state, event, errorMessage, attempt, 1);
+            // rev1285d F1: the dead-letter hold is taken BEFORE the retry hold is released, so the loop
+            // is never unheld in between — and the retry hold is released BEFORE the append is issued,
+            // because a sink that resolves inline runs completeDeadLetter (and its requestDrain) inside
+            // that call. Released after it, the re-drive found the loop still held, read nothing, and
+            // the backlog already in the ring sat until the next append.
+            state.markDeadLetterInFlight();
             state.clearRetryInFlight();
+            appendDeadLetterThenAdvance(key, state, event, errorMessage, attempt, 1);
 
             return;
         }
@@ -1089,6 +1106,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// append retries with backoff indefinitely: capping and advancing anyway would BE the silent
     /// loss this contract exists to prevent; the stall is deliberate and operator-visible via the
     /// held cursor (the §9 `DLQ_STALL` alarm surface arrives with the D3 batch).
+    ///
+    /// A caller holding ANOTHER hold (the retry hold in [#handleRetryFailureAgain]) releases it before
+    /// this call, never after: the sink may resolve inline, and then [#completeDeadLetter]'s re-drive
+    /// runs inside this call and must find only the dead-letter hold, which it clears itself.
     private void appendDeadLetterThenAdvance(ConsumerKey key,
                                              ConsumerState state,
                                              OffHeapRingBuffer.RawEvent event,
