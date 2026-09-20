@@ -12,7 +12,6 @@ import org.pragmatica.lang.Verify;
 /// instead of the canonical constructor.
 public record LookupRequest(String code) {
     public static Result<LookupRequest> lookupRequest(String code) {
-        return Verify.ensure(code, Verify.Is::present)
-                     .map(LookupRequest::new);
+        return Verify.ensure(code, Verify.Is::present).map(LookupRequest::new);
     }
 }

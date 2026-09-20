@@ -9,19 +9,29 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
 import com.sun.management.ThreadMXBean;
 
 import java.lang.management.ManagementFactory;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -295,6 +305,124 @@ class SegmentReaderTest {
             var threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
 
             return threads.getThreadAllocatedBytes(Thread.currentThread().threadId());
+        }
+    }
+
+    /// #1392: a read across k segments must not nest a frame group per segment. With a memory tier every
+    /// `storage.get` settles synchronously, and the `flatMap`-per-segment chain then ran each continuation
+    /// inline: 7 frames per segment, ~3,600 for a 512-segment replay batch — and the sealer seals one evicted
+    /// record per segment, so that is the production shape. On CI's 1 MB x64 thread stack the entity replay
+    /// overflowed at about 480 segments. Depth is measured with `StackWalker`, which `MaxJavaStackTraceDepth`
+    /// does not cap.
+    @Nested
+    class StackDepthAcrossSegments {
+        private static final int MANY_SEGMENTS = 2_000;
+        private static final int SOME_SEGMENTS = 200;
+        private static final int FAILING_SEGMENT = 5;
+        /// Well under one segment's worth of nesting (7 frames) times any small constant, and four orders of
+        /// magnitude under the 13,993 frames the recursion grew by before the fix.
+        private static final long MAX_DEPTH_GROWTH = 50;
+
+        /// RED before the fix: the last segment's `get` ran 7 × 1,999 frames deeper than the first's.
+        @Test
+        void readEvents_keepsStackDepthFlat_acrossTwoThousandSynchronouslySettlingSegments() {
+            var depths = new ArrayList<Long>();
+            var probedReader = segmentReader(recordingDepthOnGet(storage, depths), index);
+
+            sealOneEventSegments(MANY_SEGMENTS);
+            var events = probedReader.readEvents(STREAM, PARTITION, 0, MANY_SEGMENTS).await();
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(offsets(MANY_SEGMENTS)));
+            assertThat(depths).as("control: every segment was fetched through the probe").hasSize(MANY_SEGMENTS);
+            assertThat(depths.getLast() - depths.getFirst()).as("stack depth at the last segment's get relative to the first's")
+                                                              .isLessThan(MAX_DEPTH_GROWTH);
+        }
+
+        /// The suspended branch: a `get` that settles on another thread parks the loop, which resumes there.
+        @Test
+        void readEvents_readsEverySegmentInOrder_whenEachGetSettlesOffThread() {
+            var offThreadReader = segmentReader(settlingOffThread(storage, Option.none()), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = offThreadReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await();
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(offsets(SOME_SEGMENTS)));
+        }
+
+        @Test
+        void readEvents_failsTheWholeRead_whenAGetSettlingOffThreadFails() {
+            var failure = SegmentError.General.SEGMENT_DATA_NOT_FOUND;
+            var failingReader = segmentReader(settlingOffThread(storage, Option.some(failure)), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = failingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await();
+
+            events.onSuccess(list -> fail("a failed segment read must fail the whole read, not return " + list.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(failure));
+        }
+
+        private void sealOneEventSegments(int count) {
+            for (long offset = 0; offset < count; offset++) {
+                var serialized = serializeEvents(List.of(RawEvent.rawEvent(offset, ("e" + offset).getBytes(), offset)));
+
+                sink.seal(sealedSegment(STREAM, PARTITION, offset, offset, 1, offset, offset, serialized)).await();
+            }
+        }
+
+        private static List<Long> offsets(int count) {
+            return LongStream.range(0, count).boxed().toList();
+        }
+
+        /// The real storage, with the calling thread's stack depth recorded at every `get`.
+        private static StorageInstance recordingDepthOnGet(StorageInstance delegate, List<Long> depths) {
+            return proxy(delegate, (method, args) -> {
+                if (method.getName().equals("get")) {
+                    depths.add(StackWalker.getInstance().walk(Stream::count));
+                }
+
+                return Option.none();
+            });
+        }
+
+        /// The real storage, every `get` settling on a fresh virtual thread — or failing there with `failure`
+        /// once `FAILING_SEGMENT` gets have gone through.
+        private static StorageInstance settlingOffThread(StorageInstance delegate, Option<Cause> failure) {
+            var gets = new AtomicInteger();
+
+            return proxy(delegate, (method, args) -> {
+                if (!method.getName().equals("get")) {
+                    return Option.none();
+                }
+
+                var id = (BlockId) args[0];
+                var failing = failure.filter(_ -> gets.incrementAndGet() > FAILING_SEGMENT);
+
+                return Option.some(Promise.<Option<byte[]>> promise()
+                                          .async(promise -> failing.onPresent(cause -> promise.fail(cause))
+                                                                   .onEmpty(() -> delegate.get(id).onResult(promise::resolve))));
+            });
+        }
+
+        /// `intercept` answers a call itself or returns none to pass it to `delegate`.
+        private static StorageInstance proxy(StorageInstance delegate, BiFunction<Method, Object[], Option<Object>> intercept) {
+            return (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
+                                                            new Class<?>[]{StorageInstance.class},
+                                                            (_, method, args) -> intercept.apply(method, args)
+                                                                                          .or(() -> invoke(delegate, method, args)));
+        }
+
+        private static Object invoke(StorageInstance delegate, Method method, Object[] args) {
+            try {
+                return method.invoke(delegate, args);
+            } catch (InvocationTargetException e) {
+                throw new IllegalStateException(e.getCause());
+            } catch (IllegalAccessException e) {
+                throw new IllegalStateException(e);
+            }
         }
     }
 

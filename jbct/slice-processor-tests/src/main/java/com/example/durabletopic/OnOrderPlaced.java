@@ -12,6 +12,7 @@ import java.lang.annotation.Target;
 import org.pragmatica.aether.slice.Subscriber;
 import org.pragmatica.aether.slice.annotation.ResourceQualifier;
 
+
 /// Subscribes to the `order-events` topic, whose `resources.toml` section declares
 /// `durability = "durable"` — the precondition for the [org.pragmatica.aether.slice.topic.MessageContext]
 /// parameter shape (#386 D5).
