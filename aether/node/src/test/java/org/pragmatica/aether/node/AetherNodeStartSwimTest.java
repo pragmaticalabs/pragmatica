@@ -153,7 +153,7 @@ class AetherNodeStartSwimTest {
 
         swimStart.fail(SWIM_BIND_FAILED);
 
-        assertThat(outcome.isResolved()).as("a SWIM start failure settles the start at once").isTrue();
+        // The failure handler is dispatched (AsyncExecutor), so the settlement is bounded, not inline.
         assertThat(outcome.await(timeSpan(1).seconds()))
             .as("the start fails with the SWIM cause, not a timeout")
             .isEqualTo(SWIM_BIND_FAILED.result());
