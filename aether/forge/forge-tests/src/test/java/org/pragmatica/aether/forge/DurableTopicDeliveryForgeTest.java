@@ -245,7 +245,7 @@ class DurableTopicDeliveryForgeTest {
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
-               .until(this::allInstancesActiveOnDistinctNodes);
+               .untilAsserted(this::assertAllInstancesActiveOnDistinctNodes);
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -808,17 +808,28 @@ class DurableTopicDeliveryForgeTest {
                : 1;
     }
 
-    /// Every one of the [#INSTANCES] instances ACTIVE, each on a different node.
-    private boolean allInstancesActiveOnDistinctNodes() {
-        var activeNodes = cluster.slicesStatus()
-                                 .stream()
-                                 .filter(slice -> slice.artifact().equals(DURABLE_TOPIC_SLICE))
-                                 .flatMap(slice -> slice.instances().stream())
-                                 .filter(instance -> "ACTIVE".equals(instance.state()))
-                                 .map(EmberCluster.SliceInstanceStatus::nodeId)
-                                 .collect(Collectors.toSet());
+    /// Every one of the [#INSTANCES] instances ACTIVE, each on a different node. An assertion rather
+    /// than a boolean so a gate that times out names the states it saw: one run sat 4 minutes here after
+    /// a `forceActivatingToActive` at +90 s, and a bare `ConditionTimeoutException` said nothing.
+    private void assertAllInstancesActiveOnDistinctNodes() {
+        var instances = cluster.slicesStatus()
+                               .stream()
+                               .filter(slice -> slice.artifact().equals(DURABLE_TOPIC_SLICE))
+                               .flatMap(slice -> slice.instances().stream())
+                               .toList();
+        var activeNodes = instances.stream()
+                                   .filter(instance -> "ACTIVE".equals(instance.state()))
+                                   .map(EmberCluster.SliceInstanceStatus::nodeId)
+                                   .collect(Collectors.toSet());
 
-        return activeNodes.size() == INSTANCES;
+        assertThat(activeNodes).describedAs("all %d instances ACTIVE on distinct nodes before any arm publishes;"
+                                            .formatted(INSTANCES)
+                                            + " the cluster deployment map reports: "
+                                            + instances.stream()
+                                                       .map(instance -> instance.nodeId() + "=" + instance.state())
+                                                       .sorted()
+                                                       .toList())
+                               .hasSize(INSTANCES);
     }
 
     /// The `poison-events` half of the readiness gate. Its warm-up event WILL be dead-lettered by the
