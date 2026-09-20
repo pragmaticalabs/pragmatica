@@ -76,9 +76,9 @@ import static org.awaitility.Awaitility.await;
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DurableProjectionRebuildForgeTest {
-    private static final int BASE_PORT = 26500;
-    private static final int BASE_MGMT_PORT = 26600;
-    private static final int BASE_APP_HTTP_PORT = 26700;
+    private static final int BASE_PORT = 31600;
+    private static final int BASE_MGMT_PORT = 31700;
+    private static final int BASE_APP_HTTP_PORT = 31800;
     private static final int NODES = 3;
     private static final int INSTANCES = 3;
     private static final String PROJECTION_SLICE = TestArtifacts.DURABLE_PROJECTION_SLICE;
