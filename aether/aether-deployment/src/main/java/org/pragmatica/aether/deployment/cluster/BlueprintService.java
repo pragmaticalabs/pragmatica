@@ -462,7 +462,9 @@ class BlueprintServiceInstance implements BlueprintService {
                                                               boolean registerOnly) {
         return ensureMigrationOwnership(expanded.id(),
                                         migrations).flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
-                                       .flatMap(_ -> streamBindings(expanded.id(), resourcesConfig, roleHints))
+                                       .flatMap(_ -> streamBindings(expanded.id(),
+                                                                    resourcesConfig,
+                                                                    roleHints))
                                        .async()
                                        .flatMap(bindings -> applyAllCommands(expanded,
                                                                              bindings,
@@ -834,11 +836,12 @@ class BlueprintServiceInstance implements BlueprintService {
     /// rejections are unioned with them, de-duplicated because slices packaged from one module ship the
     /// same text. A gating failure in any declaration refuses the publish.
     private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId, List<Option<String>> declarations) {
-        return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList())
-                     .flatMap(_ -> derivedSliceBindings(blueprintId, declarations));
+        return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList()).flatMap(_ -> derivedSliceBindings(blueprintId,
+                                                                                                                                                        declarations));
     }
 
-    private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId, List<Option<String>> declarations) {
+    private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId,
+                                                               List<Option<String>> declarations) {
         return Result.allOf(declarations.stream()
                                         .flatMap(Option::stream)
                                         .map(toml -> streamBindings(blueprintId,
