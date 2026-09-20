@@ -28,6 +28,7 @@ import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.ConsumerCallback;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
@@ -645,7 +646,7 @@ public interface StreamConsumerManager {
             runtime.subscribe(key.streamName(),
                               key.partition(),
                               consumerConfigFor(key, declaration),
-                              callbackFor(declaration, bridge),
+                              callbackFor(key, declaration, bridge),
                               IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED)
                    .onSuccess(_ -> logAttached(key, declaration))
                    .onFailure(cause -> failAttach(key, cause));
@@ -675,8 +676,8 @@ public interface StreamConsumerManager {
                       cause.message());
         }
 
-        private ConsumerCallback callbackFor(ConsumerDeclaration declaration, SliceBridge bridge) {
-            return (_, payload, _) -> deliver(declaration, bridge, payload);
+        private ConsumerCallback callbackFor(SubscriptionKey key, ConsumerDeclaration declaration, SliceBridge bridge) {
+            return (offset, payload, _) -> deliver(key, declaration, bridge, offset, payload);
         }
 
         /// Durable-topic groups take the spec-cadence config (durable-pubsub-spec §6/§7 — 5
@@ -687,9 +688,13 @@ public interface StreamConsumerManager {
                    : ConsumerConfig.consumerConfig(declaration.consumerGroup());
         }
 
-        private Promise<Unit> deliver(ConsumerDeclaration declaration, SliceBridge bridge, byte[] payload) {
+        private Promise<Unit> deliver(SubscriptionKey key,
+                                      ConsumerDeclaration declaration,
+                                      SliceBridge bridge,
+                                      long offset,
+                                      byte[] payload) {
             return DurableTopicNames.isTopicStream(declaration.streamName())
-                   ? deliverTopicEvent(declaration, bridge, payload)
+                   ? deliverTopicEvent(key, declaration, offset, payload)
                    : bridge.decode(payload)
                            .flatMap(event -> invokeConsumer(declaration, event));
         }
@@ -700,11 +705,30 @@ public interface StreamConsumerManager {
         /// bridge, the same cross-slice type contract every RPC message already rides. The
         /// handler's promise is the ack — nothing else about delivery differs from a declarative
         /// consumer, which is the point of the option-(a) reuse.
-        private Promise<Unit> deliverTopicEvent(ConsumerDeclaration declaration, SliceBridge bridge, byte[] rawEvent) {
+        ///
+        /// #1295: the delivery carries its [MessageContext] — the envelope's `messageId` (the §8
+        /// idempotency key), the topic address, and the partition and offset it was read from. The
+        /// subscribing slice's bridge decodes the payload and hands a context-carrying (2-arg) subscriber
+        /// `contextualEvent(event, context)`, a 1-arg subscriber the bare event. The invocation is LOCAL by
+        /// construction ([SliceInvoker#invokeLocalWithContext] never forwards), which is what lets the
+        /// context stay an in-process value.
+        private Promise<Unit> deliverTopicEvent(SubscriptionKey key,
+                                                ConsumerDeclaration declaration,
+                                                long offset,
+                                                byte[] rawEvent) {
             return Result.lift(() -> nodeCodec.<TopicEventEnvelope> decode(rawEvent))
                          .async()
-                         .flatMap(envelope -> bridge.decode(envelope.payload()))
-                         .flatMap(event -> invokeConsumer(declaration, event));
+                         .flatMap(envelope -> invoker.invokeLocalWithContext(declaration.artifact(),
+                                                                             declaration.methodName(),
+                                                                             envelope.payload(),
+                                                                             contextOf(key, offset, envelope)));
+        }
+
+        private static MessageContext contextOf(SubscriptionKey key, long offset, TopicEventEnvelope envelope) {
+            return MessageContext.messageContext(envelope.messageId(),
+                                                 DurableTopicNames.topicAddressOf(key.streamName()),
+                                                 key.partition(),
+                                                 offset);
         }
 
         private Promise<Unit> invokeConsumer(ConsumerDeclaration declaration, Object event) {

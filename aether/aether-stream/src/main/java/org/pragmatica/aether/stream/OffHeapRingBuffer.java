@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -33,6 +34,18 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
+/// Off-heap ring of `capacity` index slots over a growable data region, on a shared arena.
+///
+/// Concurrency model (#1340): readers take no lock. They snapshot tail/head, copy, and validate the copy
+/// against the tail AFTER copying ([#retainedAfterCopy]); the writer publishes an advanced tail with a
+/// store-store fence before overwriting the freed slot ([#evictOldest]) and a new head with a release
+/// fence after the slot's stores ([#updateHeaderAfterAppend]). That protocol is sound for ONE appender
+/// per ring at a time: two concurrent `append`s would both read the same tail in
+/// [#countEvictionsForSpace], both store `tail + 1`, lose one eviction, and land the second write on a
+/// slot the tail still claims — a torn read the post-copy check cannot see. The single appender is
+/// `appendLock` (#1258): every header-writing path — `append`, `appendOrdered`, `appendBatch`,
+/// `seedHead` and the retention sweeps via [#guardedSweep] — runs inside `synchronized (appendLock)`,
+/// and `StreamPartitionManager.appendToPartition` reaches the ring only through `appendOrdered`.
 public final class OffHeapRingBuffer implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(OffHeapRingBuffer.class);
     /// Empty-ring encoding reported when a native read is refused (#999): allocation seeds
@@ -47,6 +60,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private static final long HEADER_DATA_WRITE_POS = 24;
     private static final long HEADER_DATA_SIZE = 32;
     private static final long HEADER_CAPACITY = 40;
+    /// Absolute (never wrapped) data position of the tail record's first byte; advances by the evicted
+    /// record's length in [#evictOldest]. `dataWritePos() - dataTailPos()` is the exact live byte count
+    /// (#1340 review M-1: reconstructing it from two ring-relative positions reads an EXACTLY full ring,
+    /// `headEnd == tailDataPos`, as empty).
+    private static final long HEADER_DATA_TAIL_POS = 48;
     private static final long HEADER_SIZE = 64;
     private static final long INDEX_ENTRY_SIZE = 24;
     private static final long INDEX_DATA_OFFSET = 0;
@@ -303,6 +321,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, 0L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, 0L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, 0L);
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_TAIL_POS, 0L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_SIZE, dataRegionSize);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_CAPACITY, capacity);
 
@@ -544,9 +563,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (base < 0 || currentHead != -1) {
             return new StreamError.SeedRejected(base, currentHead).result();
         }
-
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, base);
+        // Tail first, then fence, then head — as evictOldest orders it: a reader that saw head = base
+        // before tail = base + 1 would pass both range checks for an offset in [0, base] and copy an
+        // unwritten slot (#1340 review N-4).
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, base + 1);
+        VarHandle.storeStoreFence();
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, base);
         lastSealedOffset = base;
 
         return unitResult();
@@ -678,7 +700,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_EMPTY.result();
         }
 
-        return readSliceAtOffset(offset);
+        VarHandle.acquireFence();
+
+        return readSliceAtOffset(offset).flatMap(slice -> retainedAfterCopy(offset, slice));
     }
 
     @Contract
@@ -717,17 +741,46 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         var count = (int) Math.min(maxEvents, head - fromOffset + 1);
 
-        return readEvents(fromOffset, count);
+        VarHandle.acquireFence();
+
+        return retainedAfterCopy(fromOffset, readEvents(fromOffset, count));
     }
 
-    private Result<List<RawEvent>> readEvents(long fromOffset, int count) {
+    private List<RawEvent> readEvents(long fromOffset, int count) {
         var events = new ArrayList<RawEvent>(count);
 
         for (long offset = fromOffset; offset < fromOffset + count; offset++) {
             events.add(readSingleEvent(offset));
         }
 
-        return success(List.copyOf(events));
+        return List.copyOf(events);
+    }
+
+    /// Seqlock validation of a copy against a concurrent eviction (#1340). Readers take no lock: the
+    /// tail check at the top of [#readChecked] / [#readSliceChecked] is a snapshot, and a writer wrapping
+    /// the ring advances the tail past `fromOffset` and overwrites that slot with the record of
+    /// `fromOffset + capacity` while the copy is in flight. The copy then holds the NEWER record under
+    /// the REQUESTED offset's label — well-formed, decodable, and another offset's data (measured at
+    /// rc4: 3,499 of 23,984 tail reads on a 64-slot ring, `OffHeapRingBufferReadEvictionRaceTest`).
+    ///
+    /// The re-read decides AFTER the bytes are copied: if the tail has moved past `fromOffset`, some slot
+    /// of the copy may have been reclaimed under it, and the whole read fails `CursorExpired` — the same
+    /// typed refusal a read that arrived after the eviction gets, so every caller already handles it
+    /// (`PartitionedStreamAccess.handleReadFailure` reroutes to the sealed tier). What makes the check a
+    /// guarantee rather than an x86 accident is the fence pairing: [#evictOldest] publishes the new tail
+    /// with a store-store fence BEFORE the slot is overwritten, and the reader's acquire fence here
+    /// orders the copy's loads BEFORE the tail re-read. So a copy that observed the overwrite cannot
+    /// observe the old tail. Holding the slot instead would put a lock on a path that has never had one
+    /// and serialise every reader against the writer; the re-check keeps readers lock-free.
+    private <T> Result<T> retainedAfterCopy(long fromOffset, T copy) {
+        VarHandle.acquireFence();
+        var tailAfterCopy = rawTailOffset();
+
+        if (tailAfterCopy > fromOffset) {
+            return new StreamError.CursorExpired(fromOffset, tailAfterCopy).result();
+        }
+
+        return success(copy);
     }
 
     /// Guarded header reads (#999). See [#guardedRead] for why a `long`-returning accessor needs a
@@ -1138,6 +1191,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS);
     }
 
+    private long dataTailPos() {
+        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_DATA_TAIL_POS);
+    }
+
+    /// Bytes of the data region held by live records — exact, whatever the ring's wrap state.
+    private long liveDataBytes() {
+        return dataWritePos() - dataTailPos();
+    }
+
     /// Current wrap modulus of the logical data ring = the live allocated data bytes. While the
     /// region is still growing this is raised before each write to cover it (so writes never wrap
     /// below cap); once a stream can no longer grow (EVENTUAL pool-exhausted) it stays fixed and the
@@ -1226,7 +1288,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         controlSegment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP, timestamp);
     }
 
+    /// The slot's data and index stores must be visible before the head that publishes it (#1340): a
+    /// reader that sees `newHeadOffset` copies that slot next, and without the release fence it could
+    /// read the index entry the slot held `capacity` offsets ago — the head-side twin of the tail race.
     private void updateHeaderAfterAppend(long newHeadOffset, int payloadLength) {
+        VarHandle.releaseFence();
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, newHeadOffset);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() + payloadLength);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() + 1);
@@ -1241,6 +1307,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var eventBytes = readDataBytes(dataPos, dataLen);
 
         return RawEvent.rawEvent(offset, eventBytes, timestamp);
+    }
+
+    private long dataLengthAt(long slotIndex) {
+        var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
+
+        return controlSegment.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
     }
 
     private long readTimestamp(long slotIndex) {
@@ -1259,47 +1331,27 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var count = 0L;
         var simulatedTail = rawTailOffset();
         var simulatedCount = rawEventCount();
+        var simulatedLive = liveDataBytes();
 
         while (simulatedCount >= capacity) {
+            simulatedLive -= dataLengthAt(Math.floorMod(simulatedTail, capacity));
             simulatedTail++;
             simulatedCount--;
             count++;
         }
-
-        while (simulatedCount > 0 && wouldNeedDataEviction(payloadLength, simulatedTail)) {
+        // Data-region pressure is measured against the **allocated** data bytes, not the cap: an
+        // EVENTUAL stream that could not grow (pool exhausted) must evict to fit within what it has.
+        // While the region can still grow (allocated < cap) growth covers the write, so this loop is a
+        // no-op. See spec §4.2. The live count is exact (write position minus tail position), so a ring
+        // that is EXACTLY full evicts before the write lands on its tail record (#1340 review M-1).
+        while (simulatedCount > 0 && simulatedLive + payloadLength > allocatedDataBytes) {
+            simulatedLive -= dataLengthAt(Math.floorMod(simulatedTail, capacity));
             simulatedTail++;
             simulatedCount--;
             count++;
         }
 
         return count;
-    }
-
-    /// Data-region pressure is measured against the **allocated** data bytes, not the cap: an
-    /// EVENTUAL stream that could not grow (pool exhausted) must evict to fit within what it has.
-    /// While the region can still grow (allocated < cap) growth covers the write, so eviction is a
-    /// no-op here. See spec §4.2.
-    private boolean wouldNeedDataEviction(int payloadLength, long simulatedTail) {
-        var head = rawHeadOffset();
-
-        if (simulatedTail > head) {
-            return false;
-        }
-
-        var tailSlot = Math.floorMod(simulatedTail, capacity);
-        var headSlot = Math.floorMod(head, capacity);
-        var tailDataPos = controlSegment.get(ValueLayout.JAVA_LONG,
-                                             indexStart + tailSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-        var headDataPos = controlSegment.get(ValueLayout.JAVA_LONG,
-                                             indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-        var headDataLen = controlSegment.get(ValueLayout.JAVA_INT,
-                                             indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_LENGTH);
-        var headEnd = headDataPos + headDataLen;
-        var used = (headEnd >= tailDataPos)
-                   ? headEnd - tailDataPos
-                   : (dataRing() - tailDataPos) + headEnd;
-
-        return used + payloadLength > allocatedDataBytes;
     }
 
     private void evictOldest() {
@@ -1311,6 +1363,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, tail + 1);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() - 1);
+        controlSegment.set(ValueLayout.JAVA_LONG,
+                           HEADER_DATA_TAIL_POS,
+                           dataTailPos() + dataLengthAt(Math.floorMod(tail, capacity)));
+        // The new tail must be visible before the slot it frees is overwritten — the writer half of
+        // the reader's post-copy check in retainedAfterCopy (#1340).
+        VarHandle.storeStoreFence();
     }
 
     private void evictByCount(long maxCount) {
@@ -1387,27 +1445,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private long countEvictionsBySize(long maxBytes) {
         var count = 0L;
-        var simulatedTail = rawTailOffset();
+        var tail = rawTailOffset();
         var head = rawHeadOffset();
+        var live = liveDataBytes();
 
-        while (simulatedTail + count <= head) {
-            var tailSlot = Math.floorMod(simulatedTail + count, capacity);
-            var headSlot = Math.floorMod(head, capacity);
-            var tailDataPos = controlSegment.get(ValueLayout.JAVA_LONG,
-                                                 indexStart + tailSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-            var headDataPos = controlSegment.get(ValueLayout.JAVA_LONG,
-                                                 indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-            var headDataLen = controlSegment.get(ValueLayout.JAVA_INT,
-                                                 indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_LENGTH);
-            var headEnd = headDataPos + headDataLen;
-            var used = (headEnd >= tailDataPos)
-                       ? headEnd - tailDataPos
-                       : (dataRing() - tailDataPos) + headEnd;
-
-            if (used <= maxBytes) {
-                break;
-            }
-
+        while (tail + count <= head && live > maxBytes) {
+            live -= dataLengthAt(Math.floorMod(tail + count, capacity));
             count++;
         }
 
