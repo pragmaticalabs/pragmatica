@@ -1031,10 +1031,11 @@ class StreamConsumerManagerTest {
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
-        /// rev1272 F7 follow-up: the "not started, retrying its cursor fetch" state reaches the
-        /// per-partition status the declarative-consumers route renders.
+        /// #1266 and rev1272 F7 follow-up: every non-delivering state reaches the per-partition status
+        /// the declarative-consumers route renders, each from its OWN snapshot field — set one at a time
+        /// so a swapped or dropped mapping shows.
         @Test
-        void statuses_carryAwaitingCursorFetch_fromTheSnapshot() {
+        void statuses_carryEachNonDeliveringState_fromItsOwnSnapshotField() {
             declareStringConsumer();
             deploySliceLocally();
             ownership.ownedBySelf(0);
@@ -1042,14 +1043,30 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-            runtime.awaitingCursorFetch(true);
+            runtime.states(true, false, false);
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
-                                                     .satisfies(cursor -> assertThat(cursor.awaitingCursorFetch()).isTrue()));
-            runtime.awaitingCursorFetch(false);
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isTrue();
+                                                                                                 assertThat(cursor.retryInFlight()).isFalse();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isFalse();
+                                                                                             }));
+            runtime.states(false, true, false);
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
-                                                     .satisfies(cursor -> assertThat(cursor.awaitingCursorFetch()).isFalse()));
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isFalse();
+                                                                                                 assertThat(cursor.retryInFlight()).isTrue();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isFalse();
+                                                                                             }));
+            runtime.states(false, false, true);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isFalse();
+                                                                                                 assertThat(cursor.retryInFlight()).isFalse();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isTrue();
+                                                                                             }));
         }
 
         @Test
@@ -1145,13 +1162,17 @@ class StreamConsumerManagerTest {
 
         private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
         private int subscribeCalls;
+        private volatile boolean deadLetterHold;
+        private volatile boolean retryHold;
         private volatile boolean awaitingCursorFetch;
         // Runs on the unsubscribing thread after each unsubscribe — lets a test trigger a pass from INSIDE
         // the stop sweep, while that thread holds the pass lock. Inert by default.
         private volatile Runnable afterUnsubscribe = () -> {};
 
-        void awaitingCursorFetch(boolean awaiting) {
-            awaitingCursorFetch = awaiting;
+        void states(boolean deadLetter, boolean retry, boolean awaitingFetch) {
+            deadLetterHold = deadLetter;
+            retryHold = retry;
+            awaitingCursorFetch = awaitingFetch;
         }
 
         List<Integer> subscribedPartitions() {
@@ -1220,6 +1241,8 @@ class StreamConsumerManagerTest {
                                                                        false,
                                                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
                                                                        Option.none(),
+                                                                       deadLetterHold,
+                                                                       retryHold,
                                                                        awaitingCursorFetch))
                                 .toList();
         }

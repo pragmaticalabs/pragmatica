@@ -27,6 +27,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -54,6 +55,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// rather than holding the node. [design intent — unverified: 5s is not derived from a measured
     /// commit-latency distribution, it is a judgment call reviewed and accepted for this fix].
     private static final TimeSpan CURSOR_COMMIT_SHUTDOWN_BOUND = timeSpan(5).seconds();
+    /// #1266: bound on one dead-letter append. The partition's loop is HELD while the append is
+    /// unresolved, so an append that never settles (a replication barrier that never answers) would hold
+    /// it forever; a timed-out append takes the same retry-with-backoff path as a failed one. A timed-out
+    /// append can still land later, and the retry then writes a SECOND entry for the same event: the DLQ
+    /// is at-least-once per event and duplicates are possible. Nothing deduplicates them today —
+    /// `DeadLetterEntry` carries no messageId; `DlqEnvelope.messageId` is only a candidate key, and only
+    /// for topic streams. 30s matches the declarative handler timeout and the consensus apply timeout.
+    /// [design intent — unverified: not derived from a measured DLQ-append latency.]
+    static final TimeSpan DEAD_LETTER_APPEND_TIMEOUT = timeSpan(30).seconds();
+    private static final Cause NULL_PROMISE = Causes.cause("Foreign call returned null instead of a promise");
     /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
     /// commits apart, and a detach flush cancels the consumer before it is issued.
     /// rev1272 F6: bound on one PERIODIC cursor commit. With one periodic commit in flight per consumer, a
@@ -72,6 +83,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private final Option<ConsumerCursorStore> cursorStore;
     private final Option<TransactionalCursorCommit> transactionalCommit;
     private final PartitionReader reader;
+    private final TimeSpan deadLetterAppendTimeout;
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
@@ -118,11 +130,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          Option<ConsumerCursorStore> cursorStore,
                          Option<TransactionalCursorCommit> transactionalCommit,
                          PartitionReader reader) {
+        this(partitionManager, dlHandler, cursorStore, transactionalCommit, reader, DEAD_LETTER_APPEND_TIMEOUT);
+    }
+
+    /// Package-private seam: the dead-letter append bound, shortened by [StreamConsumerRuntimeTest].
+    ConsumerRuntimeState(StreamPartitionManager partitionManager,
+                         DeadLetterHandler dlHandler,
+                         Option<ConsumerCursorStore> cursorStore,
+                         Option<TransactionalCursorCommit> transactionalCommit,
+                         PartitionReader reader,
+                         TimeSpan deadLetterAppendTimeout) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
         this.cursorStore = cursorStore;
         this.transactionalCommit = transactionalCommit;
         this.reader = reader;
+        this.deadLetterAppendTimeout = deadLetterAppendTimeout;
         this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::periodicConsumerCheck,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
@@ -177,6 +200,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                         state.isStalled(),
                                         state.idlePolicy(),
                                         state.lastCursorCommitFailure(),
+                                        state.isDeadLetterInFlight(),
+                                        state.isRetryInFlight(),
                                         state.isAwaitingCursorFetch());
     }
 
@@ -924,10 +949,19 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// Flattens a promise-returning call whose synchronous throw must surface as a failed promise — the
     /// `Result.lift(...).async().flatMap(...)` idiom `StreamConsumerManager` uses for the topic-envelope
     /// decode.
+    ///
+    /// #1266 review: a foreign call that returns `null` instead of a promise is a failure of that call
+    /// too — a handler returning `null` is a failed delivery (retry, then dead-letter), never a null that
+    /// blows up later inside the pass.
     private static <T> Promise<T> lifted(Functions.ThrowingFn0<Promise<T>> call) {
         return Result.lift(call)
+                     .flatMap(ConsumerRuntimeState::nonNullPromise)
                      .async()
                      .flatMap(promise -> promise);
+    }
+
+    private static <T> Result<Promise<T>> nonNullPromise(Promise<T> promise) {
+        return option(promise).toResult(NULL_PROMISE);
     }
 
     private Promise<Unit> deliveryOutcome(ConsumerKey key,
@@ -1083,21 +1117,31 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              int attemptCount,
                                              int appendAttempt) {
         state.markDeadLetterInFlight();
-        dlHandler.append(key.streamName(),
-                         key.partition(),
-                         event.offset(),
-                         key.groupId(),
-                         event.data(),
-                         errorMessage,
-                         attemptCount)
-                 .onSuccess(_ -> completeDeadLetter(key, state, event))
-                 .onFailure(cause -> retryDeadLetterAppend(key,
-                                                           state,
-                                                           event,
-                                                           errorMessage,
-                                                           attemptCount,
-                                                           appendAttempt,
-                                                           cause));
+        appendDeadLetter(key, event, errorMessage, attemptCount).onSuccess(_ -> completeDeadLetter(key, state, event))
+                        .onFailure(cause -> retryDeadLetterAppend(key,
+                                                                  state,
+                                                                  event,
+                                                                  errorMessage,
+                                                                  attemptCount,
+                                                                  appendAttempt,
+                                                                  cause));
+    }
+
+    /// #1266: lifted and bounded. A sink that THROWS synchronously used to escape before the callbacks
+    /// above were attached, and one whose append never settles held the loop with no timeout — either way
+    /// the dead-letter hold was never released and the partition wedged silently and permanently. Both
+    /// now arrive as a failure on the returned promise and take [#retryDeadLetterAppend].
+    private Promise<Unit> appendDeadLetter(ConsumerKey key,
+                                           OffHeapRingBuffer.RawEvent event,
+                                           String errorMessage,
+                                           int attemptCount) {
+        return lifted(() -> dlHandler.append(key.streamName(),
+                                             key.partition(),
+                                             event.offset(),
+                                             key.groupId(),
+                                             event.data(),
+                                             errorMessage,
+                                             attemptCount)).timeout(deadLetterAppendTimeout);
     }
 
     private void completeDeadLetter(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
@@ -1471,8 +1515,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         @Contract
+        /// Also releases the delivery holds (#1266 review): a cancelled consumer delivers nothing, so the
+        /// holds would only mislead — every outcome, cancellation included, ends with both clear.
         void cancel() {
             cancelled.set(true);
+            retryInFlight.set(false);
+            deadLetterInFlight.set(false);
             option(future).onPresent(f -> f.cancel(false));
         }
 
