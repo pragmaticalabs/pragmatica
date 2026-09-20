@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 
@@ -141,6 +142,7 @@ public final class PartitionWal implements AutoCloseable {
     private volatile long syncedOffset;  // last offset covered by a successful force (#1234); guarded by syncLock
     private volatile long truncatedUpto = -1;  // in-memory discard watermark
     private volatile long lastCompactedUpto = -1;  // last physical compaction point
+    private final AtomicLong commitRequests = new AtomicLong();  // group commits requested, any thread
     private volatile long fsyncCount;  // group commits completed; guarded by syncLock
     private volatile long fsyncTotalNanos;  // guarded by syncLock
     private volatile long fsyncMaxNanos;  // guarded by syncLock
@@ -185,7 +187,17 @@ public final class PartitionWal implements AutoCloseable {
     /// covering it has completed, sharing that fsync with every write queued before it. Runs on the
     /// async executor, so a caller can release its own ordered section before the fsync.
     public Promise<Unit> commit(long writeSeq) {
+        commitRequests.incrementAndGet();
+
         return promise(() -> groupCommit(writeSeq));
+    }
+
+    /// Group commits REQUESTED since open — every [#commit] call, counted before it runs. `stats()`'s
+    /// `fsyncCount` is how many `force` calls those requests turned into; the gap is coalescing under
+    /// `syncLock`, which is why a request count is the only measurement a "one commit per batch"
+    /// contract can be pinned on: N per-record requests may cost anywhere from 1 to N fsyncs (#1244).
+    public long commitRequests() {
+        return commitRequests.get();
     }
 
     /// Replay records in file order, skipping `offset <= afterOffset` (and any discarded by a lazy
