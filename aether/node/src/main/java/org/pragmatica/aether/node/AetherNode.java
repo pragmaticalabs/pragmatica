@@ -4255,12 +4255,13 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                                  streamConsumerManager::onCheckpointPut));
         // #1333: what a slice's ProjectionRuntime resource needs from the node — the registry above and
-        // the replay cursor's collaborators (partition bounds from the local ring, the fenced checkpoint
-        // put, the committed read-back). Registered beside the entity drivers, as one extension.
+        // the replay cursor's collaborators (partition bounds from the local ring or forwarded to the owner
+        // through the read router, the fenced checkpoint put, the committed read-back). Registered beside
+        // the entity drivers, as one extension.
         var projectionNodeSupport = ProjectionNodeSupport.projectionNodeSupport(projectionRegistry,
                                                                                 streamClusterCursorStore::reportFailureCount,
                                                                                 streamConsumerOwnership::partitionCount,
-                                                                                PartitionBounds.localOnly(streamPartitionManager),
+                                                                                PartitionBounds.routed(streamReadRouter),
                                                                                 cursorCommandWriter,
                                                                                 committedCursorReader);
 

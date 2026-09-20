@@ -127,6 +127,22 @@ public final class StreamReadRouter {
         return readRouters.get(preference);
     }
 
+    /// #1333: the consumer-visible bounds of a partition, answered the way a GOVERNOR read is served —
+    /// from this node's ring when it is materialised here (owner or replica), else forwarded to the
+    /// resolved HRW owner, whose `ReadForwardResponse` carries them. Fails when there is no ring here, no
+    /// owner is resolvable, or no forward client is wired — a rebuild must refuse rather than guess.
+    public Promise<VisibleBounds> bounds(String streamName, int partition) {
+        return partitionManager.visibleBounds(streamName, partition)
+                               .map(Promise::success)
+                               .or(() -> forwardBounds(streamName, partition));
+    }
+
+    private Promise<VisibleBounds> forwardBounds(String streamName, int partition) {
+        return Option.all(forwardClient, ownerResolver.resolve(streamName, partition))
+                     .map((client, owner) -> client.boundsRemote(owner, streamName, partition))
+                     .or(StreamError.General.PARTITION_NOT_LOCAL::promise);
+    }
+
     /// #1264: one router per {@link ReadPreference}, built ONCE as the constructor's last step from
     /// `final` fields only — `read` varies the preference per call, so the routers are keyed by it
     /// rather than rebuilt per read. What is cached is the mechanism, never the answer: the owner

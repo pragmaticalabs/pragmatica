@@ -47,6 +47,7 @@ import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
 import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
@@ -172,7 +173,7 @@ class DurableProjectionRebuildTest {
         support = ProjectionNodeSupport.projectionNodeSupport(registry,
                                                               hook::reportFailureCount,
                                                               _ -> Option.some(1),
-                                                              PartitionBounds.localOnly(partitions),
+                                                              PartitionBounds.routed(StreamReadRouter.localOnly(partitions)),
                                                               this::apply,
                                                               this::committed);
         projection = support.attach(ARTIFACT.base(),

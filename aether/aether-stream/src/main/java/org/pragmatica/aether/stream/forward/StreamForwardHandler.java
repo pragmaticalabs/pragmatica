@@ -13,6 +13,7 @@ import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
@@ -297,12 +298,16 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                  errorMessage);
     }
 
+    /// #1333: every successful answer carries this node's visible bounds of the partition, read AFTER
+    /// the events so the head is never behind the last event served.
     @Contract
     private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events) {
         var capped = applyCap(events);
+        var bounds = partitionManager.visibleBounds(request.streamName(), request.partition())
+                                     .or(VisibleBounds::absent);
         var response = capped.truncated()
-                       ? ReadForwardResponse.truncatedResponse(selfNodeId, request.correlationId(), capped.events())
-                       : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events());
+                       ? ReadForwardResponse.truncatedResponse(selfNodeId, request.correlationId(), capped.events(), bounds)
+                       : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events(), bounds);
 
         if (capped.truncated()) {
             metrics.recordTruncated();

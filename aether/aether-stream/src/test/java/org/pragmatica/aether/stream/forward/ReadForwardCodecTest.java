@@ -5,7 +5,12 @@
 package org.pragmatica.aether.stream.forward;
 
 import org.junit.jupiter.api.Test;
+import java.util.List;
+
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.lang.Option;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
@@ -49,6 +54,44 @@ class ReadForwardCodecTest {
         var catchup = readForward(SENDER, "corr-3", "orders", 3, 42L, 100, false, true);
 
         assertThat(roundTrip(consumer)).isNotEqualTo(roundTrip(catchup));
+    }
+
+    /// #1333: the response grew two longs (the serving node's visible bounds). The rewound-looking values
+    /// are the discriminating ones — a codec that dropped both components would still round-trip the
+    /// `-1/-1` absent form to an equal record.
+    @Test
+    void readForwardResponse_roundTrips_withTheVisibleBounds() {
+        var original = ReadForwardResponse.successResponse(SENDER,
+                                                           "corr-4",
+                                                           List.of(new RawEventDto(41L, 1_700_000_000_000L, new byte[] {1, 2})),
+                                                           VisibleBounds.visibleBounds(3L, 41L));
+        var decoded = roundTripResponse(original);
+
+        assertThat(decoded.earliestRetained()).isEqualTo(3L);
+        assertThat(decoded.visibleHead()).isEqualTo(41L);
+        assertThat(decoded.bounds()).isEqualTo(Option.some(VisibleBounds.visibleBounds(3L, 41L)));
+        assertThat(decoded.events()).hasSize(1);
+        assertThat(decoded.success()).isTrue();
+    }
+
+    @Test
+    void readForwardResponse_absentBounds_decodeToNone() {
+        var failure = roundTripResponse(ReadForwardResponse.failureResponse(SENDER, "corr-5", "nope"));
+        var noRing = roundTripResponse(ReadForwardResponse.successResponse(SENDER, "corr-6", List.of()));
+
+        assertThat(failure.bounds()).isEqualTo(Option.none());
+        assertThat(noRing.bounds()).isEqualTo(Option.none());
+        assertThat(roundTripResponse(ReadForwardResponse.successResponse(SENDER, "corr-7", List.of(), VisibleBounds.visibleBounds(0L, -1L))).bounds())
+                .as("an empty ring (tail 0, nothing visible) is a real answer, not absence")
+                .isEqualTo(Option.some(VisibleBounds.visibleBounds(0L, -1L)));
+    }
+
+    private static ReadForwardResponse roundTripResponse(ReadForwardResponse original) {
+        var buffer = Unpooled.buffer();
+
+        CODEC.write(buffer, original);
+
+        return CODEC.read(buffer);
     }
 
     private static ReadForward roundTrip(ReadForward original) {
