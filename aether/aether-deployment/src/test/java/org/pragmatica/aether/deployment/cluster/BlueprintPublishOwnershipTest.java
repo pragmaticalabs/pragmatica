@@ -970,6 +970,50 @@ class BlueprintPublishOwnershipTest {
             assertThat(cluster.batches).as("nothing may be applied when the bindings cannot be derived").isEmpty();
         }
 
+        /// #1336 — one invalid `[streams.*]` section must cost only ITS binding. At the rc4 tip
+        /// `BlueprintService.streamBindings` folded the validator's all-or-nothing result with
+        /// `.or(List.of())`, so `audit-events` declaring both `source` and `version` emptied the whole
+        /// bindings entry and `order-events`, declared correctly beside it, vanished with it.
+        @Test
+        void publish_bindsTheValidStream_whenAnotherStreamIsInvalid() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, ONE_VALID_ONE_INVALID),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, ONE_VALID_ONE_INVALID)));
+
+            publishBody(repository).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(boundAddresses(store))
+                    .as("#1336: the valid `order-events` binding must survive the invalid `audit-events` section beside it")
+                    .containsExactly(ORDER_EVENTS + "=" + NAMESPACE + ":" + ORDER_EVENTS + ":1.0.0");
+        }
+
+        @Test
+        void publishFromArtifact_bindsTheValidStream_whenAnotherStreamIsInvalid() {
+            var artifactPathStore = new TestKVStore();
+
+            BlueprintService.blueprintService(new TestClusterNode(artifactPathStore),
+                                              artifactPathStore,
+                                              streamAppRepository(),
+                                              artifactStore(streamAppBlueprintJar(ONE_VALID_ONE_INVALID)))
+                            .publishFromArtifact(STREAM_APP_COORDS + ":blueprint")
+                            .await()
+                            .onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(boundAddresses(artifactPathStore))
+                    .as("#1336: the artifact path must keep the valid `order-events` binding beside the invalid section")
+                    .containsExactly(ORDER_EVENTS + "=" + NAMESPACE + ":" + ORDER_EVENTS + ":1.0.0");
+        }
+
+        /// `order-events` is a well-formed owned stream; `audit-events` trips the parser's
+        /// `version-and-source-mutually-exclusive` rule, which names exactly that one section.
+        private static final String ONE_VALID_ONE_INVALID = """
+                [streams.order-events]
+                partitions = 1
+
+                [streams.audit-events]
+                source = "org.example.other:audit-events:1.0.0"
+                version = "1.0.0"
+                """;
+
         private Result<ExpandedBlueprint> publishBody(Repository repository) {
             return BlueprintService.blueprintService(cluster, store, repository)
                                    .publish(STREAM_APP_DSL)
@@ -1076,11 +1120,15 @@ class BlueprintPublishOwnershipTest {
         }
 
         private static byte[] streamAppBlueprintJar() {
+            return streamAppBlueprintJar(MODULE_STREAMS);
+        }
+
+        private static byte[] streamAppBlueprintJar(String resourcesToml) {
             var bytes = new ByteArrayOutputStream();
 
             try (var zip = new ZipOutputStream(bytes)) {
                 writeEntry(zip, "META-INF/blueprint.toml", STREAM_APP_DSL);
-                writeEntry(zip, "META-INF/resources.toml", MODULE_STREAMS);
+                writeEntry(zip, "META-INF/resources.toml", resourcesToml);
             } catch (IOException e) {
                 throw new IllegalStateException("Failed to build test blueprint jar", e);
             }
