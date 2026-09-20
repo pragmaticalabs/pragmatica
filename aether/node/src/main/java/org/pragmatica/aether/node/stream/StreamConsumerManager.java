@@ -5,11 +5,13 @@
 package org.pragmatica.aether.node.stream;
 
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -26,6 +28,7 @@ import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.ConsumerCallback;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
@@ -88,12 +91,15 @@ import org.slf4j.LoggerFactory;
 /// case is reported loudly and appears in [#statuses] as `unassignedPartitions`.
 public interface StreamConsumerManager {
     /// Re-evaluate what this node should consume and apply the difference. Idempotent; safe to call
-    /// from the periodic tick and from a registration change.
+    /// from the periodic tick and from a registration change. Passes never overlap (#1267): a call
+    /// arriving while a pass is in flight waits for it, and every call that waited is covered by ONE
+    /// follow-up pass that reads the state as of after those calls were made.
     @Contract
     void reconcile();
 
     /// Unsubscribe everything (flushing cursors) — called from node stop, before the partition
-    /// manager closes.
+    /// manager closes. Waits for a pass already in flight, and no pass runs after it, so nothing is
+    /// attached once it returns.
     @Contract
     void stop();
 
@@ -278,6 +284,9 @@ public interface StreamConsumerManager {
         private final TimeSpan handlerTimeout;
         private final Map<SubscriptionKey, ConsumerDeclaration> active = new ConcurrentHashMap<>();
         private final Map<String, Diagnosis> diagnoses = new ConcurrentHashMap<>();
+        private final AtomicBoolean passRequested = new AtomicBoolean();
+        private final AtomicBoolean stopped = new AtomicBoolean();
+        private final Object passLock = new Object();
 
         ManagerState(StreamConsumerRegistry registry,
                      StreamConsumerRuntime runtime,
@@ -305,16 +314,41 @@ public interface StreamConsumerManager {
             reconcile();
         }
 
+        /// #1267: the periodic tick and the registration-change listener call this on different
+        /// threads. Unserialized, a pass that read the declarations before a registration landed could
+        /// finish after the listener's pass attached that registration's partitions, and its
+        /// `dropStale` would detach them until the next tick. So one pass runs at a time: a trigger
+        /// records itself in `passRequested` BEFORE queuing on `passLock`, and whichever thread next
+        /// holds the lock runs one pass on behalf of every trigger recorded so far — later entrants
+        /// find the request already consumed and return. The pass reads its snapshot after consuming
+        /// the request, so it sees every state change that preceded those triggers. A monitor, not a
+        /// flag-only gate, so a pass that throws still releases it and cannot wedge reconciliation.
+        ///
+        /// A pass that finds the manager stopped attaches nothing; see [#stop].
         @Contract
         @Override
         public void reconcile() {
+            passRequested.set(true);
+            synchronized (passLock) {
+                if (passRequested.getAndSet(false) && !stopped.get()) {
+                    runPass();
+                }
+            }
+        }
+
+        /// #1267: ONE declaration snapshot per pass. The desired set, the collision check and the
+        /// key->declaration resolution all read it — previously resolution re-collected every
+        /// declaration once per desired key, and mixed snapshots within a pass.
+        @Contract
+        private void runPass() {
             var declarations = allDeclarations();
-            var collisions = collidingGroups(declarations);
+            var byGroup = declarationsByGroup(declarations);
+            var collisions = collidingGroups(byGroup);
             var desired = declarations.stream()
                                       .flatMap(declaration -> desiredFor(declaration, collisions).stream())
-                                      .toList();
+                                      .collect(Collectors.toCollection(LinkedHashSet::new));
 
-            desired.forEach(this::subscribeIfAbsent);
+            desired.forEach(key -> subscribeIfAbsent(key, byGroup));
             dropStale(desired);
         }
 
@@ -352,16 +386,21 @@ public interface StreamConsumerManager {
         /// declaration-level check that keeps that key from ever being asked to serve two different
         /// artifacts). Keyed on `base()`, not the full version-carrying `Artifact`: two VERSIONS of one
         /// base legitimately collapse to one group during an upgrade window and must not be flagged.
-        private static Map<ConsumerGroupKey, List<ArtifactBase>> collidingGroups(List<ConsumerDeclaration> declarations) {
+        private static Map<ConsumerGroupKey, List<ArtifactBase>> collidingGroups(Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+            return byGroup.entrySet()
+                          .stream()
+                          .map(entry -> Map.entry(entry.getKey(),
+                                                  distinctBases(entry.getValue())))
+                          .filter(entry -> entry.getValue()
+                                                .size() > 1)
+                          .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        }
+
+        /// The pass snapshot keyed by `(stream, group)`. Each group's list keeps the snapshot's
+        /// encounter order, so resolution picks the same first match the full-list scan did.
+        private static Map<ConsumerGroupKey, List<ConsumerDeclaration>> declarationsByGroup(List<ConsumerDeclaration> declarations) {
             return declarations.stream()
-                               .collect(Collectors.groupingBy(ConsumerGroupKey::of))
-                               .entrySet()
-                               .stream()
-                               .map(entry -> Map.entry(entry.getKey(),
-                                                       distinctBases(entry.getValue())))
-                               .filter(entry -> entry.getValue()
-                                                     .size() > 1)
-                               .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+                               .collect(Collectors.groupingBy(ConsumerGroupKey::of));
         }
 
         private static List<ArtifactBase> distinctBases(List<ConsumerDeclaration> declarations) {
@@ -550,15 +589,15 @@ public interface StreamConsumerManager {
             }
         }
 
-        private void subscribeIfAbsent(SubscriptionKey key) {
-            declarationFor(key).onPresent(declaration -> attach(key, declaration));
+        private void subscribeIfAbsent(SubscriptionKey key, Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+            declarationFor(key, byGroup).onPresent(declaration -> attach(key, declaration));
         }
 
         /// The ONE declaration-resolution point (#386 seam): declarative registrations UNION the
-        /// synthesized durable-topic declarations. Every consumer of "what declarations exist" —
-        /// the reconcile's desired set and the key->declaration re-resolution below — reads this,
-        /// so a source declaration can never be computed into a subscription key and then dropped
-        /// on re-resolution.
+        /// synthesized durable-topic declarations. Read ONCE per pass (#1267): the reconcile's desired
+        /// set and the key->declaration re-resolution below both use that one snapshot, so a source
+        /// declaration can never be computed into a subscription key and then dropped on
+        /// re-resolution.
         private List<ConsumerDeclaration> allDeclarations() {
             return Stream.concat(registry.allDeclarations().stream(),
                                  topicGroups.declarations().stream())
@@ -570,12 +609,14 @@ public interface StreamConsumerManager {
         /// resolved to `none` — rather than picked arbitrarily. A match spanning VERSIONS of a single
         /// base is the intended blue-green collapse and picking either is correct: the group's cursor
         /// belongs to the group, not the version.
-        private Option<ConsumerDeclaration> declarationFor(SubscriptionKey key) {
-            var matches = allDeclarations().stream()
-                                         .filter(declaration -> declaration.streamName()
-                                                                           .equals(key.streamName()) && declaration.consumerGroup()
-                                                                                                                   .equals(key.consumerGroup()))
-                                         .toList();
+        ///
+        /// #1267: resolved against the pass's own snapshot — the one `collidingGroups` was computed
+        /// from, which already keeps a colliding group's keys out of `desired`. The refusal below is
+        /// therefore a fail-closed backstop that no single-snapshot pass reaches; it stays so a future
+        /// change to how `desired` is built cannot silently turn a collision into an arbitrary winner.
+        private Option<ConsumerDeclaration> declarationFor(SubscriptionKey key,
+                                                           Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+            var matches = byGroup.getOrDefault(ConsumerGroupKey.of(key), List.of());
             var bases = distinctBases(matches);
 
             if (bases.size() > 1) {
@@ -608,7 +649,7 @@ public interface StreamConsumerManager {
             runtime.subscribe(key.streamName(),
                               key.partition(),
                               consumerConfigFor(key, declaration),
-                              callbackFor(declaration, bridge),
+                              callbackFor(key, declaration, bridge),
                               IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED)
                    .onSuccess(_ -> logAttached(key, declaration))
                    .onFailure(cause -> failAttach(key, cause));
@@ -638,8 +679,8 @@ public interface StreamConsumerManager {
                       cause.message());
         }
 
-        private ConsumerCallback callbackFor(ConsumerDeclaration declaration, SliceBridge bridge) {
-            return (_, payload, _) -> deliver(declaration, bridge, payload);
+        private ConsumerCallback callbackFor(SubscriptionKey key, ConsumerDeclaration declaration, SliceBridge bridge) {
+            return (offset, payload, _) -> deliver(key, declaration, bridge, offset, payload);
         }
 
         /// Durable-topic groups take the spec-cadence config (durable-pubsub-spec §6/§7 — 5
@@ -650,9 +691,13 @@ public interface StreamConsumerManager {
                    : ConsumerConfig.consumerConfig(declaration.consumerGroup());
         }
 
-        private Promise<Unit> deliver(ConsumerDeclaration declaration, SliceBridge bridge, byte[] payload) {
+        private Promise<Unit> deliver(SubscriptionKey key,
+                                      ConsumerDeclaration declaration,
+                                      SliceBridge bridge,
+                                      long offset,
+                                      byte[] payload) {
             return DurableTopicNames.isTopicStream(declaration.streamName())
-                   ? deliverTopicEvent(declaration, bridge, payload)
+                   ? deliverTopicEvent(key, declaration, offset, payload)
                    : bridge.decode(payload)
                            .flatMap(event -> invokeConsumer(declaration, event));
         }
@@ -663,11 +708,31 @@ public interface StreamConsumerManager {
         /// bridge, the same cross-slice type contract every RPC message already rides. The
         /// handler's promise is the ack — nothing else about delivery differs from a declarative
         /// consumer, which is the point of the option-(a) reuse.
-        private Promise<Unit> deliverTopicEvent(ConsumerDeclaration declaration, SliceBridge bridge, byte[] rawEvent) {
+        ///
+        /// #1295: the delivery carries its [MessageContext] — the envelope's `messageId` (the §8
+        /// idempotency key), the topic address, and the partition and offset it was read from. The
+        /// subscribing slice's bridge decodes the payload and hands a context-carrying (2-arg) subscriber
+        /// `contextualEvent(event, context)`, a 1-arg subscriber the bare event. The invocation is LOCAL by
+        /// construction ([SliceInvoker#invokeLocalWithContext] never forwards), which is what lets the
+        /// context stay an in-process value.
+        private Promise<Unit> deliverTopicEvent(SubscriptionKey key,
+                                                ConsumerDeclaration declaration,
+                                                long offset,
+                                                byte[] rawEvent) {
             return Result.lift(() -> nodeCodec.<TopicEventEnvelope> decode(rawEvent))
                          .async()
-                         .flatMap(envelope -> bridge.decode(envelope.payload()))
-                         .flatMap(event -> invokeConsumer(declaration, event));
+                         .flatMap(envelope -> invoker.invokeLocalWithContext(declaration.artifact(),
+                                                                             declaration.methodName(),
+                                                                             envelope.payload(),
+                                                                             contextOf(key, offset, envelope))
+                                                     .timeout(handlerTimeout));
+        }
+
+        private static MessageContext contextOf(SubscriptionKey key, long offset, TopicEventEnvelope envelope) {
+            return MessageContext.messageContext(envelope.messageId(),
+                                                 DurableTopicNames.topicAddressOf(key.streamName()),
+                                                 key.partition(),
+                                                 offset);
         }
 
         private Promise<Unit> invokeConsumer(ConsumerDeclaration declaration, Object event) {
@@ -688,7 +753,7 @@ public interface StreamConsumerManager {
                    : event;
         }
 
-        private void dropStale(List<SubscriptionKey> desired) {
+        private void dropStale(Set<SubscriptionKey> desired) {
             active.keySet().stream().filter(key -> !desired.contains(key)).toList().forEach(this::detach);
         }
 
@@ -725,11 +790,19 @@ public interface StreamConsumerManager {
                                                  cause.message()));
         }
 
+        /// The detach sweep holds `passLock`, so a pass already in flight finishes first and whatever it
+        /// attached is swept. The lock alone is not enough: a caller queued behind it, or a tick that
+        /// outlives the stop, would run a pass afterwards and re-attach — so `stopped` is set first and
+        /// every later pass sees it.
         @Contract
         @Override
         public void stop() {
-            active.keySet().stream().toList().forEach(this::detach);
-            diagnoses.clear();
+            stopped.set(true);
+            synchronized (passLock) {
+                active.keySet().stream().toList().forEach(this::detach);
+                diagnoses.clear();
+            }
+
             log.info("Declarative stream consumer manager stopped");
         }
 
@@ -820,6 +893,10 @@ public interface StreamConsumerManager {
     record ConsumerGroupKey(String streamName, String consumerGroup) {
         static ConsumerGroupKey of(ConsumerDeclaration declaration) {
             return new ConsumerGroupKey(declaration.streamName(), declaration.consumerGroup());
+        }
+
+        static ConsumerGroupKey of(SubscriptionKey key) {
+            return new ConsumerGroupKey(key.streamName(), key.consumerGroup());
         }
     }
 
