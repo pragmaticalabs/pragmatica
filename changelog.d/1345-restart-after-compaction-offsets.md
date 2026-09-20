@@ -22,19 +22,23 @@
   snapshot and does after it; both red when the live index is handed back]
   `[unverified: power loss — `DefaultSnapshotManager` writes the snapshot without fsync, so "on
   disk" here means process-crash-durable]`
-- **Recovery refuses a gap instead of renumbering.** WAL replay now checks, before appending anything,
-  that the replayed records start at `lastSealedOffset + 1` and run contiguously. A WAL whose first
-  survivor sits above that (refs lost after a compaction, or a mid-log hole) fails the partition's
-  recovery with `StreamError.WalRecoveryGap` naming the stream, partition, watermark, expected and
-  found offsets, logged at ERROR. The node never renumbers on its own. Operator recovery: restore the
-  metadata snapshot covering the gap (after a power loss: re-point `LATEST` at the previous retained
-  `snapshot-*.dat`), or accept the loss explicitly by removing the partition WAL. While refused the node
-  stays up, the stream is absent on this node, the reconcile loop retries every tick (ERROR at the
-  refusal, WARN "materialize-on-reconcile failed"), and each publish fails with the typed cause. The
-  check is vacuous on an EMPTY compacted WAL `[unverified: unreachable via the ring today; #1278's
-  floor closes it]`.
-  Note: a partition whose every ref was reclaimed by retention (#1278, open) now refuses at boot
-  instead of silently renumbering; #1278's persisted reclaimed-through floor will satisfy this check.
+- **A WAL that starts above the rebuilt watermark keeps its stored offsets; a hole inside the tail refuses
+  before anything is appended.** With (a) in place the lost-refs restart needs a snapshot directory
+  restored from before the compaction (or lost). Recovery then follows #1258: the leading gap is
+  accepted as reclaimed history — survivors sit at their STORED offsets (offset 0 is absent, never
+  another event's payload), the range is WARNed and `walRecoveryHeadGapsAccepted` counts it — and the
+  sealed history below is unreachable until the snapshot is restored (after a power loss: re-point
+  `LATEST` at the previous retained `snapshot-*.dat`). A gap or duplicate INSIDE the tail is
+  `StreamError.WalReplayMismatch` (#1258), and #1345 adds the pass that raises it BEFORE any record is
+  appended: a refused recovery hands the sink nothing, so no renumbered segment can be sealed from it.
+  While refused the node stays up, the stream is absent on this node, the reconcile loop retries every
+  tick (ERROR at the refusal, WARN "materialize-on-reconcile failed"), and each publish fails with the
+  typed cause. Nothing is renumbered on any path. An EMPTY compacted WAL against a lower watermark is
+  accepted vacuously `[unverified: unreachable via the ring today; #1278's floor closes it]`.
+  Note: a partition whose every ref was reclaimed by retention (#1278, open) is indistinguishable from
+  lost refs and is accepted with the same WARN on every restart until #1278 persists a reclaimed-through
+  floor.
   [verified: `StreamPartitionManagerRestartAfterCompactionTest
-  restartAfterCompaction_walStartsAboveDurableWatermark_refusesLoudly`, `restart_walWithMidLogHole_refusesLoudly`
-  — both red with the check removed]
+  restartAfterCompaction_walStartsAboveDurableWatermark_survivorsKeepStoredOffsets_headGapWarned`,
+  `restart_walWithMidLogHole_refusesLoudly_andSealsNothing` (red with the pre-append pass removed or moved
+  after the appends), `restartAfterRetentionReclaimedEveryRef_acceptedAsReclaimedHistory_warnedUntil1278`]

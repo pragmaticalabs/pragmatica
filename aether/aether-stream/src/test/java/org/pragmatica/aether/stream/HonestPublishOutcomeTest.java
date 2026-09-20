@@ -358,7 +358,8 @@ class HonestPublishOutcomeTest {
                                       OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore()),
                                       StreamOwnerEpochSource.zero(),
                                       Option.some(walDir),
-                                      LastSealedOffsetSource.none());
+                                      LastSealedOffsetSource.none(),
+                                      DurableSealedOffsetSource.none());
     }
 
     private static void createStream(StreamPartitionManager manager) {

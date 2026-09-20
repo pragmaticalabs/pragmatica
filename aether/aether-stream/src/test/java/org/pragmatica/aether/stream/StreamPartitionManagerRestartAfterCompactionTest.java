@@ -51,12 +51,14 @@ import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 /// recovery appended the compaction survivors (196..199) at FRESH offsets 0..3 — measured
 /// `head=3 tail=0 count=4`, offset 0 carrying event 196's payload — with no error and no log line.
 ///
-/// Two outcomes are acceptable and each is pinned by name: (a) truncation never passes the DURABLE watermark
-/// ([DurableSealedOffsetSource] — what a restart would rebuild, never the live index), so the WAL still holds
-/// every record the lost refs covered and recovery reproduces the original offsets exactly; (b) when the WAL
-/// genuinely starts above the durable watermark (a disk that lost the snapshot after the compaction), recovery
-/// REFUSES with [StreamError.WalRecoveryGap] instead of renumbering. The snapshot-derived production source is
-/// pinned against a real [SnapshotManager] below.
+/// Two halves, each pinned by name: (a) truncation never passes the DURABLE watermark ([DurableSealedOffsetSource]
+/// — what a restart would rebuild, never the live index), so the WAL still holds every record the lost refs
+/// covered and recovery reproduces the original offsets exactly; (b) when the WAL genuinely starts above the
+/// rebuilt watermark (a disk that lost the snapshot after the compaction), recovery places the survivors at their
+/// STORED offsets — #1258's head-gap acceptance, WARN + `walRecoveryHeadGapsAccepted` — so offset 0 is ABSENT
+/// rather than carrying event 196; a hole or duplicate INSIDE the tail refuses with [StreamError.WalReplayMismatch]
+/// before anything is appended. The snapshot-derived production source is pinned against a real
+/// [SnapshotManager] below.
 class StreamPartitionManagerRestartAfterCompactionTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -100,35 +102,35 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     }
 
     /// (b) The index IS treated as durable, so the tick compacts the WAL past 195; then the refs are lost
-    /// anyway (a snapshot directory restored from before the compaction). The WAL genuinely starts at 196
-    /// above a rebuilt watermark of -1: recovery must refuse with [StreamError.WalRecoveryGap] naming the gap
-    /// — never seed at `-1` and renumber.
+    /// anyway (a snapshot directory restored from before the compaction). The WAL starts at 196 above a rebuilt
+    /// watermark of -1. Recovery accepts the head gap as reclaimed history (#1258): 196..199 sit at their stored
+    /// offsets, offset 0 is absent (`CursorExpired`, never event 196's payload), one head gap is counted and the
+    /// WARN names the range. The sealed history [0, 195] is unreachable — its refs are gone — which is the loss
+    /// (a) exists to prevent; nothing is renumbered.
     @Test
-    void restartAfterCompaction_walStartsAboveDurableWatermark_refusesLoudly() {
+    void restartAfterCompaction_walStartsAboveDurableWatermark_survivorsKeepStoredOffsets_headGapWarned() {
         var index = new SegmentIndex();
         var sealedThrough = publishSealAndTruncate(index, DurableSealedOffsetSource.same(index::lastSealedOffset));
 
         assertThat(sealedThrough).as("pre-crash sealed watermark").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
 
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+        var warnings = new CopyOnWriteArrayList<String>();
+        var capture = capturingWarnings(warnings);
         var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), new SegmentIndex()::lastSealedOffset);
-        var create = createStream(recovered);
-        var observed = recovered.partitionInfo(STREAM, PARTITION)
-                                .map(pi -> "head=" + pi.headOffset() + " tail=" + pi.tailOffset() + " count=" + pi.eventCount())
-                                .or("no partition");
-        var offset0 = recovered.readLocal(STREAM, PARTITION, 0, 1)
-                               .map(events -> events.isEmpty() ? "empty" : "offset0 payloadIndex=" + payloadIndex(events.getFirst().data()))
-                               .or("unreadable");
 
-        recovered.close();
-
-        assertThat(create.isFailure()).as("recovery silently renumbered: %s, %s", observed, offset0).isTrue();
-        // createStream folds every partition's recovery through Result.allOf, so the refusal arrives inside a
-        // composite; the typed cause is the leaf.
-        create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalRecoveryGap.class::isInstance)
-                                                  .map(StreamError.WalRecoveryGap.class::cast)
-                                                  .toList()).as("typed refusal inside %s", cause.message())
-                                                            .singleElement()
-                                                            .satisfies(gap -> assertGap(gap, 0L, sealedThrough + 1)));
+        try {
+            createStream(recovered).onFailure(cause -> fail("recovery refused: " + cause.message()));
+            assertSurvivorsAtStoredOffsets(recovered, sealedThrough + 1);
+            assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).isEqualTo(1);
+            assertThat(warnings).singleElement()
+                                .asString()
+                                .contains("starts at offset " + (sealedThrough + 1))
+                                .contains("treated as reclaimed history");
+        } finally {
+            capture.run();
+            recovered.close();
+        }
     }
 
     /// The tripwire past the first record: a WAL whose records run 0,1,2 then 4..8 (a mid-log hole — nothing
@@ -163,21 +165,22 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         assertThat(sealed).as("a refused recovery handed the sink segments %s",
                               sealed.stream().map(segment -> segment.startOffset() + "-" + segment.endOffset()).toList())
                           .isEmpty();
-        create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalRecoveryGap.class::isInstance)
-                                                  .map(StreamError.WalRecoveryGap.class::cast)
+        create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalReplayMismatch.class::isInstance)
+                                                  .map(StreamError.WalReplayMismatch.class::cast)
                                                   .toList()).singleElement()
-                                                            .satisfies(gap -> assertGap(gap, 3L, 4L)));
+                                                            .satisfies(mismatch -> assertMismatch(mismatch, 3L, 4L)));
     }
 
-    /// #1278 shape, pinned as it stands (ENABLED tripwire, not a fix): the snapshot covered every seal, so the tick
-    /// legitimately compacted the WAL to the watermark; then retention reclaimed EVERY ref of the partition and the
-    /// next snapshot holds none. The restart rebuilds the index from that snapshot — nothing anchors it, base `-1`
-    /// — and the WAL starts at 196. Before this PR that restart renumbered 196..199 to 0..3 silently (#1278's
-    /// symptom). Now it REFUSES with [StreamError.WalRecoveryGap]: the ruled behaviour until #1278 persists a
-    /// reclaimed-through floor that seeds recovery at the reclaimed point. When that lands this test goes red —
-    /// replace the refusal assertion with recovery at the original offsets (head 199, tail 196).
+    /// #1278 shape, pinned as it stands: the snapshot covered every seal, so the tick legitimately compacted the
+    /// WAL to the watermark; then retention reclaimed EVERY ref of the partition and the next snapshot holds none.
+    /// The restart rebuilds the index from that snapshot — nothing anchors it, base `-1` — and the WAL starts at
+    /// 196. Recovery cannot tell reclaimed history from lost refs, so it ACCEPTS the head gap (#1258): survivors
+    /// at their stored offsets, the range WARNed and counted. The WARN is the cost of #1278 being open — a
+    /// persisted reclaimed-through floor is what makes the floor durable, so recovery seeds at the reclaimed point
+    /// and this WARN stops. When #1278 lands, the WARN/counter assertions here go red: drop them and keep the
+    /// stored-offset assertions.
     @Test
-    void restartAfterRetentionReclaimedEveryRef_refusesInsteadOfRenumbering_until1278() {
+    void restartAfterRetentionReclaimedEveryRef_acceptedAsReclaimedHistory_warnedUntil1278() {
         var index = new SegmentIndex();
         var sealedThrough = publishSealAndTruncate(index, DurableSealedOffsetSource.same(index::lastSealedOffset));
 
@@ -189,20 +192,22 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         rebuilt.rebuildFromRefs(Map.of("streams/other/0/0-9", blockId(9)));
         assertThat(rebuilt.lastSealedOffset(STREAM, PARTITION)).as("#1278: nothing anchors the rebuild").isEqualTo(-1L);
 
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+        var warnings = new CopyOnWriteArrayList<String>();
+        var capture = capturingWarnings(warnings);
         var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), rebuilt::lastSealedOffset);
-        var create = createStream(recovered);
 
-        recovered.close();
-
-        assertThat(create.isFailure()).as("#1278 shape: all refs reclaimed, WAL compacted to %d — recovery must refuse, "
-                                          + "not renumber; a persisted reclaimed-through floor (#1278) is what makes it "
-                                          + "recover instead, and this assertion flips then",
-                                          sealedThrough)
-                                      .isTrue();
-        create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalRecoveryGap.class::isInstance)
-                                                  .map(StreamError.WalRecoveryGap.class::cast)
-                                                  .toList()).singleElement()
-                                                            .satisfies(gap -> assertGap(gap, 0L, sealedThrough + 1)));
+        try {
+            createStream(recovered).onFailure(cause -> fail("#1278 shape must be accepted as reclaimed history: " + cause.message()));
+            assertSurvivorsAtStoredOffsets(recovered, sealedThrough + 1);
+            assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).as("#1278: until a persisted reclaimed-through floor seeds recovery at the reclaimed point, "
+                                                                                                    + "the head gap is counted and WARNed on every restart — drop this assertion when #1278 lands")
+                                                                                                .isEqualTo(1);
+            assertThat(warnings).singleElement().asString().contains("treated as reclaimed history");
+        } finally {
+            capture.run();
+            recovered.close();
+        }
     }
 
     /// Control for the tripwire: the snapshot DID cover the seals (durable == live), the tick compacted the WAL
@@ -215,20 +220,14 @@ class StreamPartitionManagerRestartAfterCompactionTest {
 
         assertThat(sealedThrough).as("pre-crash sealed watermark").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
 
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
         var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
 
         createStream(recovered).onFailure(cause -> fail("recovery refused: " + cause.message()));
-        var info = recovered.partitionInfo(STREAM, PARTITION).onFailure(cause -> fail(cause.message())).unwrap();
-        var tail = recovered.readLocal(STREAM, PARTITION, sealedThrough + 1, EVENTS)
-                            .onFailure(cause -> fail(cause.message()))
-                            .unwrap();
-
+        assertSurvivorsAtStoredOffsets(recovered, sealedThrough + 1);
         recovered.close();
 
-        assertThat(info.headOffset()).isEqualTo(EVENTS - 1L);
-        assertThat(info.tailOffset()).isEqualTo(sealedThrough + 1);
-        assertThat(tail).hasSize((int) (EVENTS - 1 - sealedThrough));
-        tail.forEach(StreamPartitionManagerRestartAfterCompactionTest::assertOffsetMatchesPayload);
+        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).as("no head gap: the tail starts at base + 1").isZero();
     }
 
     /// rev1349 F3: reclamation is coupled to the snapshot, so a snapshot that stops advancing must be VISIBLE
@@ -383,14 +382,29 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                .onSuccess(offset -> assertThat(offset).isEqualTo((long) i));
     }
 
-    /// The rebuilt watermark is `-1` in every refusal here (an empty index), so `expected` names the offset the
-    /// ring would have assigned and `found` the record's own.
-    private static void assertGap(StreamError.WalRecoveryGap gap, long expected, long found) {
-        assertThat(gap.streamName()).isEqualTo(STREAM);
-        assertThat(gap.partition()).isEqualTo(PARTITION);
-        assertThat(gap.base()).isEqualTo(-1L);
-        assertThat(gap.expected()).isEqualTo(expected);
-        assertThat(gap.found()).isEqualTo(found);
+    /// Head 199, tail `firstSurvivor`, every readable event's offset equal to the index in its payload, and
+    /// offset 0 absent (`CursorExpired`) — never event 196's payload.
+    private static void assertSurvivorsAtStoredOffsets(StreamPartitionManager recovered, long firstSurvivor) {
+        var info = recovered.partitionInfo(STREAM, PARTITION).onFailure(cause -> fail(cause.message())).unwrap();
+        var tail = recovered.readLocal(STREAM, PARTITION, firstSurvivor, EVENTS)
+                            .onFailure(cause -> fail(cause.message()))
+                            .unwrap();
+
+        assertThat(info.headOffset()).as("head=%d tail=%d count=%d", info.headOffset(), info.tailOffset(), info.eventCount())
+                                     .isEqualTo(EVENTS - 1L);
+        assertThat(info.tailOffset()).isEqualTo(firstSurvivor);
+        assertThat(tail).hasSize((int) (EVENTS - firstSurvivor));
+        tail.forEach(StreamPartitionManagerRestartAfterCompactionTest::assertOffsetMatchesPayload);
+        recovered.readLocal(STREAM, PARTITION, 0, 1)
+                 .onSuccess(events -> fail("offset 0 must be absent, but read " + (events.isEmpty() ? "[]" : "payloadIndex=" + payloadIndex(events.getFirst().data()))))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+    }
+
+    private static void assertMismatch(StreamError.WalReplayMismatch mismatch, long expected, long found) {
+        assertThat(mismatch.streamName()).isEqualTo(STREAM);
+        assertThat(mismatch.partition()).isEqualTo(PARTITION);
+        assertThat(mismatch.expectedOffset()).isEqualTo(expected);
+        assertThat(mismatch.foundOffset()).isEqualTo(found);
     }
 
     private static BlockId blockId(int seed) {
