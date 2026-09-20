@@ -97,6 +97,8 @@ per-node paths that survive a restart within that cluster. Test crashes at each 
 checkpoint/compaction boundary; report the measured cost of durable writes separately from
 in-memory protocol tests.
 
+WAL crash acceptance includes temporary-file write/force failures, checkpoint rename before parent-directory fsync, and WAL replacement rename before parent-directory fsync. A failed durability step must not acknowledge success or permit further voting writes. Reopen tests cover retained old/new complete-file combinations; physical power-loss behavior remains a filesystem assumption, not an in-process test claim.
+
 
 ### P3 — community authority and worker execution
 
@@ -200,59 +202,59 @@ probes. Exercise multi-community formation, worker execution, governor replaceme
 source movement, asymmetric partition and mass reconnect under load. Document the measured envelope
 and remaining unmeasured physical-cluster limits honestly.
 
-## Reconciliation ledger
 
-The following is an initial work ledger, not a completion claim. Update it with commit and executed
-test evidence before requesting final review of the batch.
+## Reconciliation and review plan
 
-| Contract | Package | Initial state |
+The runtime PR owns the implementation checklist, in
+`aether/docs/specs/hierarchical-cluster-reconciliation.md` on [PR #1390](https://github.com/pragmaticalabs/pragmatica/pull/1390).
+It enumerates H01–H10 and H-T01–H-T12 with DONE / MISSING / STUB / SHORTCUT / OMISSION /
+SIMPLIFICATION, names the production mechanism and regression classes, and separates source
+coverage from executed final-head evidence. This specification PR does not claim that merging
+these documents implements the contract. Current-product documentation changes belong to #1390.
+
+Review the runtime by these axes, using the relevant contract sections as the claim list:
+
+| Axis | Packages | Contract and acceptance scope |
 |---|---|---|
-| H01/H02 core eligibility and ordered application | P1 | Implementation and focused tests in progress |
-| H03 committed electorate | P2 | Design and implementation in progress |
-| H04 exclusive committed governor | P3 | Implementation and integration tests in progress |
-| H05 independent community placement | P5 | Configuration/provider foundations in progress |
-| H06 idempotent runtime ownership | P3 | Assembly and lifecycle tests in progress |
-| H07/H08 metrics authority and quality | P4 | Implementation and focused tests in progress |
-| H09 resumable movement | P6 | Required; not yet complete |
-| H10 bounded recovery and information flow | P7 | Required; not yet complete |
+| Consensus | `integrations/consensus`, cluster/Rabia assembly | H01–H03; slots/rounds, ordered application, voter handoff, WAL format and crash matrix |
+| Assembly and authority | `aether/node`, `integrations/cluster`, worker health/governor | H01/H03/H04/H06/H07; immutable roles, operator refusal, committed ownership, callback/task lifecycle |
+| Deployment and placement | `aether/aether-deployment`, `aether/environment`, cloud integrations | H05/H09; observed placement, source binding, shared reservations, interruption/recovery matrix |
+| Metrics and metadata | `aether/aether-metrics`, config, worker metadata/health | H07/H08/H10; durable producer epochs distinct from SWIM, freshness/overlap, bounded repair |
 
-Final review requires no required MISSING/STUB/SHORTCUT/OMISSION/SIMPLIFICATION entries. Keep
-unexecuted physical WAN/cloud benchmarks clearly separate from implemented correctness contracts.
+The runtime PR body supplies commit ranges and per-axis changed paths. Review dependencies first:
+this pure specification, the corrected guarded-KV foundation (#1379), then the integrated runtime
+(#1390). Under the owner's revised release decision the batch may merge into rc4 when ready; rc5
+creation is not a gate. Refresh the target branch and validate the merge ref before approval.
 
-## Validation ledger (2026-09-20)
+Final review requires no required MISSING/STUB/SHORTCUT/OMISSION/SIMPLIFICATION rows. The bounded
+local correctness probes do not replace physical WAN/cloud or 10K-node performance measurements.
+[unverified: physical-scale] No physical WAN or 10K-node throughput envelope is established.
 
-This is a specification-only PR. The following are local checkpoints from the separate integrated
-implementation worktree, not tests executed by this documentation change or a claim that the batch
-is ready to merge. Later changes invalidate earlier evidence for affected paths; counts are not additive.
+## Reproducible validation ledger
 
-| Checkpoint | Executed result | Remaining scope |
+Historical aggregate counts from private scratch worktrees are withdrawn as merge evidence.
+Each retained result identifies source, command and test classes. Subsequent changes require
+revalidation of affected paths. A command run with skipped tests is compile evidence only.
+
+| Source ref and worktree | Exact command | Named tests / result |
 |---|---|---|
-| Extracted foundation | Latest selected gate: 85 cases passed, followed by five Forge provisioning/coordination cases. PR #1379 CI Forge passed after notification dispatch was separated from the store monitor. | PR #1379 CI build and ancillary checks also passed; heavy Forge was skipped. |
-| Configuration and metrics | Complete configuration suite: 430 passed. Complete metrics suite: 268 passed. | Cloud/WAN and 10K-producer throughput, encoded bytes and memory remain unmeasured. |
-| Control | Complete control suite: 119 passed after the worker-directive fixture correction. | Real worker workload, metadata blackout recovery and loaded movement passed local Forge acceptance; seasonal prediction is outside this hierarchy batch. |
-| Deployment | Complete deployment suite: 1302 passed after implicit-community retirement and the current-count formation latch correction. | The subsequent installed-electorate formation and quorum corrections passed all 117 reconciler tests. Provider tests use fixtures, not paid cloud resources. |
-| Consensus and invocation | Complete consensus suite: 808 passed; final passive-leader edge cases then passed all six focused tests. Complete invocation suite after QUIC reply ordering: 307 passed. The final focused gates passed seven bridge tests, seven HTTP tests, three blueprint tests, two committed-leader refresh tests and nine node integration cases. | The final multi-node matrix also passed; module counts overlap focused checks. |
-| Integrated selected gate | 281 passed: consensus transport 66, metrics 20, deployment 137, node 58. | This checkpoint predates later runtime corrections and is not complete module coverage. |
-| Node correction gate | Corrected full node suite: 1565 cases, zero failures/errors, one skipped benchmark. Later targeted gates cover notification isolation, metadata cuts, worker forwarding and readiness; the latest community-health gate passed eight cases plus nine node integration cases. | The full node checkpoint predates the later targeted corrections. All 31 Ember cases passed after self-drain slot cleanup; operator voter-budget and role-route checks passed 22 cases plus nine node integration cases. |
-| Actual multi-node Forge | Earlier batches passed five instance-tag/provisioning cases, empty-community movement, loaded movement, multi-community metadata blackout recovery and held worker HTTP invocation/drain. The final matrix exercised the completed production fixes, including unchanged-leader refresh after voter handoff. | Final matrix: 27 cases passed, zero failures/errors/skips, including core resize, governor-report loss, worker formation, durable core restart, role labels, real worker HTTP workload, stream fencing and the full smoke set. All 70 installed dependency modules passed freshness checks. Heavy/cloud/10K tests were not run. |
-| Repository build | All six steps of `./build.sh` passed, including fixture compilation and integration-test lint (49 baseline findings, zero new). The subsequent internal invocation/node corrections passed the focused install reactor. | Forge executes installed artifacts separately and requires its freshness gate to pass. |
-| JBCT | Explicit repository CLI checked 179 changed production files: zero introduced errors; 25 errors reproduce in baseline low-level contracts. The final three modified production files were checked separately with zero errors. Warnings total 3222 in the 179-file checkpoint; subsequent focused lint reports 335 warnings, overlapping that checkpoint. | The default build skips JBCT and is not lint evidence. Warnings were not exhaustively classified; repeat the explicit comparison for any further changes. |
+| Foundation `52daae511`, `/private/tmp/pragmatica-hierarchy-primitives` | `env -u HCLOUD_TOKEN mvn -T1 -pl integrations/cluster -am install -Dtest='KVStore*Test,CanonicalSliceCodecTest' -Dsurefire.failIfNoSpecifiedTests=false` | 84 cases in the `KVStore*Test` classes plus two in `CanonicalSliceCodecTest`, zero failures/errors. Classes: `KVStoreAuthorizedMutationTest`, `KVStoreCanonicalSnapshotTest`, `KVStoreEpochFenceTest`, `KVStoreInstallOverlayTest`, `KVStoreLeaderFenceTest`, `KVStoreLeaderTransactionTest`, `KVStoreNoopTest`, `KVStoreNotificationIsolationTest`, `KVStoreOwnerFenceTest`, `KVStorePutFenceTest`, `KVStoreRemoveFenceTest`, `KVStoreReplaySignalTest`, `KVStoreWatermarkFenceTest` (including their nested cases). |
+| Foundation production source `52daae511`; reproducible script added at `c80358cda`, same worktree | `python3 tools/check-hierarchy-foundation-mutations.py` | Six assertion-red mutations: read guards, leader authority, equal-epoch deletion, snapshot canonical selection, notification reentrancy and coherent snapshot reads. Exact per-mutation selectors and commands are recorded by the script in `target/hierarchy-mutations/results.json`. |
+| Foundation `52daae511`, same worktree, exact production bytes restored after mutations | `env -u HCLOUD_TOKEN mvn -T1 -pl integrations/cluster install -Dtest='KVStore*Test'` | All 84 KV cases passed after source restoration. |
+| Foundation PR head `c80358cda`, GitHub PR merge checkout | **Hierarchy review acceptance / foundation-mutations** workflow | [CI run 35537456683](https://github.com/pragmaticalabs/pragmatica/actions/runs/35537456683) passed. Uploaded `foundation-mutation-evidence` contains commands, tested source SHA, mutation logs and restored-implementation JUnit reports. |
 
-Required runtime acceptance includes policy-aware make-before-break placement, full eligible replica
-count before drain unload, provider retirement only after acknowledged quiescence and confirmed
-absence, and recovery of scoped metadata without reopening admission from stale data. The four-client
-metadata blackout test is modest local recovery evidence, not mass socket reconnect or a 10K benchmark.
-Asymmetric governor-report loss exercises a specific authority-recovery path; it does not certify all
-one-way network partitions or exclusive application execution.
+Runtime review corrections are being validated on the current rc4-integrated branch. Its
+**Hierarchy review acceptance / runtime-acceptance** workflow records both the tested merge SHA
+and PR head SHA, then uploads JUnit and measured-envelope artifacts. The runtime reconciliation
+must cite those exact results before claiming final-head completion; an older green run is not
+substituted for that evidence. Full CI results remain inspectable in the PR's Checks tab.
 
-Performance boundaries remain explicit. Operational metrics history is bounded, not a year-long
-seasonal archive. Entry-count limits do not establish encoded-byte bounds. Provider fixtures do not
-measure cloud quota, pagination latency or movement completion time. Uncertain effects deliberately
-retain durable capacity reservations until reconciliation establishes the outcome.
-
-Shared metadata scopes, cache limits, one in-flight client exchange and per-core byte budgets bound
-particular resources; directory construction, per-client manifest work and mutation bursts still need
-profiling. Oversized required scopes fail visibly and close worker admission. Relevant endpoint sets
-can reach the full fleet. Worker DHT data connections may reach every verified core independently of
-two control uplinks: O(NK) connections and up to N incoming worker connections per core. Storage and
-IOPS remain core-hosted. No validated 10K-node application/storage performance envelope is claimed.
+[limit: metadata-resources] Scope/cache/client/byte limits bound particular resources; directory
+construction, per-client manifest work and mutation bursts still require profiling. Oversized
+required scopes fail visibly and close worker admission.
+[limit: core-hosted-state] Worker DHT connections may reach each of K cores, O(NK) connections
+for N workers and up to N incoming worker connections per core. Storage and IOPS remain core-hosted.
+[limit: workload-catalog] Relevant endpoint sets may reach the full fleet. Community peer scoping
+does not establish a constant bound for arbitrary application dependency graphs.
+[limit: uncertain-capacity] Unknown provider effects retain capacity reservations until their
+outcome is established; an empty inventory result is not proof that an unconfirmed create failed.

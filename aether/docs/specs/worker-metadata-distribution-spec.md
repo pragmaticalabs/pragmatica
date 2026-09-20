@@ -1,5 +1,8 @@
 # Worker metadata distribution
 
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
 Status: implementation contract for hierarchical-cluster H10/P7; acceptance evidence belongs in the implementation ledger.
 
 Workers are clients of committed core state. They do not synchronize or replay the global Rabia log. Candidate cores remain consensus observers; immutable worker identity selects passive-client consensus mode before network startup. Worker mutation requests retain the explicit forwarding request/result protocol.
@@ -30,7 +33,9 @@ The verified membership directory installs current core routing eligibility befo
 
 ## Resource bounds
 
-Encoded scope caches have an aggregate byte budget, individual scope byte limit and deterministic eviction. Outstanding manifests are bounded and expired. Eviction never preserves an invalid completeness claim: affected clients receive a restart response. A per-core outbound byte budget throttles both manifests and chunks; request-driven chunk delivery does not queue whole snapshots for reconnecting workers. Empty or unchanged replies do not imply missing data.
+[limit: worker-metadata-envelope] Defaults are 64 KiB chunks, 8 MiB per scope, 128 MiB cache,
+16 MiB/s per-core serving bandwidth, 16,384 manifests, 512 scopes per worker, 30-second manifest
+TTL and one-second polling (`WorkerMetadataLimits.DEFAULT`). Encoded scope caches have an aggregate byte budget, individual scope byte limit and deterministic eviction. Outstanding manifests are bounded and expired. Eviction never preserves an invalid completeness claim: affected clients receive a restart response. A per-core outbound byte budget throttles both manifests and chunks; request-driven chunk delivery does not queue whole snapshots for reconnecting workers. Empty or unchanged replies do not imply missing data.
 
 These bounds constrain memory and burst fanout. Shared scope encoding avoids encoding the same endpoint set once per worker. Performance evidence must report workload metadata size, relevant endpoint cardinality, mutation rate, reconnect concurrency, cache budget, transport connections, heap and convergence lag; a synthetic 100-by-100 layout alone is not a 10K active-worker scalability claim.
 
@@ -47,9 +52,9 @@ These bounds constrain memory and burst fanout. Shared scope encoding avoids enc
 
 ## Storage boundary and retired subsystem
 
-The worker transport adapter uses the verified core directory for DHT replica placement. No active community-local DHT storage path was removed: the former WorkerDHTNetwork/DHTRelayMessage subsystem had no production assembly caller or inbound relay handler. WorkerBootstrap, DecisionRelay, FollowerHeartbeat/FollowerHealthTracker and the parallel WorkerDeploymentManager/MutationForwarder/WorkerMutation path were likewise dormant and are removed. Normal NodeDeploymentManager plus ForwardingClusterNode and the scoped metadata channel are the worker execution/mutation paths.
+The worker transport adapter uses the verified core directory for DHT replica placement. The #1390 removal must preserve all active storage paths: the former WorkerDHTNetwork/DHTRelayMessage subsystem had no production assembly caller or inbound relay handler. WorkerBootstrap, DecisionRelay, FollowerHeartbeat/FollowerHealthTracker and the parallel WorkerDeploymentManager/MutationForwarder/WorkerMutation path are assessed as dormant on the rc4 baseline and are to be removed by #1390. Normal NodeDeploymentManager plus ForwardingClusterNode and the scoped metadata channel are the worker execution/mutation paths.
 
-Community-sharded DHT and governor-mediated metadata relay from the older worker-membership proposal are not delivered here. Core-hosted DHT capacity, core metadata egress and cross-community endpoint connection cardinality must be measured independently of community count. This implementation makes no 10K-node application/storage throughput claim.
+[limit: core-hosted-dht] Community-sharded DHT and governor-mediated metadata relay from the older worker-membership proposal are not delivered here. Core-hosted DHT capacity, core metadata egress and cross-community endpoint connection cardinality must be measured independently of community count. [unverified: 10k-application-storage-throughput] No 10K-node application/storage throughput claim is made.
 
 Worker data connections are additional to the two selected control/metrics uplinks. Because DHT replica placement can select any installed core and the transport has no demand-dial gateway, workers maintain connections to every verified core DHT peer (up to K cores). Core-initiated health polling remains bounded to cores/governors; the extra connections do not expand probe audiences. At N workers this can require O(NK) data connections and up to N inbound worker connections per core. A 10K-worker deployment therefore requires explicit core connection/memory/IOPS sizing; the two-uplink control policy is not a total-connection bound.
 

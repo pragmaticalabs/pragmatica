@@ -1,5 +1,8 @@
 # Voter configuration and checkpoint handoff
 
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
 Status: implementation contract, rc4 hierarchy batch.
 
 ## Authority
@@ -35,6 +38,12 @@ state, not a change of immutable node role.
 7. Removed instances may be deprovisioned only after successful completion. Failure or uncertainty
    preserves the old instances and pending operation for retry. Repeating the same operation is
    idempotent; a contradictory request is a distinct consensus proposal.
+
+[limit: handoff-write-unavailability] After the barrier commits, clients cannot obtain new old-epoch
+writes. Requests may remain pending or reach their ordinary deadline/refusal until a successor
+majority durably installs the checkpoint. There is no timeout-based rollback to E. Operators must
+restore connectivity or durable storage and restart the same certified participants so handoff retry
+can complete; loss of required durable evidence requires explicit recovery outside this protocol.
 
 The [Rabia paper's reconfiguration discussion](https://ceres.cs.umd.edu/818/papers/rabiaRandomization.pdf)
 uses agreed membership commands that take effect at the following log slot. The checkpoint and
@@ -181,7 +190,7 @@ an unassigned community's core to dial it before requesting its bootstrap direct
 
 ### Bounded checkpoint admission
 
-The current transport carries whole checkpoints, not chunks. Its frame ceiling is 32 MiB;
+[limit: core-snapshot-frame] The #1390 transport carries whole checkpoints, not chunks. Its frame ceiling is 32 MiB;
 consensus reserves 64 KiB and checks the serialized envelope before transmission. A
 configuration proposal is admitted only after the exact application prefix can encode both
 the handoff transfer and the subsequent synchronization response, including the retained

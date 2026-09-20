@@ -674,11 +674,11 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// compile-time signal; grep for `.timeout(` used as a statement before making that change.
     default Promise<T> timeout(TimeSpan timeout) {
         var future = AsyncExecutor.INSTANCE.runAsync(timeout,
-                                                       () -> fail(new CoreError.Timeout("Promise timed out after " + timeout.millis() + "ms")));
+                                                     () -> fail(new CoreError.Timeout("Promise timed out after " + timeout.millis()
+                                                                                     + "ms")));
 
         return withResult(_ -> future.cancel(false));
     }
-
 
     /// **[Resolution]**
     /// Cancel the promise.
@@ -3175,7 +3175,6 @@ public sealed interface Promise<T> permits PromiseImpl {
 
 enum AsyncExecutor {
     INSTANCE;
-
     // #749/#750: .timeout()'s delayed-failure task used to share this pool's virtual-thread carriers with
     // every other .async() offload in the codebase. A timeout is exactly the guard relied on when the
     // system is under load -- and CPU-bound work pinning every carrier is a form of load -- so a timeout
@@ -3207,15 +3206,17 @@ enum AsyncExecutor {
     // per second would still accumulate thousands of dead-but-queued entries (each holding a closure and a
     // ContextPropagation snapshot) for up to the full timeout duration. #749/#750 follow-up.
     private final ScheduledThreadPoolExecutor timeoutScheduler = createTimeoutScheduler();
-
     private static ScheduledThreadPoolExecutor createTimeoutScheduler() {
         var pool = new ScheduledThreadPoolExecutor(TIMEOUT_SCHEDULER_THREADS,
-                                                     Thread.ofPlatform().name("promise-timeout-scheduler-", 0).daemon(true).factory());
+                                                   Thread.ofPlatform()
+                                                         .name("promise-timeout-scheduler-", 0)
+                                                         .daemon(true)
+                                                         .factory());
+
         pool.setRemoveOnCancelPolicy(true);
 
         return pool;
     }
-
     @Contract
     void runAsync(Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
@@ -3229,15 +3230,16 @@ enum AsyncExecutor {
         var snapshot = ContextPropagation.INSTANCE.capture();
 
         return timeoutScheduler.schedule(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable),
-                                          delay.nanos(), TimeUnit.NANOSECONDS);
+                                         delay.nanos(),
+                                         TimeUnit.NANOSECONDS);
     }
-
     // Test-only observability: number of tasks still sitting in the scheduler's delay queue. With
     // setRemoveOnCancelPolicy(true) above, a cancelled task is purged from this count synchronously,
     // on the cancelling thread -- no polling needed to observe the effect of an early promise resolution.
     @Contract
     int pendingTimeoutCount() {
-        return timeoutScheduler.getQueue().size();
+        return timeoutScheduler.getQueue()
+                               .size();
     }
 }
 
@@ -3492,6 +3494,8 @@ final class PromiseImpl<T> implements Promise<T> {
         rethrowIfFatal(runAll(joins, runAll(actions, null)));
     }
 
+    // JBCT-RET-06 waived on the two list walkers: Completion is an intrusive singly-linked list whose
+    // terminator is null; wrapping each node in an Option would allocate on the completion hot path (#1356).
     /// #1311: a VirtualMachineError rethrown by one completion must not abandon the rest of the batch this
     /// call CAS-claimed — the sibling dependents would never resolve and a thread parked in `await()` would
     /// never be unparked, which is the ticket's own wedge re-created for a StackOverflowError in one mapper.
@@ -3499,7 +3503,7 @@ final class PromiseImpl<T> implements Promise<T> {
     /// joins have been unparked, so "rethrown after logging" still holds, one batch later. The call site
     /// nests the two calls: the inner (argument) runs the sequential actions first, the outer the joins
     /// after — the original order.
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings({"rawtypes", "unchecked", "JBCT-RET-06"})
     private VirtualMachineError runAll(Completion current, VirtualMachineError first) {
         var fatal = first;
 
@@ -3518,7 +3522,7 @@ final class PromiseImpl<T> implements Promise<T> {
         return fatal;
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings({"rawtypes", "unchecked", "JBCT-RET-06"})
     private void runEventHandlers(Completion asyncEvents) {
         if (asyncEvents == null) {
             return;

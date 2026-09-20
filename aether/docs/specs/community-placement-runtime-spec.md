@@ -1,5 +1,8 @@
 # Community placement, movement and capacity admission
 
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
 This specification complements `hierarchical-cluster-contract-spec.md`. It defines the
 core-authoritative implementation boundary; it does not delegate new actuation authority
 to disconnected communities. Node roles remain immutable.
@@ -35,6 +38,34 @@ location of the same source, are rejected.
 Minimums reserve the first slots. Remaining slots use weighted largest remainders with
 source/zone lexical tie breaking. The result sums exactly to the community target.
 
+A definitive provider capacity refusal installs leader-authorized availability evidence keyed
+by community/source/zone, with canonical policy identity, resolved provider binding, refusal
+time and bounded attempt count. Effective desired counts retain every hard minimum and
+redistribute only discretionary slots among locations without matching refusal evidence.
+Allocation and excess detection use the same effective counts, preventing immediate migration
+back to an unavailable preference. If all locations are unavailable, configured counts remain
+unsatisfied obligations; no capacity is invented. An unavailable minimum cannot be fulfilled
+by another source. Existing workers are retained when unavailable locations prevent progress.
+
+The refusal transition atomically completes only the failed create attempt and records its
+availability evidence; it never removes the previous worker. This transition requires proof
+that capacity accounting was released (or no reservation exists). Ambiguous effects remain
+`CREATE_UNCERTAIN` with their original identity and reservation, without fallback.
+
+After ordinary effective deficits are addressed, a due preferred-location deficit may receive
+one recovery probe. The sole active community operation is its persisted exclusivity token.
+The probe requires the same resolved source binding as the refusal and a fresh stable node
+identity. Retry delay starts at 30 seconds, doubles, and caps at 10 minutes; attempt count caps
+at 31. A successful create or verified inventory recovery clears matching refusal evidence
+atomically with `AWAITING_READY`, then normal make-before-break movement restores preferences.
+Refusals survive leader changes. Policy changes invalidate only evidence for the old policy;
+they do not erase unresolved operations. UTC retry timestamps require the deployment clock
+assumption; clock rollback delays probes rather than allowing earlier retries.
+
+[limit: fallback-probe-rate] Recovery is serialized per community, not globally per provider;
+several communities sharing a source may each issue one due probe subject to the shared
+capacity ledger. Provider-wide backoff is not inferred from one community's refusal.
+
 When explicit communities exist, their targets are the worker-capacity intent. Legacy
 source worker counts do not independently create or destroy workers, including sources
 no longer present in a community's desired placement. Core and spot capacity retain their
@@ -68,7 +99,7 @@ on refusal. Accepted transactions install every value before routing notificatio
 
 The result is `TransactionResult(transactionId, accepted)`. Submitters select their own ID
 from a merged batch response. They must not infer success from an unqualified successful
-consensus promise. `LeaderPut` uses the same primitive for a single write.
+consensus promise. A single write also uses a caller-correlated `LeaderTransaction` containing one mutation.
 
 Ordinary Put/Remove cannot modify leader-authorized records. An authorized transaction may
 remove a non-owner-fenced reservation with an exact witness; owner-fenced authority uses
@@ -132,7 +163,7 @@ Externally managed SSH capacity is not a provider allocation in this ledger.
 
 Commit `DISPATCHED` before create. Ambiguous failures retain capacity across leader changes.
 Explicit provider capacity rejection, which proves no create occurred, can release that
-attempt for a bounded zone fallback. Reusing an existing unresolved identity is refused.
+attempt for bounded source or zone fallback within the community policy. Reusing an existing unresolved identity is refused.
 A successful provider observation changes the reservation to `OBSERVED`.
 
 Release an observed allocation only after source-bound node inventory confirms absence.
@@ -168,9 +199,12 @@ operational capacity limit.
 
 Core health probing targets admitted core nodes and current committed governors. A governor probes its own community; ordinary workers retain community SWIM and bounded core uplinks. A core never uses a persisted governor roster as a heartbeat.
 
-Each core challenges each governor using a process-incarnation token and monotonic request sequence. A response must match the outstanding challenge, authenticated sender, committed governor term, governor assignment and every reported member assignment. Duplicate members, excessive report size, stale terms and expired challenges are rejected. One pending challenge per community bounds request state. A new core process cannot accept an old response.
+Each core challenges each governor using a random process-incarnation challenge token and monotonic request sequence. The token is
+matched for equality, never ordered; restart invalidates outstanding challenges. A response must match the outstanding challenge, authenticated sender, committed governor term, governor assignment and every reported member assignment. Duplicate members, excessive report size, stale terms and expired challenges are rejected. One pending challenge per community bounds request state. A new core process cannot accept an old response.
 
-Governor observations come from direct worker pongs, with producer incarnation/sequence and timestamp freshness checks. Relayed metrics and cached SWIM ALIVE labels cannot refresh this evidence. Reported age includes the producer observation age and elapsed governor-local time. The core adds the challenge round trip and its own elapsed receipt time, using monotonic clocks for elapsed durations. Readiness requires both fresh positive reachability and READY lifecycle evidence. A governor records its own lifecycle locally.
+Governor observations come from direct worker pongs, with durable producer-process incarnation/sequence
+and timestamp freshness checks as specified in metrics-distribution-spec. This replay identity is
+separate from the pong’s SWIM membership incarnation carried in MemberHealth and membership evidence. Relayed metrics and cached SWIM ALIVE labels cannot refresh this evidence. Reported age includes the producer observation age and elapsed governor-local time. The core adds the challenge round trip and its own elapsed receipt time, using monotonic clocks for elapsed durations. Readiness requires both fresh positive reachability and READY lifecycle evidence. A governor records its own lifecycle locally.
 
 Accepted evidence retains provenance `(community, governor, governor term, member incarnation)` when supplied to the membership integration. Missing, stale or incomplete reports make workers unavailable for placement; they do not declare worker death, authorize instance termination or release capacity reservations. A governor change immediately invalidates prior positive evidence. Initial governor nomination requires a fresh direct candidate observation and committed worker assignment, avoiding a circular dependency on a report from a governor that has not yet been appointed.
 

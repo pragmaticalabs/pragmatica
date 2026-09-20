@@ -1,5 +1,8 @@
 # Hierarchical cluster contract
 
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
 Status: implementation in progress; no scale certification implied.
 Baseline: `release-1.0.0-rc4`, `ccba0dba5` (2026-09-19).
 
@@ -11,11 +14,11 @@ community placement, governor authority, observation, recovery and shutdown. It 
 worker-membership-spec D2's one-source restriction and historical assumptions that any worker
 may become a core. The companion metrics-distribution-spec governs observation exchange.
 
-Core and worker are immutable instance roles. A governor is a worker responsibility, not a
+Core and worker are immutable instance roles. A governor is an operation a worker performs, not a
 third instance role. Core sizes 5/7/9/11, roughly 100 workers per community and roughly 100
 communities are operating targets, not protocol constants or measured production limits.
 
-Current operation remains dependent on core authority. Disconnected autonomous provisioning,
+The specified operation remains dependent on core authority. Disconnected autonomous provisioning,
 delegated recovery budgets and regional consensus cells are explicitly outside this batch.
 Authorization boundaries must permit their later addition without redefining node identity,
 operation identity or resource fencing. Existing seasonal predictive supervision remains the
@@ -46,8 +49,13 @@ cannot write through an equal-generation overwrite or act merely because their c
 submitted. Rejections must be visible to the submitting operation.
 
 H05. Node role, source and physical location are distinct from community assignment. A stable
-community can span sources and zones. Replica anti-affinity is enforced independently of
-community zone coverage. No universal zone-count limit is introduced.
+community can span sources and zones. Replica anti-affinity requires distinct eligible node
+identities; community zone coverage is a separate placement property. Single-zone configurations
+remain supported. No universal zone-count limit is introduced.
+
+[limit: replica-zone-diversity] Distinct replica nodes do not guarantee distinct physical zones.
+Zone diversity requires an explicit workload placement policy; community zone coverage alone
+does not provide that guarantee.
 
 H06. Replayed activation does not allocate duplicate schedulers, listeners or worker runtimes.
 Reassignment stops the previous runtime before installing the replacement. Shutdown cancels
@@ -95,8 +103,10 @@ advertise themselves as LIVE voting responders. Broadcast audiences must disting
 protocol traffic from committed state delivery to observers.
 
 Consensus application keeps an applied progress boundary independent of garbage-collected
-phase objects. Delayed decisions below progress are ignored. Ahead decisions are boundedly
-buffered and cause state synchronization; replay uses the same checks. Snapshot installation
+phase objects. Delayed decisions below progress are ignored. [limit: ahead-decision-buffer]
+Ahead decisions are buffered up to 256 entries per engine; overflow evicts the oldest buffered
+entry and requests authoritative synchronization rather than applying across the gap. Replay uses
+the same checks. Snapshot installation
 establishes the new boundary before replay. Observer activation follows the same installation
 barrier as voting activation. Paused/synchronizing modes must not lose accepted buffered work.
 
@@ -115,6 +125,9 @@ preferences. Empty optional topology means the existing single-zone deployment, 
 Several communities may use one source; one community may use several sources. Source-level
 quotas are shared reservations, not multiplied by community count. Source fallback resolves
 prior ambiguous provisioning attempts before issuing replacement requests elsewhere.
+Definitive no-create refusals may redistribute discretionary capacity through persisted
+location availability; hard minima remain obligations. Effective targets and bounded recovery
+probes follow the community placement runtime specification.
 
 Configuration must travel through parse/validation, committed desired state, source selection,
 provision request, returned physical placement, assignment and operator-visible reconciliation.
@@ -313,48 +326,50 @@ partial results or entering a forwarding loop.
 
 ## Resource envelope to measure
 
-Let `N` be workers, `C` cores, `G` communities, `M` the largest community, and `B` the
+Let `N` be workers, `K` cores, `G` communities, `M` the largest community, and `B` the
 encoded bytes per producer observation. With two selected core uplinks and a possible additional
 leader connection, worker control connections are at most approximately `3N` cluster-wide, plus
 core mesh and governor/community links. This is a cluster-wide bound, not three connections per
 core: at 10,000 workers, each core can still terminate thousands of connections. Changing the
 leader can temporarily increase reconnect traffic. Application endpoint connections are additional.
-Current worker DHT clients also connect to every verified core replica peer: these data connections
-can require `N * C` links and `N` worker connections per core. The two-uplink policy bounds control
+[limit: core-dht-connections] After #1390, worker DHT clients also connect to every verified core replica peer: these data connections
+can require `N * K` links and `N` worker connections per core. The two-uplink policy bounds control
 probe audiences; it does not cap total worker-to-core connections or core-hosted storage demand.
 
-Core SWIM membership is approximately `C + G`; worker membership is approximately `C + M`.
+Core SWIM membership is approximately `K + G`; worker membership is approximately `K + M`.
 A governor processes its own community's direct health observations and answers fenced core
 challenges. Ordinary workers do not relay global peer metrics. These bounds reduce observation
 fan-out without substituting silence for proof of an individual worker's death.
 
-Complete metrics on every core still require at least order `C * N * B` delivered observation
+Complete metrics on every core still require at least order `K * N * B` delivered observation
 bytes per collection interval, regardless of batching. Batch limits bound individual messages,
 not total throughput. History retention adds its configured point count times producer and metric
 cardinality. Measure encoded payload bytes, allocation rate and collection/forwarding CPU alongside
 message counts; a fixed sample count alone is not a memory limit.
 
-Metadata caches, per-worker projection size, manifest lifetime and serving bandwidth have explicit
+[limit: metadata-and-endpoint-cardinality] Metadata caches, per-worker projection size, manifest lifetime and serving bandwidth have explicit
 limits. Large shared catalogs and endpoint fan-out can exhaust those limits even when membership
 is small. Reconnect tests must measure cache churn, rebuild cost, time until a fresh projection and
 consensus latency while workers recover. Oversize projection rejection is a visible availability
 failure, not permission to fall back to an unbounded full snapshot.
 
-The 100-by-100 hierarchy is a deployment target. It is not evidence that one core group can sustain
+[unverified: 10k-wan-throughput] The 100-by-100 hierarchy is a deployment target. It is not evidence that one core group can sustain
 all workloads at that size, or that a wide-area core quorum has local-area latency. Core consensus
 latency, durable journal writes, governor turnover, metric cardinality, endpoint cardinality and
 cross-region repair bandwidth each impose independent limits. Physical multi-region measurements
 remain necessary before publishing a supported production envelope.
 
-The current durable Rabia path forces proposal, first-round vote, second-round vote and decision
+[limit: durable-checkpoint-pauses] The #1390 durable Rabia path forces proposal, first-round vote, second-round vote and decision
 records for a normal decided batch. Retried rounds add evidence writes. The journal checkpoints
 after 4,096 appended records or 32 MiB, encoding a canonical full-state image on the consensus
-actor. Large control-state images can therefore introduce checkpoint pauses. Local small-state
+actor. A checkpoint temporary file is forced, atomically renamed, and its containing directory
+is forced before the covered WAL prefix is replaced; atomic rename alone is not power-loss durability.
+Large control-state images can therefore introduce checkpoint pauses. Local small-state
 write measurements do not establish the latency or throughput of a 10K-worker deployment;
 measure checkpoint size, serialization time, force latency and proposal queue delay under the
 intended state cardinality and storage hardware.
 
-Core catch-up and voter handoff currently transfer whole encoded messages under a 32 MiB
+[limit: core-snapshot-frame] After #1390, core catch-up and voter handoff transfer whole encoded messages under a 32 MiB
 transport frame limit. The usable application snapshot is smaller: framing, certified authority
 history and a retained handoff snapshot consume the same envelope. Reconfiguration must validate
 the exact barrier prefix and both handoff and post-install catch-up envelopes before proposing or
@@ -362,3 +377,8 @@ voting for the barrier. Oversized transfer is a visible refusal, not permission 
 electorate after an agreed barrier. Uncommitted pending requests may be omitted from recovery
 hints without being acknowledged; callers retain their ordinary retry obligations. Chunked core
 snapshot transfer is future work. Bounded worker metadata chunks do not remove this core limit.
+
+[limit: handoff-write-unavailability] Once barrier R commits, old epoch E cannot resume writes.
+Clients can observe delayed completion or their ordinary timeout/refusal until a successor majority
+durably installs E+1. Operators restore connectivity/storage and restart the same durable participants
+to retry the certified handoff; they must not roll back to E or manufacture a new electorate.

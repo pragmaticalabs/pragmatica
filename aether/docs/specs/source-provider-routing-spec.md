@@ -1,5 +1,8 @@
 # Source-aware provider routing
 
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
 Status: implementation contract for the fresh-cluster hierarchy batch. This specification complements
 `hierarchical-cluster-contract-spec.md`; it does not define a rolling upgrade or migration path.
 
@@ -24,7 +27,8 @@ Any failed source query fails the fleet view; a partial view must not masquerade
 
 Persisted cluster configuration can contain unresolved references. Runtime source resolution uses
 the existing `${env:NAME}` and `${secrets:name}` grammar. The latter maps to `AETHER_NAME`, with
-uppercase and hyphens replaced by underscores, matching the existing environment fallback. Missing,
+uppercase and hyphens replaced by underscores, matching bootstrap `ConfigReferenceResolver` and runtime `ConfigReferenceValues`. This is not the
+`EnvSecretsProvider` convention (`AETHER_SECRET_<PATH>`), which is a separate secret-provider boundary. Missing,
 blank, nested or unknown references fail before provider construction. Neither credentials nor
 resolved values appear in these failures.
 

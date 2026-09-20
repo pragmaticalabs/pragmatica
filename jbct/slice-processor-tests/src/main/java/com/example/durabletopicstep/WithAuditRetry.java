@@ -12,6 +12,7 @@ import java.lang.annotation.Target;
 import org.pragmatica.aether.slice.MethodInterceptor;
 import org.pragmatica.aether.slice.annotation.ResourceQualifier;
 
+
 /// A method interceptor on the HOST slice's own business method, deliberately placed so this
 /// fixture pairs an interceptor with a context-carrying subscriber that is reached transitively.
 ///
