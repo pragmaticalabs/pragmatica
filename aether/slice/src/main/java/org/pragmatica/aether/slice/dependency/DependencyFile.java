@@ -22,7 +22,6 @@ import org.pragmatica.lang.io.StreamError;
 import org.pragmatica.lang.io.StreamOps;
 import org.pragmatica.lang.utils.Causes;
 
-
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
@@ -154,7 +153,8 @@ public record DependencyFile(List<ArtifactDependency> shared,
 
         return StreamOps.readResource(classLoader, resource)
                         .flatMap(DependencyFile::dependencyFile)
-                        .fold(cause -> emptyOnlyIfAbsent(resource, classLoader, cause), Result::success);
+                        .fold(cause -> emptyOnlyIfAbsent(resource, classLoader, cause),
+                              Result::success);
     }
 
     private static Result<DependencyFile> emptyOnlyIfAbsent(String resource, ClassLoader classLoader, Cause cause) {
@@ -169,7 +169,8 @@ public record DependencyFile(List<ArtifactDependency> shared,
         record Unreadable(String resource, String jar, Cause origin) implements DependencyFileError, Cause.Wrapped {
             @Override
             public String message() {
-                return "Dependency file " + resource + " in " + jar
+                return "Dependency file " + resource
+                     + " in " + jar
                      + " is present but cannot be read; refusing to load the slice: " + origin.message();
             }
         }

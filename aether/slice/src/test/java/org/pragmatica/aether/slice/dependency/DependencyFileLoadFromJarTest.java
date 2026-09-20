@@ -74,8 +74,8 @@ class DependencyFileLoadFromJarTest {
                                    ClassLoader.getPlatformClassLoader())
                       .onSuccess(file -> Assertions.fail("must refuse; got " + file))
                       .onFailure(cause -> assertThat(cause.message()).contains(DEPENDENCIES_ENTRY)
-                                                                     .contains(jar.toString())
-                                                                     .contains("Unknown section"));
+                                                    .contains(jar.toString())
+                                                    .contains("Unknown section"));
     }
 
     /// The read itself failing (an I/O error after the resource was found) is the other unreadable shape.
@@ -87,8 +87,8 @@ class DependencyFileLoadFromJarTest {
         DependencyFile.loadClosing(SLICE_CLASS, loader)
                       .onSuccess(file -> Assertions.fail("must refuse; got " + file))
                       .onFailure(cause -> assertThat(cause.message()).contains(DEPENDENCIES_ENTRY)
-                                                                     .contains(jar.toString())
-                                                                     .contains("disk gone"));
+                                                    .contains(jar.toString())
+                                                    .contains("disk gone"));
         assertThat(loader.closed.get()).as("a refused load still closes the loader").isTrue();
     }
 
