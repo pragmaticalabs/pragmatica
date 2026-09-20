@@ -221,6 +221,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
     /// owner-write admission (#1230) — only the epoch fence applies to them.
     private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
+    /// A publish with no min-sync barrier: the floor check is trivially met.
+    private static final int NO_REPLICA_FLOOR = 0;
 
     /// Live committed-ownership admission for application appends (#1230). Consulted by [#publishLocal]
     /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
@@ -1190,6 +1192,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                             ownerEpochSource.currentOwnerEpoch(streamName, partition));
     }
 
+    /// Owner-local publish that also checks the replica floor (#1236) — `minAcks` in-sync peers must exist
+    /// BEFORE the append, so a `NOT_ENOUGH_REPLICAS` refusal leaves nothing in the ring or the WAL. The
+    /// floor runs AFTER the epoch fence and the owner admission (#1230/#1236 composition): the in-sync
+    /// floor is the OWNER's replication state, so a non-owner is redirected ([StreamError.NotOwnerAppend])
+    /// rather than answering `NOT_ENOUGH_REPLICAS` for a partition whose replication it does not own.
+    public Result<Long> publishLocalAtFloor(String streamName,
+                                            int partition,
+                                            byte[] payload,
+                                            long timestamp,
+                                            int minAcks) {
+        return publishLocal(streamName,
+                            partition,
+                            payload,
+                            timestamp,
+                            ownerEpochSource.currentOwnerEpoch(streamName, partition),
+                            minAcks);
+    }
+
     /// Owner-local publish stamped with an explicit `ownerEpoch` fencing token (#345 item 1d-ii). The
     /// append is fenced against the partition high-water before `buffer.append`; on accept the event is
     /// replicated to the registered replica set carrying the SAME `ownerEpoch` so every replica fences
@@ -1213,13 +1233,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch) {
+        return publishLocal(streamName, partition, payload, timestamp, ownerEpoch, NO_REPLICA_FLOOR);
+    }
+
+    private Result<Long> publishLocal(String streamName,
+                                      int partition,
+                                      byte[] payload,
+                                      long timestamp,
+                                      Epoch ownerEpoch,
+                                      int minAcks) {
         return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
                                                                                  streamName,
                                                                                  partition,
                                                                                  payload,
                                                                                  timestamp,
                                                                                  ownerEpoch,
-                                                                                 admitOwnerWrite(streamName, partition)))
+                                                                                 admitOwnerWrite(streamName,
+                                                                                                 partition,
+                                                                                                 minAcks)))
                                  .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
                                  .onSuccess(offset -> replicationManager.replicateEvent(streamName,
                                                                                         partition,
@@ -1303,10 +1334,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return refusedReplicaDropsSinceBoot.get();
     }
 
-    private Result<Unit> admitOwnerWrite(String streamName, int partition) {
+    /// Owner admission first, then the replica floor: the floor is evaluated only for an admitted write.
+    private Result<Unit> admitOwnerWrite(String streamName, int partition, int minAcks) {
         return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
                                   .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
-                                  .or(Result::unitResult);
+                                  .or(Result::unitResult)
+                                  .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks));
     }
 
     /// Gate the publish ack on WAL fsync (streaming-persistence W3). With no WAL configured for

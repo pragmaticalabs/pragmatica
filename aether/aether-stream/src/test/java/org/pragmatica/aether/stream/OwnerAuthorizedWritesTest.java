@@ -5,11 +5,16 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
+import org.pragmatica.aether.stream.replication.ReplicationError;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
@@ -30,6 +35,8 @@ import java.util.function.Function;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
+import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
 
 /// #1230: holding a partition ring authorizes reads and replication receipt, never an application write.
 ///
@@ -44,6 +51,7 @@ class OwnerAuthorizedWritesTest {
     private static final String STREAM = "owned-stream";
     private static final int PARTITION = 0;
     private static final long FORWARDED_OFFSET = 42L;
+    private static final int MIN_SYNC_TWO = 2;
 
     private StreamPartitionManager partitionManager;
 
@@ -207,7 +215,113 @@ class OwnerAuthorizedWritesTest {
         }
     }
 
+    /// #1230/#1236 composition: owner admission precedes the replica-floor check on every local-append site.
+    /// The in-sync floor is the OWNER's replication state; a non-owner evaluating it answers a question it
+    /// does not own, and a `NOT_ENOUGH_REPLICAS` from a non-owner tells the caller something false about the
+    /// partition. Fixture: the real replication manager over a registry holding SELF alone (zero non-self
+    /// targets, so a `min-sync = 2` floor is unmeetable here) AND a committed owner elsewhere. Each test is
+    /// RED with the order swapped back: the floor then answers first and `redirectNotOwner` passes
+    /// `NOT_ENOUGH_REPLICAS` through untouched.
+    @Nested
+    class AdmissionPrecedesReplicaFloor {
+        @BeforeEach
+        void thinFloorUnderARemoteOwner() {
+            partitionManager.close();
+            partitionManager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, ownerOnlyReplication());
+            partitionManager.createStream(minSyncTwoConfig())
+                            .onFailure(cause -> Assertions.fail(cause.message()));
+            partitionManager.placementRoleSupplier((_, _) -> Role.REPLICA);
+            partitionManager.ownerWriteAdmission((_, _) -> Option.some(OWNER));
+        }
+
+        @Test
+        void appPublisher_redirectsToCommittedOwner_ratherThanAnsweringNotEnoughReplicas() {
+            var forwardClient = new RecordingForwardClient();
+
+            publisher(forwardClient, SELF, MIN_SYNC_TWO).publish("e0".getBytes())
+                                                        .await()
+                                                        .onFailure(cause -> Assertions.fail(cause.message()));
+            assertThat(forwardClient.owners).containsExactly(OWNER);
+            assertThat(localHead()).isEqualTo(-1L);
+        }
+
+        @Test
+        void writeRouter_redirectsToCommittedOwner_ratherThanAnsweringNotEnoughReplicas() {
+            var forwardClient = new RecordingForwardClient();
+
+            StreamWriteRouter.streamWriteRouter(partitionManager, Option.some(forwardClient), SELF, (_, _) -> Option.some(SELF))
+                             .publish(STREAM, PARTITION, "e0".getBytes(), 1L)
+                             .await()
+                             .onFailure(cause -> Assertions.fail(cause.message()))
+                             .onSuccess(offset -> assertThat(offset).isEqualTo(FORWARDED_OFFSET));
+            assertThat(forwardClient.owners).containsExactly(OWNER);
+            assertThat(localHead()).isEqualTo(-1L);
+        }
+
+        @Test
+        void streamAccess_redirectsToCommittedOwner_ratherThanAnsweringNotEnoughReplicas() {
+            var forwardClient = new RecordingForwardClient();
+            Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(SELF);
+
+            PartitionedStreamAccess.<byte[]> streamAccess(partitionManager,
+                                                          identitySerializer(),
+                                                          identityDeserializer(),
+                                                          STREAM,
+                                                          1,
+                                                          Option.<Function<byte[], Object>> none(),
+                                                          Option.some(forwardClient),
+                                                          SELF,
+                                                          Option.<Fn0<Option<NodeId>>> none(),
+                                                          Option.some(ownerResolver),
+                                                          MIN_SYNC_TWO)
+                                   .publish("e0".getBytes())
+                                   .await()
+                                   .onFailure(cause -> Assertions.fail(cause.message()))
+                                   .onSuccess(offset -> assertThat(offset).isEqualTo(FORWARDED_OFFSET));
+            assertThat(forwardClient.owners).containsExactly(OWNER);
+            assertThat(localHead()).isEqualTo(-1L);
+        }
+
+        /// Control for the fixture: with SELF as the committed owner the same thin floor IS the answer, so
+        /// the redirect above is earned by the order, not by a floor that never fails.
+        @Test
+        void committedOwner_stillAnswersNotEnoughReplicas_belowTheFloor() {
+            partitionManager.ownerWriteAdmission((_, _) -> Option.none());
+
+            publisher(new RecordingForwardClient(), SELF, MIN_SYNC_TWO).publish("e0".getBytes())
+                                                                       .await()
+                                                                       .onSuccess(_ -> Assertions.fail("publish must fail below the replica floor"))
+                                                                       .onFailure(cause -> assertThat(cause).isEqualTo(ReplicationError.General.NOT_ENOUGH_REPLICAS));
+            assertThat(localHead()).isEqualTo(-1L);
+        }
+
+        private ReplicationManager ownerOnlyReplication() {
+            var registry = replicaRegistry();
+
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            return replicationManager(SELF, registry, (_, _) -> {});
+        }
+
+        private StreamConfig minSyncTwoConfig() {
+            return StreamConfig.streamConfig(STREAM,
+                                             1,
+                                             RetentionPolicy.retentionPolicy(),
+                                             "earliest",
+                                             StreamConfig.DEFAULT.maxEventSizeBytes(),
+                                             ConsistencyMode.EVENTUAL,
+                                             MIN_SYNC_TWO,
+                                             MIN_SYNC_TWO,
+                                             StreamCompression.NONE,
+                                             Option.none());
+        }
+    }
+
     private DefaultStreamPublisher<byte[]> publisher(StreamForwardClient forwardClient, NodeId hrwOwner) {
+        return publisher(forwardClient, hrwOwner, 0);
+    }
+
+    private DefaultStreamPublisher<byte[]> publisher(StreamForwardClient forwardClient, NodeId hrwOwner, int minSyncReplicas) {
         Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
 
         return DefaultStreamPublisher.streamPublisher(partitionManager,
@@ -217,7 +331,7 @@ class OwnerAuthorizedWritesTest {
                                                       Option.<Function<byte[], Object>> none(),
                                                       ConsistencyMode.EVENTUAL,
                                                       Option.none(),
-                                                      0,
+                                                      minSyncReplicas,
                                                       Option.some(forwardClient),
                                                       Option.<Fn0<Option<NodeId>>> none(),
                                                       Option.some(ownerResolver),

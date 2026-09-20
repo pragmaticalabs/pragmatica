@@ -69,10 +69,10 @@ public final class StreamWriteRouter {
 
     private Promise<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(streamName);
-        // #1236: floor before the append (a refusal is not in the log); after it, an unconfirmed
-        // barrier is an unknown outcome. #1230: a NotOwnerAppend refusal is redirected to the committed owner.
-        return partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
-                               .flatMap(_ -> partitionManager.publishLocal(streamName, partition, payload, timestamp))
+        // #1230: a NotOwnerAppend refusal is redirected to the committed owner, before #1236's floor check;
+        // the floor precedes the append (a refusal is not in the log); after it, an unconfirmed barrier is
+        // an unknown outcome.
+        return partitionManager.publishLocalAtFloor(streamName, partition, payload, timestamp, minSyncReplicas - 1)
                                .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
                                                                                   owner -> forwardTo(owner,
                                                                                                      streamName,

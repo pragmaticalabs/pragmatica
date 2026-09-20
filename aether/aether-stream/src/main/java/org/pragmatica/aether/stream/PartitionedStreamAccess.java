@@ -647,24 +647,15 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// (0 = eventual, 1 = owner-only). A refusal because the committed owner is another node (the #1230
     /// ownership-lag window) is redirected to that owner via {@link StreamForwardRetry#redirectNotOwner}.
     private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
-        return ensureReplicaFloor(partition).flatMap(_ -> partitionManager.publishLocal(streamName,
-                                                                                        partition,
-                                                                                        bytes,
-                                                                                        timestamp))
-                                 .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
-                                                                                    owner -> forwardClient.map(client -> forwardToOwner(client,
-                                                                                                                                        owner,
-                                                                                                                                        partition,
-                                                                                                                                        bytes,
-                                                                                                                                        timestamp))),
-                                       offset -> awaitMinSync(partition, offset));
-    }
-
-    /// #1236: floor before the append (a refusal is not in the log).
-    private Result<Unit> ensureReplicaFloor(int partition) {
-        return minSyncReplicas > 1
-               ? partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
-               : Result.unitResult();
+        // #1236: floor before the append (a refusal is not in the log), after the #1230 owner admission.
+        return partitionManager.publishLocalAtFloor(streamName, partition, bytes, timestamp, minSyncReplicas - 1)
+                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                  owner -> forwardClient.map(client -> forwardToOwner(client,
+                                                                                                                                      owner,
+                                                                                                                                      partition,
+                                                                                                                                      bytes,
+                                                                                                                                      timestamp))),
+                                     offset -> awaitMinSync(partition, offset));
     }
 
     /// #1236: after the append, an unconfirmed barrier is an unknown outcome.

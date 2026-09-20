@@ -23,7 +23,6 @@ import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
@@ -256,27 +255,18 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                            .or(() -> publishLocalEventual(partition, bytes, timestamp));
     }
 
-    /// Owner-local append. With `minSyncReplicas > 1` the replica floor is checked BEFORE the append (#1236:
-    /// NOT_ENOUGH_REPLICAS means "not in the log") and `minSyncReplicas - 1` peer acks are awaited after it.
-    /// A refusal because the committed owner is another node (the #1230 ownership-lag window) is redirected
-    /// to that owner via {@link StreamForwardRetry#redirectNotOwner}.
+    /// Owner-local append. A refusal because the committed owner is another node (the #1230 ownership-lag
+    /// window) is redirected to that owner via {@link StreamForwardRetry#redirectNotOwner}; that admission
+    /// precedes the `minSyncReplicas - 1` replica-floor check, which precedes the append (#1236:
+    /// NOT_ENOUGH_REPLICAS means "not in the log"); the same number of peer acks is awaited after it.
     private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        return ensureReplicaFloor(partition).flatMap(_ -> partitionManager.publishLocal(streamName,
-                                                                                        partition,
-                                                                                        bytes,
-                                                                                        timestamp))
-                                 .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
-                                                                                    owner -> forwardTo(owner,
-                                                                                                       partition,
-                                                                                                       bytes,
-                                                                                                       timestamp)),
-                                       offset -> awaitMinSync(partition, offset));
-    }
-
-    private Result<Unit> ensureReplicaFloor(int partition) {
-        return minSyncReplicas > 1
-               ? partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
-               : Result.unitResult();
+        return partitionManager.publishLocalAtFloor(streamName, partition, bytes, timestamp, minSyncReplicas - 1)
+                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                  owner -> forwardTo(owner,
+                                                                                                     partition,
+                                                                                                     bytes,
+                                                                                                     timestamp)),
+                                     offset -> awaitMinSync(partition, offset));
     }
 
     /// #1236: once appended, a barrier that does not confirm is an unknown outcome, never a failure.
