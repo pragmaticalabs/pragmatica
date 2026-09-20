@@ -125,6 +125,9 @@ preferences. Empty optional topology means the existing single-zone deployment, 
 Several communities may use one source; one community may use several sources. Source-level
 quotas are shared reservations, not multiplied by community count. Source fallback resolves
 prior ambiguous provisioning attempts before issuing replacement requests elsewhere.
+Definitive no-create refusals may redistribute discretionary capacity through persisted
+location availability; hard minima remain obligations. Effective targets and bounded recovery
+probes follow the community placement runtime specification.
 
 Configuration must travel through parse/validation, committed desired state, source selection,
 provision request, returned physical placement, assignment and operator-visible reconciliation.

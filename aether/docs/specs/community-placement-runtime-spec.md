@@ -38,6 +38,34 @@ location of the same source, are rejected.
 Minimums reserve the first slots. Remaining slots use weighted largest remainders with
 source/zone lexical tie breaking. The result sums exactly to the community target.
 
+A definitive provider capacity refusal installs leader-authorized availability evidence keyed
+by community/source/zone, with canonical policy identity, resolved provider binding, refusal
+time and bounded attempt count. Effective desired counts retain every hard minimum and
+redistribute only discretionary slots among locations without matching refusal evidence.
+Allocation and excess detection use the same effective counts, preventing immediate migration
+back to an unavailable preference. If all locations are unavailable, configured counts remain
+unsatisfied obligations; no capacity is invented. An unavailable minimum cannot be fulfilled
+by another source. Existing workers are retained when unavailable locations prevent progress.
+
+The refusal transition atomically completes only the failed create attempt and records its
+availability evidence; it never removes the previous worker. This transition requires proof
+that capacity accounting was released (or no reservation exists). Ambiguous effects remain
+`CREATE_UNCERTAIN` with their original identity and reservation, without fallback.
+
+After ordinary effective deficits are addressed, a due preferred-location deficit may receive
+one recovery probe. The sole active community operation is its persisted exclusivity token.
+The probe requires the same resolved source binding as the refusal and a fresh stable node
+identity. Retry delay starts at 30 seconds, doubles, and caps at 10 minutes; attempt count caps
+at 31. A successful create or verified inventory recovery clears matching refusal evidence
+atomically with `AWAITING_READY`, then normal make-before-break movement restores preferences.
+Refusals survive leader changes. Policy changes invalidate only evidence for the old policy;
+they do not erase unresolved operations. UTC retry timestamps require the deployment clock
+assumption; clock rollback delays probes rather than allowing earlier retries.
+
+[limit: fallback-probe-rate] Recovery is serialized per community, not globally per provider;
+several communities sharing a source may each issue one due probe subject to the shared
+capacity ledger. Provider-wide backoff is not inferred from one community's refusal.
+
 When explicit communities exist, their targets are the worker-capacity intent. Legacy
 source worker counts do not independently create or destroy workers, including sources
 no longer present in a community's desired placement. Core and spot capacity retain their
@@ -135,7 +163,7 @@ Externally managed SSH capacity is not a provider allocation in this ledger.
 
 Commit `DISPATCHED` before create. Ambiguous failures retain capacity across leader changes.
 Explicit provider capacity rejection, which proves no create occurred, can release that
-attempt for a bounded zone fallback. Reusing an existing unresolved identity is refused.
+attempt for bounded source or zone fallback within the community policy. Reusing an existing unresolved identity is refused.
 A successful provider observation changes the reservation to `OBSERVED`.
 
 Release an observed allocation only after source-bound node inventory confirms absence.
