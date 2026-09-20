@@ -2703,7 +2703,10 @@ A checkpoint is the only thing that bounds an entity log: until a partition is c
 floor reclaims nothing for it. **`writes` climbing is the signal that the driver is alive** — writes and
 reads keep succeeding even when checkpointing has stopped, so a flat `writes` under load is the fault to
 act on. `failures` and `checkpointedThrough` say which partitions are stuck; a partition this node has
-never folded is absent rather than reported as offset 0.
+never folded is absent rather than reported as offset 0. `checkpointLag` (#1302) is, per folded partition,
+the log head minus the COMMITTED checkpoint in consensus KV, for partitions this node OWNS — how far a
+recovery would replay; its node-wide
+maximum drives the `entity.checkpoint.lag.max` threshold alert (default WARNING 5,000 / CRITICAL 10,000).
 
 Output is the endpoint's JSON, pretty-printed:
 
@@ -2711,7 +2714,8 @@ Output is the endpoint's JSON, pretty-printed:
 {
   "keyspaces": [
     {"keyspace": "orders", "partitionCount": 8, "writes": 214, "failures": 0,
-     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}}
+     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502},
+     "checkpointLag": {"0": 59, "3": 12, "5": 0}}
   ]
 }
 ```
@@ -2803,7 +2807,9 @@ WAL counters (`sizeBytes`, replayable window `(truncatedUpto, lastOffset]`, fsyn
 `sealedThrough` / `earliestSegment` — the durable sealed bound and the earliest retained sealed
 segment; `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest offset reachable from
 any local source; `violated` / `violation` — the tri-floor invariant verdict. `walTotalBytes` at the
-root is this node's total live WAL footprint. Full schema and the precise invariant in the
+root is this node's total live WAL footprint; `walRecoveryHeadGapsAccepted` counts WAL recoveries that
+accepted a gap before a WAL file's first record as reclaimed history (non-zero without retention
+having reclaimed that partition means records were lost — the WARN log names the range). Full schema and the precise invariant in the
 Management API section linked above.
 
 **A `violated: true` row means this node cannot rebuild that partition from its checkpoint** — the

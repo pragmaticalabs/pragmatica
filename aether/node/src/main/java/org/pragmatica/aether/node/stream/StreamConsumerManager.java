@@ -28,6 +28,7 @@ import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.ConsumerCallback;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
@@ -39,6 +40,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -79,7 +81,7 @@ import org.slf4j.LoggerFactory;
 /// **At-least-once delivery per partition, conditional on the slice being ACTIVE on at least one live
 /// node.** Duplicates arise from redelivery after a handler failure under `RETRY`; from the
 /// reconcile-tick window during an ownership or placement change, in which the old and new assignee
-/// may both deliver; and from resuming at the last checkpoint (≤1000 events or ≤30s of progress)
+/// may both deliver; and from resuming at the last checkpoint (≤1000 events or ≤1s of progress — 500ms for durable-topic groups)
 /// rather than the last delivered offset after an UNGRACEFUL move — a graceful detach flushes the
 /// exact cursor. Replay after an ungraceful move is bounded by that checkpoint cadence. This is NOT
 /// effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment
@@ -174,7 +176,16 @@ public interface StreamConsumerManager {
     /// failure while the consumer stays attached; [Option#none] once it commits successfully again,
     /// or if none has failed. Sourced from
     /// [org.pragmatica.aether.stream.StreamConsumerRuntime.SubscriptionSnapshot#lastCursorCommitFailure].
-    record PartitionCursor(int partition, long cursor, boolean stalled, Option<String> lastCursorCommitFailure) {}
+    /// `deadLetterInFlight` / `retryInFlight` (#1266): the holds currently stopping this partition's
+    /// delivery loop, so a held partition is distinguishable from a quiet one. `awaitingCursorFetch`: the
+    /// consumer has not started at all, because its cursor fetch keeps failing and is being retried.
+    record PartitionCursor(int partition,
+                           long cursor,
+                           boolean stalled,
+                           Option<String> lastCursorCommitFailure,
+                           boolean deadLetterInFlight,
+                           boolean retryInFlight,
+                           boolean awaitingCursorFetch) {}
 
     /// Who consumes one partition, and who owns it. Both are computed locally and identically on every
     /// node, so a single call to any node answers "who consumes partition 3, and does it read locally?"
@@ -240,7 +251,8 @@ public interface StreamConsumerManager {
                                        ownership,
                                        placement,
                                        self,
-                                       topicGroups);
+                                       topicGroups,
+                                       ManagerState.HANDLER_TIMEOUT);
 
         registry.setChangeListener(manager::onDeclarationChange);
 
@@ -252,6 +264,14 @@ public interface StreamConsumerManager {
 
         private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
 
+        /// #1238: bound on one handler invocation. The consumer runtime runs ONE serial delivery loop per
+        /// (group, partition), so a handler that never resolves would hold that partition forever; a
+        /// timed-out invocation is a delivery FAILURE and goes through the group's error strategy (retry,
+        /// then dead-letter). 30s is the value the deleted `StreamConsumerAdapter` used (#577); no
+        /// configuration surface for it exists. [design intent — unverified: not derived from a measured
+        /// handler-latency distribution.]
+        static final TimeSpan HANDLER_TIMEOUT = TimeSpan.timeSpan(30).seconds();
+
         private final StreamConsumerRegistry registry;
         private final StreamConsumerRuntime runtime;
         private final SliceInvoker invoker;
@@ -261,6 +281,7 @@ public interface StreamConsumerManager {
         private final SlicePlacement placement;
         private final NodeId self;
         private final TopicGroupDeclarationSource topicGroups;
+        private final TimeSpan handlerTimeout;
         private final Map<SubscriptionKey, ConsumerDeclaration> active = new ConcurrentHashMap<>();
         private final Map<String, Diagnosis> diagnoses = new ConcurrentHashMap<>();
         private final AtomicBoolean passRequested = new AtomicBoolean();
@@ -275,7 +296,8 @@ public interface StreamConsumerManager {
                      PartitionOwnership ownership,
                      SlicePlacement placement,
                      NodeId self,
-                     TopicGroupDeclarationSource topicGroups) {
+                     TopicGroupDeclarationSource topicGroups,
+                     TimeSpan handlerTimeout) {
             this.registry = registry;
             this.runtime = runtime;
             this.invoker = invoker;
@@ -285,6 +307,7 @@ public interface StreamConsumerManager {
             this.placement = placement;
             this.self = self;
             this.topicGroups = topicGroups;
+            this.handlerTimeout = handlerTimeout;
         }
 
         private void onDeclarationChange(Object key, Option<ConsumerDeclaration> declaration) {
@@ -626,7 +649,7 @@ public interface StreamConsumerManager {
             runtime.subscribe(key.streamName(),
                               key.partition(),
                               consumerConfigFor(key, declaration),
-                              callbackFor(declaration, bridge),
+                              callbackFor(key, declaration, bridge),
                               IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED)
                    .onSuccess(_ -> logAttached(key, declaration))
                    .onFailure(cause -> failAttach(key, cause));
@@ -656,8 +679,8 @@ public interface StreamConsumerManager {
                       cause.message());
         }
 
-        private ConsumerCallback callbackFor(ConsumerDeclaration declaration, SliceBridge bridge) {
-            return (_, payload, _) -> deliver(declaration, bridge, payload);
+        private ConsumerCallback callbackFor(SubscriptionKey key, ConsumerDeclaration declaration, SliceBridge bridge) {
+            return (offset, payload, _) -> deliver(key, declaration, bridge, offset, payload);
         }
 
         /// Durable-topic groups take the spec-cadence config (durable-pubsub-spec §6/§7 — 5
@@ -668,9 +691,13 @@ public interface StreamConsumerManager {
                    : ConsumerConfig.consumerConfig(declaration.consumerGroup());
         }
 
-        private Promise<Unit> deliver(ConsumerDeclaration declaration, SliceBridge bridge, byte[] payload) {
+        private Promise<Unit> deliver(SubscriptionKey key,
+                                      ConsumerDeclaration declaration,
+                                      SliceBridge bridge,
+                                      long offset,
+                                      byte[] payload) {
             return DurableTopicNames.isTopicStream(declaration.streamName())
-                   ? deliverTopicEvent(declaration, bridge, payload)
+                   ? deliverTopicEvent(key, declaration, offset, payload)
                    : bridge.decode(payload)
                            .flatMap(event -> invokeConsumer(declaration, event));
         }
@@ -681,11 +708,31 @@ public interface StreamConsumerManager {
         /// bridge, the same cross-slice type contract every RPC message already rides. The
         /// handler's promise is the ack — nothing else about delivery differs from a declarative
         /// consumer, which is the point of the option-(a) reuse.
-        private Promise<Unit> deliverTopicEvent(ConsumerDeclaration declaration, SliceBridge bridge, byte[] rawEvent) {
+        ///
+        /// #1295: the delivery carries its [MessageContext] — the envelope's `messageId` (the §8
+        /// idempotency key), the topic address, and the partition and offset it was read from. The
+        /// subscribing slice's bridge decodes the payload and hands a context-carrying (2-arg) subscriber
+        /// `contextualEvent(event, context)`, a 1-arg subscriber the bare event. The invocation is LOCAL by
+        /// construction ([SliceInvoker#invokeLocalWithContext] never forwards), which is what lets the
+        /// context stay an in-process value.
+        private Promise<Unit> deliverTopicEvent(SubscriptionKey key,
+                                                ConsumerDeclaration declaration,
+                                                long offset,
+                                                byte[] rawEvent) {
             return Result.lift(() -> nodeCodec.<TopicEventEnvelope> decode(rawEvent))
                          .async()
-                         .flatMap(envelope -> bridge.decode(envelope.payload()))
-                         .flatMap(event -> invokeConsumer(declaration, event));
+                         .flatMap(envelope -> invoker.invokeLocalWithContext(declaration.artifact(),
+                                                                             declaration.methodName(),
+                                                                             envelope.payload(),
+                                                                             contextOf(key, offset, envelope))
+                                                     .timeout(handlerTimeout));
+        }
+
+        private static MessageContext contextOf(SubscriptionKey key, long offset, TopicEventEnvelope envelope) {
+            return MessageContext.messageContext(envelope.messageId(),
+                                                 DurableTopicNames.topicAddressOf(key.streamName()),
+                                                 key.partition(),
+                                                 offset);
         }
 
         private Promise<Unit> invokeConsumer(ConsumerDeclaration declaration, Object event) {
@@ -693,6 +740,7 @@ public interface StreamConsumerManager {
                                        declaration.methodName(),
                                        payloadFor(declaration, event),
                                        UNIT_TYPE_TOKEN)
+                          .timeout(handlerTimeout)
                           .mapToUnit();
         }
 
@@ -787,7 +835,10 @@ public interface StreamConsumerManager {
                                                     snapshot -> new PartitionCursor(snapshot.partition(),
                                                                                     snapshot.cursor(),
                                                                                     snapshot.stalled(),
-                                                                                    snapshot.lastCursorCommitFailure()),
+                                                                                    snapshot.lastCursorCommitFailure(),
+                                                                                    snapshot.deadLetterInFlight(),
+                                                                                    snapshot.retryInFlight(),
+                                                                                    snapshot.awaitingCursorFetch()),
                                                     (first, _) -> first));
         }
 

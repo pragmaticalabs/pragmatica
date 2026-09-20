@@ -111,6 +111,24 @@ class StreamForwardHandlerTest {
             assertThat(response.correlationId()).isEqualTo(CORRELATION_ID);
         }
 
+        /// #1230: a forward reaching a node whose committed ownership names someone else — the HRW owner
+        /// during the reshuffle lag, before the leader commits the change — is refused RETRYABLE, so the
+        /// forwarder's bounded retry (#485) absorbs the lag instead of surfacing it; nothing lands here.
+        @Test
+        void onPublishForward_committedOwnerElsewhere_respondsRetryable_andAppendsNothing() {
+            partitionManager.createStream(streamConfig(STREAM));
+            partitionManager.ownerWriteAdmission((_, _) -> Option.some(REQUESTER));
+            var request = publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+
+            handler.onPublishForward(request);
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isFalse();
+            assertThat(response.retryable()).isTrue();
+            assertThat(partitionManager.nextExpectedOffset(STREAM, PARTITION)).isZero();
+        }
+
         @Test
         void onPublishForward_partitionOutOfRange_respondsWithError() {
             partitionManager.createStream(streamConfig(STREAM));
@@ -146,6 +164,72 @@ class StreamForwardHandlerTest {
             var events = partitionManager.readLocal(STREAM, PARTITION, 0L, 10);
             assertThat(events.isSuccess()).isTrue();
             events.onSuccess(list -> assertThat(list).hasSize(1));
+        }
+    }
+
+    /// #1235: a consumer forward is answered up to the VISIBLE position; a catch-up forward (a replica
+    /// backfilling, a new owner pulling from a survivor) up to the APPENDED head.
+    @Nested
+    class VisibilityTests {
+        private static final NodeId PEER = NodeId.randomNodeId();
+
+        private StreamPartitionManager pendingManager;
+
+        @BeforeEach
+        void publishAnUnacknowledgedEvent() {
+            var registry = replicaRegistry();
+
+            registry.registerReplica(STREAM, PARTITION, GOVERNOR);
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            pendingManager = streamPartitionManager(Long.MAX_VALUE,
+                                                    EvictionListener.NOOP,
+                                                    replicationManager(GOVERNOR, registry));
+            pendingManager.createStream(streamConfig(STREAM,
+                                                     1,
+                                                     RetentionPolicy.retentionPolicy(),
+                                                     "earliest",
+                                                     1_048_576L,
+                                                     ConsistencyMode.EVENTUAL,
+                                                     2,
+                                                     2,
+                                                     StreamCompression.NONE,
+                                                     Option.none()));
+            pendingManager.publishLocal(STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+            handler = streamForwardHandler(GOVERNOR, pendingManager, (target, message) -> sentMessages.add(new SentMessage(target,
+                                                                                                                          message)));
+        }
+
+        @Test
+        void consumerReadForward_doesNotServeAnUnacknowledgedEvent() {
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).isEmpty();
+        }
+
+        @Test
+        void catchupReadForward_fromARegisteredReplica_servesTheAppendedEvent() {
+            handler.onReadForward(readForward(PEER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false, true));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).hasSize(1);
+            assertThat(response.events().getFirst().data()).isEqualTo(PAYLOAD);
+        }
+
+        /// CTO ruling (#1235 Fork A): the flag alone must not let an arbitrary reader opt out of
+        /// visibility. A node outside the partition's replica set gets a consumer read.
+        @Test
+        void catchupReadForward_fromANonReplica_isServedOnlyTheVisiblePosition() {
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false, true));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).isEmpty();
         }
     }
 
@@ -290,6 +374,33 @@ class StreamForwardHandlerTest {
                 .as("min-sync-replicas<=1 carries no peer-ack barrier and must stay a plain local-append ack")
                 .isTrue();
             assertThat(response.offset()).isGreaterThanOrEqualTo(0L);
+        }
+
+        /// #1290 review M1: on the lazy-materialization path the handler read `min-sync` 0 (the stream did
+        /// not exist here yet), so the floor it passes is always -1. The manager must take the floor from
+        /// the committed config it materializes from: a `min-sync = 2` config with no peer is refused
+        /// CLEANLY (nothing appended), not appended-then-reported-unknown. RED when that floor is dropped:
+        /// the append lands and the post-append barrier reports outcome-unknown.
+        @Test
+        void onPublishForward_materializedFromCommittedConfig_checksThatConfigsFloorBeforeAppending() {
+            barrierManager = streamPartitionManager(Long.MAX_VALUE,
+                                                    EvictionListener.NOOP,
+                                                    replicationManager(GOVERNOR, replicaRegistry()));
+            barrierManager.committedConfigSource(_ -> Option.some(configWithMinSync(2)));
+            var handler = streamForwardHandler(GOVERNOR,
+                                               barrierManager,
+                                               (target, message) -> sentMessages.add(new SentMessage(target, message)));
+
+            handler.onPublishForward(publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP));
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isFalse();
+            assertThat(response.outcomeUnknown()).as("a pre-append floor refusal is a clean failure: " + response.errorMessage())
+                                                 .isFalse();
+            assertThat(barrierManager.partitionBuffer(STREAM, PARTITION).map(buffer -> buffer.headOffset()).or(-1L))
+                .as("the stream is materialized and nothing was appended")
+                .isEqualTo(-1L);
         }
     }
 

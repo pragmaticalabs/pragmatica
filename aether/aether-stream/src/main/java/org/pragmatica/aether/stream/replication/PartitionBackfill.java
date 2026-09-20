@@ -117,6 +117,12 @@ public final class PartitionBackfill {
     /// ANOTHER node blocks self-election. Strict equality would starve a just-promoted owner by one commit.
     /// Defaults to {@link CommittedStreamOwnerSource#none} in the legacy/test factories (behavior unchanged).
     private final CommittedStreamOwnerSource committedOwnerSource;
+    /// #1244 (ruling know 801a8b54e): the replica WAL durability barrier. Replica frames are written with
+    /// no per-record fsync, so a backfill run commits what it applied through this barrier before it
+    /// promotes self to CAUGHT_UP and acks the owner. Production wires
+    /// `StreamPartitionManager::syncReplicated`; the legacy/test factories pass
+    /// [ReplicationReceiveHandler#NO_DURABILITY_BARRIER] (no WAL behind them).
+    private final ReplicationReceiveHandler.ReplicaDurability durability;
 
     /// First wall-clock instant (ms) at which each partition was observed to have NO caught-up source.
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
@@ -152,7 +158,8 @@ public final class PartitionBackfill {
                               TimeSpan sourceWaitBound,
                               LongSupplier clock,
                               Supplier<List<NodeId>> membersSupplier,
-                              CommittedStreamOwnerSource committedOwnerSource) {
+                              CommittedStreamOwnerSource committedOwnerSource,
+                              ReplicationReceiveHandler.ReplicaDurability durability) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
@@ -164,6 +171,7 @@ public final class PartitionBackfill {
         this.clock = clock;
         this.membersSupplier = membersSupplier;
         this.committedOwnerSource = committedOwnerSource;
+        this.durability = durability;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
@@ -183,7 +191,8 @@ public final class PartitionBackfill {
                                      TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
                                      System::currentTimeMillis,
                                      List::of,
-                                     CommittedStreamOwnerSource.none());
+                                     CommittedStreamOwnerSource.none(),
+                                     ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
     }
 
     /// Cold-start-aware factory: after `sourceWaitBound` elapses with no caught-up source, the
@@ -204,6 +213,32 @@ public final class PartitionBackfill {
                                                       TimeSpan sourceWaitBound,
                                                       Supplier<List<NodeId>> membersSupplier,
                                                       CommittedStreamOwnerSource committedOwnerSource) {
+        return partitionBackfill(registry,
+                                 partitionRecovery,
+                                 transport,
+                                 replicationTransport,
+                                 probe,
+                                 selfWatermark,
+                                 self,
+                                 sourceWaitBound,
+                                 membersSupplier,
+                                 committedOwnerSource,
+                                 ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
+    }
+
+    /// Production factory (#1244): the cold-start-aware factory above plus the replica WAL `durability`
+    /// barrier a completed backfill run commits through before promoting self (see [#durability]).
+    public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                                      StreamPartitionRecovery partitionRecovery,
+                                                      CatchupTransport transport,
+                                                      ReplicationTransport replicationTransport,
+                                                      ReplicaWatermarkProbe probe,
+                                                      SelfWatermark selfWatermark,
+                                                      NodeId self,
+                                                      TimeSpan sourceWaitBound,
+                                                      Supplier<List<NodeId>> membersSupplier,
+                                                      CommittedStreamOwnerSource committedOwnerSource,
+                                                      ReplicationReceiveHandler.ReplicaDurability durability) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
@@ -214,7 +249,8 @@ public final class PartitionBackfill {
                                      sourceWaitBound,
                                      System::currentTimeMillis,
                                      membersSupplier,
-                                     committedOwnerSource);
+                                     committedOwnerSource,
+                                     durability);
     }
 
     /// Test factory: injects a deterministic clock so the bounded wait can be exercised without sleeping.
@@ -286,7 +322,8 @@ public final class PartitionBackfill {
                                      sourceWaitBound,
                                      clock,
                                      membersSupplier,
-                                     committedOwnerSource);
+                                     committedOwnerSource,
+                                     ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
     }
 
     /// Backfill `(streamName, partition)` onto self. Resolves with the number of events applied on
@@ -637,11 +674,29 @@ public final class PartitionBackfill {
         var watermark = Math.max(response.toOffset(), sourceConfirmedOffset);
 
         return applyEvents(streamName, partition, response).fold(cause -> failApply(streamName, partition, cause),
-                                                                 applied -> promote(streamName,
-                                                                                    partition,
-                                                                                    fromOffset,
-                                                                                    watermark,
-                                                                                    applied));
+                                                                 applied -> commitThenPromote(streamName,
+                                                                                              partition,
+                                                                                              fromOffset,
+                                                                                              watermark,
+                                                                                              applied));
+    }
+
+    /// #1244: commit what this run applied through the replica WAL [#durability] barrier BEFORE [#promote]
+    /// counts self as a copy — replica frames carry no per-record fsync, and a quiet partition would
+    /// otherwise never sync what backfill pulled. A failed commit fails the run; self stays SYNCING.
+    private Promise<Long> commitThenPromote(String streamName,
+                                            int partition,
+                                            long fromOffset,
+                                            long watermark,
+                                            long applied) {
+        return durability.sync(streamName, partition)
+                         .onFailure(cause -> log.warn("Backfill {}[{}] applied {} events but could not make them durable: {}"
+                                                     + " — staying SYNCING",
+                                                      streamName,
+                                                      partition,
+                                                      applied,
+                                                      cause.message()))
+                         .flatMap(_ -> promote(streamName, partition, fromOffset, watermark, applied));
     }
 
     /// Promote self to CAUGHT_UP only when the highest applied offset actually reaches the source

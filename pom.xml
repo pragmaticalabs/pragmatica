@@ -48,6 +48,11 @@
         <module>integrations</module>
         <module>testing</module>
         <module>test-logging</module>
+        <!--
+            Leaves a marker in every test fork for as long as its plan runs; the test-plan-gate profile
+            below fails a module whose marker outlives the fork (#1344). Depends on nothing here.
+        -->
+        <module>test-plan-witness</module>
         <module>jbct</module>
         <module>aether</module>
         <module>examples</module>
@@ -75,6 +80,7 @@
         <netty.version>4.2.9.Final</netty.version>
         <slf4j.version>2.0.17</slf4j.version>
         <junit.version>5.13.4</junit.version>
+        <junit-platform.version>1.13.4</junit-platform.version>
         <assertj-core.version>3.27.7</assertj-core.version>
         <mockito.version>5.21.0</mockito.version>
         <awaitility.version>4.3.0</awaitility.version>
@@ -98,6 +104,7 @@
         <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
         <maven-plugin-plugin.version>4.0.0-beta-2</maven-plugin-plugin.version>
         <jacoco.version>0.8.13</jacoco.version>
+        <maven-antrun-plugin.version>3.1.0</maven-antrun-plugin.version>
 
         <!-- Default true to avoid reactor cycle; override with -Djbct.skip=false -pl !jbct -->
         <jbct.skip>true</jbct.skip>
@@ -401,6 +408,12 @@
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter-params</artifactId>
                 <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.platform</groupId>
+                <artifactId>junit-platform-launcher</artifactId>
+                <version>${junit-platform.version}</version>
                 <scope>test</scope>
             </dependency>
             <dependency>
@@ -750,6 +763,228 @@
                     <plugin>
                         <groupId>org.jacoco</groupId>
                         <artifactId>jacoco-maven-plugin</artifactId>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!--
+            A crashed fork must fail the build (#1344). Surefire fails a fork that dies without saying
+            goodbye, but a fork whose test plan ends early and then says goodbye exits 0 and reads as
+            BUILD SUCCESS with every later class unrun (observed 2026-09-19: a StackOverflowError inside
+            java.lang.StringBuffer's static initialiser poisoned the class, the failure report then threw
+            NoClassDefFoundError out of the launcher, and ForkedBooter said goodbye from its finally).
+            Two witnesses are read after each test phase, and either surviving fails the module:
+              - `target/test-plan-witness/*.plan-incomplete`: written by test-plan-witness when the
+                JUnit plan starts, removed only when the plan finishes. Fail-closed: whatever ends the
+                plan early leaves it. One directory for both plugins, because the fork cannot tell
+                which one launched it.
+              - `<reports>/*-jvmRun*.dump`: surefire's own fork-side error dump (the provider threw, a shutdown
+                command, a ping timeout, the 30 s exit deadline). Historical dumps in this workspace all
+                belong to killed runs.
+            Both directories are swept of stale witnesses right before the plugin that fills them, so the
+            verdict is about THIS run and a Ctrl-C last week cannot fail today's green build. Skipped
+            with -DskipTests, like the tests themselves.
+        -->
+        <profile>
+            <id>test-plan-gate</id>
+            <activation>
+                <file>
+                    <exists>src/test</exists>
+                </file>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>org.pragmatica-lite</groupId>
+                    <artifactId>test-plan-witness</artifactId>
+                    <version>${project.version}</version>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>${maven-antrun-plugin.version}</version>
+                        <configuration>
+                            <skip>${skipTests}</skip>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>sweep-unit-test-witnesses</id>
+                                <phase>process-test-classes</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <!-- The directory itself goes: the listener recreates it, and its absence
+                                             after a run that wrote XML is how the gate tells a plan that finished
+                                             from a witness that never ran. -->
+                                        <delete dir="${project.build.directory}/test-plan-witness" quiet="true"/>
+                                        <delete quiet="true">
+                                            <fileset dir="${project.build.directory}/surefire-reports" erroronmissingdir="false">
+                                                <include name="*-jvmRun*.dump"/>
+                                            </fileset>
+                                        </delete>
+                                        <!-- Reports are never swept, so the silent-witness check below only counts
+                                             XML written after this moment. -->
+                                        <touch file="${project.build.directory}/test-plan-witness-unit.stamp" mkdirs="true"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>unit-test-plan-completed</id>
+                                <phase>test</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <pathconvert property="witness.markers" pathsep="${line.separator}">
+                                            <fileset dir="${project.build.directory}/test-plan-witness" erroronmissingdir="false">
+                                                <include name="*.plan-incomplete"/>
+                                            </fileset>
+                                        </pathconvert>
+                                        <pathconvert property="witness.dumps" pathsep="${line.separator}">
+                                            <fileset dir="${project.build.directory}/surefire-reports" erroronmissingdir="false">
+                                                <include name="*-jvmRun*.dump"/>
+                                            </fileset>
+                                        </pathconvert>
+                                        <condition property="witness.markers.text" value="${witness.markers}" else="(none)">
+                                            <not>
+                                                <equals arg1="${witness.markers}" arg2=""/>
+                                            </not>
+                                        </condition>
+                                        <condition property="witness.dumps.text" value="${witness.dumps}" else="(none)">
+                                            <not>
+                                                <equals arg1="${witness.dumps}" arg2=""/>
+                                            </not>
+                                        </condition>
+                                        <fail message="A test fork left evidence that surefire's exit status cannot see (#1344).${line.separator}plan incomplete (the fork ended before running everything it planned; the file lists the plan): ${witness.markers.text}${line.separator}surefire fork dump present (the fork reported a problem; with nothing listed above the plan finished and it happened after the tests, e.g. the fork could not exit within 30 s; read the dump): ${witness.dumps.text}">
+                                            <condition>
+                                                <or>
+                                                    <not>
+                                                        <equals arg1="${witness.markers}" arg2=""/>
+                                                    </not>
+                                                    <not>
+                                                        <equals arg1="${witness.dumps}" arg2=""/>
+                                                    </not>
+                                                </or>
+                                            </condition>
+                                        </fail>
+                                        <!-- A witness that never ran looks exactly like a plan that finished. The
+                                             listener creates this directory at every plan start, so XML from THIS run
+                                             (newer than the sweep's stamp; reports are never swept) without it means
+                                             the marker half is off (a deactivated listener, a dropped dependency) and
+                                             the unit run was dump-gated only. -->
+                                        <condition property="witness.silent">
+                                            <and>
+                                                <resourcecount when="greater" count="0">
+                                                    <fileset dir="${project.build.directory}/surefire-reports" erroronmissingdir="false">
+                                                        <include name="TEST-*.xml"/>
+                                                        <depend targetdir="${project.build.directory}">
+                                                            <mapper type="merge" to="test-plan-witness-unit.stamp"/>
+                                                        </depend>
+                                                    </fileset>
+                                                </resourcecount>
+                                                <not>
+                                                    <available file="${project.build.directory}/test-plan-witness" type="dir"/>
+                                                </not>
+                                            </and>
+                                        </condition>
+                                        <fail if="witness.silent" message="surefire wrote test reports but no test plan was witnessed (#1344): ${project.build.directory}/test-plan-witness does not exist, so the test-plan-witness listener did not run in this module's forks (deactivated in junit-platform.properties, or the test-plan-gate dependency is missing). The crash gate was dump-only for this run."/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>sweep-integration-test-witnesses</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <!-- The directory itself goes: the listener recreates it, and its absence
+                                             after a run that wrote XML is how the gate tells a plan that finished
+                                             from a witness that never ran. -->
+                                        <delete dir="${project.build.directory}/test-plan-witness" quiet="true"/>
+                                        <delete quiet="true">
+                                            <fileset dir="${project.build.directory}/failsafe-reports" erroronmissingdir="false">
+                                                <include name="*-jvmRun*.dump"/>
+                                            </fileset>
+                                        </delete>
+                                        <!-- Reports are never swept, so the silent-witness check below only counts
+                                             XML written after this moment. -->
+                                        <touch file="${project.build.directory}/test-plan-witness-integration-test.stamp" mkdirs="true"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>integration-test-plan-completed</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <pathconvert property="witness.markers" pathsep="${line.separator}">
+                                            <fileset dir="${project.build.directory}/test-plan-witness" erroronmissingdir="false">
+                                                <include name="*.plan-incomplete"/>
+                                            </fileset>
+                                        </pathconvert>
+                                        <pathconvert property="witness.dumps" pathsep="${line.separator}">
+                                            <fileset dir="${project.build.directory}/failsafe-reports" erroronmissingdir="false">
+                                                <include name="*-jvmRun*.dump"/>
+                                            </fileset>
+                                        </pathconvert>
+                                        <condition property="witness.markers.text" value="${witness.markers}" else="(none)">
+                                            <not>
+                                                <equals arg1="${witness.markers}" arg2=""/>
+                                            </not>
+                                        </condition>
+                                        <condition property="witness.dumps.text" value="${witness.dumps}" else="(none)">
+                                            <not>
+                                                <equals arg1="${witness.dumps}" arg2=""/>
+                                            </not>
+                                        </condition>
+                                        <fail message="An integration-test fork left evidence that failsafe's exit status cannot see (#1344).${line.separator}plan incomplete (the fork ended before running everything it planned; the file lists the plan): ${witness.markers.text}${line.separator}surefire fork dump present (the fork reported a problem; with nothing listed above the plan finished and it happened after the tests, e.g. the fork could not exit within 30 s; read the dump): ${witness.dumps.text}">
+                                            <condition>
+                                                <or>
+                                                    <not>
+                                                        <equals arg1="${witness.markers}" arg2=""/>
+                                                    </not>
+                                                    <not>
+                                                        <equals arg1="${witness.dumps}" arg2=""/>
+                                                    </not>
+                                                </or>
+                                            </condition>
+                                        </fail>
+                                        <!-- A witness that never ran looks exactly like a plan that finished. The
+                                             listener creates this directory at every plan start, so XML from THIS run
+                                             (newer than the sweep's stamp; reports are never swept) without it means
+                                             the marker half is off (a deactivated listener, a dropped dependency) and
+                                             the integration-test run was dump-gated only. -->
+                                        <condition property="witness.silent">
+                                            <and>
+                                                <resourcecount when="greater" count="0">
+                                                    <fileset dir="${project.build.directory}/failsafe-reports" erroronmissingdir="false">
+                                                        <include name="TEST-*.xml"/>
+                                                        <depend targetdir="${project.build.directory}">
+                                                            <mapper type="merge" to="test-plan-witness-integration-test.stamp"/>
+                                                        </depend>
+                                                    </fileset>
+                                                </resourcecount>
+                                                <not>
+                                                    <available file="${project.build.directory}/test-plan-witness" type="dir"/>
+                                                </not>
+                                            </and>
+                                        </condition>
+                                        <fail if="witness.silent" message="failsafe wrote test reports but no test plan was witnessed (#1344): ${project.build.directory}/test-plan-witness does not exist, so the test-plan-witness listener did not run in this module's forks (deactivated in junit-platform.properties, or the test-plan-gate dependency is missing). The crash gate was dump-only for this run."/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
                     </plugin>
                 </plugins>
             </build>
