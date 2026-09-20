@@ -55,6 +55,9 @@ public sealed interface StreamResourceValidator {
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
     String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
+    /// #1336: per-section rules whose violation refuses the deploy instead of dropping the one alias —
+    /// see [#partition]. Data, so a ruling flips one line.
+    Set<String> GATING_SECTION_RULES = Set.of(RULE_SOURCE_RESERVED_KIND);
 
     /// Run the full validation pass for a deploy attempt.
     ///
@@ -102,12 +105,15 @@ public sealed interface StreamResourceValidator {
     ///    raised on the blueprint artifact while at least one stream is declared — the namespace
     ///    prefixes every owned address, so there is no per-alias subset that survives it. With no
     ///    stream declared the namespace failure is reported and gates nothing.
+    ///    [#RULE_SOURCE_RESERVED_KIND] (#1282), ruled gating for #1336: the management API refuses a
+    ///    reserved stream kind with a typed 4xx on every mint path, and a deploy must refuse the same
+    ///    declaration the same way — a deliberate reach into a reserved namespace, not a config slip —
+    ///    rather than drop the alias and let the slice fail at load. Listed in [#GATING_SECTION_RULES].
     ///
     /// Every other rule is per-section: the parser's (`version-and-source-mutually-exclusive`,
     /// `producer-version-must-be-exact`, `version-or-source-required`, address and version format,
-    /// the partition ceiling and replication knobs, #1282's reserved source kind) and #576's inert
-    /// config keys ([#RULE_INERT_STREAM_CONFIG], [#RULE_INERT_CONSUMER_CONFIG]), which name the alias
-    /// they sit under.
+    /// the partition ceiling and replication knobs) and #576's inert config keys
+    /// ([#RULE_INERT_STREAM_CONFIG], [#RULE_INERT_CONSUMER_CONFIG]), which name the alias they sit under.
     static Result<StreamValidationPartition> partition(Option<String> resourcesConfig,
                                                        Artifact blueprintArtifact,
                                                        Map<String, String> roleHints) {
@@ -135,8 +141,9 @@ public sealed interface StreamResourceValidator {
         parsed.accepted()
               .forEach((alias, resource) -> acceptOrReject(alias, resource, resourcesConfig, accepted, rejected));
         var declaresStreams = !parsed.accepted().isEmpty() || !parsed.rejected().isEmpty();
+        var gatesBySection = rejected.stream().anyMatch(failure -> GATING_SECTION_RULES.contains(failure.rule()));
 
-        if (!namespaceFailures.isEmpty() && declaresStreams) {
+        if ((!namespaceFailures.isEmpty() && declaresStreams) || gatesBySection) {
             return gating(namespaceFailures, rejected).result();
         }
 

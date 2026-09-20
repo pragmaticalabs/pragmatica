@@ -171,6 +171,32 @@ class StreamResourceValidatorPartitionTest {
                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_NAMESPACE_RESERVED));
         }
 
+        /// #1282 refuses a reserved stream kind with a typed 4xx on every management-API mint path; the
+        /// #1336 ruling makes the deploy refuse the same declaration the same way, naming the rule, rather
+        /// than drop the alias and let the slice fail at load. Every other failure found rides along.
+        @Test
+        void aReservedKindSource_isTheFailure_notADroppedAlias() {
+            var result = StreamResourceValidator.partition(Option.some("""
+                                                                       [streams.orders]
+                                                                       version = "1.0.0"
+
+                                                                       [streams.inbox]
+                                                                       source = "entity:orders:1.0.0"
+                                                                       role = "consumer"
+
+                                                                       [streams.audit]
+                                                                       source = "com.other:audit:1.0.0"
+                                                                       version = "1.0.0"
+                                                                       """),
+                                                           APP_ARTIFACT,
+                                                           Map.of());
+
+            result.onSuccess(_ -> fail("a reserved stream kind is a deliberate reach into a reserved namespace — it must gate"))
+                  .onFailure(cause -> assertThat(fieldsAndRules(((StreamValidationFailures) cause).failures()))
+                          .containsExactlyInAnyOrder("[streams.inbox]::" + StreamResourceValidator.RULE_SOURCE_RESERVED_KIND,
+                                                     "[streams.audit]::version-and-source-mutually-exclusive"));
+        }
+
         /// The management-plane error funnel answers `httpStatus()` when the cause declares one and
         /// `500` otherwise (`ProblemResponses.writeProblem`). A gating refusal is the artifact author's
         /// content, not a server fault.

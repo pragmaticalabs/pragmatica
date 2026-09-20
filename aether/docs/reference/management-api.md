@@ -960,7 +960,9 @@ operator learns why, at the point where it is actionable. The same shape is retu
 whose violation leaves nothing to bind refuse the publish outright with **`422`** and the same
 `field`/`rule`/`message` triples in the error body: a `resources.toml` that does not parse
 (`resources-toml-parse`), a blueprint whose own namespace cannot be derived
-(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream. Every other rule — the parser's per-section rules and
+(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, and an
+`External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
+exactly as the management API refuses it on every mint path). Every other rule — the parser's per-section rules and
 #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`) — costs only its own
 alias. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
 declarations included.
@@ -5742,10 +5744,9 @@ streams exist.
 
 Blueprints are covered as well. A `[streams.X]` section whose `source` names a `topic` or `entity`
 namespace address would otherwise make the slice's stream factories mint that stream. The blueprint
-validator rejects such a section under rule `source-reserved-kind`, so the stream is never minted. What
-an operator sees today is coarser. The deploy path swallows validator failures and publishes EMPTY
-stream bindings for the whole blueprint, so every stream alias in it fails later with a generic
-`UnboundStreamAlias`, including valid ones, and the typed rule is not shown (#1336). A
+validator rejects such a section under rule `source-reserved-kind`, so the stream is never minted, and
+since #1336 the deploy refuses the blueprint with `422` naming that rule and section — the same typed
+refusal as the routes above, instead of the earlier silent empty-bindings publish. A
 `system`-namespace source is unaffected, because its engine key is the bare name.
 
 Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config

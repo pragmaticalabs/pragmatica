@@ -1042,6 +1042,30 @@ class BlueprintPublishOwnershipTest {
             assertThat(artifactPathCluster.batches).as("the refusal must come before any batch is applied").isEmpty();
         }
 
+        /// GATING by ruling (#1336 on #1282): a blueprint `External` source naming a runtime-provisioned
+        /// stream kind is refused the way the management API refuses it — a typed 4xx naming the rule — not
+        /// dropped so the consuming slice fails at load. The valid section beside it does not rescue the
+        /// publish.
+        @Test
+        void publish_isRefused_whenASourceNamesAReservedStreamKind() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, RESERVED_KIND_SOURCE),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, RESERVED_KIND_SOURCE)));
+
+            publishBody(repository).onSuccess(_ -> Assertions.fail("a reserved stream-kind source must refuse the publish"))
+                                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_SOURCE_RESERVED_KIND)
+                                                                                  .contains("[streams.inbox]"));
+            assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+        }
+
+        private static final String RESERVED_KIND_SOURCE = """
+                [streams.order-events]
+                partitions = 1
+
+                [streams.inbox]
+                source = "entity:orders:1.0.0"
+                role = "consumer"
+                """;
+
         /// GATING: the blueprint's own namespace prefixes every owned address, so when it cannot be derived
         /// and a stream IS declared there is no per-alias subset to keep — the publish is refused naming
         /// the rule. `system` is the reserved namespace (`Namespace.appNamespace`).
@@ -1137,7 +1161,9 @@ class BlueprintPublishOwnershipTest {
         /// and the consuming slice failed far away with a generic `UnboundStreamAlias`. The enabled
         /// tripwire that pinned that defect stood here.
         ///
-        /// Ruled per rule (#1336): an inert key is a per-alias rule — the stream parses, the key does
+        /// CTO ruling on #1181/#1336 (2026-09-20): "inert keys: KEEP drop + report (#576 reject-not-accept).
+        /// Not bind-and-warn." — the tripwire's expectation of a GATE is superseded by that ruling. An inert
+        /// key is a per-alias rule — the stream parses, the key does
         /// nothing — so it drops THAT alias and is reported by field and rule; it does not refuse the
         /// publish. Here the only declared stream is the rejected one, so the entry is still empty —
         /// but the answer now says which key and why.
