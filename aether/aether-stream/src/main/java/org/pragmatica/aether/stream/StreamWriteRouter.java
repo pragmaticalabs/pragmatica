@@ -33,6 +33,19 @@ import org.pragmatica.lang.Promise;
 /// Since #265 made non-owner nodes metadata-only, a management publish landing on an arbitrary node
 /// (the harness hits any node's mgmt API) must reach the owner instead of failing
 /// {@link StreamError.General#PARTITION_NOT_LOCAL} on {@code publishLocal}.
+///
+/// There is a deliberate FOURTH write arm that is NOT on the router: the entity-log substrate
+/// ({@code StreamEntityLogSubstrate}) calls {@link StreamPartitionManager#publishLocal} directly — it is
+/// owner-local by construction and builds an EVENTUAL config itself, so neither the owner routing nor the
+/// #1262 consistency guard applies to it. The owner side of a forwarded publish
+/// ({@code StreamForwardHandler}) is the router's counterpart on the receiving node. It reads
+/// {@code min-sync-replicas} TWICE (once for the pre-append floor, once for the barrier) where this router
+/// reads it ONCE and feeds both from that value ({@link #publishLocal}) — and that asymmetry is
+/// DELIBERATE, not drift: on the handler's lazy-materialization arm the first read is {@code 0} (the stream
+/// is not yet in the owner's map; {@link StreamPartitionManager#publishForwarded} materializes it from the
+/// committed config), so the barrier MUST read again after the materialization or a forwarded publish to an
+/// unmaterialized owner would ack on the local fsync alone. Harmonising the handler to a single read is a
+/// silent data-loss regression that no test currently reddens (#1391 is the missing pin).
 public final class StreamWriteRouter {
     private final StreamPartitionManager partitionManager;
     private final Option<StreamForwardClient> forwardClient;
@@ -83,8 +96,8 @@ public final class StreamWriteRouter {
 
     /// Publish `payload` to `(streamName, partition)`, resolving to the assigned offset. Routes by
     /// AUTHORITY, never by ring presence (#1230) — a replica holds the same materialized ring the owner
-    /// does: a remote HRW owner is write-forwarded; a self owner appends locally (mirroring
-    /// {@link DefaultStreamPublisher}'s eventual path — local append + min-sync await). Falls back to a
+    /// does: a remote HRW owner is write-forwarded; a self owner appends locally (local append + min-sync
+    /// barrier — the one path every entry point gets since #1263). Falls back to a
     /// local append only when the owner is unknown or no forward client is wired (bootstrap / minimal
     /// runtime), matching the read router's soft-fail-to-local posture. The local append is admitted only
     /// for the committed owner; a refusal in the ownership-lag window redirects to that owner.
@@ -111,6 +124,9 @@ public final class StreamWriteRouter {
                          .or(false);
     }
 
+    /// `min-sync-replicas` is read ONCE here and feeds both the pre-append floor and the post-append barrier,
+    /// so a config raised while a publish is in flight moves the NEXT publish's barrier, never this one's
+    /// (#1361 M12; pinned by `StreamWritePathContractTest`).
     private Promise<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(streamName);
         // #1230: a NotOwnerAppend refusal is redirected to the committed owner, before #1236's floor check;
@@ -146,8 +162,8 @@ public final class StreamWriteRouter {
     /// when the owner reported the failure as retryable (`RemotePublishRetryable`) and attempts remain —
     /// the owner's committed-config view had not yet caught up to the config this sender just committed
     /// and forwarded — bounded so no unbounded loop; no other failure cause is ever retried. The retry
-    /// policy lives once in {@link StreamForwardRetry} (shared with {@link DefaultStreamPublisher} and
-    /// {@link PartitionedStreamAccess}).
+    /// policy lives once in {@link StreamForwardRetry}; since #1263 this router is its only production
+    /// caller, and {@link DefaultStreamPublisher} and {@link PartitionedStreamAccess} inherit it by delegation.
     private Promise<Long> attemptForward(StreamForwardClient client,
                                          NodeId owner,
                                          String streamName,
