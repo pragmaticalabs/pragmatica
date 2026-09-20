@@ -47,7 +47,9 @@ class DependencyFileMalformedTest {
 
     @Test
     void load_wellFormedDependencyFile_isParsed() throws IOException {
-        var jar = writeJar(tempDir.resolve("slice.jar"), DEPENDENCIES_ENTRY, "[slices]\norg.example:pricing-service:^1.0.0\n");
+        var jar = writeJar(tempDir.resolve("slice.jar"),
+                           DEPENDENCIES_ENTRY,
+                           "[slices]\norg.example:pricing-service:^1.0.0\n");
 
         try (var loader = new SliceClassLoader(new URL[]{jar}, PLATFORM)) {
             DependencyFile.load(SLICE_CLASS, loader)
@@ -64,27 +66,29 @@ class DependencyFileMalformedTest {
             DependencyFile.load(SLICE_CLASS, loader)
                           .onSuccess(file -> Assertions.fail("a present-but-malformed dependency file must refuse the load; got " + file))
                           .onFailure(cause -> {
-                              assertThat(cause).isInstanceOf(DependencyFile.DependencyFileError.Unreadable.class);
-                              assertThat(cause.message()).contains(DEPENDENCIES_ENTRY)
-                                                         .contains(jar.toString())
-                                                         .contains("Unknown section");
-                          });
+                                         assertThat(cause).isInstanceOf(DependencyFile.DependencyFileError.Unreadable.class);
+                                         assertThat(cause.message()).contains(DEPENDENCIES_ENTRY)
+                                                   .contains(jar.toString())
+                                                   .contains("Unknown section");
+                                     });
         }
     }
 
     @Test
     void load_dependencyFileWhoseReadFails_refusesTheLoad_namingTheJarAndTheReadError() throws IOException {
-        var jar = writeJar(tempDir.resolve("slice.jar"), DEPENDENCIES_ENTRY, "[slices]\norg.example:pricing-service:^1.0.0\n");
+        var jar = writeJar(tempDir.resolve("slice.jar"),
+                           DEPENDENCIES_ENTRY,
+                           "[slices]\norg.example:pricing-service:^1.0.0\n");
 
         try (var loader = new FailingReadLoader(jar)) {
             DependencyFile.load(SLICE_CLASS, loader)
                           .onSuccess(file -> Assertions.fail("a present-but-unreadable dependency file must refuse the load; got " + file))
                           .onFailure(cause -> {
-                              assertThat(cause).isInstanceOf(DependencyFile.DependencyFileError.Unreadable.class);
-                              assertThat(cause.message()).contains(DEPENDENCIES_ENTRY)
-                                                         .contains(jar.toString())
-                                                         .contains("disk gone");
-                          });
+                                         assertThat(cause).isInstanceOf(DependencyFile.DependencyFileError.Unreadable.class);
+                                         assertThat(cause.message()).contains(DEPENDENCIES_ENTRY)
+                                                   .contains(jar.toString())
+                                                   .contains("disk gone");
+                                     });
         }
     }
 
@@ -96,8 +100,7 @@ class DependencyFileMalformedTest {
         try (var loader = new SliceClassLoader(new URL[]{jar}, PLATFORM)) {
             DependencyFile.load(SLICE_CLASS, loader)
                           .onSuccessRun(() -> Assertions.fail("must refuse"))
-                          .onFailure(cause -> assertThat(cause.source().map(origin -> origin.message()).or(""))
-                                                  .contains("bogus-section"));
+                          .onFailure(cause -> assertThat(cause.source().map(origin -> origin.message()).or("")).contains("bogus-section"));
         }
     }
 
@@ -108,7 +111,8 @@ class DependencyFileMalformedTest {
             out.closeEntry();
         }
 
-        return path.toUri().toURL();
+        return path.toUri()
+                   .toURL();
     }
 
     /// Finds the resource, then fails the read: `StreamOps.readBytes` maps the IOException to `ReadFailed`.

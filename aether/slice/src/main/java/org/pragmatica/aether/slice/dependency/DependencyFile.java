@@ -135,6 +135,7 @@ public record DependencyFile(List<ArtifactDependency> shared,
 
     private static final String DEPENDENCIES_DIR = "META-INF/dependencies/";
     private static final DependencyFile EMPTY = new DependencyFile(List.of(), List.of(), List.of());
+
     private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. "
                                                                                            + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
@@ -151,7 +152,8 @@ public record DependencyFile(List<ArtifactDependency> shared,
 
         return StreamOps.readResource(classLoader, resource)
                         .flatMap(DependencyFile::dependencyFile)
-                        .fold(cause -> emptyOnlyIfAbsent(resource, classLoader, cause), Result::success);
+                        .fold(cause -> emptyOnlyIfAbsent(resource, classLoader, cause),
+                              Result::success);
     }
 
     private static Result<DependencyFile> emptyOnlyIfAbsent(String resource, ClassLoader classLoader, Cause cause) {
@@ -162,7 +164,9 @@ public record DependencyFile(List<ArtifactDependency> shared,
 
     private static String jarOf(ClassLoader classLoader) {
         return classLoader instanceof SliceClassLoader slice
-               ? slice.sliceJarUrl().map(URL::toString).or("<loader without a jar url>")
+               ? slice.sliceJarUrl()
+                      .map(URL::toString)
+                      .or("<loader without a jar url>")
                : classLoader.toString();
     }
 
@@ -172,7 +176,8 @@ public record DependencyFile(List<ArtifactDependency> shared,
         record Unreadable(String resource, String jar, Cause origin) implements DependencyFileError, Cause.Wrapped {
             @Override
             public String message() {
-                return "Dependency file " + resource + " in " + jar
+                return "Dependency file " + resource
+                     + " in " + jar
                      + " is present but cannot be read; refusing to load the slice: " + origin.message();
             }
         }
