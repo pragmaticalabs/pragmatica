@@ -284,7 +284,6 @@ class DurableProjectionRebuildTest {
         awaitLive(20_000);
         awaitModel(123456L, 15_000);
         awaitCommittedEpoch(RewindEpoch.rewindEpoch(1L, 1L), 20_000);
-
         // The assignee's slice restarts: the registration goes with it, and a NEW store (generation 0)
         // comes back. Whatever the store counts, the committed epoch is 1/1.
         registry.unregister(ARTIFACT.base(), TOPIC_STREAM);
@@ -299,16 +298,15 @@ class DurableProjectionRebuildTest {
                                               .withClaims(InMemoryProjectionClaims.inMemoryProjectionClaims(),
                                                           TimeSpan.timeSpan(30).seconds()))
                             .unwrap();
-        assertThat(freshStore.read(MODEL_KEY).await().unwrap()).as("control: the fresh store is empty").isEqualTo(Option.none());
-
+        assertThat(freshStore.read(MODEL_KEY).await().unwrap()).as("control: the fresh store is empty")
+                  .isEqualTo(Option.none());
         projection.rebuild().await().onFailure(cause -> fail("second rebuild refused: " + cause.message()));
         var minted = freshStore.replayStatus().await().unwrap().currentRewind().unwrap();
 
-        assertThat(NodeReplayCursor.epochOf(minted).isStrictlyAfter(RewindEpoch.rewindEpoch(1L, 1L)))
-                .as("minted strictly after the committed 1/1, from committed state: %s", minted)
-                .isTrue();
+        assertThat(NodeReplayCursor.epochOf(minted).isStrictlyAfter(RewindEpoch.rewindEpoch(1L, 1L))).as("minted strictly after the committed 1/1, from committed state: %s",
+                                                                                                         minted)
+                  .isTrue();
         awaitCommittedEpoch(NodeReplayCursor.epochOf(minted), 20_000);
-
         var deadline = System.currentTimeMillis() + 20_000;
 
         while (!freshStore.read(MODEL_KEY).await().unwrap().filter(value -> value == 123456L).isPresent() && System.currentTimeMillis() < deadline) {
@@ -316,7 +314,7 @@ class DurableProjectionRebuildTest {
         }
 
         assertThat(freshStore.read(MODEL_KEY).await().unwrap()).as("the consumer restarted under the new epoch and rebuilt the FRESH store")
-                                                              .isEqualTo(Option.some(123456L));
+                  .isEqualTo(Option.some(123456L));
         assertThat(freshStore.replayStatus().await().unwrap().isLive()).isTrue();
     }
 
@@ -328,7 +326,6 @@ class DurableProjectionRebuildTest {
         publishAll(1, 3);
         awaitModel(123L, 15_000);
         var racing = projection.withReplayCursor(new RacingCursor(projection.replayCursor()));
-
         var outcome = racing.rebuild().await();
 
         assertThat(outcome.isFailure()).as("the losing rebuild is refused, never Success: %s", outcome).isTrue();
@@ -339,9 +336,9 @@ class DurableProjectionRebuildTest {
         var committed = committed(StreamCursorCheckpointKey.streamCursorCheckpointKey(TOPIC_STREAM, PARTITION, GROUP)).unwrap();
 
         assertThat(committed.rewindEpoch()).isEqualTo(RacingCursor.COMPETITOR.rewindEpoch());
-        assertThat(committed.rewind() && committed.commitTimestamp() != RacingCursor.COMPETITOR.commitTimestamp())
-                .as("our equal-epoch rewind record never committed: %s", committed)
-                .isFalse();
+        assertThat(committed.rewind() && committed.commitTimestamp() != RacingCursor.COMPETITOR.commitTimestamp()).as("our equal-epoch rewind record never committed: %s",
+                                                                                                                      committed)
+                  .isFalse();
     }
 
     /// Between the mint and the put, a competing rebuild commits a rewind record under the SAME epoch.
@@ -366,9 +363,12 @@ class DurableProjectionRebuildTest {
 
         @Override
         public Promise<Unit> rewind(ProjectionStore.ReplayRange range, RewindToken token) {
-            applyNow(new KVCommand.Put<AetherKey, AetherValue>(StreamCursorCheckpointKey.streamCursorCheckpointKey(TOPIC_STREAM, PARTITION, GROUP),
-                                                                COMPETITOR));
-            assertThat(NodeReplayCursor.epochOf(token)).as("control: both minted the same next epoch").isEqualTo(COMPETITOR.rewindEpoch());
+            applyNow(new KVCommand.Put<AetherKey, AetherValue>(StreamCursorCheckpointKey.streamCursorCheckpointKey(TOPIC_STREAM,
+                                                                                                                   PARTITION,
+                                                                                                                   GROUP),
+                                                               COMPETITOR));
+            assertThat(NodeReplayCursor.epochOf(token)).as("control: both minted the same next epoch")
+                      .isEqualTo(COMPETITOR.rewindEpoch());
 
             return real.rewind(range, token);
         }
@@ -383,7 +383,6 @@ class DurableProjectionRebuildTest {
         awaitModel(123456L, 15_000);
         projection.rebuild().await().onFailure(cause -> fail("rebuild refused: " + cause.message()));
         awaitLive(20_000);
-
         assertThat(model()).isEqualTo(Option.some(123456L));
         assertThat(deadLettersForGroup()).isEmpty();
         awaitCommittedCursor(6L, 5_000);

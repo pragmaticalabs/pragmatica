@@ -353,7 +353,8 @@ public record Projection<S, T>(String name,
                            .mapWith(store::resetToNewGeneration, Rebuild::new)
                            .mapWith(rebuild -> replayCursor.mintRewindToken(rebuild.generation()),
                                     Projection::rewound)
-                           .mapWith(rewound -> store.beginRewind(rewound.generation(), rewound.token()),
+                           .mapWith(rewound -> store.beginRewind(rewound.generation(),
+                                                                 rewound.token()),
                                     (rewound, _) -> rewound)
                            .flatMap(rewound -> replayCursor.rewind(rewound.range(),
                                                                    rewound.token()));

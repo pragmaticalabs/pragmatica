@@ -942,7 +942,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.adjustPollInterval(!events.isEmpty());
 
         return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH)
-                                                .onSuccess(batchFull -> commitRewoundCatchUp(key, state, batchFull));
+                            .onSuccess(batchFull -> commitRewoundCatchUp(key, state, batchFull));
     }
 
     /// #1333 (review MEDIUM): a consumer resumed under a REWOUND epoch replays to the head, and a clean

@@ -287,11 +287,17 @@ class DurableProjectionRebuildForgeTest {
     /// The node whose groups row says `heldHere: true` — the one consuming the group's single partition.
     /// Its app port is derived from the slot (`base + slot` on every port family), and the derivation is
     /// checked against the model: the consuming node is the only one whose store holds one.
+    /// STABLE across a reconcile interval, not merely observed once: the assignment is recomputed on the
+    /// 5 s tick, and a node that turned ACTIVE just before the ACTIVE gate passed can take the partition on
+    /// the NEXT tick (measured: force-transition at 22:33:29, consumer moved at 22:33:32). A rebuild POSTed
+    /// to the node that then loses the partition rewinds a consumer whose replays land in the new node's
+    /// fresh store — the old store never goes LIVE. Three consecutive reads 2.5 s apart span one tick.
     private ConsumerNode awaitConsumerNode() {
         var holder = new ConsumerNode[1];
+        var seen = new java.util.ArrayList<String>();
 
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
+             .pollInterval(Duration.ofMillis(2_500))
              .untilAsserted(() -> {
                                 var found = cluster.status()
                                                    .nodes()
@@ -305,6 +311,10 @@ class DurableProjectionRebuildForgeTest {
 
                                 assertThat(found).describedAs("exactly one node holds the group's partition")
                                           .hasSize(1);
+                                seen.add(found.getFirst().id());
+                                assertThat(seen.size() >= 3 && seen.subList(seen.size() - 3, seen.size()).stream().distinct().count() == 1)
+                                          .describedAs("the assignment is stable across one reconcile interval: %s", seen)
+                                          .isTrue();
                                 assertThat(consumerAppPort()).describedAs("the model lives on the node that holds the partition")
                                           .isEqualTo(Option.some(found.getFirst().appPort()));
                                 holder[0] = found.getFirst();

@@ -140,8 +140,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     private static <E extends Comparable<E>> boolean incomingEpochIsStale(EpochBearing<E> incoming,
                                                                           EpochBearing<?> stored) {
-        var comparison = incoming.fenceEpoch()
-                                 .compareTo((E) stored.fenceEpoch());
+        var comparison = incoming.fenceEpoch().compareTo((E) stored.fenceEpoch());
 
         return incoming.mintsEpoch()
                ? comparison <= 0

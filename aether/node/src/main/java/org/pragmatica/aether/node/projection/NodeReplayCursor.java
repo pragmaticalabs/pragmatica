@@ -139,7 +139,8 @@ public record NodeReplayCursor(String topicStream,
                               .max(RewindEpoch::compareTo)
                               .orElse(RewindEpoch.NONE);
 
-        return new RewindToken(Math.max(generation, newest.generation()), newest.rewind() + 1);
+        return new RewindToken(Math.max(generation, newest.generation()),
+                               newest.rewind() + 1);
     }
 
     @Override
@@ -157,11 +158,14 @@ public record NodeReplayCursor(String topicStream,
         var records = new HashMap<Integer, StreamCursorCheckpointValue>();
 
         range.partitions()
-             .forEach((partition, span) -> records.put(partition, StreamCursorCheckpointValue.rewindRecord(span.fromOffset(), epoch)));
+             .forEach((partition, span) -> records.put(partition,
+                                                       StreamCursorCheckpointValue.rewindRecord(span.fromOffset(),
+                                                                                                epoch)));
         var puts = records.entrySet()
                           .stream()
-                          .map(entry -> commandWriter.apply(new KVCommand.Put<AetherKey, AetherValue>(checkpointKey(group, entry.getKey()),
-                                                                                                    entry.getValue())))
+                          .map(entry -> commandWriter.apply(new KVCommand.Put<AetherKey, AetherValue>(checkpointKey(group,
+                                                                                                                    entry.getKey()),
+                                                                                                      entry.getValue())))
                           .toList();
 
         return Promise.allOf(puts)
@@ -178,10 +182,15 @@ public record NodeReplayCursor(String topicStream,
     /// silent. Reading back what the applier committed is the only way to know, and it is the RECORD that is
     /// compared: an equal-epoch mint refused by the applier leaves the earlier record, whose epoch may equal
     /// the token's.
-    private Promise<Unit> verifyCommitted(String group, Map<Integer, StreamCursorCheckpointValue> records, RewindToken token) {
+    private Promise<Unit> verifyCommitted(String group,
+                                          Map<Integer, StreamCursorCheckpointValue> records,
+                                          RewindToken token) {
         var refused = records.entrySet()
                              .stream()
-                             .map(entry -> checkCommitted(group, entry.getKey(), entry.getValue(), token))
+                             .map(entry -> checkCommitted(group,
+                                                          entry.getKey(),
+                                                          entry.getValue(),
+                                                          token))
                              .toList();
 
         return Result.allOf(refused)
@@ -189,7 +198,10 @@ public record NodeReplayCursor(String topicStream,
                      .async();
     }
 
-    private Result<Unit> checkCommitted(String group, int partition, StreamCursorCheckpointValue record, RewindToken token) {
+    private Result<Unit> checkCommitted(String group,
+                                        int partition,
+                                        StreamCursorCheckpointValue record,
+                                        RewindToken token) {
         var committed = committed(group, partition);
 
         return committed.filter(record::equals)

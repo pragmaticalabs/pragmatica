@@ -13,6 +13,6 @@
   bytes (offset + rewind epoch). An existing 8-byte ref reads as ABSENT, so each declarative or
   durable-topic group resumes from the earliest retained offset ONCE after upgrading a node with
   cursors on disk, then rewrites the ref in the new layout. The KV snapshot form of a stream cursor
-  grows from 2 to 4 pipe-delimited fields; a pre-#1333 snapshot does not parse.
+  grows from 2 to 5 pipe-delimited fields (rewind epoch and the rewind-record flag); a pre-#1333 snapshot does not parse.
 - `StreamConsumerManager` restarts a consumer whose committed rewind epoch is newer than the one it
   runs under — on the checkpoint's KV notification and on every reconcile pass.
