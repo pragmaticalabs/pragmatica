@@ -165,9 +165,11 @@ import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
+import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.node.stream.TopicGroupDeclarationSource;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
@@ -213,10 +215,12 @@ import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -3749,6 +3753,9 @@ public interface AetherNode extends ManageableNode {
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
         // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
+        // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
+        // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
+        // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
         // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex),
@@ -3760,7 +3767,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
                                                                                    resolveStreamWalDir(config),
-                                                                                   streamSegmentIndex::lastSealedOffset);
+                                                                                   streamSegmentIndex::lastSealedOffset,
+                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
 
         streamPartitionManagerRef.set(streamPartitionManager);
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
@@ -4124,11 +4132,13 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::synchronizeNow,
                                                                       config.timeouts().dht().antiEntropyInterval()));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
-        // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
-        // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
-        // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
-        // cheap when nothing new has sealed. Driven off the durable, CONTIGUOUS sealed bound (#1234: it
-        // never passes a segment that failed to seal) to avoid any truncated-before-durable window.
+        // last-sealed offset so the WAL does not grow unbounded. Records <= that offset are already in
+        // cold segments whose refs are in the metadata snapshot on disk (served post-restart by the tiered
+        // reader), so dropping them from the WAL loses nothing; the un-sealed tail stays in the WAL.
+        // truncate is threshold-lazy, so this tick is cheap when nothing new has sealed. Driven off the
+        // CONTIGUOUS sealed bound (#1234: it never passes a segment that failed to seal) as REBUILT from
+        // the latest snapshot file (#1345: never the live index, which runs ahead of disk until the next
+        // snapshot — a crash in that window used to lose the refs and renumber the survivors).
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed,
                                                                       WAL_TRUNCATE_INTERVAL));
         // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for
@@ -4200,12 +4210,25 @@ public interface AetherNode extends ManageableNode {
         //
         // No role-change callback is available (onBecameReplica / onReconcilePassComplete are
         // single-consumer seams already bound above), hence the poll.
+        // #1271: checkpoints carry this node's consumer-assignment token and are refused by the applier
+        // once the assignment moves; a forwarding (worker) node sends a Noop barrier before re-reading the
+        // verdict, since its publish resolves on the core's reply rather than its own apply.
+        // #1271: the committed consumer assignment is the one authority for which node delivers a
+        // (group, partition). The leader writes it from the same computation every node used to act on
+        // alone; every node attaches only where the committed record names it — and the cursor store's
+        // verdict re-reads it before calling a refused checkpoint Fenced (#1335 B1).
+        ConsumerAssignmentWriter.CommittedAssignments committedConsumerAssignments = (stream, partition, group) -> kvStore.getTyped(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                                partition,
+                                                                                                                                                                                group),
+                                                                                                                                    ConsumerAssignmentValue.class);
         var streamClusterCursorStore = ClusterCursorStore.clusterCursorStore(streamCursorStore,
+                                                                             config.self(),
                                                                              cursorKey -> kvStore.getTyped(cursorKey,
-                                                                                                           AetherValue.StreamCursorCheckpointValue.class)
-                                                                                                 .map(AetherValue.StreamCursorCheckpointValue::committedOffset),
-                                                                             command -> clusterNode.apply(List.of(command))
-                                                                                                   .mapToUnit());
+                                                                                                           AetherValue.StreamCursorCheckpointValue.class),
+                                                                             committedConsumerAssignments,
+                                                                             commands -> clusterNode.apply(commands)
+                                                                                                    .mapToUnit(),
+                                                                             () -> switchableCluster.current() instanceof ForwardingClusterNode);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
@@ -4239,6 +4262,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                     maxEvents,
                                                                                                                                                     ReadPreference.GOVERNOR));
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
+        var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
+                                                                                                        ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,
+                                                                                                                                                          rabiaTermSupplier,
+                                                                                                                                                          hlcClock,
+                                                                                                                                                          committedConsumerAssignments),
+                                                                                                        commands -> clusterNode.apply(commands)
+                                                                                                                               .mapToUnit());
         var streamConsumerManager = StreamConsumerManager.streamConsumerManager(streamConsumerRegistry,
                                                                                 streamConsumerRuntime,
                                                                                 sliceInvoker,
@@ -4250,7 +4280,14 @@ public interface AetherNode extends ManageableNode {
                                                                                 config.self(),
                                                                                 TopicGroupDeclarationSource.topicGroupDeclarationSource(topicSubscriptionRegistry,
                                                                                                                                         streamName -> streamConsumerOwnership.partitionCount(streamName)
-                                                                                                                                                                             .isPresent()));
+                                                                                                                                                                             .isPresent()),
+                                                                                consumerAssignmentAuthority);
+        // #1271: a node that loses quorum stops delivering at the self-fence's DETECTION, not at the drain's
+        // halt — the majority is free to reassign its partitions from that moment. Re-set here because the
+        // manager exists only now; the detector was armed with the same chain earlier and this replaces it
+        // with the chain plus the consumer abandon.
+        quorumLossDetector.setQuorumLossListener(StreamConsumerManager.abandoningOnQuorumLoss(quorumLossChain,
+                                                                                              streamConsumerManager));
         // #499: the handle is retained in `periodicTasks`, which stop() cancels wholesale. A declarative
         // consumer that outlived its node would deliver into a torn-down slice.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamConsumerManager::reconcile,

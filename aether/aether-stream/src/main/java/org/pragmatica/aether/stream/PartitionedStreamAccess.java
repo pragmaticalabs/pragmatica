@@ -769,12 +769,36 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                              .or(0L)).promise();
     }
 
+    /// The cold read is bounded by the partition's VISIBLE position exactly as the ring read is (#1352):
+    /// DROP_OLDEST seals every evictee, acknowledged or not — the WAL and the replicas hold it, and its publisher
+    /// was told at most that the outcome is unknown — so the durable tier can hold offsets above visible, and
+    /// serving one there would expose an event the ring refuses for the same offset. An offset above visible
+    /// reads as the ring reads it (`OffHeapRingBuffer.readChecked`: `fromOffset > head` ⇒ `[]`, nothing yet);
+    /// below it the tier is asked for no more than `[fromOffset, visible]`. Visible only rises, so a consumer
+    /// waiting here is woken by the same advance that would wake it on the ring.
     private Promise<List<StreamEvent<T>>> readFromTieredReader(TieredStreamReader reader,
                                                                int partition,
                                                                long fromOffset,
                                                                int maxEvents) {
-        return reader.read(streamName, partition, fromOffset, maxEvents)
+        var visible = visibleOffset(partition);
+
+        if (fromOffset > visible) {
+            return Promise.success(List.of());
+        }
+
+        return reader.read(streamName,
+                           partition,
+                           fromOffset,
+                           (int) Math.min(maxEvents, visible - fromOffset + 1))
                      .flatMap(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
+    }
+
+    /// `-1` (nothing visible) when the partition has no ring here — this path is reached only after a local
+    /// ring read, so that is a ring released under the reader, and nothing may be served from the tier in its name.
+    private long visibleOffset(int partition) {
+        return partitionManager.partitionBuffer(streamName, partition)
+                               .map(OffHeapRingBuffer::visibleOffset)
+                               .or(-1L);
     }
 
     /// Continue a cold read into the ring (#1234). With nothing sealed at `fromOffset` the ring is the only
