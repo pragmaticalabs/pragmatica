@@ -3739,7 +3739,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
                                                                                    resolveStreamWalDir(config),
-                                                                                   streamSegmentIndex);
+                                                                                   streamSegmentIndex::lastSealedOffset);
 
         streamPartitionManagerRef.set(streamPartitionManager);
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit

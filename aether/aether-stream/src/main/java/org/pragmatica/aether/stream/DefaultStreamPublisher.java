@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -289,12 +290,11 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                      offset -> awaitMinSync(partition, offset));
     }
 
-    /// #1236: once appended, a barrier that does not confirm is an unknown outcome, never a failure — except an
-    /// unacknowledged eviction (#1352), which is a definite one; see [StreamError#barrierFailure].
+    /// #1236: once appended, a barrier that does not confirm is an unknown outcome, never a failure.
     private Promise<Unit> awaitMinSync(int partition, long offset) {
         return minSyncReplicas > 1
                ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
-                                 .mapError(StreamError::barrierFailure)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
                : Promise.unitPromise();
     }
 

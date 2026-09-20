@@ -14,6 +14,7 @@ import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -670,12 +671,11 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                      offset -> awaitMinSync(partition, offset));
     }
 
-    /// #1236: after the append, an unconfirmed barrier is an unknown outcome — except an unacknowledged eviction
-    /// (#1352), which is a known one; see [StreamError#barrierFailure].
+    /// #1236: after the append, an unconfirmed barrier is an unknown outcome.
     private Promise<Long> awaitMinSync(int partition, long offset) {
         return minSyncReplicas > 1
                ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
-                                 .mapError(StreamError::barrierFailure)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
                                  .map(_ -> offset)
                : Promise.success(offset);
     }

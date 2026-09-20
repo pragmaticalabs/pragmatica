@@ -290,9 +290,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final AtomicLong releasedSinceBoot = new AtomicLong(0);
     /// Best-effort-stream events dropped by a frozen ring since boot (#1233 observability).
     private final AtomicLong droppedEventsSinceBoot = new AtomicLong(0);
-    /// Events evicted by DROP_OLDEST before their min-sync peers acknowledged them, since boot (#1352): never
-    /// sealed, their publishers' awaits failed with [StreamError.UnacknowledgedEvicted].
-    private final AtomicLong unacknowledgedEvictionsSinceBoot = new AtomicLong(0);
     /// Owner publishes refused because a frozen ring dropped the event on a durable stream (#1233).
     private final AtomicLong refusedPublishDropsSinceBoot = new AtomicLong(0);
     /// Replicated appends refused because this replica's frozen ring dropped the event (#1233).
@@ -782,7 +779,6 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return StreamEntry.fromConfig(config,
                                       evictionListener,
-                                      this::unacknowledgedEvicted,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
                                       partition -> shouldMaterialize(config.name(),
@@ -1082,7 +1078,6 @@ public final class StreamPartitionManager implements AutoCloseable {
         // success keeps the follower's later createStream short-circuiting (no re-publish).
         return StreamEntry.fromConfig(config,
                                       evictionListener,
-                                      this::unacknowledgedEvicted,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
                                       partition -> shouldMaterialize(config.name(),
@@ -1438,31 +1433,6 @@ public final class StreamPartitionManager implements AutoCloseable {
         return droppedEventsSinceBoot.get();
     }
 
-    /// The ring evicted `[fromOffset, toOffset]` of `(streamName, partition)` above its visible position
-    /// (#1352, [UnacknowledgedEvictionListener]): count them, tell the sealed-offset source the range is
-    /// reclaimed (so the contiguous watermark — and with it WAL truncation — moves past the hole the missing
-    /// seal would otherwise leave), and fail their publishers' pending awaits with a cause naming the offset,
-    /// so a publisher learns "not in the log" now and never a replication timeout. Runs under the ring's
-    /// append section; the replication manager resolves the promises off this thread.
-    @Contract
-    private void unacknowledgedEvicted(String streamName, int partition, long fromOffset, long toOffset) {
-        unacknowledgedEvictionsSinceBoot.addAndGet(toOffset - fromOffset + 1);
-        lastSealedOffset.markReclaimed(streamName, partition, fromOffset, toOffset);
-        replicationManager.failPendingAcks(streamName,
-                                           partition,
-                                           fromOffset,
-                                           toOffset,
-                                           offset -> new StreamError.UnacknowledgedEvicted(streamName, partition, offset));
-    }
-
-    /// Events evicted by DROP_OLDEST before their min-sync peers acknowledged them, since boot (#1352). Each
-    /// was dropped rather than sealed, and its publisher's pending await failed with
-    /// [StreamError.UnacknowledgedEvicted]. The frozen-ring counters above are a different loss: there the NEW
-    /// event never enters the ring; here an OLD one leaves it unacknowledged.
-    public long unacknowledgedEvictionsSinceBoot() {
-        return unacknowledgedEvictionsSinceBoot.get();
-    }
-
     /// Owner publishes on durable streams refused since boot because a frozen ring could not fit the event
     /// (#1233) — the failing-class counterpart of [#droppedEventsSinceBoot].
     public long refusedPublishDropsSinceBoot() {
@@ -1502,7 +1472,6 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  timestamp,
                                  ownerEpoch,
                                  admission,
-                                 OffHeapRingBuffer.SealBound.VISIBLE,
                                  offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
     }
 
@@ -1687,7 +1656,6 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  timestamp,
                                  ownerEpoch,
                                  RECEIPT_NEEDS_NO_ADMISSION,
-                                 OffHeapRingBuffer.SealBound.APPENDED,
                                  offset -> success(logReplicated(streamName, partition, offset, payload, timestamp)));
     }
 
@@ -1825,8 +1793,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Append into the partition's ordered section: `inOrder` runs with the assigned offset before any
     /// other append on this partition is assigned one (see [OffHeapRingBuffer#appendOrdered]). The epoch
     /// fence and `admission` are checked first, in that order (#1230: a deposed writer learns it is deposed,
-    /// not merely redirected), and before the section is entered. `sealBound` says which evictees this
-    /// append may seal (#1352): the owner path seals only acknowledged ones, the replica path all of them.
+    /// not merely redirected), and before the section is entered.
     private <T> Result<T> appendToPartition(StreamEntry entry,
                                             String streamName,
                                             int partition,
@@ -1834,12 +1801,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             long timestamp,
                                             Epoch ownerEpoch,
                                             Result<Unit> admission,
-                                            OffHeapRingBuffer.SealBound sealBound,
                                             Fn1<Result<T>, Long> inOrder) {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
                              .flatMap(_ -> checkEventSize(entry, payload))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
-                             .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, sealBound, inOrder))
+                             .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, inOrder))
                              .onSuccess(_ -> entry.updateActivity());
     }
 
@@ -2417,7 +2383,6 @@ public final class StreamPartitionManager implements AutoCloseable {
         return StreamEntry.materializeOne(config,
                                           partition,
                                           evictionListener,
-                                          this::unacknowledgedEvicted,
                                           bytes -> reserveForGrowth(config, bytes),
                                           this::release,
                                           walBaseDir,
@@ -3082,14 +3047,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// is built with an EMPTY `materialized` map — metadata present, zero off-heap bytes reserved.
         static Result<StreamEntry> fromConfig(StreamConfig config,
                                               EvictionListener listener,
-                                              UnacknowledgedEvictionListener unacknowledgedListener,
                                               LongPredicate reserve,
                                               LongConsumer release,
                                               IntPredicate shouldMaterialize,
                                               Option<Path> walBaseDir,
                                               LastSealedOffsetSource lastSealedOffset) {
             var selected = selectedPartitions(config, shouldMaterialize);
-            var ringResults = buildRings(config, selected, listener, unacknowledgedListener, reserve, release);
+            var ringResults = buildRings(config, selected, listener, reserve, release);
 
             return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
@@ -3127,23 +3091,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         private static List<Result<OffHeapRingBuffer>> buildRings(StreamConfig config,
                                                                   List<Integer> selected,
                                                                   EvictionListener listener,
-                                                                  UnacknowledgedEvictionListener unacknowledgedListener,
                                                                   LongPredicate reserve,
                                                                   LongConsumer release) {
             return selected.stream()
-                           .map(partition -> buildRing(config,
-                                                       partition,
-                                                       listener,
-                                                       unacknowledgedListener,
-                                                       reserve,
-                                                       release))
+                           .map(partition -> buildRing(config, partition, listener, reserve, release))
                            .toList();
         }
 
         private static Result<OffHeapRingBuffer> buildRing(StreamConfig config,
                                                            int partition,
                                                            EvictionListener listener,
-                                                           UnacknowledgedEvictionListener unacknowledgedListener,
                                                            LongPredicate reserve,
                                                            LongConsumer release) {
             var retention = config.retention();
@@ -3153,7 +3110,6 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        retention.maxCount(),
                                                        retention.maxBytes(),
                                                        listener,
-                                                       unacknowledgedListener,
                                                        deriveEvictionPolicy(config),
                                                        reserve,
                                                        release);
@@ -3166,12 +3122,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         static Result<MaterializedPartition> materializeOne(StreamConfig config,
                                                             int partition,
                                                             EvictionListener listener,
-                                                            UnacknowledgedEvictionListener unacknowledgedListener,
                                                             LongPredicate reserve,
                                                             LongConsumer release,
                                                             Option<Path> walBaseDir,
                                                             LastSealedOffsetSource lastSealedOffset) {
-            return buildRing(config, partition, listener, unacknowledgedListener, reserve, release).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
+            return buildRing(config, partition, listener, reserve, release).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
                             .flatMap(ring -> openAndRecoverOne(config, partition, ring, walBaseDir, lastSealedOffset));
         }
 

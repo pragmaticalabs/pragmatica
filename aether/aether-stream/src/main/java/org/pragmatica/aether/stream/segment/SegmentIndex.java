@@ -10,33 +10,21 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
-import org.pragmatica.aether.stream.LastSealedOffsetSource;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.storage.MetadataStore;
 
 import static org.pragmatica.lang.Option.option;
-import static org.pragmatica.lang.Unit.unit;
 
 
-public final class SegmentIndex implements LastSealedOffsetSource {
+public final class SegmentIndex {
     private static final long NOTHING_SEALED = -1L;
-    private static final ConcurrentSkipListMap<Long, Long> NOTHING_RECLAIMED = new ConcurrentSkipListMap<>();
 
     private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<Long, SegmentRef>> partitions = new ConcurrentHashMap<>();
 
-    /// Per-partition ranges DROP_OLDEST reclaimed without a seal (#1352, [#markReclaimed]): `start -> end`. They
-    /// count towards the contiguous watermark exactly as a sealed segment does and are held by nothing else —
-    /// the tiered reader never sees them, so a read inside one is "reclaimed", never a hole. In memory only: a
-    /// restart re-anchors the watermark at the lowest surviving ref, which treats a reclaimed prefix below it
-    /// as reclaimed history anyway (see [#lastSealedOffset]).
-    private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<Long, Long>> reclaimed = new ConcurrentHashMap<>();
-
     /// Per-partition CONTIGUOUS sealed watermark (#1234): every offset at or below it has been durably
-    /// sealed or reclaimed without a seal (#1352). Advanced only by [#addSegment] and [#markReclaimed], never
-    /// lowered by [#removeSegment] — see [#lastSealedOffset].
+    /// sealed. Advanced only by [#addSegment] and never lowered by [#removeSegment] — see [#lastSealedOffset].
     private final ConcurrentHashMap<PartitionKey, Long> sealedThrough = new ConcurrentHashMap<>();
 
     public record SegmentRef(long startOffset,
@@ -91,35 +79,7 @@ public final class SegmentIndex implements LastSealedOffsetSource {
 
         map.put(startOffset,
                 SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize));
-        advanceWatermark(key, map);
-    }
-
-    /// `[fromOffset, toOffset]` of `(streamName, partition)` was reclaimed by DROP_OLDEST WITHOUT a seal (#1352):
-    /// the events were never acknowledged, so they are not in the log, and a drop is retention reclamation, not
-    /// a failed seal. The watermark advances over the range as it would over a sealed segment, so WAL
-    /// truncation proceeds past it and a read from inside it reports `CursorExpired` (reclaimed), never
-    /// [SegmentError.SealedRangeMissing] (a seal that FAILED). A range that is not yet contiguous with the
-    /// watermark — an earlier seal still in flight — is kept and counted once that seal lands.
-    @Contract
-    @Override
-    public Unit markReclaimed(String streamName, int partition, long fromOffset, long toOffset) {
-        var key = PartitionKey.partitionKey(streamName, partition);
-
-        reclaimed.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>()).merge(fromOffset, toOffset, Math::max);
-        advanceWatermark(key, partitions.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>()));
-
-        return unit();
-    }
-
-    private void advanceWatermark(PartitionKey key, ConcurrentSkipListMap<Long, SegmentRef> map) {
-        sealedThrough.compute(key,
-                              (_, current) -> sealedOrReclaimedEnd(map,
-                                                                   reclaimedOf(key),
-                                                                   option(current).or(NOTHING_SEALED)));
-    }
-
-    private ConcurrentSkipListMap<Long, Long> reclaimedOf(PartitionKey key) {
-        return option(reclaimed.get(key)).or(NOTHING_RECLAIMED);
+        sealedThrough.compute(key, (_, current) -> contiguousEnd(map, option(current).or(NOTHING_SEALED)));
     }
 
     @Contract
@@ -135,8 +95,8 @@ public final class SegmentIndex implements LastSealedOffsetSource {
     }
 
     /// The CONTIGUOUS sealed watermark for `(streamName, partition)`: the highest offset at or below which
-    /// EVERY offset has been durably sealed into a segment or reclaimed without a seal (#1352,
-    /// [#markReclaimed]) — the lowest offset that is neither, minus 1 — or `-1` when offset 0 is neither. It bounds WAL truncation (records at or below it are discarded) and WAL replay on
+    /// EVERY offset has been durably sealed into a segment (lowest unsealed offset - 1), or `-1` when offset
+    /// 0 is not sealed. It bounds WAL truncation (records at or below it are discarded) and WAL replay on
     /// partition recovery (the recovered ring skips records at or below it, served by the tiered reader), so
     /// it must never pass a hole: until #1234 it was the MAXIMUM sealed `endOffset`, and a later successful
     /// seal licensed truncating the WAL past a segment that had failed to seal — permanent silent loss.
@@ -152,51 +112,12 @@ public final class SegmentIndex implements LastSealedOffsetSource {
     ///     surviving ref is therefore not detected across a restart; [SegmentSealer] seals strictly in offset
     ///     order (one seal in flight per partition), so it produces no such prefix. When retention has
     ///     reclaimed EVERY ref of a partition nothing anchors the rebuild at all (#1278).
-    @Override
     public long lastSealedOffset(String streamName, int partition) {
         return option(sealedThrough.get(PartitionKey.partitionKey(streamName, partition))).or(NOTHING_SEALED);
     }
 
-    /// The watermark walk: sealed segments and reclaimed ranges extend it in turn until neither reaches
-    /// past it — a reclaimed range may bridge two sealed runs and a sealed run may bridge two reclaimed ones.
-    private static long sealedOrReclaimedEnd(ConcurrentSkipListMap<Long, SegmentRef> map,
-                                             ConcurrentSkipListMap<Long, Long> reclaimed,
-                                             long through) {
-        var end = through;
-
-        for (var next = extend(map, reclaimed, end); next > end; next = extend(map, reclaimed, end)) {
-            end = next;
-        }
-
-        return end;
-    }
-
-    private static long extend(ConcurrentSkipListMap<Long, SegmentRef> map,
-                               ConcurrentSkipListMap<Long, Long> reclaimed,
-                               long through) {
-        return Math.max(contiguousEnd(map, through), reclaimedEnd(reclaimed, through));
-    }
-
-    /// [#contiguousEnd] over reclaimed ranges: extend `through` across every range starting at or before
-    /// `through + 1`.
-    private static long reclaimedEnd(ConcurrentSkipListMap<Long, Long> reclaimed, long through) {
-        var end = through;
-
-        for (var range : reclaimed.tailMap(option(reclaimed.floorKey(through + 1)).or(Long.MIN_VALUE)).entrySet()) {
-            if (range.getKey() > end + 1) {
-                break;
-            }
-
-            end = Math.max(end, range.getValue());
-        }
-
-        return end;
-    }
-
     /// Extend `through` across every segment that starts at or before `through + 1`, walking the map in
-    /// start order and stopping at the first segment that would leave a gap. Segments only: the tiered
-    /// reader bounds a read by this, and a read must stop at a reclaimed range (the next read then starts
-    /// inside it and is told it expired) rather than skip over it. The walk begins at the segment
+    /// start order and stopping at the first segment that would leave a gap. The walk begins at the segment
     /// with the greatest start at or below `through + 1`; a segment starting earlier that overlaps past it
     /// (only a re-seal with different boundaries produces one) is not consulted, which can only leave the
     /// watermark LOWER — the direction that keeps more WAL, never the direction that loses it.
@@ -271,7 +192,6 @@ public final class SegmentIndex implements LastSealedOffsetSource {
     @Contract
     public void rebuildFromRefs(MetadataStore metadataStore) {
         partitions.clear();
-        reclaimed.clear();
         sealedThrough.clear();
         metadataStore.listAllRefs()
                      .keySet()

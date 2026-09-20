@@ -8,7 +8,6 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.lang.Option;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MetadataStore;
 
@@ -188,78 +187,6 @@ class SegmentIndexTest {
             index.rebuildFromRefs(store);
 
             assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(299L);
-        }
-    }
-
-    /// #1352: a range DROP_OLDEST reclaimed WITHOUT a seal — its events were never acknowledged, so they are not
-    /// in the log — counts towards the watermark exactly as a sealed segment does. Otherwise the drop would
-    /// pin the watermark below it forever: WAL truncation would stop for the partition and a read from the
-    /// dropped offset would read as a FAILED seal (`SealedRangeMissing`) instead of reclaimed history.
-    @Nested
-    class ReclaimedWithoutSeal {
-
-        @Test
-        void markReclaimed_advancesTheWatermark_asASealWould() {
-            index.markReclaimed(STREAM, PARTITION, 0, 0);
-
-            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(0L);
-
-            index.addSegment(STREAM, PARTITION, 1, 5);
-
-            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(5L);
-        }
-
-        /// The seal below the drop was still in flight when the drop was reported: the range is kept and
-        /// counted once that seal lands.
-        @Test
-        void markReclaimed_aheadOfAPendingSeal_isCountedWhenTheSealLands() {
-            index.markReclaimed(STREAM, PARTITION, 3, 4);
-
-            assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("offsets 0-2 are neither sealed nor reclaimed").isEqualTo(-1L);
-
-            index.addSegment(STREAM, PARTITION, 0, 2);
-
-            assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("the seal bridges to the reclaimed range").isEqualTo(4L);
-        }
-
-        @Test
-        void markReclaimed_bridgesTwoSealedRuns() {
-            index.addSegment(STREAM, PARTITION, 0, 2);
-            index.addSegment(STREAM, PARTITION, 5, 9);
-
-            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(2L);
-
-            index.markReclaimed(STREAM, PARTITION, 3, 4);
-
-            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(9L);
-        }
-
-        /// The reader's contiguous run is segments only: a read must stop at the reclaimed range, so that the
-        /// next read starts inside it and is told the offset expired instead of skipping it.
-        @Test
-        void reclaimedRange_isNotPartOfTheReadableRun_andReadsAsReclaimed() {
-            index.addSegment(STREAM, PARTITION, 0, 2);
-            index.markReclaimed(STREAM, PARTITION, 3, 4);
-            index.addSegment(STREAM, PARTITION, 5, 9);
-
-            assertThat(index.contiguousSealedEnd(STREAM, PARTITION, 0)).as("the read stops before the reclaimed range").isEqualTo(Option.some(2L));
-            assertThat(index.contiguousSealedEnd(STREAM, PARTITION, 3)).as("no segment holds a reclaimed offset").isEqualTo(Option.none());
-            assertThat(index.nextSealedOffset(STREAM, PARTITION, 3)).isEqualTo(Option.some(5L));
-            assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("at or below the watermark ⇒ the reader reports CursorExpired, not SealedRangeMissing")
-                                                                 .isGreaterThanOrEqualTo(3L);
-        }
-
-        @Test
-        void rebuildFromRefs_forgetsReclaimedRanges() {
-            index.markReclaimed(STREAM, PARTITION, 0, 0);
-            var store = MetadataStore.inMemoryMetadataStore("rebuild-reclaimed");
-            var block = BlockId.blockId(new byte[]{1}).unwrap();
-
-            store.putRef("streams/" + STREAM + "/" + PARTITION + "/1-5", block);
-            index.rebuildFromRefs(store);
-
-            assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("anchored at the lowest surviving ref, as for any reclaimed prefix")
-                                                                 .isEqualTo(5L);
         }
     }
 

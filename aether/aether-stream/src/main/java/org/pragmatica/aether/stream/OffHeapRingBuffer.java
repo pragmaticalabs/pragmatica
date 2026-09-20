@@ -103,23 +103,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         floorAllocAdmit = _ -> true;
     }
 
-    /// Which evictees an append may hand to the eviction listener (#1352). The bound is a property of the
-    /// WRITE PATH, not of the ring: the same ring is written by the owner path and, after a role change, by the
-    /// replica path, and what an evictee's membership in the log depends on differs between the two.
-    public enum SealBound {
-        /// The owner's append (`StreamPartitionManager.publishLocal`): only evictees at or below the VISIBLE
-        /// position — durable here AND acknowledged by the stream's min-sync peers — are sealed. An evictee above
-        /// it was never acknowledged, is not part of the log, and is dropped: reclaimed without the hand-over,
-        /// reported to the [UnacknowledgedEvictionListener] (which fails its publisher's pending await), WARNed.
-        VISIBLE,
-        /// A replica's append (`appendRecovered`): every evictee is sealed. What a replica holds is already in
-        /// the OWNER's log — appended, WAL-written and replicated by the owner — so the replica's own fsync lag
-        /// says nothing about membership, and the replica acks the batch regardless; dropping here would lose an
-        /// acknowledged event from this replica's ring and tier at once. The sealer keeps the heap copy until the
-        /// replica WAL is durable before it spills (#1234), which is what makes sealing ahead of the fsync safe.
-        APPENDED
-    }
-
     private final Arena arena;
     private final MemorySegment controlSegment;
     private final List<MemorySegment> dataSegments;
@@ -129,8 +112,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private final String streamName;
     private final int partition;
     private final EvictionListener listener;
-    /// Told of evictees ABOVE the visible position, which are dropped instead of handed to `listener` (#1352).
-    private final UnacknowledgedEvictionListener unacknowledgedListener;
     private final EvictionPolicy evictionPolicy;
     private final LongPredicate reserve;
     private final LongConsumer release;
@@ -196,7 +177,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                               String streamName,
                               int partition,
                               EvictionListener listener,
-                              UnacknowledgedEvictionListener unacknowledgedListener,
                               EvictionPolicy evictionPolicy,
                               LongPredicate reserve,
                               LongConsumer release,
@@ -212,7 +192,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         this.streamName = streamName;
         this.partition = partition;
         this.listener = listener;
-        this.unacknowledgedListener = unacknowledgedListener;
         this.evictionPolicy = evictionPolicy;
         this.reserve = reserve;
         this.release = release;
@@ -247,7 +226,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                           capacity,
                           dataRegionSize,
                           listener,
-                          UnacknowledgedEvictionListener.NOOP,
                           policy,
                           ALWAYS_ADMIT,
                           NOOP_RELEASE);
@@ -283,28 +261,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                               EvictionPolicy policy,
                                                               LongPredicate reserve,
                                                               LongConsumer release) {
-        return offHeapRingBuffer(streamName,
-                                 partition,
-                                 capacity,
-                                 dataRegionSize,
-                                 listener,
-                                 UnacknowledgedEvictionListener.NOOP,
-                                 policy,
-                                 reserve,
-                                 release);
-    }
-
-    /// The production factory: `unacknowledgedListener` is told of evictees above the visible position, which
-    /// are dropped rather than handed to `listener` (#1352, see `handOverAndEvict`).
-    public static Result<OffHeapRingBuffer> offHeapRingBuffer(String streamName,
-                                                              int partition,
-                                                              long capacity,
-                                                              long dataRegionSize,
-                                                              EvictionListener listener,
-                                                              UnacknowledgedEvictionListener unacknowledgedListener,
-                                                              EvictionPolicy policy,
-                                                              LongPredicate reserve,
-                                                              LongConsumer release) {
         var arena = Arena.ofShared();
 
         return buildFloorGuarded(arena,
@@ -313,7 +269,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                  capacity,
                                  dataRegionSize,
                                  listener,
-                                 unacknowledgedListener,
                                  policy,
                                  reserve,
                                  release);
@@ -331,7 +286,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                                long capacity,
                                                                long dataRegionSize,
                                                                EvictionListener listener,
-                                                               UnacknowledgedEvictionListener unacknowledgedListener,
                                                                EvictionPolicy policy,
                                                                LongPredicate reserve,
                                                                LongConsumer release) {
@@ -348,7 +302,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                       capacity,
                                       dataRegionSize,
                                       listener,
-                                      unacknowledgedListener,
                                       policy,
                                       reserve,
                                       release));
@@ -365,7 +318,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                 long capacity,
                                                 long dataRegionSize,
                                                 EvictionListener listener,
-                                                UnacknowledgedEvictionListener unacknowledgedListener,
                                                 EvictionPolicy policy,
                                                 LongPredicate reserve,
                                                 LongConsumer release) {
@@ -392,7 +344,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                      streamName,
                                      partition,
                                      listener,
-                                     unacknowledgedListener,
                                      policy,
                                      reserve,
                                      release,
@@ -414,11 +365,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// each, in offset order (#1258 R2-1); the notifier starts only after the section is released.
     private Result<Long> appendVisible(byte[] payload, long timestamp) {
         synchronized (appendLock) {
-            return appendLocked(payload, timestamp, SealBound.VISIBLE).onSuccess(this::queueAppendedVisible);
+            return appendLocked(payload, timestamp).onSuccess(this::queueAppendedVisible);
         }
     }
 
-    private Result<Long> appendLocked(byte[] payload, long timestamp, SealBound sealBound) {
+    private Result<Long> appendLocked(byte[] payload, long timestamp) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
@@ -429,8 +380,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         synchronized (appendLock) {
             return guardedAccess(() -> ensureGrownFor(payload.length).flatMap(_ -> appendIfFitsAllocated(payload,
-                                                                                                         timestamp,
-                                                                                                         sealBound)));
+                                                                                                         timestamp)));
         }
     }
 
@@ -444,12 +394,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// [#markDurable] and [#advanceVisible] once the event is durable and, on an owner, acknowledged by its
     /// min-sync peers. Listeners then learn the new visible high-water on this ring's serial notifier,
     /// never under the section.
-    public <T> Result<T> appendOrdered(byte[] payload,
-                                       long timestamp,
-                                       SealBound sealBound,
-                                       Fn1<Result<T>, Long> inOrder) {
+    public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {
-            return appendLocked(payload, timestamp, sealBound).flatMap(inOrder);
+            return appendLocked(payload, timestamp).flatMap(inOrder);
         }
     }
 
@@ -507,9 +454,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///     refusal an EVENTUAL append can meet is the eviction listener's: `SEALING_BEHIND` once the
     ///     pending-seal cap is reached on a partition with NO WAL — the non-crash-durable mode, where the
     ///     sealer's heap copy is the only holder (#1234, [#evictForSpace]). With a WAL the sealer never refuses.
-    private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp, SealBound sealBound) {
+    private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
         if (payload.length <= allocatedDataBytes) {
-            return appendWritten(payload, timestamp, sealBound);
+            return appendWritten(payload, timestamp);
         }
 
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL) {
@@ -526,12 +473,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// it never overflows. No listener is queued here: listeners are notified when the event becomes
     /// VISIBLE ([#advanceVisible], #1235), after `appendLock` is released, on the serial notifier. See
     /// spec §4.2.
-    private Result<Long> appendWritten(byte[] payload, long timestamp, SealBound sealBound) {
+    private Result<Long> appendWritten(byte[] payload, long timestamp) {
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL && countEvictionsForSpace(payload.length) > 0) {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        return evictForSpace(payload.length, sealBound).map(_ -> writeAppend(payload, timestamp));
+        return evictForSpace(payload.length).map(_ -> writeAppend(payload, timestamp));
     }
 
     private long writeAppend(byte[] payload, long timestamp) {
@@ -604,7 +551,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        return evictForSpace((int) totalSize, SealBound.VISIBLE).map(_ -> appendPayloads(payloads, timestamps));
+        return evictForSpace((int) totalSize).map(_ -> appendPayloads(payloads, timestamps));
     }
 
     /// Position a FRESH ring (no appends yet, `headOffset() == -1`) so the NEXT append is assigned
@@ -1473,8 +1420,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// Make room for an append. A refusal by the eviction listener (#1234) leaves every event in place and is
     /// returned to the append, which then writes nothing.
-    private Result<Unit> evictForSpace(int payloadLength, SealBound sealBound) {
-        return handOverAndEvict(countEvictionsForSpace(payloadLength), sealBound);
+    private Result<Unit> evictForSpace(int payloadLength) {
+        return handOverAndEvict(countEvictionsForSpace(payloadLength));
     }
 
     private long countEvictionsForSpace(int payloadLength) {
@@ -1542,7 +1489,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// to return to — the same shape as the other `void` sweep paths here.
     @Contract
     private void notifyAndEvict(long count) {
-        handOverAndEvict(count, SealBound.VISIBLE).onFailure(this::retentionDeferred);
+        handOverAndEvict(count).onFailure(this::retentionDeferred);
     }
 
     private void retentionDeferred(Cause cause) {
@@ -1555,53 +1502,16 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Hand the oldest `count` events to the eviction listener and reclaim them once it has taken them. The
     /// listener takes ownership synchronously and seals asynchronously, so reclamation is immediate; the
     /// partition WAL holds the events until their seal lands (#1234).
-    ///
-    /// Under [SealBound#VISIBLE] the hand-over is clamped at the VISIBLE position (#1352): only `[tail, visible]`
-    /// is sealed. An evictee above it was appended but never acknowledged by the stream's min-sync peers — it is
-    /// not part of the log, and sealing it would serve every future tiered reader an event no consumer was ever
-    /// allowed to see. Those are dropped: reclaimed without the hand-over, reported to [#unacknowledgedListener]
-    /// (which fails the publishers' pending awaits) and WARNed. Under [SealBound#APPENDED] every evictee is
-    /// sealed, as before #1352. A listener refusal still leaves everything in place under either bound.
-    private Result<Unit> handOverAndEvict(long count, SealBound sealBound) {
+    private Result<Unit> handOverAndEvict(long count) {
         if (count <= 0) {
             return unitResult();
         }
 
-        var sealable = sealBound == SealBound.APPENDED
-                       ? count
-                       : sealableCount(count);
-
-        return handOver(sealable).onSuccess(_ -> dropUnacknowledged(sealable, count))
-                       .onSuccess(_ -> evictOldest(count));
-    }
-
-    /// How many of the oldest `count` events are at or below the visible position.
-    private long sealableCount(long count) {
-        var visibleRun = visibleOffset.get() - rawTailOffset() + 1;
-
-        return Math.clamp(visibleRun, 0, count);
-    }
-
-    private void dropUnacknowledged(long sealable, long count) {
-        if (sealable >= count) {
-            return;
-        }
-
-        var from = rawTailOffset() + sealable;
-        var to = rawTailOffset() + count - 1;
-
-        log.warn("OffHeapRingBuffer {}[{}]: dropped {} unacknowledged event(s) [{}, {}] above the visible position {} — evicted before their replicas acknowledged them, never sealed (#1352)",
-                 streamName,
-                 partition,
-                 count - sealable,
-                 from,
-                 to,
-                 visibleOffset.get());
-        unacknowledgedListener.onUnacknowledgedEviction(streamName, partition, from, to);
+        return handOver(count).onSuccess(_ -> evictOldest(count));
     }
 
     private Result<Unit> handOver(long count) {
-        if (count <= 0 || listener == EvictionListener.NOOP) {
+        if (listener == EvictionListener.NOOP) {
             return unitResult();
         }
 

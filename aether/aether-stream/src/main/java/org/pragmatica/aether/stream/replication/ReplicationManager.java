@@ -6,9 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -83,19 +81,6 @@ public interface ReplicationManager extends AutoCloseable {
     default Result<Unit> ensureReplicaFloor(String streamName, int partition, int minAcks) {
         return Result.unitResult();
     }
-
-    /// Fail every pending [#awaitReplication] for `(stream, partition)` whose offset lies in `[fromOffset,
-    /// toOffset]` with `causeFor(offset)` (#1352). The owner's ring calls this, through the partition manager,
-    /// when DROP_OLDEST evicts events above the visible position: they were never acknowledged and are no
-    /// longer in the log, so their publishers learn a definite failure now rather than a `REPLICATION_TIMEOUT`
-    /// (outcome-unknown) 5 s later. An await already resolved by an ack is untouched. The default is a no-op:
-    /// the no-op manager registers no awaits.
-    @Contract
-    default void failPendingAcks(String streamName,
-                                 int partition,
-                                 long fromOffset,
-                                 long toOffset,
-                                 Fn1<Cause, Long> causeFor) {}
 
     @Contract
     @Override

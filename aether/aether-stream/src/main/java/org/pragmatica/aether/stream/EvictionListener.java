@@ -12,9 +12,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 
-/// Takes the events a ring is about to reclaim (#1234). Under an owner append only those at or below the ring's
-/// visible position arrive; an evictee above it is dropped and reported to the [UnacknowledgedEvictionListener]
-/// instead (#1352, [OffHeapRingBuffer.SealBound]). Success means the listener now owns them — the ring
+/// Takes the events a ring is about to reclaim (#1234). Success means the listener now owns them — the ring
 /// reclaims their space at once, and making them durable is the listener's job (the partition WAL holds them
 /// meanwhile). A failure is a refusal: the ring keeps the events, and an append that needed their room fails
 /// with the listener's cause. The segment sealer refuses only for a partition with no WAL (see its class doc).
