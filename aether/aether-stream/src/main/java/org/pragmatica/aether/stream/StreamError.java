@@ -87,7 +87,13 @@ public sealed interface StreamError extends Cause {
     /// renumbers (that silently shifts every later record against replicas, segments and cursors), so the
     /// STREAM stays unmaterialized on this node when it is being created (a lazy per-partition materialize
     /// leaves only this partition unbuilt) until an operator acts; the message says how without advising
-    /// anything that could discard a correct tail.
+    /// anything that could discard a correct tail. #1345 raises it BEFORE any record is appended, so a refused
+    /// recovery hands the sealer nothing. Node shape, traced to the producers: the node stays up; the ERROR
+    /// is logged per ATTEMPT, and attempts are boot hydration, once when this node newly becomes a replica
+    /// (`ReplicaSetController.reconcilePartition` → `onBecameReplica`, only on the registration edge), and
+    /// every publish (`ensureStreamMaterialized` / the owner-append safety valve) — reads never materialize
+    /// and nothing periodic re-attempts (`redriveIncompleteBackfills` backfills only). Each publish fails with
+    /// this cause.
     record WalReplayMismatch(String streamName, int partition, Path walFile, long expectedOffset, long foundOffset) implements StreamError {
         @Override
         public String message() {

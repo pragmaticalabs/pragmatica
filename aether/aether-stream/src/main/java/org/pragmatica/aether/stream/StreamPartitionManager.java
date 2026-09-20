@@ -1086,7 +1086,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       walBaseDir,
                                       lastSealedOffset)
                           .onSuccess(StreamEntry::markCommitted)
-                          .onFailure(_ -> hydrationFailed(config, floorBytes))
+                          .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
                           .or((StreamEntry) null);
     }
 
@@ -1146,10 +1146,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     @Contract
-    private void hydrationFailed(StreamConfig config, long floorBytes) {
+    /// The cause is the ring build's own — an off-heap allocation, a WAL open, or a refused WAL recovery
+    /// (#1345: `WalReplayMismatch`) — so it is carried, not narrated as an allocation failure.
+    private void hydrationFailed(StreamConfig config, long floorBytes, Cause cause) {
         release(floorBytes);
-        log.warn("Follower could not materialize committed stream '{}' — off-heap floor allocation failed; entry not created",
-                 config.name());
+        log.warn("Follower could not materialize committed stream '{}' — entry not created: {}",
+                 config.name(),
+                 cause.message());
     }
 
     /// Follower defense-in-depth (#265 increment 4, spec §7/§11): a COMMITTED config whose declared partition
@@ -1994,6 +1997,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void close() {
         streams.values().forEach(StreamEntry::close);
         streams.clear();
+        durableAtPreviousTick.clear();
         totalAllocatedBytes.set(0);
         inFlightMaterializations.clear();
         systemMaterializeQueue.clear();
@@ -2062,8 +2066,20 @@ public final class StreamPartitionManager implements AutoCloseable {
         releaseEntry(entry);
         entry.deleteWals();
         evictionListener.onStreamDeleted(entry.config().name());
+        forgetHeldBack(entry);
 
         return success(unit());
+    }
+
+    /// The held-back bookkeeping ([#noteHeldBack]) is keyed per partition; a removed stream's keys would
+    /// otherwise outlive it, and a re-created stream of the same name would compare its first tick against
+    /// the dead stream's bound.
+    @Contract
+    private void forgetHeldBack(StreamEntry entry) {
+        for (int partition = 0; partition < entry.declaredPartitions(); partition++) {
+            durableAtPreviousTick.remove(partitionKeyOf(entry.config().name(),
+                                                        partition));
+        }
     }
 
     /// Release a stream's live budget and close it WITHOUT double-counting the buffer seam.

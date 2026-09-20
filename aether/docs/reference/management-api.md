@@ -2289,7 +2289,8 @@ the view actionable (see recovery below).
       "violation": ""
     }
   ],
-  "walRecoveryHeadGapsAccepted": 0
+  "walRecoveryHeadGapsAccepted": 0,
+  "walReclamationHeldBackTicks": 0
 }
 ```
 
@@ -2297,6 +2298,7 @@ the view actionable (see recovery below).
 |-------|-------------|
 | `walTotalBytes` | Total live WAL bytes across every partition on this node — the same number the `streams` storage instance reports as `wal.totalBytes` (both derive from one snapshot) |
 | `walRecoveryHeadGapsAccepted` | WAL recoveries on this node, since process start, that accepted a gap BEFORE a WAL file's first record as reclaimed history (the partition's sealed segments were removed by retention after the WAL was compacted). Each one is also logged at WARN, naming the stream, partition and offset range. Expected after retention reclaimed a partition's every sealed segment; otherwise the records in that range are lost. A gap BETWEEN records, or a duplicate offset, is never accepted: it refuses the stream on the node with an ERROR |
+| `walReclamationHeldBackTicks` | Consecutive WAL-truncation ticks (30 s each) in which some partition's sealed watermark ON DISK — the refs in the latest streams metadata snapshot, which is the only bound truncation may use (#1345) — sat below its live watermark without advancing. `0` while the snapshot keeps up. Climbing means WAL reclamation is halted because the streams snapshot cannot be written or read (disk full, permissions, a torn newest file); the WAL grows, bounded by the disk. The tick WARNs from the second such tick and every 10 after, naming the partitions and their WAL bytes. Recovery: make the streams snapshot directory writable and `LATEST` readable; the next snapshot advances the bound and the counter resets |
 | `partitions[]` | One row per `(stream, partition)` this node holds anything for — materialized (ring/WAL) or held only as sealed segments — sorted by stream, then partition |
 | `stream` / `partition` | The partition coordinate (`entity:`-prefixed streams are durable-entity logs) |
 | `wal` | The partition's live WAL counters; `null` when it has no WAL (non-durable path, or a segment-only row) |

@@ -31,9 +31,11 @@
   `LATEST` at the previous retained `snapshot-*.dat`). A gap or duplicate INSIDE the tail is
   `StreamError.WalReplayMismatch` (#1258), and #1345 adds the pass that raises it BEFORE any record is
   appended: a refused recovery hands the sink nothing, so no renumbered segment can be sealed from it.
-  While refused the node stays up, the stream is absent on this node, the reconcile loop retries every
-  tick (ERROR at the refusal, WARN "materialize-on-reconcile failed"), and each publish fails with the
-  typed cause. Nothing is renumbered on any path. An EMPTY compacted WAL against a lower watermark is
+  While refused the node stays up and the stream is absent on this node; the ERROR is logged per
+  ATTEMPT, and attempts are boot hydration, once when the node newly becomes a replica for the
+  partition, and every publish (which fails with the typed cause) — reads never materialize and nothing
+  periodic re-attempts. Nothing is renumbered on any path. The follower's hydration WARN now carries the
+  cause instead of narrating it as an allocation failure. An EMPTY compacted WAL against a lower watermark is
   accepted vacuously `[unverified: unreachable via the ring today; #1278's floor closes it]`.
   Note: a partition whose every ref was reclaimed by retention (#1278, open) is indistinguishable from
   lost refs and is accepted with the same WARN on every restart until #1278 persists a reclaimed-through
