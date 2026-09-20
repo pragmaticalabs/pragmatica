@@ -16,6 +16,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.SnapshotConfig;
+import org.pragmatica.storage.SnapshotManager;
 
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -34,10 +38,12 @@ import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 /// recovery appended the compaction survivors (196..199) at FRESH offsets 0..3 — measured
 /// `head=3 tail=0 count=4`, offset 0 carrying event 196's payload — with no error and no log line.
 ///
-/// Two outcomes are acceptable and each is pinned by name: (a) truncation never passes the DURABLE watermark,
-/// so the WAL still holds every record the lost refs covered and recovery reproduces the original offsets
-/// exactly; (b) when the WAL genuinely starts above the durable watermark (a disk that lost the snapshot after
-/// the compaction), recovery REFUSES with a typed cause instead of renumbering.
+/// Two outcomes are acceptable and each is pinned by name: (a) truncation never passes the DURABLE watermark
+/// ([DurableSealedOffsetSource] — what a restart would rebuild, never the live index), so the WAL still holds
+/// every record the lost refs covered and recovery reproduces the original offsets exactly; (b) when the WAL
+/// genuinely starts above the durable watermark (a disk that lost the snapshot after the compaction), recovery
+/// REFUSES with [StreamError.WalRecoveryGap] instead of renumbering. The snapshot-derived production source is
+/// pinned against a real [SnapshotManager] below.
 class StreamPartitionManagerRestartAfterCompactionTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -53,16 +59,17 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     @TempDir
     Path walDir;
 
-    /// (a) Refs never snapshotted, WAL truncated off the in-memory index, restart against an empty index:
-    /// the recovered partition must carry the original offsets — head 199, and every readable event's offset
-    /// equal to the index encoded in its payload.
+    /// (a) Refs never snapshotted (the durable view stays EMPTY while the live index seals to 195), the
+    /// truncation tick runs, restart against the empty index: the recovered partition must carry the original
+    /// offsets — head 199, and every readable event's offset equal to the index encoded in its payload.
     @Test
     void restartAfterCompaction_refsNotYetSnapshotted_recoversOriginalOffsets() {
-        var sealedThrough = publishSealAndTruncate(new SegmentIndex());
+        var neverSnapshotted = new SegmentIndex();
+        var sealedThrough = publishSealAndTruncate(new SegmentIndex(), DurableSealedOffsetSource.same(neverSnapshotted::lastSealedOffset));
 
         assertThat(sealedThrough).as("pre-crash sealed watermark").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
 
-        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), new SegmentIndex()::lastSealedOffset);
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), neverSnapshotted::lastSealedOffset);
 
         createStream(recovered).onFailure(cause -> fail("recovery refused: " + cause.message()));
         var info = recovered.partitionInfo(STREAM, PARTITION).onFailure(cause -> fail(cause.message())).unwrap();
@@ -78,11 +85,14 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         tail.forEach(StreamPartitionManagerRestartAfterCompactionTest::assertOffsetMatchesPayload);
     }
 
-    /// (b) The WAL genuinely starts above the durable watermark (its records below 196 are gone and so are
-    /// the refs). Recovery must refuse — a failed `createStream` — never seed at `-1` and renumber.
+    /// (b) The index IS treated as durable, so the tick compacts the WAL past 195; then the refs are lost
+    /// anyway (a snapshot directory restored from before the compaction). The WAL genuinely starts at 196
+    /// above a rebuilt watermark of -1: recovery must refuse with [StreamError.WalRecoveryGap] naming the gap
+    /// — never seed at `-1` and renumber.
     @Test
     void restartAfterCompaction_walStartsAboveDurableWatermark_refusesLoudly() {
-        var sealedThrough = publishSealAndTruncate(new SegmentIndex());
+        var index = new SegmentIndex();
+        var sealedThrough = publishSealAndTruncate(index, DurableSealedOffsetSource.same(index::lastSealedOffset));
 
         assertThat(sealedThrough).as("pre-crash sealed watermark").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
 
@@ -98,15 +108,69 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         recovered.close();
 
         assertThat(create.isFailure()).as("recovery silently renumbered: %s, %s", observed, offset0).isTrue();
+        // createStream folds every partition's recovery through Result.allOf, so the refusal arrives inside a
+        // composite; the typed cause is the leaf.
+        create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalRecoveryGap.class::isInstance)
+                                                  .map(StreamError.WalRecoveryGap.class::cast)
+                                                  .toList()).as("typed refusal inside %s", cause.message())
+                                                            .singleElement()
+                                                            .satisfies(gap -> assertGap(gap, sealedThrough + 1)));
+    }
+
+    /// Control for the tripwire: the snapshot DID cover the seals (durable == live), the tick compacted the WAL
+    /// to the watermark, and the restart rebuilds the same watermark. The survivors start exactly at
+    /// `base + 1`, so recovery accepts them at their original offsets — the check must not fire here.
+    @Test
+    void restartAfterCompaction_refsSnapshotted_recoversTailAtOriginalOffsets() {
+        var index = new SegmentIndex();
+        var sealedThrough = publishSealAndTruncate(index, DurableSealedOffsetSource.same(index::lastSealedOffset));
+
+        assertThat(sealedThrough).as("pre-crash sealed watermark").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
+
+        createStream(recovered).onFailure(cause -> fail("recovery refused: " + cause.message()));
+        var info = recovered.partitionInfo(STREAM, PARTITION).onFailure(cause -> fail(cause.message())).unwrap();
+        var tail = recovered.readLocal(STREAM, PARTITION, sealedThrough + 1, EVENTS)
+                            .onFailure(cause -> fail(cause.message()))
+                            .unwrap();
+
+        recovered.close();
+
+        assertThat(info.headOffset()).isEqualTo(EVENTS - 1L);
+        assertThat(info.tailOffset()).isEqualTo(sealedThrough + 1);
+        assertThat(tail).hasSize((int) (EVENTS - 1 - sealedThrough));
+        tail.forEach(StreamPartitionManagerRestartAfterCompactionTest::assertOffsetMatchesPayload);
+    }
+
+    /// The production source: the watermark of the latest metadata snapshot ON DISK, rebuilt the way boot
+    /// rebuilds it. Before any snapshot it is `-1` whatever the store holds (nothing may be truncated); after a
+    /// snapshot it is that snapshot's contiguous watermark, and a ref added since is NOT counted until the next.
+    @Test
+    void fromLatestSnapshot_reportsOnlyRefsOnDisk() {
+        var store = MetadataStore.inMemoryMetadataStore("streams");
+        var snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(walDir.resolve("snapshots"), "node-1"));
+        var durable = DurableSealedOffsetSource.fromLatestSnapshot(snapshots);
+
+        store.putRef("streams/" + STREAM + "/" + PARTITION + "/0-99", blockId(1));
+        assertThat(durable.current().lastSealedOffset(STREAM, PARTITION)).as("no snapshot yet").isEqualTo(-1L);
+
+        snapshots.forceSnapshot();
+        store.putRef("streams/" + STREAM + "/" + PARTITION + "/100-199", blockId(2));
+        assertThat(durable.current().lastSealedOffset(STREAM, PARTITION)).as("only the snapshotted ref").isEqualTo(99L);
+
+        snapshots.forceSnapshot();
+        assertThat(durable.current().lastSealedOffset(STREAM, PARTITION)).as("both refs on disk").isEqualTo(199L);
     }
 
     /// Publish [#EVENTS], let the sealer drain to the in-memory `index`, truncate the WALs off that index and
     /// close (the crash). Returns the in-memory sealed watermark at the moment of the truncate.
-    private long publishSealAndTruncate(SegmentIndex index) {
+    private long publishSealAndTruncate(SegmentIndex index, DurableSealedOffsetSource durable) {
         var manager = streamPartitionManager(Long.MAX_VALUE,
                                              segmentSealer(segment -> indexed(index, segment)),
                                              Option.some(walDir),
-                                             index::lastSealedOffset);
+                                             index::lastSealedOffset,
+                                             durable);
 
         createStream(manager).onFailure(cause -> fail(cause.message()));
         IntStream.range(0, EVENTS).forEach(i -> publish(manager, i));
@@ -144,6 +208,18 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         manager.publishLocal(STREAM, PARTITION, payload(i), 1000L + i)
                .onFailure(cause -> fail(cause.message()))
                .onSuccess(offset -> assertThat(offset).isEqualTo((long) i));
+    }
+
+    private static void assertGap(StreamError.WalRecoveryGap gap, long firstSurvivor) {
+        assertThat(gap.streamName()).isEqualTo(STREAM);
+        assertThat(gap.partition()).isEqualTo(PARTITION);
+        assertThat(gap.base()).isEqualTo(-1L);
+        assertThat(gap.expected()).isEqualTo(0L);
+        assertThat(gap.found()).isEqualTo(firstSurvivor);
+    }
+
+    private static BlockId blockId(int seed) {
+        return BlockId.blockId(new byte[] {(byte) seed}).unwrap();
     }
 
     private static void assertOffsetMatchesPayload(RawEvent event) {

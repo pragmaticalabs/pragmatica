@@ -78,6 +78,24 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// WAL recovery refused (#1345): the replayed records do not start where the durable sealed watermark
+    /// ends (or are not contiguous), so appending them would assign the survivors new offsets. The usual
+    /// cause is a WAL compacted past segment refs that never reached the metadata snapshot — a snapshot
+    /// directory restored from before the compaction, or lost. `base` is the rebuilt watermark, `expected`
+    /// the offset the ring would assign next, `found` the record's own offset. Recovery action: restore the
+    /// metadata snapshot that covers `[expected, found)`, or accept the loss explicitly by removing the
+    /// partition's WAL; the node never renumbers on its own.
+    record WalRecoveryGap(String streamName, int partition, long base, long expected, long found) implements StreamError {
+        @Override
+        public String message() {
+            return "WAL recovery gap for %s/%d: durable sealed watermark %d, next record must be offset %d but the WAL holds %d — refusing to renumber survivors".formatted(streamName,
+                                                                                                                                                                            partition,
+                                                                                                                                                                            base,
+                                                                                                                                                                            expected,
+                                                                                                                                                                            found);
+        }
+    }
+
     record StreamNotFound(String streamName) implements StreamError {
         @Override
         public String message() {

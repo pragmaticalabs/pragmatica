@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MetadataStore;
 
 import static org.pragmatica.lang.Option.option;
@@ -191,13 +192,17 @@ public final class SegmentIndex {
 
     @Contract
     public void rebuildFromRefs(MetadataStore metadataStore) {
+        rebuildFromRefs(metadataStore.listAllRefs());
+    }
+
+    /// Rebuild from a ref listing — the live store's at boot, or a metadata snapshot's (#1345: the sealed
+    /// watermark a restart WOULD rebuild is the bound WAL truncation may use, and only the snapshot on disk
+    /// can say what that is).
+    @Contract
+    public void rebuildFromRefs(Map<String, BlockId> refs) {
         partitions.clear();
         sealedThrough.clear();
-        metadataStore.listAllRefs()
-                     .keySet()
-                     .stream()
-                     .filter(ref -> ref.startsWith(STREAMS_PREFIX))
-                     .forEach(this::parseAndAddRef);
+        refs.keySet().stream().filter(ref -> ref.startsWith(STREAMS_PREFIX)).forEach(this::parseAndAddRef);
         partitions.forEach(this::anchorAtLowestRef);
     }
 
