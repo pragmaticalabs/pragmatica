@@ -1,3 +1,3 @@
 ### Added (2026-09-20 — #1386: hierarchy implementation specifications)
 - **End-to-end hierarchical cluster contracts and acceptance plan** covering immutable core/worker roles, Rabia voter handoff and durable recovery, community authority and movement, source-aware capacity, metrics and scoped worker metadata.
-- Reconciles historical worker and metrics documentation with the proposed rc4 batch. Records executed local checkpoints separately from pending validation and explicitly avoids a 10K-node throughput or completed-JBCT-gate claim. [mechanism: aether/docs/specs/hierarchical-cluster-implementation-plan.md]
+- Defines proposed behavior separately from current-product documentation, which belongs to runtime PR #1390. Records named validation evidence and explicit unmeasured scale limits. [spec: aether/docs/specs/hierarchical-cluster-implementation-plan.md]

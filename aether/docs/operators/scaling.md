@@ -263,9 +263,9 @@ curl http://localhost:8080/api/v1/slices/status
     "instances": 5,
     "targetInstances": 7,
     "cpuPercent": 72,
-    "intervalMeanLatencyP50Ms": 23,
-    "intervalMeanLatencyP95Ms": 89,
-    "intervalMeanLatencyP99Ms": 145,
+    "latencyP50Ms": 23,
+    "latencyP95Ms": 89,
+    "latencyP99Ms": 145,
     "requestsPerSecond": 1250,
     "scaling": {
       "status": "scaling-up",

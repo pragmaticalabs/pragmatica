@@ -1252,10 +1252,6 @@ The response has two halves with different time semantics, deliberately:
   counts; `leaderId` is absent until a leader is known.
 
 **Response:**
-The `intervalMeanLatencyP*` fields summarize the distribution of interval means, not
-individual request latencies. `errorRate` is the failed/completed invocation ratio;
-`requestRate` and `gcRate` are events per second derived from cumulative-counter differences.
-
 ```json
 {
   "minuteTimestamp": 1704067200000,
@@ -1265,9 +1261,9 @@ individual request latencies. `errorRate` is the failed/completed invocation rat
   "avgLatencyMs": 12.3,
   "totalInvocations": 15000,
   "totalGcPauseMs": 50,
-  "intervalMeanLatencyP50": 8.0,
-  "intervalMeanLatencyP95": 25.0,
-  "intervalMeanLatencyP99": 80.0,
+  "latencyP50": 8.0,
+  "latencyP95": 25.0,
+  "latencyP99": 80.0,
   "errorRate": 0.005,
   "eventCount": 120,
   "sampleCount": 60,
@@ -1297,9 +1293,9 @@ Get derived (computed) metrics including trends, saturation, and health score.
   "requestRate": 250.0,
   "errorRate": 0.005,
   "gcRate": 0.8,
-  "intervalMeanLatencyP50": 8.0,
-  "intervalMeanLatencyP95": 25.0,
-  "intervalMeanLatencyP99": 80.0,
+  "latencyP50": 8.0,
+  "latencyP95": 25.0,
+  "latencyP99": 80.0,
   "eventLoopSaturation": 0.1,
   "heapSaturation": 0.6,
   "cpuTrend": 0.02,
@@ -1740,9 +1736,9 @@ Export TTM training data (last 120 minute-aggregated samples).
     "latencyMs": 12.3,
     "invocations": 15000,
     "gcPauseMs": 50,
-    "intervalMeanLatencyP50": 8.0,
-    "intervalMeanLatencyP95": 25.0,
-    "intervalMeanLatencyP99": 80.0,
+    "latencyP50": 8.0,
+    "latencyP95": 25.0,
+    "latencyP99": 80.0,
     "errorRate": 0.005,
     "eventCount": 120
   }

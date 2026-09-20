@@ -1,5 +1,8 @@
 # Metrics distribution and calculation
 
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
 Status: implementation specification for the hierarchical clustering batch against `rc4`.
 Fresh clusters only. The producer-envelope ping/pong schema replaces the earlier wire layout;
 there is no migration, rolling-upgrade negotiation, or compatibility decoder.
@@ -30,6 +33,15 @@ that threat model requires signed producer envelopes and is outside this change.
 producer. Forwarders preserve the complete envelope unchanged. A receiver accepts a version only
 if its incarnation is newer or its sequence is greater within the same incarnation. Membership
 removal retires the retained producer watermark and history. Worker identities are not reused.
+Producer incarnation is a durable per-node process counter, allocated before metrics startup from
+`producer-incarnation.bin` under the node's configured/default control directory. Allocation locks
+the counter, validates the retained value, increments it, forces a temporary file, atomically renames
+it and forces the directory before use. Persistence failure or exhaustion refuses startup. Retain
+this directory across restarts; loss requires a fresh node identity. UTC clock rollback cannot lower
+the counter. It is independent of SWIM's membership incarnation: metric replay ordering uses this
+process counter and sequence; governor membership evidence carries the direct pong's SWIM incarnation.
+This is a #1390 requirement, not a property of rc4's wall-clock-derived startup incarnation.
+
 Both raw and typed ingestion require the producer to be known and eligible in authoritative
 membership. This predicate defaults to deny until assembly wires it. Current views and relay
 caches recheck eligibility, so an already-cached source disappears immediately after removal
@@ -49,7 +61,7 @@ of 0.2 means 20 percent. Weighted means merge sums and counts. Percentiles requi
 histograms; averaging per-node percentiles or taking percentiles of per-node means is invalid.
 
 Raw node observations and aggregate summaries are different inputs, not additive collections.
-The current `CommunityMetricsSnapshot` name is historical: `WorkerMetricsAggregator` publishes
+On the rc4 baseline, the `CommunityMetricsSnapshot` name is historical: `WorkerMetricsAggregator` publishes
 one producer's own per-slice metrics with `memberCount = 1`; `governorId` identifies that producer.
 Each report carries producer incarnation and sequence; the control loop rejects duplicate, older,
 expired, and excessively future reports. It accepts only `memberCount = 1`, keys by producer, and
@@ -117,11 +129,11 @@ control hints but omits the global readiness and provisioning rosters. All produ
 `completeMetricsRoster=false`: omission from a chunk is never evidence of producer removal.
 Membership verdicts remove producers; freshness removes expired samples from current views.
 
-For N producers and K core consumers, detailed dissemination is O(K*N), not O(N*N). No claim of
-10K throughput follows from this complexity bound alone. Core CPU, payload cardinality, transport
+[limit: replicated-metrics-volume] For N producers and K core consumers, detailed dissemination is O(K*N), not O(N*N). No claim of
+10K throughput follows from this complexity bound alone. [unverified: 10k-metrics-throughput] Core CPU, payload cardinality, transport
 bandwidth, snapshot processing, and failure bursts require measurement.
 
-The metrics lane currently refuses writes under transport backpressure rather than creating the
+On the rc4 baseline, the metrics lane refuses writes under transport backpressure rather than creating the
 consensus retry queue. A subsequent cycle republishes current observations; it does not enqueue
 an application-level backlog of missed historical cycles. Missing coverage is a degradation signal.
 The metrics protocol cannot guarantee heartbeat delivery during sustained metrics-lane saturation;
@@ -172,3 +184,7 @@ and must not merge calendar periods across markets indiscriminately.
 The historical contributor document `../contributors/metrics-control.md` describes earlier
 leader-broadcast assumptions. This specification takes precedence for ping/pong distribution and
 sample identity; it does not reinstate the old LLM actuation model.
+
+A missing producer counter alongside an existing allocation lock is an integrity failure, not a
+fresh identity. Startup refuses allocation, including after an interrupted first allocation.
+Operators must restore the retained state or provision a fresh node identity.

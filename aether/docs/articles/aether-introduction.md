@@ -150,7 +150,7 @@ You configure it through thresholds:
 
 ```bash
 aether thresholds set cpu_high 0.8 --action scale_up
-aether thresholds set interval_mean_latency_p99 500ms --action alert
+aether thresholds set latency_p99 500ms --action alert
 ```
 
 These rules run locally on every node. There's no central controller that becomes a single point of failure.

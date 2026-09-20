@@ -1,5 +1,8 @@
 # Community placement, movement and capacity admission
 
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
 This specification complements `hierarchical-cluster-contract-spec.md`. It defines the
 core-authoritative implementation boundary; it does not delegate new actuation authority
 to disconnected communities. Node roles remain immutable.
@@ -68,7 +71,7 @@ on refusal. Accepted transactions install every value before routing notificatio
 
 The result is `TransactionResult(transactionId, accepted)`. Submitters select their own ID
 from a merged batch response. They must not infer success from an unqualified successful
-consensus promise. `LeaderPut` uses the same primitive for a single write.
+consensus promise. A single write also uses a caller-correlated `LeaderTransaction` containing one mutation.
 
 Ordinary Put/Remove cannot modify leader-authorized records. An authorized transaction may
 remove a non-owner-fenced reservation with an exact witness; owner-fenced authority uses
@@ -168,9 +171,12 @@ operational capacity limit.
 
 Core health probing targets admitted core nodes and current committed governors. A governor probes its own community; ordinary workers retain community SWIM and bounded core uplinks. A core never uses a persisted governor roster as a heartbeat.
 
-Each core challenges each governor using a process-incarnation token and monotonic request sequence. A response must match the outstanding challenge, authenticated sender, committed governor term, governor assignment and every reported member assignment. Duplicate members, excessive report size, stale terms and expired challenges are rejected. One pending challenge per community bounds request state. A new core process cannot accept an old response.
+Each core challenges each governor using a random process-incarnation challenge token and monotonic request sequence. The token is
+matched for equality, never ordered; restart invalidates outstanding challenges. A response must match the outstanding challenge, authenticated sender, committed governor term, governor assignment and every reported member assignment. Duplicate members, excessive report size, stale terms and expired challenges are rejected. One pending challenge per community bounds request state. A new core process cannot accept an old response.
 
-Governor observations come from direct worker pongs, with producer incarnation/sequence and timestamp freshness checks. Relayed metrics and cached SWIM ALIVE labels cannot refresh this evidence. Reported age includes the producer observation age and elapsed governor-local time. The core adds the challenge round trip and its own elapsed receipt time, using monotonic clocks for elapsed durations. Readiness requires both fresh positive reachability and READY lifecycle evidence. A governor records its own lifecycle locally.
+Governor observations come from direct worker pongs, with durable producer-process incarnation/sequence
+and timestamp freshness checks as specified in metrics-distribution-spec. This replay identity is
+separate from the pong’s SWIM membership incarnation carried in MemberHealth and membership evidence. Relayed metrics and cached SWIM ALIVE labels cannot refresh this evidence. Reported age includes the producer observation age and elapsed governor-local time. The core adds the challenge round trip and its own elapsed receipt time, using monotonic clocks for elapsed durations. Readiness requires both fresh positive reachability and READY lifecycle evidence. A governor records its own lifecycle locally.
 
 Accepted evidence retains provenance `(community, governor, governor term, member incarnation)` when supplied to the membership integration. Missing, stale or incomplete reports make workers unavailable for placement; they do not declare worker death, authorize instance termination or release capacity reservations. A governor change immediately invalidates prior positive evidence. Initial governor nomination requires a fresh direct candidate observation and committed worker assignment, avoiding a circular dependency on a report from a governor that has not yet been appointed.
 

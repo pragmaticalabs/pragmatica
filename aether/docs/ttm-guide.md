@@ -486,9 +486,9 @@ Timeline from startup:
 | 3 | latency_ms | milliseconds | 0+ |
 | 4 | invocations | count/min | 0+ |
 | 5 | gc_pause_ms | milliseconds | 0+ |
-| 6 | interval_mean_latency_p50 | milliseconds | 0+ |
-| 7 | interval_mean_latency_p95 | milliseconds | 0+ |
-| 8 | interval_mean_latency_p99 | milliseconds | 0+ |
+| 6 | latency_p50 | milliseconds | 0+ |
+| 7 | latency_p95 | milliseconds | 0+ |
+| 8 | latency_p99 | milliseconds | 0+ |
 | 9 | error_rate | ratio | 0.0-1.0 |
 | 10 | event_count | count | 0+ |
 

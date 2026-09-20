@@ -1,5 +1,8 @@
 # Rabia instance and binary-round contract
 
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
 Status: implementation contract for the rc4 hierarchy correction batch.
 
 ## Problem and scope
@@ -34,8 +37,8 @@ commit. The normal two-round path remains.
 - Initial round-one vote derives from the fixed proposal set. A later round-one vote derives
   solely from the preceding round's carry-forward result.
 - After a quorum of round-one votes, broadcast the common value if a quorum agrees, otherwise
-  question. After a quorum of round-two votes, decide on an intersecting threshold of matching
-  non-question votes; otherwise carry the observed non-question value, or the common coin.
+  question. After a quorum of round-two votes, decide on f+1 matching non-question votes for n=2f+1 voters
+  (the refinement threshold in `weak_mvc.ivy`); otherwise carry the observed non-question value, or the common coin.
 - Carry-forward advances only the binary round. It cannot apply a command, mark the slot decided,
   change the snapshot frontier, discard proposals, or start a different slot.
 - A V1 decision waits for a quorum-agreed proposal. A plurality or empty fallback is forbidden.
@@ -100,8 +103,10 @@ own proposal and ballots before responding to synchronization or voting. A resta
 choose a new proposal or ballot merely because its volatile PhaseData map was lost.
 
 The checkpoint includes the application frontier, voter authority/retirement evidence, WAL sequence,
-and retained promises for the still-open slot. The checkpoint is fsynced and atomically renamed before
-the covered WAL prefix is replaced. A crash between those replacements leaves redundant old records,
+and retained promises for the still-open slot. The temporary checkpoint file is fsynced, atomically
+renamed, and the containing directory is fsynced before the covered WAL prefix is replaced. A crash
+after rename but before directory fsync may lose the rename; recovery must retain the old WAL prefix
+until directory durability is established. A crash between those replacements leaves redundant old records,
 which recovery validates and then ignores below the checkpoint sequence. An incomplete frame,
 checksum mismatch, unknown schema, or sequence gap fails startup; this implementation does not
 silently truncate or reinterpret corrupted durable history as a fresh node.
@@ -120,14 +125,14 @@ Production selects `cluster.consensus_path`; Ember uses a distinct per-cluster, 
 path that survives that node's in-process restart. In-memory persistence remains an explicit test
 choice and does not imply crash durability. Passive workers do not replay the global consensus WAL.
 
-Baseline bounds: records are at most 64 MiB; checkpoint payloads at most 512 MiB; WAL at most 256 MiB;
+[limit: durable-journal-envelope] Baseline bounds: records are at most 64 MiB; checkpoint payloads at most 512 MiB; WAL at most 256 MiB;
 compaction is requested after 4,096 appended records or 32 MiB. At most 65,536 uncompacted/open-slot
 promises are retained, including binary-round history. Exceeding a bound stops voting with a typed
 failure; it does not discard an unresolved promise. Optional git backup receives only immutable
 checkpoints on a separate worker, with one in-flight and one latest pending snapshot. Backup failure
 is observable but cannot delay voting or make a durable write appear unsuccessful.
 
-Acceptance evidence (local development filesystem, not production storage): 64 append+fsync samples
+[unverified: production-durable-throughput] Local development measurements (not production storage): 64 append+fsync samples
 had median 6.7–8.3 ms and p95 8.4–23.1 ms across three runs. A proposal, two ballots, and a Decision
 therefore add material serial storage latency per batch. Production throughput and tail latency
 must be measured with actual batch size, core count, disk, and inter-region delay. These figures are
