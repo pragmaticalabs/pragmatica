@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.nio.file.Path;
+
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
@@ -72,6 +74,33 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Ring seed rejected (base=%d, head=%d): requires fresh ring, base>=0".formatted(base, currentHead);
+        }
+    }
+
+    /// WAL recovery refused (#1232): the recovered tail, placed by STORED offset, has a gap between
+    /// records (`foundOffset` above `expectedOffset`) or a duplicate (`foundOffset` below it). A gap
+    /// BEFORE the first record is not refused — it is reclaimed history (#1258 review B2). Recovery never
+    /// renumbers (that silently shifts every later record against replicas, segments and cursors), so the
+    /// STREAM stays unmaterialized on this node when it is being created (a lazy per-partition materialize
+    /// leaves only this partition unbuilt) until an operator acts; the message says how without advising
+    /// anything that could discard a correct tail.
+    record WalReplayMismatch(String streamName, int partition, Path walFile, long expectedOffset, long foundOffset) implements StreamError {
+        @Override
+        public String message() {
+            return ("WAL recovery refused for stream '%s' on this node: partition %d expected offset %d but %s holds %d (%s),"
+                   + " and records are never renumbered, so the stream is not materialized here. Keep the file — do not delete,"
+                   + " truncate or move it: records below offset %d are intact and may be the only copy. Operator action: archive"
+                   + " a copy for diagnosis; the other nodes keep serving the stream when replicas >= 2. Remove the file from"
+                   + " this node only after confirming another replica holds this partition beyond offset %d").formatted(streamName,
+                                                                                                                         partition,
+                                                                                                                         expectedOffset,
+                                                                                                                         walFile,
+                                                                                                                         foundOffset,
+                                                                                                                         foundOffset < expectedOffset
+                                                                                                                         ? "duplicate"
+                                                                                                                         : "gap",
+                                                                                                                         expectedOffset,
+                                                                                                                         foundOffset);
         }
     }
 
