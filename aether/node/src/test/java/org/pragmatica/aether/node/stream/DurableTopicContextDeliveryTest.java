@@ -158,7 +158,12 @@ class DurableTopicContextDeliveryTest {
                                       .toList();
 
         assertThat(published.offset()).as("the retried event is not at offset 0").isEqualTo(1L);
-        assertThat(forTarget).as("1 attempt + 2 injected-failure retries").hasSize(3);
+        // CI at 13cab2ceb: "Expected size: 3 but was: 1" with attempts >= 4, so three attempts carried some OTHER
+        // event; the filtered list hid which. Name them, and the attempt count, so the next red is diagnosable.
+        assertThat(forTarget).as("1 attempt + 2 injected-failure retries; attempts=%d, every contextual delivery=%s",
+                                 contextualAttempts.get(),
+                                 contextualSeen)
+                             .hasSize(3);
         assertThat(forTarget).allSatisfy(contextual -> assertThat(contextual.context()).isEqualTo(expected));
         assertThat(deadLettersFor(ON_PLACED_WITH_CONTEXT)).isEmpty();
     }

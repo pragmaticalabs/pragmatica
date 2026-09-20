@@ -1836,7 +1836,8 @@ class StreamConsumerManagerTest {
                                                    placement,
                                                    SELF,
                                                    TopicGroupDeclarationSource.none(),
-                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis()).reconcile();
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis(),
+                                                   authority(true)).reconcile();
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
             var settled = new java.util.concurrent.CountDownLatch(1);
             var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
