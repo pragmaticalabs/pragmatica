@@ -27,12 +27,15 @@ import org.pragmatica.lang.Unit;
 ///     (spec §10).
 ///   - **Per-call read consistency (spec §8.1, resolves S5 / #382).** Reads take an optional
 ///     [ReadConsistency]. The no-arg [#get] and [#get(Object, ReadConsistency)] with
-///     [ReadConsistency#BOUNDED_STALE] read this process's committed-prefix map for the key — a local,
-///     single-writer-serialized read (the honest current semantics of the HA-only in-memory cut).
-///     [ReadConsistency#LINEARIZABLE] routes to the key's committed partition owner and orders a no-op
-///     consensus round + post-round epoch fence before serving (#345 item 1e-b); when the owner-routing
-///     substrate is not yet wired (#277) it degrades to the local read, which on a single owner already
-///     reflects every acknowledged write.
+///     [ReadConsistency#BOUNDED_STALE] serve the key's partition fold — the view derived from the
+///     partition's fenced log — on any node that HOLDS that log, once the fold is rebuilt and caught up to
+///     the local log's head. Its staleness is the replication lag of records not yet in the local log,
+///     never a partial or torn view; a node with no local log forwards the read to the committed owner.
+///     [ReadConsistency#LINEARIZABLE] is served by the key's committed partition owner only, which orders
+///     a no-op consensus round and re-checks its epoch fence AFTER the round before serving (#345 item
+///     1e-b); a non-owner refuses with [EntityError.NotCurrentOwner] so the caller re-resolves, an owner
+///     with no consensus barrier refuses with [EntityError.LinearizableUnavailable], and only the absence
+///     of a committed ownership record for the arc degrades to the local read.
 ///
 /// ## Binding a keyspace into a slice
 ///
@@ -67,12 +70,15 @@ import org.pragmatica.lang.Unit;
 /// their codecs generated; a state type that is neither must have a codec supplied by the node
 /// (`@CodecFor`), and its absence fails at slice load with a named type rather than at first write.
 ///
-/// ## Slice boundary (this cut)
+/// ## Shipped implementation
 ///
-/// This is the **HA-only, in-memory** first functional cut (spec §4.4, plan Phase 2b): state lives
-/// in an in-memory map and operations serialize per key on a single owner. The ownership fence
-/// (#345) and restart-durable state (fenced log / persistent DHT, spec §4.4 / epic #349) replace
-/// the backing store in later slices behind this same API, with no author churn.
+/// The node provisions exactly one implementation behind this API: the fenced-log
+/// [PartitionFencedDurableEntity] (#345 I3/I4, spec §4.4). State lives in a fenced, fsync-durable,
+/// replicated log per `(keyspace, partition)`; the in-memory view is derived by replaying that log, so any
+/// holder rebuilds it after a restart or handover. Every write is admitted by the committed-owner check,
+/// gated by the log's epoch fence, and resolves only once the record is fsync-durable on the owner and
+/// held by the keyspace's `minSyncReplicas`. The in-memory variant (`InMemoryDurableEntity`) is a test
+/// fixture under `src/test` and is not in the shipped artifact (#1270).
 ///
 /// @param <K> entity key type — used only as a map key (equals/hashCode); never mutated
 /// @param <S> entity state type — an application-defined immutable value (record / sealed interface)
@@ -89,10 +95,10 @@ public interface DurableEntity<K, S, C extends Mutator<S>> {
     /// @return the created state, or a failure if the key already exists
     Promise<S> create(K key, S initial);
 
-    /// Read the current state for `key` with [ReadConsistency#BOUNDED_STALE] — the local committed-prefix
-    /// read of this process's in-memory map (reflects [#create]/[#update] applied on THIS owner). Returns
-    /// [Option#none()] when no state exists for the key. Equivalent to
-    /// [#get(Object, ReadConsistency)] with [ReadConsistency#BOUNDED_STALE].
+    /// Read the current state for `key` with [ReadConsistency#BOUNDED_STALE] — the partition fold on this
+    /// node, caught up to the local log's head before serving, so it reflects every write this node has
+    /// appended or received by replication. Returns [Option#none()] when no state exists for the key.
+    /// Equivalent to [#get(Object, ReadConsistency)] with [ReadConsistency#BOUNDED_STALE].
     ///
     /// @param key entity key
     ///
@@ -102,16 +108,15 @@ public interface DurableEntity<K, S, C extends Mutator<S>> {
     /// Read the current state for `key` with the requested [ReadConsistency] (spec §8.1). Returns
     /// [Option#none()] when no state exists for the key.
     ///
-    /// [ReadConsistency#BOUNDED_STALE] serves the local committed-prefix read (identical to [#get]).
-    /// [ReadConsistency#LINEARIZABLE] reflects every write acknowledged before the read began — routed to
-    /// the key's committed partition owner + no-op round + post-round epoch fence (#345 item 1e-b).
+    /// [ReadConsistency#BOUNDED_STALE] serves the local fold read (identical to [#get]).
+    /// [ReadConsistency#LINEARIZABLE] reflects every write acknowledged before the read began — served by
+    /// the key's committed partition owner after a no-op round and a post-round epoch fence check
+    /// (#345 item 1e-b); a non-owner refuses with [EntityError.NotCurrentOwner].
     ///
-    /// This default serves BOTH consistencies with the local read [#get]: on a single-owner cut (the
-    /// HA-only in-memory / fenced backings) the local committed-prefix read already reflects every
-    /// acknowledged write, so `LINEARIZABLE` is served correctly by the local read. Cluster-wired
-    /// implementations override this to route a `LINEARIZABLE` read to the committed owner; when the
-    /// owner-routing substrate is absent or no ownership record is committed for the arc, they too degrade
-    /// to the local read.
+    /// This default serves BOTH consistencies with the local read [#get]. It is correct only for an
+    /// implementation with a single owner and no replication, where the local read already reflects every
+    /// acknowledged write. The shipped fenced-log implementation overrides it to run the owner-side pipeline
+    /// above, degrading to the local read only when no ownership record is committed for the arc.
     ///
     /// @param key         entity key
     /// @param consistency requested read consistency
@@ -137,9 +142,9 @@ public interface DurableEntity<K, S, C extends Mutator<S>> {
 
     /// Schedule a one-shot timer that applies `onFire` to the entity state after `delay`.
     ///
-    /// Supported by the fenced-log backing (#345 I4), where a pending timer is a record in the entity's
-    /// own durable log and therefore survives handover and restart by the same machinery state does. The
-    /// HA-only in-memory cut declines with [EntityError.TimerNotSupported].
+    /// An ordinary fenced write (#345 I4): the schedule is a record appended to the entity's own durable
+    /// log, admitted and epoch-fenced like [#update], so a pending timer survives handover and restart by
+    /// the same machinery state does.
     ///
     /// ## Semantics, stated per property rather than as a label
     ///   - **One-shot.** The timer fires at most once and leaves the pending set when it does. There is no
@@ -217,8 +222,8 @@ public interface DurableEntity<K, S, C extends Mutator<S>> {
 
     /// Cancel a previously scheduled timer.
     ///
-    /// Supported by the fenced-log backing (#345 I4); the HA-only in-memory cut declines with
-    /// [EntityError.TimerNotSupported].
+    /// An ordinary fenced write (#345 I4): the cancellation is a record appended to the key's own log,
+    /// admitted and epoch-fenced like [#update], so a successor owner learns of it by replay.
     ///
     /// **Idempotent** (spec §5.1): a token that already fired, was already cancelled, or belonged to a key
     /// that has since been deleted succeeds without doing anything — [#delete] auto-cancels the key's

@@ -5,12 +5,14 @@
 package org.pragmatica.aether.stream.topic;
 
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Promise;
@@ -116,9 +118,25 @@ class DurableTopicPublisherTest {
         }
     }
 
-    /// Captures every envelope; the FIRST call then fails as #1236 reports a post-append timeout.
+    /// Captures every envelope; the FIRST call then fails as #1236 reports a post-append timeout. The batch
+    /// form is not exercised by this fixture's callers (#1342 made it abstract): it answers each event as
+    /// published, so a caller that did reach it would not silently pass.
     private static StreamPublisher<TopicEventEnvelope> failingFirstCall(List<TopicEventEnvelope> sink) {
-        return event -> capturedThenFailFirst(sink, event);
+        return new StreamPublisher<>() {
+            @Override
+            public Promise<Unit> publish(TopicEventEnvelope event) {
+                return capturedThenFailFirst(sink, event);
+            }
+
+            @Override
+            public Promise<List<PublishOutcome>> publishBatch(List<TopicEventEnvelope> events) {
+                sink.addAll(events);
+
+                return Promise.success(IntStream.range(0, events.size())
+                                                .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                .toList());
+            }
+        };
     }
 
     private static Promise<Unit> capturedThenFailFirst(List<TopicEventEnvelope> sink, TopicEventEnvelope event) {
@@ -139,10 +157,12 @@ class DurableTopicPublisherTest {
             }
 
             @Override
-            public Promise<Unit> publishBatch(List<TopicEventEnvelope> events) {
+            public Promise<List<PublishOutcome>> publishBatch(List<TopicEventEnvelope> events) {
                 sink.addAll(events);
 
-                return Promise.unitPromise();
+                return Promise.success(IntStream.range(0, events.size())
+                                                .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                .toList());
             }
         };
     }

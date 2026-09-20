@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.List;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Promise;
@@ -19,12 +21,24 @@ import org.pragmatica.lang.Unit;
 ///
 /// Tests in downstream modules (e.g. `aether/node`) use this impl to verify that components which
 /// depend on `FrameworkStreamPublisher<T>` actually publish. The capture callback receives every
-/// published event synchronously; the returned `Promise<Unit>` always succeeds.
+/// published event synchronously; the returned promises always succeed.
 record TestSystemStreamPublisher<T>(ResourceAddress address, Consumer<T> capture) implements FrameworkStreamPublisher<T> {
     @Override
     public Promise<Unit> publish(T event) {
         capture.accept(event);
 
         return Promise.unitPromise();
+    }
+
+    /// Every event is captured and reported [PublishOutcome.Published]; there is no log behind this double, so
+    /// the "offset" is the event's index in the batch.
+    @Override
+    public Promise<List<PublishOutcome>> publishBatch(List<T> events) {
+        events.forEach(capture);
+
+        return Promise.success(IntStream.range(0,
+                                               events.size())
+                                        .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                        .toList());
     }
 }
