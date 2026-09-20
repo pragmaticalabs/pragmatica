@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
+
 /// #1333, CTO ruling 4 (a): a node that holds no ring for a partition learns its consumer-visible bounds
 /// through the SAME forward a consumer read takes — the owner answers a `ReadForward` and the response
 /// carries `earliestRetained`/`visibleHead`. Two nodes here: OWNER holds the ring and serves through the
@@ -47,7 +48,9 @@ class StreamReadRouterBoundsTest {
         ownerPartitions = StreamPartitionManager.streamPartitionManager();
         ownerPartitions.createStream(StreamConfig.streamConfig(STREAM,
                                                                1,
-                                                               RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                               RetentionPolicy.retentionPolicy(10_000,
+                                                                                               1024 * 1024,
+                                                                                               600_000),
                                                                "earliest"))
                        .onFailure(cause -> fail(cause.message()));
         assigneePartitions = StreamPartitionManager.streamPartitionManager();
@@ -61,7 +64,9 @@ class StreamReadRouterBoundsTest {
             ownerHandler.onReadForward((ReadForward) message);
         };
 
-        clientRef[0] = StreamForwardClient.streamForwardClient(ASSIGNEE, assigneeToOwner, TimeSpan.timeSpan(5).seconds());
+        clientRef[0] = StreamForwardClient.streamForwardClient(ASSIGNEE,
+                                                               assigneeToOwner,
+                                                               TimeSpan.timeSpan(5).seconds());
         ownerRouter = StreamReadRouter.localOnly(ownerPartitions);
         assigneeRouter = StreamReadRouter.streamReadRouter(assigneePartitions,
                                                            Option.none(),
@@ -80,7 +85,11 @@ class StreamReadRouterBoundsTest {
     @Test
     void bounds_forwardedFromANodeWithoutTheRing_equalTheOwnersLocalBounds() {
         for (var i = 0; i < 5; i++) {
-            ownerPartitions.publishLocal(STREAM, PARTITION, new byte[] {(byte) i}, 1_000L + i).onFailure(cause -> fail(cause.message()));
+            ownerPartitions.publishLocal(STREAM,
+                                         PARTITION,
+                                         new byte[]{(byte) i},
+                                         1_000L + i)
+                           .onFailure(cause -> fail(cause.message()));
         }
 
         var local = ownerRouter.bounds(STREAM, PARTITION).await().unwrap();
@@ -89,13 +98,13 @@ class StreamReadRouterBoundsTest {
         assertThat(local).as("control: the owner's own view").isEqualTo(VisibleBounds.visibleBounds(0L, 4L));
         assertThat(forwarded).as("the assignee learns exactly the owner's bounds").isEqualTo(local);
         assertThat(forwardedReads.get()).as("answered through ONE forwarded read").isEqualTo(1);
-        assertThat(assigneePartitions.visibleBounds(STREAM, PARTITION)).as("control: the assignee holds no ring").isEqualTo(Option.none());
+        assertThat(assigneePartitions.visibleBounds(STREAM, PARTITION)).as("control: the assignee holds no ring")
+                  .isEqualTo(Option.none());
     }
 
     @Test
     void bounds_local_neverForward() {
-        ownerPartitions.publishLocal(STREAM, PARTITION, new byte[] {7}, 1_000L).onFailure(cause -> fail(cause.message()));
-
+        ownerPartitions.publishLocal(STREAM, PARTITION, new byte[]{7}, 1_000L).onFailure(cause -> fail(cause.message()));
         var local = ownerRouter.bounds(STREAM, PARTITION).await().unwrap();
 
         assertThat(local).isEqualTo(VisibleBounds.visibleBounds(0L, 0L));
@@ -109,8 +118,7 @@ class StreamReadRouterBoundsTest {
         var forwarded = assigneeRouter.bounds(STREAM, PARTITION).await().unwrap();
 
         assertThat(forwarded.isEmpty()).isTrue();
-        assertThat(StreamReadRouter.localOnly(assigneePartitions).bounds(STREAM, PARTITION).await().isFailure())
-                .as("no ring here and no forward client: refused, not guessed")
-                .isTrue();
+        assertThat(StreamReadRouter.localOnly(assigneePartitions).bounds(STREAM, PARTITION).await().isFailure()).as("no ring here and no forward client: refused, not guessed")
+                  .isTrue();
     }
 }

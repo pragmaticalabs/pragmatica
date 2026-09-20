@@ -12,6 +12,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -33,6 +35,8 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
@@ -235,8 +239,11 @@ class DurableProjectionRebuildTest {
         assertThat(entries.getFirst().attemptCount()).isEqualTo(5);
         assertThat(committedEpoch()).as("the rewound consumer commits under the rewind token")
                   .isEqualTo(Option.some(NodeReplayCursor.epochOf(token)));
-        // LIVE is observed on the forced commit at 3; the acks of 4, 5, 6 reach KV on the 500ms cadence.
-        awaitCommittedCursor(6L, 5_000);
+        // LIVE is observed on the forced commit at 3; the acks of 4, 5, 6 reach KV through the follow-up the
+        // forced request scheduled (one interval after the commit at 3 persists). Budgeted generously: a
+        // full-module run on a shared host missed 5s once (committed still 3 at 6.8s), and the property is
+        // "lands without a further event", not "lands within N ms".
+        awaitCommittedCursor(6L, 20_000);
         poisonSeq.set(-1);
         publishAll(7, 7);
         awaitModel(124567L, 15_000);
@@ -386,9 +393,28 @@ class DurableProjectionRebuildTest {
     private void publish(AppEvent event) {
         var appended = new AtomicReference<Long>();
 
-        new DurableTopicPublisher<AppEvent>(sliceCodec, captured -> append(captured, appended)).publish(event)
-                                                                                               .await()
-                                                                                               .onFailure(cause -> fail(cause.message()));
+        new DurableTopicPublisher<AppEvent>(sliceCodec, singlePublisher(captured -> append(captured, appended))).publish(event)
+                                                                                                                .await()
+                                                                                                                .onFailure(cause -> fail(cause.message()));
+    }
+
+    /// #1342 made `publishBatch` abstract; this fixture publishes one envelope at a time, so the batch form
+    /// answers each event as published and is never reached (same adapter as `DurableTopicContextDeliveryTest`).
+    private static StreamPublisher<TopicEventEnvelope> singlePublisher(Function<TopicEventEnvelope, Promise<Unit>> publish) {
+        return new StreamPublisher<>() {
+            @Override
+            public Promise<Unit> publish(TopicEventEnvelope event) {
+                return publish.apply(event);
+            }
+
+            @Override
+            public Promise<List<PublishOutcome>> publishBatch(List<TopicEventEnvelope> events) {
+                return Promise.success(IntStream.range(0,
+                                                       events.size())
+                                                .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                .toList());
+            }
+        };
     }
 
     private Promise<Unit> append(TopicEventEnvelope envelope, AtomicReference<Long> offset) {

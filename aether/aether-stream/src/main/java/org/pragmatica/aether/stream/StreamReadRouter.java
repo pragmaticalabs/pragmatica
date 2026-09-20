@@ -138,7 +138,8 @@ public final class StreamReadRouter {
     }
 
     private Promise<VisibleBounds> forwardBounds(String streamName, int partition) {
-        return Option.all(forwardClient, ownerResolver.resolve(streamName, partition))
+        return Option.all(forwardClient,
+                          ownerResolver.resolve(streamName, partition))
                      .map((client, owner) -> client.boundsRemote(owner, streamName, partition))
                      .or(StreamError.General.PARTITION_NOT_LOCAL::promise);
     }

@@ -1842,8 +1842,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// captures, and what a forwarded read answers alongside its events.
     public Option<VisibleBounds> visibleBounds(String streamName, int partition) {
         return resolvePartitionBuffer(streamName, partition).map(buffer -> VisibleBounds.visibleBounds(buffer.tailOffset(),
-                                                                                                          buffer.visibleOffset()))
-                                                            .option();
+                                                                                                       buffer.visibleOffset()))
+                                     .option();
     }
 
     /// Append into the partition's ordered section: `inOrder` runs with the assigned offset before any

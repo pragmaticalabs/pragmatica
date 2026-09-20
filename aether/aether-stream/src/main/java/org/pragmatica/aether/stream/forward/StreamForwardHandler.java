@@ -301,11 +301,18 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Contract
     private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events) {
         var capped = applyCap(events);
-        var bounds = partitionManager.visibleBounds(request.streamName(), request.partition())
+        var bounds = partitionManager.visibleBounds(request.streamName(),
+                                                    request.partition())
                                      .or(VisibleBounds::absent);
         var response = capped.truncated()
-                       ? ReadForwardResponse.truncatedResponse(selfNodeId, request.correlationId(), capped.events(), bounds)
-                       : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events(), bounds);
+                       ? ReadForwardResponse.truncatedResponse(selfNodeId,
+                                                               request.correlationId(),
+                                                               capped.events(),
+                                                               bounds)
+                       : ReadForwardResponse.successResponse(selfNodeId,
+                                                             request.correlationId(),
+                                                             capped.events(),
+                                                             bounds);
 
         if (capped.truncated()) {
             metrics.recordTruncated();

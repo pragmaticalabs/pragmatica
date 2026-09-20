@@ -134,9 +134,11 @@ public interface StreamForwardClient {
     /// only the bounds the response carries. Fails when the serving node holds no ring either.
     default Promise<VisibleBounds> boundsRemote(NodeId ownerId, String streamName, int partition) {
         return readRemote(ownerId, streamName, partition, Long.MAX_VALUE, 0).flatMap(result -> result.bounds()
-                                                                                                         .toResult(new StreamForwardError.ReadForwardFailed("Node " + ownerId.id()
-                                                                                                                                                             + " holds no ring for " + streamName + "[" + partition + "]"))
-                                                                                                         .async());
+                                                                                                     .toResult(new StreamForwardError.ReadForwardFailed("Node " + ownerId.id()
+                                                                                                                                                       + " holds no ring for " + streamName
+                                                                                                                                                       + "[" + partition
+                                                                                                                                                       + "]"))
+                                                                                                     .async());
     }
 
     private static StreamForwardClient noOpClient() {
