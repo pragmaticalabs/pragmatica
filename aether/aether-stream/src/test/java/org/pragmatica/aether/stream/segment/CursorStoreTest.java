@@ -395,7 +395,6 @@ class CursorStoreTest {
     /// DROPPED the epoch left the whole repo green (rev1369's mutation M7').
     @Nested
     class RewindEpochLayout {
-
         private static final RewindEpoch EPOCH = RewindEpoch.rewindEpoch(7L, 3L);
 
         @Test
@@ -404,9 +403,8 @@ class CursorStoreTest {
 
             assertThat(encoded).hasSize(CursorStore.CURSOR_BYTES);
             assertThat(CursorStore.decodeCursor(encoded)).isEqualTo(Cursor.cursor(Long.MAX_VALUE, EPOCH));
-            assertThat(CursorStore.decodeOffset(encoded))
-                    .as("the offset-only reader still sees the offset in the first eight bytes")
-                    .isEqualTo(Long.MAX_VALUE);
+            assertThat(CursorStore.decodeOffset(encoded)).as("the offset-only reader still sees the offset in the first eight bytes")
+                      .isEqualTo(Long.MAX_VALUE);
         }
 
         /// The epoch must live in the BLOCK on disk, not in the store object: the storage is closed and
@@ -419,16 +417,14 @@ class CursorStoreTest {
             var first = cursorStore(diskStorage("first", dir, firstMetadata));
 
             first.commit(GROUP, STREAM, PARTITION, 42L, EPOCH).await();
-
             var reopenedMetadata = MetadataStore.inMemoryMetadataStore("reopened");
+
             reopenedMetadata.restoreRefs(firstMetadata.listAllRefs());
             var reopened = cursorStore(diskStorage("reopened", dir, reopenedMetadata));
 
-            assertThat(reopened.fetchCursor(GROUP, STREAM, PARTITION).await())
-                    .as("the reopened store must resume under the epoch the first one committed")
-                    .isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.cursor(42L, EPOCH))));
-            assertThat(reopened.fetch(GROUP, STREAM, PARTITION).await())
-                    .isEqualTo(org.pragmatica.lang.Result.success(Option.some(42L)));
+            assertThat(reopened.fetchCursor(GROUP, STREAM, PARTITION).await()).as("the reopened store must resume under the epoch the first one committed")
+                      .isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.cursor(42L, EPOCH))));
+            assertThat(reopened.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(org.pragmatica.lang.Result.success(Option.some(42L)));
         }
 
         /// The pre-#1333 8-byte offset-only block is REFUSED, not upgraded: it reads as absent (resume from
@@ -441,22 +437,20 @@ class CursorStoreTest {
             var legacyBlock = ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN).putLong(99L).array();
 
             storage.putRef(refName, legacyBlock).await();
-
-            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await())
-                    .as("an 8-byte block is the pre-#1333 layout and must read as absent, never as offset 99")
-                    .isEqualTo(org.pragmatica.lang.Result.success(Option.empty()));
-            assertThat(store.fetch(GROUP, STREAM, PARTITION).await())
-                    .isEqualTo(org.pragmatica.lang.Result.success(Option.empty()));
-
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await()).as("an 8-byte block is the pre-#1333 layout and must read as absent, never as offset 99")
+                      .isEqualTo(org.pragmatica.lang.Result.success(Option.empty()));
+            assertThat(store.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(org.pragmatica.lang.Result.success(Option.empty()));
             store.commit(GROUP, STREAM, PARTITION, 7L).await();
-
-            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await())
-                    .isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.unrewound(7L))));
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await()).isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.unrewound(7L))));
             var rewritten = storage.resolveRef(refName)
-                                   .flatMap(id -> storage.get(id).await().option().flatMap(block -> block))
+                                   .flatMap(id -> storage.get(id)
+                                                         .await()
+                                                         .option()
+                                                         .flatMap(block -> block))
                                    .or(new byte[0]);
 
-            assertThat(rewritten).as("the rewritten ref points at a 24-byte block").isEqualTo(CursorStore.encodeOffset(7L));
+            assertThat(rewritten).as("the rewritten ref points at a 24-byte block")
+                      .isEqualTo(CursorStore.encodeOffset(7L));
         }
 
         private static StorageInstance diskStorage(String name, Path dir, MetadataStore metadataStore) {
