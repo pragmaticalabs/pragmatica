@@ -4218,7 +4218,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                               Option.none(),
                                                                                                                                                                               ConsistencyMode.EVENTUAL,
                                                                                                                                                                               Option.none(),
-                                                                                                                                                                              streamPartitionManager.minSyncReplicasFor(name),
                                                                                                                                                                               Option.some(streamForwardClient),
                                                                                                                                                                               Option.some(() -> taskGroupOwnerResolver.apply(TaskGroup.STREAMING)
                                                                                                                                                                                                                       .option()),
