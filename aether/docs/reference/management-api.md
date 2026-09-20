@@ -5572,18 +5572,22 @@ writes untyped bytes with no event class to read a key from, so an explicit `par
 the operator naming a target directly. A `partition` outside `[0, partitionCount)` for the stream
 is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
 never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
-dispatch]`
+dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
+`NOT_ATTEMPTED` with `200` — see below.
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
 cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
-ProblemResponses HttpStatusAware dispatch]`
+ProblemResponses HttpStatusAware dispatch]` That `409` is the single publish; the batch form reports the
+same condition per item as `NOT_ATTEMPTED` with `200` — see below.
 
 **Batch publish is not atomic, and the response says per item what happened (#1342).** `publish-batch`
 validates and writes each item independently and concurrently. **`200` means the batch RAN, not that
 every event landed — read `notPublished`.** The top-level `published` / `notPublished` counts and one
-outcome per item, in request order, come back for every batch that ran, partial included:
+outcome per item, in request order, come back for every batch that ran, partial included. "Ran" means
+the route processed the batch: a batch in which NO item passed admission still answers `200` with
+`published: 0` and every item `NOT_ATTEMPTED` (CTO ruling, #1342; before #1342 that case answered `500`).
 
 ```json
 {"address":"acme:orders:1.0.0","published":1,"notPublished":1,
@@ -5594,8 +5598,8 @@ outcome per item, in request order, come back for every batch that ran, partial 
 - `PUBLISHED`: durably in the log at `offset`.
 - `NOT_ATTEMPTED`: rejected before any write (stream unavailable, partition out of range) — not in the log,
   safe to retry.
-- `OUTCOME_UNKNOWN`: the write was refused or timed out AFTER it may have been appended (#1236) — it may be
-  in the log; retrying it can duplicate.
+- `OUTCOME_UNKNOWN`: the write was refused or timed out, before or after the local append (#1236) — the
+  caller cannot tell which, so it may be in the log; retrying it can duplicate.
 
 A client that treats `200` as "every event landed" misreads a partial batch; check `notPublished`. Before
 #1342 the response on a partial batch was the first failure alone, and the offsets of the items that had

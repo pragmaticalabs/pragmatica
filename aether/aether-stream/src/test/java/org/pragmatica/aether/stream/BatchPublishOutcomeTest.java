@@ -92,6 +92,22 @@ class BatchPublishOutcomeTest {
         assertThat(appended(1)).as("only the first event of the group reached the ring").isEqualTo(1);
     }
 
+    /// rev1350 F1: a two-event group cannot see a `precedingFailure` that ignores a NotAttempted predecessor —
+    /// with three events, event 3 would be appended after event 2 was skipped, breaking per-key order. The
+    /// chain must stay stopped: outcomes `[OutcomeUnknown, NotAttempted, NotAttempted]`, exactly ONE append.
+    @Test
+    void failedGroup_staysStopped_pastTheSecondEvent_threeEventGroup() {
+        var first = keyFor(1);
+        var second = keyFor(1, first);
+        var third = keyFor(1, first, second);
+        var skipped = new PublishOutcome.NotAttempted(StreamPublisherError.PrecedingEventFailed.precedingEventFailed(1, BARRIER_FAILED));
+
+        var outcomes = eventualPublisher().publishBatch(List.of(first, second, third)).await().unwrap();
+
+        assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_FAILED), skipped, skipped);
+        assertThat(appended(1)).as("exactly one append on partition 1 — the third event must not be written").isEqualTo(1);
+    }
+
     /// Outcomes sit at their INPUT index whatever the partition grouping: a partition-1 event first, then two
     /// partition-0 events that land at offsets 0 and 1 in order.
     @Test

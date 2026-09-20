@@ -89,31 +89,27 @@ class StreamApiRoutesPublishBatchTest {
         }
     }
 
+    /// rev1350 nit: with every offset 0 a reorder was invisible. Partition 2 is pre-seeded with one event, so item 0
+    /// lands at offset 1 and item 1 at offset 0; swapped outcomes would pair the indices with the wrong offsets.
     @Test
     void fullBatch_reportsEveryOffset_inRequestOrder() {
         var manager = streamPartitionManager(Long.MAX_VALUE);
-
         try {
             createStream(manager, ConsistencyMode.EVENTUAL);
-            var response = routesFor(manager).publishBatch(NAMESPACE,
-                                                           STREAM,
-                                                           VERSION,
-                                                           "publish-batch",
+            routesFor(manager).publishEvent(NAMESPACE, STREAM, VERSION, new PublishRequest("seed", 2))
+                              .await()
+                              .onFailure(cause -> fail("seed publish must succeed: " + cause));
+
+            var response = routesFor(manager).publishBatch(NAMESPACE, STREAM, VERSION, "publish-batch",
                                                            requests(new PublishRequest("a", 2),
                                                                     new PublishRequest("b", 0)))
-                                    .await()
-                                    .unwrap();
+                                             .await()
+                                             .unwrap();
 
             assertThat(response.published()).isEqualTo(2);
             assertThat(response.notPublished()).isZero();
-            assertThat(response.outcomes()).containsExactly(new PublishItemOutcome(0,
-                                                                                   PublishItemStatus.PUBLISHED,
-                                                                                   Option.some(0L),
-                                                                                   Option.none()),
-                                                            new PublishItemOutcome(1,
-                                                                                   PublishItemStatus.PUBLISHED,
-                                                                                   Option.some(0L),
-                                                                                   Option.none()));
+            assertThat(response.outcomes()).containsExactly(new PublishItemOutcome(0, PublishItemStatus.PUBLISHED, Option.some(1L), Option.none()),
+                                                            new PublishItemOutcome(1, PublishItemStatus.PUBLISHED, Option.some(0L), Option.none()));
         } finally {
             manager.close();
         }

@@ -98,7 +98,7 @@ Flow (`DefaultStreamPublisher.publishStrong` → `ConsensusPublishPath.publish`,
 3. The consensus state-machine callback (wired in the node module) performs the actual local append on every node.
 
 Design properties:
-- Each `publish(event)` is one consensus proposal. The aether-stream module does **not** itself coalesce multiple STRONG events into one proposal; any batching is whatever Rabia does internally at the consensus layer. `publishBatchStrong` simply calls `publish` per event and gathers results (`DefaultStreamPublisher.publishBatchStrong`, line 163).
+- Each `publish(event)` is one consensus proposal. The aether-stream module does **not** itself coalesce multiple STRONG events into one proposal; any batching is whatever Rabia does internally at the consensus layer. `publishBatchStrong` proposes each event separately and reports each proposal's own outcome (`DefaultStreamPublisher.proposeAll`, #1342); it does not coalesce.
 - STRONG guarantees total order across all nodes; every node applies the same committed command.
 
 ---
