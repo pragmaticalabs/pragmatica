@@ -26,15 +26,19 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+import static org.pragmatica.aether.stream.replication.FailoverRecovery.failoverRecovery;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse.catchupResponse;
 
 /// #1244 (backfill-commit ruling, know 801a8b54e): replica WAL frames carry no per-record fsync, so a backfill run —
 /// the catch-up that precedes promotion — commits what it re-appended before it completes. Runs against
 /// a REAL WAL and asserts exactly ONE fsync with NO later live batch: one proves the run is durable on a
-/// quiet partition, and not more than one proves the commit is per run, never per record. (The CTO
-/// waived the backfill-commit ruling for the failover paths, `DefaultFailoverRecovery` and
-/// `GovernorFailoverHandler`, 2026-09-19.)
+/// quiet partition, and not more than one proves the commit is per run, never per record. Since #1235 a
+/// WAL-backed replica record is visible only at that barrier, so the same run also proves the records
+/// are readable on this replica once it completes. The CTO's 2026-09-19 waiver of the failover paths was
+/// replaced on 2026-09-20 (#1235 × #1244): `DefaultFailoverRecovery` commits once per recovered partition
+/// (pinned here, same catch-up fixture) and `GovernorFailoverHandler` once per replay run (pinned in
+/// `GovernorFailoverHandlerTest`).
 class CatchUpWalDurabilityTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -83,10 +87,34 @@ class CatchUpWalDurabilityTest {
         assertOneCommitCovering(before);
     }
 
-    /// Exactly one fsync, and it covers every re-appended frame: the ring holds all EVENTS records and
+    /// The catch-up-transport failover path: a recovery run commits its recovered partition through the
+    /// barrier once, after its last append. Without that barrier the run's WAL frames were never
+    /// committed, so its records stayed invisible on this replica until an unrelated live batch's barrier
+    /// happened to cover them.
+    @Test
+    void failoverRecovery_completedRun_isFsyncedOnce_andItsRecordsAreVisible_withoutALaterLiveBatch() {
+        var recovery = failoverRecovery(registry,
+                                        replica::appendRecovered,
+                                        CatchUpWalDurabilityTest::sourceRange,
+                                        replica::syncReplicated);
+        var before = fsyncCount();
+
+        var replayed = recovery.recover(STREAM, 1)
+                               .await()
+                               .onFailure(cause -> fail(cause.message()))
+                               .map(FailoverRecovery.RecoveryResult::eventsReplayed)
+                               .or(-1L);
+
+        assertThat(replayed).isEqualTo(EVENTS);
+        assertOneCommitCovering(before);
+    }
+
+    /// Exactly one fsync, and it covers every re-appended frame: the ring serves all EVENTS records — a
+    /// replica-local read is bounded by the visible offset (#1235), so this is the visibility check — and
     /// the WAL's last written offset is the last of them.
     private void assertOneCommitCovering(long fsyncsBefore) {
-        assertThat(replica.readLocal(STREAM, PARTITION, 0, 100).unwrap()).hasSize(EVENTS);
+        assertThat(replica.readLocal(STREAM, PARTITION, 0, 100).unwrap()).as("every record is visible on this replica after the run, with no live batch")
+                                                                          .hasSize(EVENTS);
         assertThat(walStats().lastOffset()).isEqualTo(EVENTS - 1);
         assertThat(fsyncCount() - fsyncsBefore).as("one commit per catch-up run — durable without a later live batch,"
                                                      + " and never one fsync per record")
