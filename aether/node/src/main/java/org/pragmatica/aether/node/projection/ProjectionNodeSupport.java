@@ -32,7 +32,10 @@ public interface ProjectionNodeSupport {
 
     /// Attach: register, then hand back the projection wired with this node's cursor. The group id the
     /// cursor rewinds is resolved lazily through the registry, so the subscription need not be visible yet.
-    <S, T> Result<Projection<S, T>> attach(ArtifactBase slice, String topicStream, Option<String> method, Projection<S, T> projection);
+    <S, T> Result<Projection<S, T>> attach(ArtifactBase slice,
+                                           String topicStream,
+                                           Option<String> method,
+                                           Projection<S, T> projection);
 
     static ProjectionNodeSupport projectionNodeSupport(ProjectionRegistry registry,
                                                        LongSupplier cursorReportFailures,
@@ -57,17 +60,27 @@ public interface ProjectionNodeSupport {
                                                           Option<String> method,
                                                           Projection<S, T> projection) {
                 var wired = projection.withReplayCursor(new NodeReplayCursor(topicStream,
-                                                                             () -> registry.groupIdOf(slice, topicStream, method),
+                                                                             () -> registry.groupIdOf(slice,
+                                                                                                      topicStream,
+                                                                                                      method),
                                                                              () -> partitionCount.apply(topicStream),
                                                                              bounds,
                                                                              commandWriter,
                                                                              committedReader));
 
-                return registry.register(new Registration(slice, topicStream, method, ProjectionHandle.projectionHandle(wired)))
+                return registry.register(new Registration(slice,
+                                                          topicStream,
+                                                          method,
+                                                          ProjectionHandle.projectionHandle(wired)))
                                .map(_ -> wired);
             }
         }
 
-        return new projectionNodeSupport(registry, cursorReportFailures, partitionCount, bounds, commandWriter, committedReader);
+        return new projectionNodeSupport(registry,
+                                         cursorReportFailures,
+                                         partitionCount,
+                                         bounds,
+                                         commandWriter,
+                                         committedReader);
     }
 }

@@ -9,18 +9,19 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointVal
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
-import io.netty.buffer.Unpooled;
-
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #1333: the checkpoint value grew from two longs to four (the rewind epoch). A value codec regenerated
 /// without the two new components would still round-trip an equal record for a never-rewound group, which
 /// is why the rewound arm is the one that discriminates. The full consensus command (`KVCommand.Put`) is
 /// pinned in aether-node's `StreamCursorCheckpointPutCodecTest`, where the node codec is assembled.
 class StreamCursorCheckpointValueCodecTest {
-    private static final SliceCodec CODEC = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), KvstoreCodecsSlice.CODECS);
+    private static final SliceCodec CODEC = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(),
+                                                                  KvstoreCodecsSlice.CODECS);
 
     @Test
     void checkpointValue_roundTrip_distinguishesTheEpoch() {

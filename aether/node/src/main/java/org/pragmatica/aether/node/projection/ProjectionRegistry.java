@@ -57,8 +57,9 @@ public interface ProjectionRegistry {
         record AlreadyAttached(ArtifactBase slice, String topicStream, Option<String> method) implements RegistryError {
             @Override
             public String message() {
-                return "Projection for slice " + slice.asString() + " on stream " + topicStream
-                     + method.map(m -> " (subscriber " + m + ")").or("")
+                return "Projection for slice " + slice.asString()
+                     + " on stream " + topicStream + method.map(m -> " (subscriber " + m + ")")
+                                                           .or("")
                      + " is already attached — a slice attaches one projection per durable subscriber; name the"
                      + " subscriber method to attach a second projection on the same topic";
             }
@@ -67,7 +68,8 @@ public interface ProjectionRegistry {
         record AmbiguousSubscriber(ArtifactBase slice, String topicStream, List<String> methods) implements RegistryError {
             @Override
             public String message() {
-                return "Projection for slice " + slice.asString() + " on stream " + topicStream
+                return "Projection for slice " + slice.asString()
+                     + " on stream " + topicStream
                      + " cannot infer its consumer group: the slice has " + methods.size()
                      + " durable subscribers on that topic " + methods
                      + " — attach with the subscriber method named, otherwise another group's cursor could be"
@@ -78,7 +80,8 @@ public interface ProjectionRegistry {
         record NoSubscriberVisible(ArtifactBase slice, String topicStream) implements RegistryError {
             @Override
             public String message() {
-                return "Projection for slice " + slice.asString() + " on stream " + topicStream
+                return "Projection for slice " + slice.asString()
+                     + " on stream " + topicStream
                      + " has no durable subscriber visible on this node yet — the topic subscription is written by"
                      + " the deployment; retry once the slice is ACTIVE";
             }
@@ -87,8 +90,10 @@ public interface ProjectionRegistry {
 
     /// Refused when the same `(slice, stream, method)` is already registered.
     Result<Unit> register(Registration registration);
+
     @Contract
     void unregister(ArtifactBase slice, String topicStream);
+
     /// The projection whose consumer group is `groupId` on `topicStream`, if this node hosts one and the
     /// attribution is unambiguous. Silent for a group that is no projection's; ERROR once when ambiguous.
     Option<ProjectionHandle> lookup(String topicStream, String groupId);
@@ -98,6 +103,7 @@ public interface ProjectionRegistry {
     default Result<String> groupIdOf(Registration registration) {
         return groupIdOf(registration.slice(), registration.topicStream(), registration.method());
     }
+
     List<Registration> registrations(String topicStream);
 
     static ProjectionRegistry projectionRegistry(Supplier<List<TopicSubscription>> subscriptions) {
@@ -127,19 +133,19 @@ public interface ProjectionRegistry {
         @Contract
         @Override
         public void unregister(ArtifactBase slice, String topicStream) {
-            registrations.keySet()
-                         .removeIf(key -> key.slice()
-                                             .equals(slice) && key.topicStream()
-                                                                  .equals(topicStream));
+            registrations.keySet().removeIf(key -> key.slice()
+                                                      .equals(slice) && key.topicStream()
+                                                                           .equals(topicStream));
         }
 
         @Override
         public Option<ProjectionHandle> lookup(String topicStream, String groupId) {
-            return DurableGroupIdentity.parse(groupId)
-                                       .flatMap(identity -> lookup(topicStream, groupId, identity));
+            return DurableGroupIdentity.parse(groupId).flatMap(identity -> lookup(topicStream, groupId, identity));
         }
 
-        private Option<ProjectionHandle> lookup(String topicStream, String groupId, DurableGroupIdentity.GroupIdentity identity) {
+        private Option<ProjectionHandle> lookup(String topicStream,
+                                                String groupId,
+                                                DurableGroupIdentity.GroupIdentity identity) {
             var explicit = Option.option(registrations.get(new RegistrationKey(identity.subscriber(),
                                                                                topicStream,
                                                                                Option.some(identity.method()))));
@@ -148,9 +154,11 @@ public interface ProjectionRegistry {
                            .orElse(() -> inferred(topicStream, groupId, identity));
         }
 
-        private Option<ProjectionHandle> inferred(String topicStream, String groupId, DurableGroupIdentity.GroupIdentity identity) {
-            return Option.option(registrations.get(new RegistrationKey(identity.subscriber(), topicStream, Option.none())))
-                         .flatMap(registration -> resolveInferred(registration, groupId).map(Registration::handle));
+        private Option<ProjectionHandle> inferred(String topicStream,
+                                                  String groupId,
+                                                  DurableGroupIdentity.GroupIdentity identity) {
+            return Option.option(registrations.get(new RegistrationKey(identity.subscriber(), topicStream, Option.none()))).flatMap(registration -> resolveInferred(registration,
+                                                                                                                                                                    groupId).map(Registration::handle));
         }
 
         /// The inferred registration is the group's projection iff the slice's ONE durable subscriber on
@@ -192,8 +200,7 @@ public interface ProjectionRegistry {
                                 .filter(subscription -> subscription.artifact()
                                                                     .base()
                                                                     .equals(slice))
-                                .filter(subscription -> DurableTopicNames.topicStream(subscription.routingKey())
-                                                                         .equals(topicStream))
+                                .filter(subscription -> DurableTopicNames.topicStream(subscription.routingKey()).equals(topicStream))
                                 .map(subscription -> subscription.methodName()
                                                                  .name())
                                 .distinct()
@@ -210,5 +217,4 @@ public interface ProjectionRegistry {
                                 .toList();
         }
     }
-
 }

@@ -44,15 +44,17 @@ public final class ProjectionRuntimeFactory implements ResourceFactory<Projectio
         record SupportUnavailable(String topicName, String missing) implements ProvisioningError {
             @Override
             public String message() {
-                return "ProjectionRuntime for topic '" + topicName + "' cannot be provisioned: the provisioning context carries no "
-                     + missing + " — the node registers it; a bare context has nothing to rewind a cursor with";
+                return "ProjectionRuntime for topic '" + topicName
+                     + "' cannot be provisioned: the provisioning context carries no " + missing
+                     + " — the node registers it; a bare context has nothing to rewind a cursor with";
             }
         }
 
         record EphemeralTopic(String topicName) implements ProvisioningError {
             @Override
             public String message() {
-                return "ProjectionRuntime for topic '" + topicName + "' refused: the topic is ephemeral, so it has no backing"
+                return "ProjectionRuntime for topic '" + topicName
+                     + "' refused: the topic is ephemeral, so it has no backing"
                      + " stream and no group cursor to rebuild from; declare it durability = \"durable\"";
             }
         }
@@ -60,9 +62,10 @@ public final class ProjectionRuntimeFactory implements ResourceFactory<Projectio
         record TopicMismatch(String runtimeTopic, String projectionTopic) implements ProvisioningError {
             @Override
             public String message() {
-                return "Projection on topic '" + projectionTopic + "' attached through the ProjectionRuntime of topic '"
-                     + runtimeTopic + "' — a runtime is bound to one topic section; declare a ProjectionRuntime for '"
-                     + projectionTopic + "'";
+                return "Projection on topic '" + projectionTopic
+                     + "' attached through the ProjectionRuntime of topic '" + runtimeTopic
+                     + "' — a runtime is bound to one topic section; declare a ProjectionRuntime for '" + projectionTopic
+                     + "'";
             }
         }
     }
@@ -84,21 +87,25 @@ public final class ProjectionRuntimeFactory implements ResourceFactory<Projectio
 
     @Override
     public Promise<ProjectionRuntime> provision(TopicConfig config, ProvisioningContext context) {
-        return Result.all(support(config, context), sliceOf(config, context), durable(config))
+        return Result.all(support(config, context),
+                          sliceOf(config, context),
+                          durable(config))
                      .map((support, slice, _) -> runtime(config, context, support, slice))
                      .async();
     }
 
     private static Result<ProjectionNodeSupport> support(TopicConfig config, ProvisioningContext context) {
         return context.extension(ProjectionNodeSupport.class)
-                      .mapError(_ -> new ProvisioningError.SupportUnavailable(config.topicName(), "ProjectionNodeSupport"));
+                      .mapError(_ -> new ProvisioningError.SupportUnavailable(config.topicName(),
+                                                                              "ProjectionNodeSupport"));
     }
 
     private static Result<ArtifactBase> sliceOf(TopicConfig config, ProvisioningContext context) {
         return context.extension(String.class)
                       .flatMap(Artifact::artifact)
                       .map(Artifact::base)
-                      .mapError(_ -> new ProvisioningError.SupportUnavailable(config.topicName(), "slice id"));
+                      .mapError(_ -> new ProvisioningError.SupportUnavailable(config.topicName(),
+                                                                              "slice id"));
     }
 
     private static Result<Unit> durable(TopicConfig config) {
@@ -126,10 +133,10 @@ public final class ProjectionRuntimeFactory implements ResourceFactory<Projectio
     @Override
     public Promise<Unit> close(ProjectionRuntime resource) {
         if (resource instanceof NodeProjectionRuntime runtime) {
-            runtime.support()
-                   .registry()
-                   .unregister(runtime.slice(), runtime.topicStream());
-            LOG.info("ProjectionRuntime released for slice {} on {}", runtime.slice().asString(), runtime.topicStream());
+            runtime.support().registry().unregister(runtime.slice(), runtime.topicStream());
+            LOG.info("ProjectionRuntime released for slice {} on {}",
+                     runtime.slice().asString(),
+                     runtime.topicStream());
         }
 
         return Promise.unitPromise();
@@ -138,7 +145,10 @@ public final class ProjectionRuntimeFactory implements ResourceFactory<Projectio
     /// One slice's runtime for one topic. `attach` refuses a projection declared on a DIFFERENT topic:
     /// the group it would report for consumes another stream, so its reports would never arrive and
     /// its rewind would move the wrong cursor.
-    record NodeProjectionRuntime(ProjectionNodeSupport support, ArtifactBase slice, String topicStream, String topicName) implements ProjectionRuntime {
+    record NodeProjectionRuntime(ProjectionNodeSupport support,
+                                 ArtifactBase slice,
+                                 String topicStream,
+                                 String topicName) implements ProjectionRuntime {
         @Override
         public <S, T> Result<Projection<S, T>> attach(Projection<S, T> projection) {
             return attach(projection, Option.none());
@@ -150,8 +160,7 @@ public final class ProjectionRuntimeFactory implements ResourceFactory<Projectio
         }
 
         private <S, T> Result<Projection<S, T>> attach(Projection<S, T> projection, Option<String> method) {
-            var declared = projection.topic()
-                                     .name();
+            var declared = projection.topic().name();
 
             return declared.equals(topicName)
                    ? support.attach(slice, topicStream, method, projection)

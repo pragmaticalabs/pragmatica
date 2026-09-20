@@ -135,7 +135,7 @@ public interface ProjectionStore<S> {
         }
 
         public boolean isLive(int partition) {
-            return !rebuilding.containsKey(partition);
+            return ! rebuilding.containsKey(partition);
         }
     }
 

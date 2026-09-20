@@ -79,6 +79,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 
+
 /// #1333 in-JVM twin of `DurableProjectionRebuildForgeTest` — the same scenario on the real
 /// in-process runtime, so the mutation table can be run in seconds. Everything on the path is REAL:
 /// the stream store, the consumer runtime with its retry and dead-letter handling, the real `KVStore`
@@ -114,6 +115,7 @@ class DurableProjectionRebuildTest {
                                                                                                      (codec, buf, value) -> codec.write(buf,
                                                                                                                                         value.seq()),
                                                                                                      (codec, buf) -> new AppEvent(codec.read(buf)));
+
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:orders:1.0.0").unwrap();
     private static final MethodName ON_PROJECTION_EVENT = MethodName.methodName("onProjectionEvent").unwrap();
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
@@ -125,13 +127,16 @@ class DurableProjectionRebuildTest {
     private static final String MODEL_KEY = "model";
     private static final int PARTITION = 0;
 
-    private final SliceCodec nodeCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), TopicCodecsStream.CODECS);
-    private final SliceCodec sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+    private final SliceCodec nodeCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(),
+                                                               TopicCodecsStream.CODECS);
+
+    private final SliceCodec sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(),
+                                                                List.of(APP_EVENT_CODEC));
+
     private final AtomicInteger poisonSeq = new AtomicInteger(-1);
     private final AtomicInteger attempts = new AtomicInteger();
     private final InMemoryProjectionStore<Long> store = InMemoryProjectionStore.inMemoryProjectionStore();
     private final InMemoryClusterCursorStore localCursors = new InMemoryClusterCursorStore();
-
     private ExecutorService consensus;
     private KVStore<AetherKey, AetherValue> kv;
     private StreamPartitionManager partitions;
@@ -176,7 +181,8 @@ class DurableProjectionRebuildTest {
                                     Projection.of(TOPIC)
                                               .into(store, _ -> MODEL_KEY)
                                               .apply(DurableProjectionRebuildTest::fold)
-                                              .withClaims(InMemoryProjectionClaims.inMemoryProjectionClaims(), TimeSpan.timeSpan(30).seconds()))
+                                              .withClaims(InMemoryProjectionClaims.inMemoryProjectionClaims(),
+                                                          TimeSpan.timeSpan(30).seconds()))
                             .unwrap();
         runtime = StreamConsumerRuntime.streamConsumerRuntime(partitions, deadLetters, cursorStore);
         manager = wireManager(topics);
@@ -202,40 +208,37 @@ class DurableProjectionRebuildTest {
         publishAll(1, 6);
         awaitModel(123456L, 15_000);
         assertThat(deadLettersForGroup()).as("control: nothing dead-lettered before the rebuild").isEmpty();
-
         poisonSeq.set(3);
-        projection.rebuild()
-                  .await()
-                  .onFailure(cause -> fail("rebuild refused: " + cause.message()));
+        projection.rebuild().await().onFailure(cause -> fail("rebuild refused: " + cause.message()));
         var afterRebuild = replayStatus();
 
         assertThat(afterRebuild.generation()).isEqualTo(1L);
         assertThat(afterRebuild.rebuilding()).as("REBUILDING over [0, 5] on partition 0").containsOnlyKeys(PARTITION);
-        assertThat(afterRebuild.rebuilding().get(PARTITION).throughOffset()).as("captured head = last visible offset").isEqualTo(5L);
+        assertThat(afterRebuild.rebuilding().get(PARTITION).throughOffset()).as("captured head = last visible offset")
+                  .isEqualTo(5L);
         // The checkpoint-put trigger restarts the consumer inside the rewind's own apply, so by the time
         // rebuild() resolves (after the committed read-back) offsets 0 and 1 may already be replayed. The
         // poison offset 2 cannot have been passed: it needs the dead letter first.
         assertThat(afterRebuild.rebuilding().get(PARTITION).nextOffset()).as("replay started at 0 and has not passed the poison offset")
-                                                                            .isBetween(0L, 2L);
+                  .isBetween(0L, 2L);
         var token = afterRebuild.currentRewind().unwrap();
 
         awaitLive(20_000);
-
-        assertThat(model()).as("seq 3 dead-lettered and SKIPPED on the committed cursor; 4, 5, 6 applied in order").isEqualTo(Option.some(12456L));
+        assertThat(model()).as("seq 3 dead-lettered and SKIPPED on the committed cursor; 4, 5, 6 applied in order")
+                  .isEqualTo(Option.some(12456L));
         var entries = deadLettersForGroup();
 
         assertThat(entries).as("exactly ONE dead letter for the poison replay offset — a second one is the cadence gap the forced commit closes")
-                           .hasSize(1);
+                  .hasSize(1);
         assertThat(entries.getFirst().offset()).isEqualTo(2L);
         assertThat(entries.getFirst().attemptCount()).isEqualTo(5);
-        assertThat(committedEpoch()).as("the rewound consumer commits under the rewind token").isEqualTo(Option.some(NodeReplayCursor.epochOf(token)));
+        assertThat(committedEpoch()).as("the rewound consumer commits under the rewind token")
+                  .isEqualTo(Option.some(NodeReplayCursor.epochOf(token)));
         // LIVE is observed on the forced commit at 3; the acks of 4, 5, 6 reach KV on the 500ms cadence.
         awaitCommittedCursor(6L, 5_000);
-
         poisonSeq.set(-1);
         publishAll(7, 7);
         awaitModel(124567L, 15_000);
-
         assertThat(deadLettersForGroup()).as("live writes admitted after LIVE; no Rebuilding cascade").hasSize(1);
     }
 
@@ -247,16 +250,15 @@ class DurableProjectionRebuildTest {
 
         applyNow(ClusterCursorStore.checkpointCommand(GROUP, TOPIC_STREAM, PARTITION, 6L, RewindEpoch.NONE));
         assertThat(committedCursor()).as("control: the pre-rewind checkpoint landed").isEqualTo(Option.some(6L));
-
         applyNow(ClusterCursorStore.checkpointCommand(GROUP, TOPIC_STREAM, PARTITION, 0L, rewound));
         assertThat(committedCursor()).as("the rewind lowered the cursor").isEqualTo(Option.some(0L));
-
         applyNow(ClusterCursorStore.checkpointCommand(GROUP, TOPIC_STREAM, PARTITION, 6L, RewindEpoch.NONE));
-        assertThat(committedCursor()).as("the zombie's put at the old epoch is REFUSED by the applier").isEqualTo(Option.some(0L));
+        assertThat(committedCursor()).as("the zombie's put at the old epoch is REFUSED by the applier")
+                  .isEqualTo(Option.some(0L));
         assertThat(committedEpoch()).isEqualTo(Option.some(rewound));
-
         applyNow(ClusterCursorStore.checkpointCommand(GROUP, TOPIC_STREAM, PARTITION, 3L, rewound));
-        assertThat(committedCursor()).as("the rewound consumer's own same-epoch checkpoint is accepted").isEqualTo(Option.some(3L));
+        assertThat(committedCursor()).as("the rewound consumer's own same-epoch checkpoint is accepted")
+                  .isEqualTo(Option.some(3L));
     }
 
     /// Resume order is `(epoch, offset)`: a stale-high local cursor from before the rewind loses to the
@@ -267,16 +269,12 @@ class DurableProjectionRebuildTest {
 
         localCursors.commit(GROUP, TOPIC_STREAM, PARTITION, 6L, RewindEpoch.NONE).await();
         applyNow(ClusterCursorStore.checkpointCommand(GROUP, TOPIC_STREAM, PARTITION, 0L, rewound));
-
-        var resumed = cursorStore.fetchCursor(GROUP, TOPIC_STREAM, PARTITION)
-                                 .await()
-                                 .unwrap();
+        var resumed = cursorStore.fetchCursor(GROUP, TOPIC_STREAM, PARTITION).await().unwrap();
 
         assertThat(resumed).isEqualTo(Option.some(ConsumerCursorStore.Cursor.cursor(0L, rewound)));
     }
 
     // ---- fixture -------------------------------------------------------------------------------
-
     private StreamConsumerManager wireManager(TopicSubscriptionRegistry topics) {
         var handler = InvocationHandler.invocationHandler(SELF, mock(ClusterNetwork.class));
         var bridge = DefaultSliceBridge.defaultSliceBridge(ARTIFACT, () -> List.of(subscriber()), sliceCodec);
@@ -299,17 +297,20 @@ class DurableProjectionRebuildTest {
                                                            new SelfOwnsEverything(),
                                                            placement,
                                                            SELF,
-                                                           TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
+                                                           TopicGroupDeclarationSource.topicGroupDeclarationSource(topics,
+                                                                                                                   _ -> true),
                                                            (stream, partition, group) -> committed(StreamCursorCheckpointKey.streamCursorCheckpointKey(stream,
                                                                                                                                                        partition,
-                                                                                                                                                       group))
-                                                                                             .map(StreamCursorCheckpointValue::rewindEpoch));
+                                                                                                                                                       group)).map(StreamCursorCheckpointValue::rewindEpoch));
     }
 
     /// The slice's durable subscriber: the generated-adapter shape (a [ContextualEvent] parameter) delegating
     /// to the ATTACHED projection. The poison arm refuses BEFORE the fold, like a fold that throws would.
     private SliceMethod<Unit, ContextualEvent> subscriber() {
-        return new SliceMethod<>(ON_PROJECTION_EVENT, this::onProjectionEvent, new TypeToken<Unit>() {}, new TypeToken<ContextualEvent>() {});
+        return new SliceMethod<>(ON_PROJECTION_EVENT,
+                                 this::onProjectionEvent,
+                                 new TypeToken<Unit>() {},
+                                 new TypeToken<ContextualEvent>() {});
     }
 
     private Promise<Unit> onProjectionEvent(ContextualEvent contextual) {
@@ -345,7 +346,8 @@ class DurableProjectionRebuildTest {
                                                             ARTIFACT,
                                                             ON_PROJECTION_EVENT);
 
-        topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, TopicSubscriptionValue.topicSubscriptionValue(SELF)),
+        topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key,
+                                                                    TopicSubscriptionValue.topicSubscriptionValue(SELF)),
                                                 Option.none()));
     }
 
@@ -359,8 +361,7 @@ class DurableProjectionRebuildTest {
     }
 
     private void applyNow(KVCommand<AetherKey> command) {
-        apply(command).await()
-                      .onFailure(cause -> fail(cause.message()));
+        apply(command).await().onFailure(cause -> fail(cause.message()));
     }
 
     private Option<StreamCursorCheckpointValue> committed(StreamCursorCheckpointKey key) {
@@ -385,12 +386,15 @@ class DurableProjectionRebuildTest {
         var appended = new AtomicReference<Long>();
 
         new DurableTopicPublisher<AppEvent>(sliceCodec, captured -> append(captured, appended)).publish(event)
-                                                                                                 .await()
-                                                                                                 .onFailure(cause -> fail(cause.message()));
+                                                                                               .await()
+                                                                                               .onFailure(cause -> fail(cause.message()));
     }
 
     private Promise<Unit> append(TopicEventEnvelope envelope, AtomicReference<Long> offset) {
-        return partitions.publishLocal(TOPIC_STREAM, PARTITION, nodeCodec.encode(envelope), System.currentTimeMillis())
+        return partitions.publishLocal(TOPIC_STREAM,
+                                       PARTITION,
+                                       nodeCodec.encode(envelope),
+                                       System.currentTimeMillis())
                          .onSuccess(offset::set)
                          .async()
                          .mapToUnit();
@@ -423,7 +427,8 @@ class DurableProjectionRebuildTest {
             TimeUnit.MILLISECONDS.sleep(50);
         }
 
-        assertThat(model()).as("model within " + maxMs + "ms (attempts so far: " + attempts.get() + ")").isEqualTo(Option.some(expected));
+        assertThat(model()).as("model within " + maxMs + "ms (attempts so far: " + attempts.get() + ")")
+                  .isEqualTo(Option.some(expected));
     }
 
     private void awaitCommittedCursor(long expected, long maxMs) throws InterruptedException {
@@ -443,9 +448,11 @@ class DurableProjectionRebuildTest {
             TimeUnit.MILLISECONDS.sleep(50);
         }
 
-        assertThat(replayStatus().isLive()).as("LIVE within " + maxMs + "ms; status " + replayStatus() + ", model " + model()
+        assertThat(replayStatus().isLive()).as("LIVE within " + maxMs
+                                              + "ms; status " + replayStatus()
+                                              + ", model " + model()
                                               + ", dead letters " + deadLettersForGroup().size())
-                                          .isTrue();
+                  .isTrue();
     }
 
     /// The node-local half of the cluster store, in memory: an epoch-carrying cursor per key, like the
@@ -459,7 +466,11 @@ class DurableProjectionRebuildTest {
         }
 
         @Override
-        public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset, RewindEpoch epoch) {
+        public Promise<CommitOutcome> commit(String consumerGroup,
+                                             String streamName,
+                                             int partition,
+                                             long offset,
+                                             RewindEpoch epoch) {
             cursors.put(consumerGroup + "/" + streamName + "/" + partition, Cursor.cursor(offset, epoch));
 
             return Promise.success(CommitOutcome.persisted());

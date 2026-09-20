@@ -95,7 +95,7 @@ public interface ProjectionSlice {
                                                   .apply(ProjectionSlice::fold)
                                                   .withClaims(InMemoryProjectionClaims.inMemoryProjectionClaims(),
                                                               TimeSpan.timeSpan(30).seconds()))
-                               .unwrap();
+                                .unwrap();
 
         return new projectionSlice(publisher, projection, store, new AtomicInteger(-1), new ConcurrentHashMap<>());
     }

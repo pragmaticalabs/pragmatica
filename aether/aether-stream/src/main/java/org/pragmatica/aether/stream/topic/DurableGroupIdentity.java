@@ -43,7 +43,8 @@ public sealed interface DurableGroupIdentity {
 
         return ArtifactBase.artifactBase(groupId.substring(0, separator))
                            .option()
-                           .map(base -> new GroupIdentity(base, groupId.substring(separator + 1)));
+                           .map(base -> new GroupIdentity(base,
+                                                          groupId.substring(separator + 1)));
     }
 
     /// A durable group's two halves.

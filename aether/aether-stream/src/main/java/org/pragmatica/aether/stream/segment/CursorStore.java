@@ -112,7 +112,11 @@ public final class CursorStore implements ConsumerCursorStore {
                   .map(CursorStore::decodeCursor);
     }
 
-    private static void logCommit(String consumerGroup, String streamName, int partition, long offset, RewindEpoch epoch) {
+    private static void logCommit(String consumerGroup,
+                                  String streamName,
+                                  int partition,
+                                  long offset,
+                                  RewindEpoch epoch) {
         log.debug("Cursor committed: {}/{}/{} -> {} @ epoch {}",
                   consumerGroup,
                   streamName,
@@ -147,9 +151,9 @@ public final class CursorStore implements ConsumerCursorStore {
     }
 
     static Cursor decodeCursor(byte[] bytes) {
-        var buffer = ByteBuffer.wrap(bytes)
-                               .order(ByteOrder.BIG_ENDIAN);
+        var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
 
-        return Cursor.cursor(buffer.getLong(), RewindEpoch.rewindEpoch(buffer.getLong(), buffer.getLong()));
+        return Cursor.cursor(buffer.getLong(),
+                             RewindEpoch.rewindEpoch(buffer.getLong(), buffer.getLong()));
     }
 }

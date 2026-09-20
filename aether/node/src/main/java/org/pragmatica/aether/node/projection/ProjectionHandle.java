@@ -21,7 +21,7 @@ public interface ProjectionHandle {
     Promise<ReplayStatus> replayStatus();
 
     static <S, T> ProjectionHandle projectionHandle(Projection<S, T> projection) {
-        record projectionHandle<S, T>(Projection<S, T> projection) implements ProjectionHandle {
+        record projectionHandle <S, T>(Projection<S, T> projection) implements ProjectionHandle {
             @Override
             public String projectionName() {
                 return projection.name();
@@ -39,10 +39,11 @@ public interface ProjectionHandle {
 
             @Override
             public Promise<ReplayStatus> replayStatus() {
-                return projection.store().replayStatus();
+                return projection.store()
+                                 .replayStatus();
             }
         }
 
-        return new projectionHandle<>(projection);
+        return new projectionHandle <>(projection);
     }
 }

@@ -31,7 +31,8 @@ public interface PartitionBounds {
         record NotHeldHere(String streamName, int partition) implements BoundsError {
             @Override
             public String message() {
-                return "Partition " + partition + " of " + streamName
+                return "Partition " + partition
+                     + " of " + streamName
                      + " is not materialised on this node, so its replay bounds cannot be captured here;"
                      + " run the rebuild on a node that holds the partition (its owner or a replica — see"
                      + " ownerNode on the groups route)";
@@ -41,7 +42,8 @@ public interface PartitionBounds {
 
     static PartitionBounds localOnly(StreamPartitionManager partitions) {
         return (streamName, partition) -> partitions.partitionBuffer(streamName, partition)
-                                                    .map(ring -> Promise.success(visible(ring.tailOffset(), ring.visibleOffset())))
+                                                    .map(ring -> Promise.success(visible(ring.tailOffset(),
+                                                                                         ring.visibleOffset())))
                                                     .or(() -> new BoundsError.NotHeldHere(streamName, partition).promise());
     }
 

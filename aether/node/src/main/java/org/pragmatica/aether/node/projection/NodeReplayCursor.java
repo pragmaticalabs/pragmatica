@@ -59,15 +59,24 @@ public record NodeReplayCursor(String topicStream,
         record StreamUnknown(String topicStream) implements RewindError {
             @Override
             public String message() {
-                return "Topic stream " + topicStream + " is not known to this node yet, so its partitions cannot be captured";
+                return "Topic stream " + topicStream
+                     + " is not known to this node yet, so its partitions cannot be captured";
             }
         }
 
-        record RewindNotCommitted(String topicStream, String groupId, int partition, RewindToken token, Option<RewindEpoch> committed) implements RewindError {
+        record RewindNotCommitted(String topicStream,
+                                  String groupId,
+                                  int partition,
+                                  RewindToken token,
+                                  Option<RewindEpoch> committed) implements RewindError {
             @Override
             public String message() {
-                return "Rewind of group " + groupId + " on " + topicStream + "[" + partition + "] to token " + token
-                     + " was not committed: the cluster cursor carries epoch " + committed.map(RewindEpoch::toString).or("<absent>")
+                return "Rewind of group " + groupId
+                     + " on " + topicStream
+                     + "[" + partition
+                     + "] to token " + token
+                     + " was not committed: the cluster cursor carries epoch " + committed.map(RewindEpoch::toString)
+                                                                                          .or("<absent>")
                      + ". The applier refuses an older epoch, so the projection store's generation is behind the"
                      + " cluster's — its generation slot must survive restarts (durable store), or the group's"
                      + " checkpoint must be reset by an operator";
@@ -119,14 +128,19 @@ public record NodeReplayCursor(String topicStream,
                         .map(entry -> commandWriter.apply(ClusterCursorStore.checkpointCommand(group,
                                                                                                topicStream,
                                                                                                entry.getKey(),
-                                                                                               entry.getValue().fromOffset(),
+                                                                                               entry.getValue()
+                                                                                                    .fromOffset(),
                                                                                                epoch)))
                         .toList();
 
         return Promise.allOf(puts)
                       .flatMap(results -> Result.allOf(results).async())
                       .flatMap(_ -> verifyCommitted(group, range, token, epoch))
-                      .onSuccess(_ -> log.info("Rewound group {} on {} to {} under epoch {}", group, topicStream, range.partitions(), epoch));
+                      .onSuccess(_ -> log.info("Rewound group {} on {} to {} under epoch {}",
+                                               group,
+                                               topicStream,
+                                               range.partitions(),
+                                               epoch));
     }
 
     /// The put resolved, which says the command was APPLIED, not that it was ACCEPTED — a fenced refusal is
@@ -144,7 +158,9 @@ public record NodeReplayCursor(String topicStream,
     }
 
     private Result<Unit> checkCommitted(String group, int partition, RewindToken token, RewindEpoch epoch) {
-        var committed = committedReader.apply(StreamCursorCheckpointKey.streamCursorCheckpointKey(topicStream, partition, group))
+        var committed = committedReader.apply(StreamCursorCheckpointKey.streamCursorCheckpointKey(topicStream,
+                                                                                                  partition,
+                                                                                                  group))
                                        .map(StreamCursorCheckpointValue::rewindEpoch);
 
         return committed.filter(epoch::equals)

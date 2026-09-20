@@ -116,10 +116,10 @@ public record ClusterCursorStore(ConsumerCursorStore local,
     }
 
     public static KVCommand<AetherKey> checkpointCommand(String consumerGroup,
-                                                  String streamName,
-                                                  int partition,
-                                                  long offset,
-                                                  RewindEpoch epoch) {
+                                                         String streamName,
+                                                         int partition,
+                                                         long offset,
+                                                         RewindEpoch epoch) {
         return new KVCommand.Put<>(checkpointKey(consumerGroup, streamName, partition),
                                    StreamCursorCheckpointValue.streamCursorCheckpointValue(offset, epoch));
     }

@@ -32,10 +32,14 @@ import org.slf4j.LoggerFactory;
 /// The hook never fails, delays or reorders the commit: the report hangs off the commit's own promise,
 /// its failure is absorbed — logged once per `(group, partition)`, counted on [#reportFailures] — and the
 /// commit's outcome is returned unchanged. A projection that throws does not break its group's cursor.
-public record ProjectionAwareCursorStore(ConsumerCursorStore delegate, ProjectionRegistry registry, AtomicLong reportFailures, Set<String> reported) implements ConsumerCursorStore {
+public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
+                                         ProjectionRegistry registry,
+                                         AtomicLong reportFailures,
+                                         Set<String> reported) implements ConsumerCursorStore {
     private static final Logger log = LoggerFactory.getLogger(ProjectionAwareCursorStore.class);
 
-    public static ProjectionAwareCursorStore projectionAwareCursorStore(ConsumerCursorStore delegate, ProjectionRegistry registry) {
+    public static ProjectionAwareCursorStore projectionAwareCursorStore(ConsumerCursorStore delegate,
+                                                                        ProjectionRegistry registry) {
         return new ProjectionAwareCursorStore(delegate, registry, new AtomicLong(), ConcurrentHashMap.newKeySet());
     }
 
@@ -67,7 +71,9 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate, Projectio
     @Contract
     private void report(String consumerGroup, String streamName, int partition, long offset, RewindEpoch epoch) {
         registry.lookup(streamName, consumerGroup)
-                .onPresent(handle -> Result.lift(() -> handle.onCursorCommitted(NodeReplayCursor.tokenOf(epoch), partition, offset))
+                .onPresent(handle -> Result.lift(() -> handle.onCursorCommitted(NodeReplayCursor.tokenOf(epoch),
+                                                                                partition,
+                                                                                offset))
                                            .async()
                                            .flatMap(promise -> promise)
                                            .onFailure(cause -> reportFailed(handle, consumerGroup, partition, cause)));

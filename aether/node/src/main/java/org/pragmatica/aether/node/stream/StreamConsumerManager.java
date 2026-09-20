@@ -112,11 +112,13 @@ public interface StreamConsumerManager {
     /// #1333: the durable-topic groups over `topicStream` — synthesized from the topic subscriptions, so
     /// absent from [#statuses], which reads the declarative registry only. Same per-partition shape.
     List<ConsumerStatus> topicGroupStatuses(String topicStream);
+
     /// #1333: a committed checkpoint landed in KV. When it carries a rewind epoch newer than the one the
     /// consumer for that key runs under, a reconcile pass restarts that consumer at once instead of on
     /// the next tick. Every other checkpoint — the consumer's own — is ignored.
     @Contract
     void onCheckpointPut(ValuePut<?, ?> put);
+
     int activeSubscriptionCount();
     /// #654: node-wide count of cursor commits (final flush at detach, or periodic checkpoint) that
     /// failed or did not settle within their shutdown bound. Delegates to the underlying
@@ -427,14 +429,17 @@ public interface StreamConsumerManager {
 
             active.keySet()
                   .stream()
-                  .filter(key -> rewoundBehind(key, Option.option(snapshots.get(key))))
+                  .filter(key -> rewoundBehind(key,
+                                               Option.option(snapshots.get(key))))
                   .toList()
                   .forEach(key -> restartForRewind(key, byGroup));
         }
 
         private boolean rewoundBehind(SubscriptionKey key, Option<SubscriptionSnapshot> snapshot) {
             return snapshot.filter(live -> !live.awaitingCursorFetch())
-                           .map(live -> committedEpochs.committedEpoch(key.streamName(), key.partition(), key.consumerGroup())
+                           .map(live -> committedEpochs.committedEpoch(key.streamName(),
+                                                                       key.partition(),
+                                                                       key.consumerGroup())
                                                        .map(committed -> committed.isStrictlyAfter(live.rewindEpoch()))
                                                        .or(false))
                            .or(false);
@@ -464,9 +469,8 @@ public interface StreamConsumerManager {
         @Contract
         @Override
         public void onCheckpointPut(ValuePut<?, ?> put) {
-            if (put.cause().key() instanceof StreamCursorCheckpointKey key
-                && put.cause().value() instanceof StreamCursorCheckpointValue value
-                && rewindsHeldConsumer(key, value)) {
+            if (put.cause().key() instanceof StreamCursorCheckpointKey key && put.cause().value() instanceof StreamCursorCheckpointValue value && rewindsHeldConsumer(key,
+                                                                                                                                                                      value)) {
                 reconcile();
             }
         }
@@ -474,11 +478,10 @@ public interface StreamConsumerManager {
         private boolean rewindsHeldConsumer(StreamCursorCheckpointKey key, StreamCursorCheckpointValue value) {
             var subscription = new SubscriptionKey(key.streamName(), key.partitionIndex(), key.consumerGroup());
 
-            return active.containsKey(subscription)
-                   && Option.option(snapshotsByKey().get(subscription))
-                            .map(live -> value.rewindEpoch()
-                                              .isStrictlyAfter(live.rewindEpoch()))
-                            .or(false);
+            return active.containsKey(subscription) && Option.option(snapshotsByKey().get(subscription))
+                                                             .map(live -> value.rewindEpoch()
+                                                                               .isStrictlyAfter(live.rewindEpoch()))
+                                                             .or(false);
         }
 
         /// Subscriptions this node SHOULD hold for one declaration, plus the loud reporting for the

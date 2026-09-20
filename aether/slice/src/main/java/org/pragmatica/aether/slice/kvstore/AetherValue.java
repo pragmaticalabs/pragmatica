@@ -1435,7 +1435,10 @@ public sealed interface AetherValue {
         }
 
         public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset, RewindEpoch epoch) {
-            return new StreamCursorCheckpointValue(committedOffset, System.currentTimeMillis(), epoch.generation(), epoch.rewind());
+            return new StreamCursorCheckpointValue(committedOffset,
+                                                   System.currentTimeMillis(),
+                                                   epoch.generation(),
+                                                   epoch.rewind());
         }
 
         public RewindEpoch rewindEpoch() {

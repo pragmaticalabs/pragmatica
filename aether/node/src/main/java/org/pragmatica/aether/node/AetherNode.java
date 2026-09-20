@@ -4189,7 +4189,7 @@ public interface AetherNode extends ManageableNode {
         // group identity (artifactBase#method) and resolves lazily against the topic subscriptions.
         var projectionRegistry = ProjectionRegistry.projectionRegistry(topicSubscriptionRegistry::allSubscriptions);
         Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
-                                                                                                                                                       AetherValue.StreamCursorCheckpointValue.class);
+                                                                                                                                                        AetherValue.StreamCursorCheckpointValue.class);
         Fn1<Promise<Unit>, KVCommand<AetherKey>> cursorCommandWriter = command -> clusterNode.apply(List.of(command))
                                                                                              .mapToUnit();
         var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
@@ -4243,8 +4243,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                         streamName -> streamConsumerOwnership.partitionCount(streamName)
                                                                                                                                                                              .isPresent()),
                                                                                 (streamName, partition, group) -> committedCursorReader.apply(AetherKey.StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName,
-                                                                                                                                                                                                              partition,
-                                                                                                                                                                                                              group))
+                                                                                                                                                                                                            partition,
+                                                                                                                                                                                                            group))
                                                                                                                                        .map(AetherValue.StreamCursorCheckpointValue::rewindEpoch));
         // #499: the handle is retained in `periodicTasks`, which stop() cancels wholesale. A declarative
         // consumer that outlived its node would deliver into a torn-down slice.
@@ -4252,7 +4252,8 @@ public interface AetherNode extends ManageableNode {
                                                                       STREAM_CONSUMER_RECONCILE_INTERVAL));
         // #1333: a committed checkpoint carrying a newer rewind epoch than the held consumer's restarts
         // that consumer on the next pass, now rather than on the 5s tick. The manager filters the key type.
-        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, streamConsumerManager::onCheckpointPut));
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                 streamConsumerManager::onCheckpointPut));
         // #1333: what a slice's ProjectionRuntime resource needs from the node — the registry above and
         // the replay cursor's collaborators (partition bounds from the local ring, the fenced checkpoint
         // put, the committed read-back). Registered beside the entity drivers, as one extension.

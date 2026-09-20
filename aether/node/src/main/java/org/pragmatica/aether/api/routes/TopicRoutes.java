@@ -145,11 +145,8 @@ public final class TopicRoutes implements RouteSource {
     private Promise<TopicGroupsResponse> groupsOf(String topicAddress) {
         var node = nodeSupplier.get();
         var topicStream = DurableTopicNames.topicStream(topicAddress);
-        var statuses = node.streamConsumerManager()
-                           .topicGroupStatuses(topicStream);
-        var details = statuses.stream()
-                              .map(status -> groupDetail(node, topicStream, status))
-                              .toList();
+        var statuses = node.streamConsumerManager().topicGroupStatuses(topicStream);
+        var details = statuses.stream().map(status -> groupDetail(node, topicStream, status)).toList();
 
         return Promise.allOf(details)
                       .flatMap(results -> Result.allOf(results).async())
@@ -207,19 +204,22 @@ public final class TopicRoutes implements RouteSource {
                                                     Option<PartitionCursor> held,
                                                     Option<ReplayStatus> replay) {
         var committed = node.kvStore()
-                            .getTyped(StreamCursorCheckpointKey.streamCursorCheckpointKey(topicStream, assignment.partition(), group),
+                            .getTyped(StreamCursorCheckpointKey.streamCursorCheckpointKey(topicStream,
+                                                                                          assignment.partition(),
+                                                                                          group),
                                       StreamCursorCheckpointValue.class);
-        var partitionReplay = replay.flatMap(status -> Option.option(status.rebuilding()
-                                                                           .get(assignment.partition())));
+        var partitionReplay = replay.flatMap(status -> Option.option(status.rebuilding().get(assignment.partition())));
 
         return new TopicGroupPartition(assignment.partition(),
                                        assignment.consumerNode().map(NodeId::id).or(""),
                                        assignment.ownerNode().map(NodeId::id).or(""),
                                        committed.map(StreamCursorCheckpointValue::committedOffset),
-                                       committed.map(value -> value.rewindEpoch().toString()).or(""),
+                                       committed.map(value -> value.rewindEpoch()
+                                                                   .toString()).or(""),
                                        held.isPresent(),
                                        held.map(PartitionCursor::cursor),
-                                       held.map(cursor -> cursor.rewindEpoch().toString()).or(""),
+                                       held.map(cursor -> cursor.rewindEpoch()
+                                                                .toString()).or(""),
                                        held.flatMap(PartitionCursor::lastCursorCommitFailure).or(""),
                                        replayState(replay, partitionReplay),
                                        partitionReplay.map(PartitionReplay::nextOffset),
@@ -253,7 +253,11 @@ public final class TopicRoutes implements RouteSource {
     /// `group` is `artifactBase#method`; the `#` must travel percent-encoded (`%23`) or a client drops it
     /// as a fragment, and the router hands the segment over undecoded — so it is decoded here. The CLI's
     /// `RouteAssembler.encodeSegment` encodes it; a plain group id without `%` decodes to itself.
-    private Promise<RebuildResponse> rebuild(String namespace, String topic, String version, String rebuildLiteral, String group) {
+    private Promise<RebuildResponse> rebuild(String namespace,
+                                             String topic,
+                                             String version,
+                                             String rebuildLiteral,
+                                             String group) {
         return ResourceAddress.resourceAddress(namespace, topic, version)
                               .async()
                               .flatMap(address -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
@@ -270,8 +274,8 @@ public final class TopicRoutes implements RouteSource {
         var node = nodeSupplier.get();
 
         return hostedProjection(node, topicStream, group).filter(_ -> consumesHere(node, topicStream, group))
-                                                         .map(handle -> runRebuild(topicStream, group, handle))
-                                                         .or(() -> notHostedHere(node, topicStream, group).promise());
+                               .map(handle -> runRebuild(topicStream, group, handle))
+                               .or(() -> notHostedHere(node, topicStream, group).promise());
     }
 
     private static boolean consumesHere(ManageableNode node, String topicStream, String group) {
@@ -309,8 +313,8 @@ public final class TopicRoutes implements RouteSource {
                      .entrySet()
                      .stream()
                      .collect(Collectors.toMap(Map.Entry::getKey,
-                                                                entry -> new PartitionReplayView(entry.getValue().nextOffset(),
-                                                                                                 entry.getValue().throughOffset())));
+                                               entry -> new PartitionReplayView(entry.getValue().nextOffset(),
+                                                                                entry.getValue().throughOffset())));
     }
 
     /// 409: the group's projection is not attached on this node — either the slice is not here, or the
@@ -324,26 +328,33 @@ public final class TopicRoutes implements RouteSource {
                                                   .equals(group))
                           .flatMap(status -> status.partitionAssignments()
                                                    .stream())
-                          .map(assignment -> assignment.partition() + "=" + assignment.consumerNode().map(NodeId::id).or("<unassigned>"))
+                          .map(assignment -> assignment.partition()
+                                            + "=" + assignment.consumerNode()
+                                                              .map(NodeId::id)
+                                                              .or("<unassigned>"))
                           .toList();
         var attributionProblem = node.projectionNodeSupport()
                                      .map(support -> support.registry()
-                                                           .registrations(topicStream)
-                                                           .stream()
-                                                           .map(registration -> support.registry().groupIdOf(registration))
-                                                           .filter(Result::isFailure)
-                                                           .map(result -> result.fold(Cause::message, _ -> ""))
-                                                           .findFirst()
-                                                           .orElse(""))
+                                                            .registrations(topicStream)
+                                                            .stream()
+                                                            .map(registration -> support.registry()
+                                                                                        .groupIdOf(registration))
+                                                            .filter(Result::isFailure)
+                                                            .map(result -> result.fold(Cause::message, _ -> ""))
+                                                            .findFirst()
+                                                            .orElse(""))
                                      .or("");
 
         return HttpError.httpError(HttpStatus.CONFLICT,
-                                   Causes.cause("Node " + node.self().id() + " hosts no projection for consumer group '" + group
-                                               + "' on " + topicStream + " that it also consumes"
+                                   Causes.cause("Node " + node.self()
+                                                              .id()
+                                               + " hosts no projection for consumer group '" + group
+                                               + "' on " + topicStream
+                                               + " that it also consumes"
                                                + "; the rebuild route is LOCAL — POST it to the node consuming the group's"
-                                               + " partitions (" + String.join(", ", hosting) + ")"
-                                               + (attributionProblem.isEmpty()
-                                                  ? ""
-                                                  : ". A projection on this topic exists here but cannot be attributed: " + attributionProblem)));
+                                               + " partitions (" + String.join(", ", hosting)
+                                               + ")" + (attributionProblem.isEmpty()
+                                                        ? ""
+                                                        : ". A projection on this topic exists here but cannot be attributed: " + attributionProblem)));
     }
 }

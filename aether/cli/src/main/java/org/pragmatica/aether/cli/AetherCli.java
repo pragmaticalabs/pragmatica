@@ -4106,7 +4106,9 @@ public class AetherCli implements Runnable {
         }
 
         private static List<String> pathOf(ResourceAddress address) {
-            return List.of(address.namespace().value(), address.name().value(), address.version().asString());
+            return List.of(address.namespace().value(),
+                           address.name().value(),
+                           address.version().asString());
         }
 
         @Command(name = "groups", description = "Show the durable consumer groups over a topic, per partition: assignee, owner, committed cursor and rewind epoch, and the projection state this node hosts")

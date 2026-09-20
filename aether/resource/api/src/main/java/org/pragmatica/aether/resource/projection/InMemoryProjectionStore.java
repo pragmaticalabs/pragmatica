@@ -43,13 +43,15 @@ public final class InMemoryProjectionStore<S> implements ProjectionStore<S> {
     }
 
     @Override
-    public synchronized Promise<WriteOutcome> write(String key, S state, long expectedGeneration, Option<DeliveryPosition> position) {
+    public synchronized Promise<WriteOutcome> write(String key,
+                                                    S state,
+                                                    long expectedGeneration,
+                                                    Option<DeliveryPosition> position) {
         if (generation != expectedGeneration) {
             return Promise.success(WriteOutcome.STALE_GENERATION);
         }
 
-        return Promise.success(position.map(at -> admitAt(key, state, at))
-                                       .or(() -> admitPositionless(key, state)));
+        return Promise.success(position.map(at -> admitAt(key, state, at)).or(() -> admitPositionless(key, state)));
     }
 
     private WriteOutcome admitPositionless(String key, S state) {
@@ -115,8 +117,7 @@ public final class InMemoryProjectionStore<S> implements ProjectionStore<S> {
 
     @Override
     public synchronized Promise<Unit> markReplayed(long expectedGeneration, DeliveryPosition at) {
-        if (generation == expectedGeneration && replayThrough.containsKey(at.partition())
-            && nextReplayOffset.get(at.partition()) == at.offset()) {
+        if (generation == expectedGeneration && replayThrough.containsKey(at.partition()) && nextReplayOffset.get(at.partition()) == at.offset()) {
             advance(at.partition(), at.offset());
         }
 
@@ -138,8 +139,7 @@ public final class InMemoryProjectionStore<S> implements ProjectionStore<S> {
 
     @Override
     public synchronized Promise<Unit> cursorCommitted(RewindToken token, int partition, long committedCursor) {
-        if (currentRewind.filter(token::equals).isPresent() && replayThrough.containsKey(partition)
-            && committedCursor > nextReplayOffset.get(partition)) {
+        if (currentRewind.filter(token::equals).isPresent() && replayThrough.containsKey(partition) && committedCursor > nextReplayOffset.get(partition)) {
             advance(partition, committedCursor - 1);
         }
 
@@ -156,7 +156,8 @@ public final class InMemoryProjectionStore<S> implements ProjectionStore<S> {
         var rebuilding = new HashMap<Integer, PartitionReplay>();
 
         replayThrough.forEach((partition, through) -> rebuilding.put(partition,
-                                                                     new PartitionReplay(nextReplayOffset.get(partition), through)));
+                                                                     new PartitionReplay(nextReplayOffset.get(partition),
+                                                                                         through)));
 
         return Promise.success(new ReplayStatus(generation, Map.copyOf(rebuilding), currentRewind));
     }

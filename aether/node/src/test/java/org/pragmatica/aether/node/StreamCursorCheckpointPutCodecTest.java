@@ -12,11 +12,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointVal
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.serialization.FrameworkCodecs;
 
+import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
-import io.netty.buffer.Unpooled;
-
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #1333: the consensus wire for a cursor checkpoint is a `KVCommand.Put` of `StreamCursorCheckpointValue`
 /// encoded by the NODE codec — the same registry the Rabia batch uses. Pinned here, where that codec is
@@ -25,7 +25,9 @@ class StreamCursorCheckpointPutCodecTest {
     @Test
     void checkpointPut_roundTrips_throughTheNodeCodec_withTheRewindEpoch() {
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
-        var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("topic:ns:orders:1.0.0", 0, "org.example:orders#onPlaced");
+        var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("topic:ns:orders:1.0.0",
+                                                                      0,
+                                                                      "org.example:orders#onPlaced");
         var value = new StreamCursorCheckpointValue(42L, 1_700_000_000_500L, 3L, 2L);
         var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
         var buf = Unpooled.buffer();
@@ -35,6 +37,7 @@ class StreamCursorCheckpointPutCodecTest {
 
         assertThat(decoded.key()).isEqualTo(key);
         assertThat(decoded.value()).isEqualTo(value);
-        assertThat(((StreamCursorCheckpointValue) decoded.value()).rewindEpoch()).isEqualTo(RewindEpoch.rewindEpoch(3L, 2L));
+        assertThat(((StreamCursorCheckpointValue) decoded.value()).rewindEpoch()).isEqualTo(RewindEpoch.rewindEpoch(3L,
+                                                                                                                    2L));
     }
 }
