@@ -1121,6 +1121,40 @@ shape, both enforced at compile time:
   `Fn1<Promise<Unit>, T>` — typed on the event alone, with nowhere to carry the context. Declaring
   both is a compile error rather than a silent loss of the context. Use one or the other.
 
+### Publishing to a durable topic (#1236, #1237)
+
+A slice publishes through the injected `Publisher<T>` (or the typed `TypedPublisher<T>` facade). On a
+**durable** topic the returned `Promise<Unit>` resolves one of three ways:
+
+| Outcome | Meaning | What to do |
+|---------|---------|------------|
+| success | The event is in the log at the declared `min_sync_replicas` floor | nothing |
+| failure (e.g. `NOT_ENOUGH_REPLICAS`) | The event is **not** in the log — the floor is checked before the append | a retry is a new publish |
+| `PublishOutcomeUnknown` | The owner appended but the floor was not confirmed (e.g. peer acks timed out): the event **may** be in the log | retry only with the same key |
+
+One known exception to "failure = not in the log": a WAL fsync failure after the owner's ring append
+(#1235).
+
+`publish(event)` mints a fresh message ID per call, so retrying it after `PublishOutcomeUnknown` writes
+a second event with a new ID. `publish(event, idempotencyKey)` uses your key as the message ID — choose
+one that names the logical event (e.g. `"order-42-placed"`); a blank key is refused. A stable key is
+**necessary** for a retry to be deduplicated, not sufficient: `[unverified: messageId is not yet
+delivered to subscribers — #1295]`, and because durable topics route events round-robin, a retry may
+land on a different partition from the first copy and be processed concurrently with it.
+
+```java
+var key = "order-" + order.id() + "-placed";
+
+// Re-sending under the SAME key is safe whichever way the first attempt failed: after a clean
+// failure the first copy is not in the log, after PublishOutcomeUnknown the copies share one ID.
+publisher.publish(event, key)
+         .orElse(() -> publisher.publish(event, key));
+```
+
+`PublishOutcomeUnknown` is deliberately not transient, so the default retry policy
+(`RetryOn.TRANSIENT`) leaves it alone; `RetryOn.NON_TERMINAL` does retry it, which is safe only for a
+keyed publish. On an **ephemeral** topic the key is ignored (there is no log and no message ID).
+
 ### Configuration
 
 | Field | Type | Default | Description |

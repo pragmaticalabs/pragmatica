@@ -61,6 +61,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// No-op release (default seam).
     private static final LongConsumer NOOP_RELEASE = _ -> {};
 
+    /// No-op read-window probe (default seam — production never parks a reader).
+    private static final Runnable NO_READ_WINDOW_PROBE = () -> {};
+
     /// Test-only floor-allocation fault-injection seam (bug #6 partial-construction coverage). Consulted
     /// by the GUARDED seam factory with each buffer's partition index BEFORE the native floor allocation;
     /// when it returns false the factory behaves exactly as a native floor OOM would — it closes the
@@ -109,6 +112,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Native accesses refused because index or offset arithmetic went out of bounds (#1247) — a ring
     /// defect, never the close race.
     private final AtomicLong indexCorruption = new AtomicLong(0);
+
+    /// Test-only seam (#1253), run by [#guardedRead] between its `closed` fast-path check and the native read.
+    /// Deliberately NOT volatile: it is set before any reader thread starts, and `Thread.start` publishes it.
+    private Runnable readWindowProbe = NO_READ_WINDOW_PROBE;
     private volatile long lastSealedOffset = -1;
 
     private OffHeapRingBuffer(Arena arena,
@@ -320,9 +327,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///   - REJECT_WHEN_FULL (STRONG) and does not fit — the same loud `STREAM_MEMORY_EXCEEDED` it returns
     ///     when it cannot make room by growing.
     ///   - DROP_OLDEST (EVENTUAL) and does not fit — the event genuinely cannot be stored in the frozen
-    ///     ring; drop it (NO write, no corruption) and report success at the current head, mirroring the
-    ///     existing non-fatal EVENTUAL contract (EVENTUAL appends never fail; the exhaustion event was
-    ///     already emitted via the growth seam). See spec §4.2 / bug #7.
+    ///     ring; drop it (NO write, no corruption) and report the distinct `EVENT_DROPPED` outcome. Never
+    ///     success at the current head (#1233): that offset belongs to an already-stored event, and a
+    ///     caller treating it as the new event's offset WAL-writes and replicates a phantom under it. The
+    ///     publish path decides whether the stream may absorb the drop. See spec §4.2 / bug #7.
     private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
         if (payload.length <= allocatedDataBytes) {
             return appendWritten(payload, timestamp);
@@ -332,7 +340,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        return success(rawHeadOffset());
+        return StreamError.General.EVENT_DROPPED.result();
     }
 
     /// Runs AFTER growth so the REJECT_WHEN_FULL fullness check is evaluated against the grown
@@ -340,7 +348,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// growing to the cap. Seam-rejected growth has already returned STREAM_MEMORY_EXCEEDED upstream
     /// (in `ensureGrownFor`). Reached only when the event fits the allocated ring (bug #7 gate above), so
     /// it never overflows; listener notification fires only here, on a real admission (the frozen-ring
-    /// drop path returns the head WITHOUT notifying). See spec §4.2.
+    /// drop path returns `EVENT_DROPPED` WITHOUT notifying). See spec §4.2.
     private Result<Long> appendWritten(byte[] payload, long timestamp) {
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL && countEvictionsForSpace(payload.length) > 0) {
             return StreamError.General.BUFFER_FULL.result();
@@ -383,7 +391,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Batch analogue of `appendIfFitsAllocated` (bug #7): after growth was attempted, the batch total
     /// must still fit the **allocated** data bytes, otherwise a frozen-ring batch write would overflow
     /// the ring (corruption / segment overrun). STRONG rejects loud; EVENTUAL drops the whole batch (no
-    /// write) and reports success at the current head. See spec §4.2 / bug #7.
+    /// write) and reports `EVENT_DROPPED`, never success at the current head (#1233, same reason as the
+    /// single-event gate). See spec §4.2 / bug #7.
     private Result<Long> appendBatchIfFitsAllocated(List<byte[]> payloads, long[] timestamps, long totalSize) {
         if (totalSize <= allocatedDataBytes) {
             return appendBatchWritten(payloads, timestamps);
@@ -393,7 +402,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        return success(rawHeadOffset());
+        return StreamError.General.EVENT_DROPPED.result();
     }
 
     private Result<Long> appendBatchWritten(List<byte[]> payloads, long[] timestamps) {
@@ -688,6 +697,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return refused;
         }
 
+        readWindowProbe.run();
         try {
             return read.getAsLong();
         } catch (IllegalStateException _) {
@@ -757,6 +767,16 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return new StreamError.RingIndexCorrupted(streamName,
                                                   partition,
                                                   String.valueOf(fault.getMessage()));
+    }
+
+    /// Test-only seam (#1253): install a probe that [#guardedRead] runs AFTER its `closed` fast-path check and
+    /// BEFORE the native read — exactly the window a concurrent `close()` must land in for the reader to be
+    /// refused by the JDK rather than by the flag. A probe that parks one reader there until `close()` has
+    /// completed makes that race deterministic instead of scheduler-dependent. Must be installed before any
+    /// reader thread starts. Production never touches it.
+    @Contract
+    void readWindowProbe(Runnable probe) {
+        readWindowProbe = probe;
     }
 
     public long allocatedBytes() {
