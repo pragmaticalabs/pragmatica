@@ -1816,6 +1816,46 @@ class StreamConsumerManagerTest {
                       .isTrue();
         }
 
+        /// rev1285d F2: the declarative `[streams.X]` twin of the pin above. That pin moved to
+        /// `invokeLocalWithContext` with #1295, which left `invokeConsumer`'s own `.timeout(handlerTimeout)`
+        /// on the `invokeLocal` path unpinned — removing it kept all 1,533 node tests green. Same seam,
+        /// same 200ms bound, the never-resolving promise stubbed on `invokeLocal` instead.
+        @Test
+        void delivery_failsWithTimeout_whenTheDeclarativeSliceHandlerNeverResolves() throws InterruptedException {
+            declare(APP_EVENT_TYPE, false);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            new StreamConsumerManager.ManagerState(registry,
+                                                   capturingRuntime,
+                                                   invoker,
+                                                   invocationHandler,
+                                                   topicAwareCodec,
+                                                   ownership,
+                                                   placement,
+                                                   SELF,
+                                                   TopicGroupDeclarationSource.none(),
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis()).reconcile();
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var settled = new java.util.concurrent.CountDownLatch(1);
+            var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
+
+            assertThat(capturingRuntime.callbackFor(STREAM, 0)).describedAs("control: the declarative consumer attached to orders[0]")
+                      .isNotNull();
+            capturingRuntime.callbackFor(STREAM, 0)
+                            .onEvent(0L, sliceCodec.encode(new AppEvent("order-42")), 1234L)
+                            .onResult(result -> {
+                                          outcome.set(result);
+                                          settled.countDown();
+                                      });
+            assertThat(settled.await(2, java.util.concurrent.TimeUnit.SECONDS)).describedAs("a hung declarative handler must end its delivery, not hold the partition's loop forever")
+                      .isTrue();
+            assertThat(outcome.get().isFailure()).describedAs("a timed-out declarative invocation is a delivery failure")
+                      .isTrue();
+            verify(invoker).invokeLocal(any(), any(), any(), any());
+        }
+
         private record DecodingBridge(SliceCodec codec) implements SliceBridge {
             @Override
             public Option<SliceCodec> sliceCodec() {
