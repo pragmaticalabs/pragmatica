@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -98,7 +99,7 @@ public final class SegmentReader {
         var remaining = maxEvents;
 
         while (refIndex < refs.size() && remaining > 0) {
-            var step = readSegment(streamName, partition, refs.get(refIndex), fromOffset, remaining);
+            var step = containedStep(streamName, partition, refs.get(refIndex), fromOffset, remaining);
 
             if (!step.isResolved()) {
                 var nextRef = refIndex + 1;
@@ -169,6 +170,19 @@ public final class SegmentReader {
         resolved.onResult(holder::set);
 
         return holder.get();
+    }
+
+    /// A step that THROWS instead of returning a promise (the ref lookup is the only call outside the step's own
+    /// `flatMap`s) is a failed step, so the loop fails `output` exactly once on both paths. Without this the
+    /// inline path let the exception escape `readEvents` and the resume path lost it in `onResult`'s catch,
+    /// leaving the read never settled — the `flatMap`-per-segment shape had contained it (rev1394 M1).
+    private Promise<List<RawEvent>> containedStep(String streamName,
+                                                  int partition,
+                                                  SegmentIndex.SegmentRef ref,
+                                                  long fromOffset,
+                                                  int remaining) {
+        return Result.lift(() -> readSegment(streamName, partition, ref, fromOffset, remaining)).fold(Cause::promise,
+                                                                                                      step -> step);
     }
 
     private Promise<List<RawEvent>> readSegment(String streamName,
