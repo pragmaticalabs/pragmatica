@@ -13,6 +13,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
@@ -322,6 +323,18 @@ class SegmentReaderTest {
         /// Well under one segment's worth of nesting (7 frames) times any small constant, and four orders of
         /// magnitude under the 13,993 frames the recursion grew by before the fix.
         private static final long MAX_DEPTH_GROWTH = 50;
+        /// Every off-thread read awaits with a budget: a read that never settles must FAIL, not park the suite
+        /// (rev1394 measured 9+ minutes parked under an ignored-failure mutation with an unbounded await).
+        private static final TimeSpan READ_BUDGET = TimeSpan.timeSpan(10).seconds();
+        private static final int RECORDS_PER_SEGMENT = 3;
+        private static final int BOUNDARY_SEGMENTS = 5;
+        private static final long CROSSING_FROM = 4;
+        /// `from + max - 1` must land INSIDE a segment, not on its end: the ref range is already bounded by that
+        /// offset, so a limit on a segment end is met by the ref list alone and an un-decremented `remaining` on the
+        /// resume path reads the same records (a first draft used max 5 over 3-record segments and pinned nothing).
+        private static final int CROSSING_MAX = 4;
+        private static final int THROWING_SEGMENT = 3;
+        private static final String THROWN_MESSAGE = "metadata store exploded synchronously";
 
         /// RED before the fix: the last segment's `get` ran 7 × 1,999 frames deeper than the first's.
         @Test
@@ -346,7 +359,7 @@ class SegmentReaderTest {
             var offThreadReader = segmentReader(settlingOffThread(storage, Option.none()), index);
 
             sealOneEventSegments(SOME_SEGMENTS);
-            var events = offThreadReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await();
+            var events = offThreadReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
 
             assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
             events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
@@ -359,10 +372,81 @@ class SegmentReaderTest {
             var failingReader = segmentReader(settlingOffThread(storage, Option.some(failure)), index);
 
             sealOneEventSegments(SOME_SEGMENTS);
-            var events = failingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await();
+            var events = failingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
 
             events.onSuccess(list -> fail("a failed segment read must fail the whole read, not return " + list.size() + " events"))
                   .onFailure(cause -> assertThat(cause).isEqualTo(failure));
+        }
+
+        /// `maxEvents` crossing a segment boundary after a resume, ending mid-segment. The suspended path carries
+        /// `remaining` forward itself; passing it unchanged over-reads the rest of the next segment, which no
+        /// `maxEvents == segments` read sees.
+        @Test
+        void readEvents_stopsAtMaxEvents_whenTheLimitFallsMidSegmentAfterAnOffThreadResume() {
+            var offThreadReader = segmentReader(settlingOffThread(storage, Option.none()), index);
+
+            sealSegmentsOf(RECORDS_PER_SEGMENT, BOUNDARY_SEGMENTS);
+            var events = offThreadReader.readEvents(STREAM, PARTITION, CROSSING_FROM, CROSSING_MAX).await(READ_BUDGET);
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(LongStream.range(CROSSING_FROM, CROSSING_FROM + CROSSING_MAX)
+                                                                                          .boxed()
+                                                                                          .toList()));
+        }
+
+        /// M1: a step that THROWS (a ref lookup that explodes) on the inline path fails the read — it neither escapes
+        /// `readEvents` as an exception nor leaves the read unsettled.
+        @Test
+        void readEvents_failsTheRead_whenARefLookupThrowsOnTheInlinePath() {
+            var throwingReader = segmentReader(throwingRefAt(storage, THROWING_SEGMENT), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = throwingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
+
+            assertThrownRefFailed(events);
+        }
+
+        /// M1, resume path: the throw lands inside the resumed loop, whose enclosing `onResult` would otherwise swallow it.
+        @Test
+        void readEvents_failsTheRead_whenARefLookupThrowsAfterAnOffThreadResume() {
+            var throwingReader = segmentReader(throwingRefAt(settlingOffThread(storage, Option.none()), THROWING_SEGMENT), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = throwingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
+
+            assertThrownRefFailed(events);
+        }
+
+        private static void assertThrownRefFailed(Result<List<RawEvent>> events) {
+            events.onSuccess(list -> fail("a throwing ref lookup must fail the read, not return " + list.size() + " events"))
+                  .onFailure(cause -> assertThat(cause.message()).as("the read's failure is the throw itself, not a timeout of a read that never settled")
+                                                                .contains(THROWN_MESSAGE));
+        }
+
+        private void sealSegmentsOf(int recordsPerSegment, int segments) {
+            for (var segment = 0; segment < segments; segment++) {
+                var start = (long) segment * recordsPerSegment;
+                var end = start + recordsPerSegment - 1;
+                var records = LongStream.rangeClosed(start, end)
+                                        .mapToObj(offset -> RawEvent.rawEvent(offset, ("e" + offset).getBytes(), offset))
+                                        .toList();
+
+                sink.seal(sealedSegment(STREAM, PARTITION, start, end, recordsPerSegment, start, end, serializeEvents(records))).await();
+            }
+        }
+
+        /// The real storage, whose `resolveRef` THROWS on its `nth` call (1-based).
+        private static StorageInstance throwingRefAt(StorageInstance delegate, int nth) {
+            var calls = new AtomicInteger();
+
+            return proxy(delegate, (method, args) -> {
+                if (method.getName().equals("resolveRef") && calls.incrementAndGet() == nth) {
+                    throw new IllegalStateException(THROWN_MESSAGE);
+                }
+
+                return Option.none();
+            });
         }
 
         private void sealOneEventSegments(int count) {
