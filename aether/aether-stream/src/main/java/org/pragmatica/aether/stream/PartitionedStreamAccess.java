@@ -38,6 +38,7 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
+import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"})
@@ -645,23 +646,27 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// the in-sync set, so only the remaining peers are awaited. `awaitReplication` registers the
     /// pending ack against the already-fired replication (the manager seeds it from the registry to
     /// close the ack-before-register race). With `minSyncReplicas <= 1` it resolves on the local write
-    /// (0 = eventual, 1 = owner-only).
+    /// (0 = eventual, 1 = owner-only). A refusal because the committed owner is another node (the #1230
+    /// ownership-lag window) is redirected to that owner via {@link StreamForwardRetry#redirectNotOwner}.
     private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 1) {
-            return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                                   .async();
-        }
-        // #1236: floor before the append (a refusal is not in the log); after it, an unconfirmed
-        // barrier is an unknown outcome.
-        return partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
-                               .flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
-                               .async()
-                               .flatMap(offset -> partitionManager.awaitReplication(streamName,
-                                                                                    partition,
-                                                                                    offset,
-                                                                                    minSyncReplicas - 1)
-                                                                  .mapError(PublishOutcomeUnknown.FACTORY)
-                                                                  .map(_ -> offset));
+        // #1236: floor before the append (a refusal is not in the log), after the #1230 owner admission.
+        return partitionManager.publishLocalAtFloor(streamName, partition, bytes, timestamp, minSyncReplicas - 1)
+                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                  owner -> forwardClient.map(client -> forwardToOwner(client,
+                                                                                                                                      owner,
+                                                                                                                                      partition,
+                                                                                                                                      bytes,
+                                                                                                                                      timestamp))),
+                                     offset -> awaitMinSync(partition, offset));
+    }
+
+    /// #1236: after the append, an unconfirmed barrier is an unknown outcome.
+    private Promise<Long> awaitMinSync(int partition, long offset) {
+        return minSyncReplicas > 1
+               ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
+                                 .map(_ -> offset)
+               : Promise.success(offset);
     }
 
     @Override
@@ -850,9 +855,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// Continue a cold read into the ring (#1234). With nothing sealed at `fromOffset` the ring is the only
     /// remaining source, so its failure — `CursorExpired` for an offset held by neither tier — is returned
     /// as-is: answering `[]` here stalled the consumer at that cursor forever. After a sealed prefix, a ring
-    /// failure is absorbed by FER (degrade forward): the sealed prefix is returned and the next read, which
-    /// starts right after it, reaches this method with nothing sealed and surfaces the failure then — the
-    /// consumer makes progress and still sees the error at the exact offset it occurs.
+    /// failure is absorbed by FER (degrade forward, [#bufferReadFallback]): the sealed prefix is returned and
+    /// the next read, which starts right after it, reaches this method with nothing sealed and surfaces the
+    /// failure then — the consumer makes progress and still sees the error at the exact offset it occurs.
+    /// The one exception is a corrupted ring (#1247 review M2), which fails the read on either path.
     private Promise<List<StreamEvent<T>>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
                                                                   int partition,
                                                                   long fromOffset,
@@ -868,16 +874,29 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
             return readBufferEvents(partition, fromOffset, remaining).async();
         }
 
-        var bufferEvents = readBufferEvents(partition,
-                                            sealedEvents.getLast().offset() + 1,
-                                            remaining).or(List.of());
-
-        return Promise.success(List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList()));
+        return readBufferEvents(partition,
+                                sealedEvents.getLast().offset() + 1,
+                                remaining).fold(this::bufferReadFallback, Result::success)
+                               .map(bufferEvents -> List.copyOf(Stream.concat(sealed.stream(),
+                                                                              bufferEvents.stream())
+                                                                      .toList()))
+                               .async();
     }
 
     private Result<List<StreamEvent<T>>> readBufferEvents(int partition, long fromOffset, int maxEvents) {
         return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
                                .map(rawEvents -> toStreamEvents(rawEvents, partition));
+    }
+
+    /// FER (degrade forward) for the ring tail after a segment fallback: any buffer failure except a
+    /// corrupted ring returns the sealed events alone — a short read the consumer continues from its next
+    /// offset, which is what this path always did. A corrupted ring is the exception (#1247 review M2): its
+    /// events cannot be trusted and "no buffer events" would silently truncate the read, so
+    /// [StreamError.RingIndexCorrupted] reaches the caller.
+    private Result<List<StreamEvent<T>>> bufferReadFallback(Cause cause) {
+        return cause instanceof StreamError.RingIndexCorrupted
+               ? cause.result()
+               : success(List.of());
     }
 
     private List<StreamEvent<T>> toStreamEvents(List<OffHeapRingBuffer.RawEvent> rawEvents, int partition) {
