@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// [org.pragmatica.aether.slice.stream.SystemStreams] name — the target name is body-carried, so
 /// `ManagementServer`'s pre-auth write-gate structurally cannot see it (gate condition 1: reuse the
 /// dispatch path's route-match, no parallel body parser). The guard therefore lives in
-/// `#createFreshStream`, the sole call site that ever mints a stream, unconditionally, before the
+/// `#createStreamWithConfig`, the sole call site that ever mints a stream, unconditionally, before the
 /// mint — closing the window where a create racing ahead of `SystemStreamBootstrap` would otherwise
 /// find `streamInfo(name)` empty and mint a caller-controlled config under a reserved name. This
 /// harness's `streamPartitionManager` is never bootstrapped, so it exercises exactly that window.
