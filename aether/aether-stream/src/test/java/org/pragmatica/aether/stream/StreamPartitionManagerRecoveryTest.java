@@ -11,10 +11,13 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Option;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.stream.IntStream;
+import java.util.zip.CRC32;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,6 +89,90 @@ class StreamPartitionManagerRecoveryTest {
         rebuilt.close();
     }
 
+    /// #1232 acceptance 1: a WAL holding offset 1 ("v1") BEFORE offset 0 ("v0") — the file order the
+    /// pre-fix owner path could produce. Each record lands at its STORED offset; before the fix recovery
+    /// numbered them in scan order and `readLocal(0)` returned "v1".
+    @Test
+    void rebuild_placesEachRecordAtItsStoredOffset_whenWalFramesAreOutOfOrder() throws IOException {
+        writeRawWal(frame(1, "v1"), frame(0, "v0"));
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        createStream(recovered);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(events).extracting(RawEvent::offset).containsExactly(0L, 1L);
+        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v0");
+        assertThat(new String(events.get(1).data(), UTF_8)).isEqualTo("v1");
+
+        recovered.close();
+    }
+
+    /// #1232 acceptance 2: two frames for one offset. Recovery refuses with the distinct
+    /// [StreamError.WalReplayMismatch] instead of shifting every later record by one.
+    @Test
+    void rebuild_failsLoudly_whenWalHoldsDuplicateOffset() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(1, "v1-again"), frame(2, "v2"));
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)), 2L, 1L);
+    }
+
+    /// A missing frame above the sealed bound: recovery refuses instead of numbering offset 5's record as 4.
+    @Test
+    void rebuild_failsLoudly_whenWalTailHasGapAboveSealedBound() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(3, "v3"), frame(5, "v5"));
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 4L, 5L);
+    }
+
+    /// #1258 review B2 (CTO ruling): a gap BEFORE the first WAL record is indistinguishable today from
+    /// retention having reclaimed every sealed segment (the sealed floor then drops to -1 while compaction
+    /// already removed the records below the old floor). It is accepted: the ring is seeded just below
+    /// the first record, the records land at their stored offsets, and the head gap is counted and WARNed.
+    @Test
+    void rebuild_acceptsLeadingGap_asReclaimedHistory_whenSealedFloorRegressed() throws IOException {
+        writeRawWal(frame(5, "v5"), frame(6, "v6"), frame(7, "v7"));
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        createStream(recovered);
+
+        var events = readFrom(recovered, 5);
+
+        assertThat(events).extracting(RawEvent::offset).containsExactly(5L, 6L, 7L);
+        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v5");
+        assertCursorExpired(recovered, 0);
+        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).isEqualTo(1);
+
+        recovered.close();
+    }
+
+    /// #1258 review round 2 (R2-3, reviewer probe D): the file still physically holds records at and below
+    /// the floor (lazy truncation), so a missing offset right above the floor is a HOLE, not reclaimed
+    /// history. A leading gap is accepted only when the file's LOWEST stored offset is above floor + 1.
+    @Test
+    void rebuild_failsLoudly_whenHoleSitsDirectlyAboveTheFloor_andEarlierRecordsExist() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(4, "v4"), frame(5, "v5"));
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 3L, 4L);
+        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).as("not counted as reclaimed")
+                                                                                         .isZero();
+    }
+
+    @Test
+    void rebuild_acceptsLeadingGap_aboveSealedBound() throws IOException {
+        writeRawWal(frame(4, "v4"), frame(5, "v5"));
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L));
+        createStream(recovered);
+
+        assertThat(readFrom(recovered, 4)).extracting(RawEvent::offset).containsExactly(4L, 5L);
+        assertCursorExpired(recovered, 3);
+
+        recovered.close();
+    }
+
     // === helpers ===
 
     private static void publishAll(StreamPartitionManager manager) {
@@ -122,6 +209,61 @@ class StreamPartitionManagerRecoveryTest {
         assertThat(event.offset()).isEqualTo((long) i);
         assertThat(event.timestamp()).isEqualTo(1000L + i);
         assertThat(new String(event.data(), UTF_8)).isEqualTo("evt-" + i);
+    }
+
+    private void assertRecoveryRefused(StreamPartitionManager manager, long expectedOffset, long foundOffset) {
+        manager.createStream(StreamConfig.streamConfig(STREAM))
+               .onSuccess(_ -> fail("recovery must refuse a WAL whose tail does not continue the ring"))
+               .onFailure(cause -> assertThat(cause.stream().toList()).as("the per-partition refusal, aggregated across partitions")
+                                                                      .singleElement()
+                                                                      .isInstanceOfSatisfying(StreamError.WalReplayMismatch.class,
+                                                                                              mismatch -> assertMismatch(mismatch,
+                                                                                                                         expectedOffset,
+                                                                                                                         foundOffset)));
+        manager.close();
+    }
+
+    private void assertMismatch(StreamError.WalReplayMismatch mismatch, long expectedOffset, long foundOffset) {
+        assertThat(mismatch.partition()).isEqualTo(PARTITION);
+        assertThat(mismatch.expectedOffset()).isEqualTo(expectedOffset);
+        assertThat(mismatch.foundOffset()).isEqualTo(foundOffset);
+        assertThat(mismatch.walFile()).isEqualTo(walFile());
+        assertThat(mismatch.message()).as("names the STREAM, since the whole stream stays unmaterialized")
+                                      .contains("stream 'orders'");
+        assertThat(mismatch.message()).as("advice that cannot discard a correct tail").contains("do not delete");
+    }
+
+    private Path walFile() {
+        return walDir.resolve(STREAM).resolve(PARTITION + ".wal");
+    }
+
+    /// Writes frames byte-for-byte in the documented `PartitionWal` format, in the order given — the
+    /// fixed WAL refuses to WRITE an out-of-order or duplicate offset, so a file holding one (left by
+    /// pre-fix code) can only be produced directly.
+    private void writeRawWal(byte[]... frames) throws IOException {
+        Files.createDirectories(walFile().getParent());
+        try (var out = Files.newOutputStream(walFile())) {
+            for (var frame : frames) {
+                out.write(frame);
+            }
+        }
+    }
+
+    /// `[u32 payloadLen][u64 offset][u64 timestampMillis][u32 crc32(offset||timestamp||payload)][payload]`.
+    private static byte[] frame(long offset, String text) {
+        var payload = text.getBytes(UTF_8);
+        var timestamp = 1000L + offset;
+        var crcInput = ByteBuffer.allocate(16 + payload.length).putLong(offset).putLong(timestamp).put(payload);
+        var crc = new CRC32();
+
+        crc.update(crcInput.array());
+        return ByteBuffer.allocate(24 + payload.length)
+                         .putInt(payload.length)
+                         .putLong(offset)
+                         .putLong(timestamp)
+                         .putInt((int) crc.getValue())
+                         .put(payload)
+                         .array();
     }
 
     private static byte[] payload(int i) {

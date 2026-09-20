@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -253,13 +254,16 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                    .mapToUnit()
                                    .async();
         }
-
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
+        // #1236: the floor is checked BEFORE the append, so NOT_ENOUGH_REPLICAS means "not in the log";
+        // once appended, a barrier that does not confirm is an unknown outcome, never a failure.
+        return partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
+                               .flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
                                .async()
                                .flatMap(offset -> partitionManager.awaitReplication(streamName,
                                                                                     partition,
                                                                                     offset,
-                                                                                    minSyncReplicas - 1));
+                                                                                    minSyncReplicas - 1)
+                                                                  .mapError(PublishOutcomeUnknown.FACTORY));
     }
 
     /// Non-materialized publish: route to the partition's HRW owner instead of the STREAMING leader. The

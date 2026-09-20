@@ -268,39 +268,47 @@ public final class StreamRoutes implements RouteSource {
     }
 
     /// Package-visible for direct unit coverage of the system-stream-name guard in
-    /// [#createFreshStream] — the entry point a real `POST /streams` request also goes through.
+    /// [#createStreamWithConfig] — the entry point a real `POST /streams` request also goes through.
     Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
         return Option.option(request.name())
                      .toResult(MISSING_STREAM_NAME)
                      .flatMap(name -> createStreamWithConfig(name, request));
     }
 
+    /// The reserved-name refusals run BEFORE the existence check (#1282 review): answering `"exists"`
+    /// for a reserved name would make this route an oracle for which internally provisioned streams
+    /// exist. Order among the refusals is unchanged — the enumerated system streams keep their `405`.
     private Result<StreamCreateResponse> createStreamWithConfig(String name, StreamCreateRequest request) {
+        if (namesSystemStream(name)) {
+            return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
+        }
+
+        return ReservedStreamNames.requireUnreserved(name).flatMap(_ -> createOrReportExisting(name, request));
+    }
+
+    private Result<StreamCreateResponse> createOrReportExisting(String name, StreamCreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
 
         return streamManager().streamInfo(name)
                             .map(existing -> Result.success(new StreamCreateResponse(name,
                                                                                      existing.partitions(),
                                                                                      "exists")))
-                            .or(() -> createFreshStream(name, partitions));
+                            .or(() -> mintStream(name, partitions));
     }
 
     /// [ManagementServer]'s HTTP-path write-gate is pre-auth and reuses the dispatch path's route
     /// canonicalization (condition 1) — a parallel body parser inside the gate would violate that.
     /// `STREAM_CREATE`'s target name is body-carried, not path-carried, so the gate structurally
-    /// cannot see it; this method is the sole call site that ever mints a stream
-    /// ([StreamManager#createStream]), so the guard sits here, first, unconditionally, with no
-    /// branch that reaches the mint below it — the handler-level equivalent of the gate's pre-auth
-    /// placement, honest about running post-auth since body-carried identity leaves no earlier hook.
-    /// This closes the narrow window `createStreamWithConfig`'s idempotent "already exists" check
-    /// does not: a create racing ahead of [SystemStreamBootstrap]'s registration at cluster startup
-    /// would otherwise find `streamManager().streamInfo(name)` empty and mint a caller-controlled
-    /// config under a reserved name.
-    private Result<StreamCreateResponse> createFreshStream(String name, int partitions) {
-        if (namesSystemStream(name)) {
-            return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
-        }
-
+    /// cannot see it; [#createStreamWithConfig] is the sole path to this method, the only call site that
+    /// ever mints a stream ([StreamManager#createStream]), so the guards sit there, first,
+    /// unconditionally, with no branch that reaches the mint below them — the handler-level equivalent of
+    /// the gate's pre-auth placement, honest about running post-auth since body-carried identity leaves no
+    /// earlier hook. They close the window a create racing ahead of [SystemStreamBootstrap]'s registration
+    /// at cluster startup would otherwise use to mint a caller-controlled config under a reserved name.
+    /// #1282 widens them past the enumerated system streams to every reserved kind prefix
+    /// ([ReservedStreamNames]) — `system:`, `topic:`, `entity:` streams are minted only by internal
+    /// provisioning.
+    private Result<StreamCreateResponse> mintStream(String name, int partitions) {
         var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
 
         return streamManager().createStream(config)
@@ -331,19 +339,24 @@ public final class StreamRoutes implements RouteSource {
     /// `replicas` / `minSyncReplicas` durability knobs) lands in applied KV state at slice activation but
     /// may not yet be in the manager's local materialized map when a first publish races in. Prefer that
     /// committed config so the auto-create preserves RF; fall back to the management default only for a
-    /// genuinely management-only stream that has no committed entry.
+    /// genuinely management-only stream that has no committed entry — and never under a reserved kind
+    /// prefix (#1282): a committed config for such a name is the real resource's and is adopted, but a
+    /// fabricated default would plant an operator-side config the real resource later finds in place.
     private Result<Unit> materializeAbsentStream(String name) {
-        var config = nodeSupplier.get()
-                                 .kvStore()
-                                 .getTyped(StreamConfigKey.streamConfigKey(name),
-                                           StreamConfigValue.class)
-                                 .map(StreamConfigValue::config)
-                                 .or(() -> StreamConfig.streamConfig(name,
-                                                                     DEFAULT_PARTITIONS,
-                                                                     MANAGEMENT_API_RETENTION,
-                                                                     "latest"));
+        return nodeSupplier.get()
+                           .kvStore()
+                           .getTyped(StreamConfigKey.streamConfigKey(name),
+                                     StreamConfigValue.class)
+                           .map(value -> Result.success(value.config()))
+                           .or(() -> managementDefaultConfig(name))
+                           .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config)));
+    }
 
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
+    private static Result<StreamConfig> managementDefaultConfig(String name) {
+        return ReservedStreamNames.requireUnreserved(name).map(unreserved -> StreamConfig.streamConfig(unreserved,
+                                                                                                       DEFAULT_PARTITIONS,
+                                                                                                       MANAGEMENT_API_RETENTION,
+                                                                                                       "latest"));
     }
 
     private Result<StreamConsumersResponse> streamConsumers(String name) {
@@ -351,7 +364,7 @@ public final class StreamRoutes implements RouteSource {
                             .map(partitions -> new StreamConsumersResponse(name, partitions));
     }
 
-    /// #742 — same guard as [#createFreshStream], for the same reason: the target stream name is
+    /// #742 — same guard as [#createStreamWithConfig], for the same reason: the target stream name is
     /// body-carried, so [ManagementServer]'s pre-auth write-gate cannot see it, and the coordinator's
     /// `joinGroup`/`leaveGroup` both `rebalance` — real, replicated KV assignment records under the
     /// named stream. First statement, unconditionally, before any coordinator call. Package-visible

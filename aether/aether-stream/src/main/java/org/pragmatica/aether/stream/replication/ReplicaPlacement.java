@@ -109,8 +109,8 @@ public final class ReplicaPlacement {
     /// publish awaits `min-sync-replicas − 1` DISTINCT NON-SELF acks) and never changes RF. The owner
     /// is index 0 of the owner-first HRW set, so a `replicas`-sized set holds the owner PLUS
     /// `replicas − 1` peers. When `min-sync-replicas` exceeds the peers a too-small cluster can
-    /// provision, the publish fails CLEARLY via [ReplicationManager#awaitReplication] with
-    /// `NOT_ENOUGH_REPLICAS` rather than silently under-provisioning.
+    /// provision, the publish fails CLEARLY via [ReplicationManager#ensureReplicaFloor] with
+    /// `NOT_ENOUGH_REPLICAS`, before anything is appended, rather than silently under-provisioning (#1236).
     public static int replicationFactor(int requested, int clusterSize) {
         if (clusterSize <= 0) {
             return 0;
