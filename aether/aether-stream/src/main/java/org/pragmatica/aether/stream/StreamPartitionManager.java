@@ -1589,9 +1589,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                 partition)));
     }
 
-    /// #1262 fail-closed guard, applied by every write entry point (`PartitionedStreamAccess`,
-    /// `StreamWriteRouter`) and by the owner-side {@link #publishForwarded}: a stream whose declared
-    /// consistency no write path can honour is refused rather than appended as EVENTUAL.
+    /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind
+    /// `DefaultStreamPublisher`, `PartitionedStreamAccess` and the management publish (#1263) — and by the
+    /// owner-side {@link #publishForwarded}: a stream whose declared consistency no write path can honour is
+    /// refused rather than appended as EVENTUAL. The entity-log substrate's direct {@link #publishLocal} is
+    /// outside it (EVENTUAL by construction).
     ///   - `STRONG` promises consensus-ordered acknowledgement, and `ConsensusPublishPath` has no production
     ///     caller → [StreamError.General#CONSENSUS_PATH_UNAVAILABLE], the cause `DefaultStreamPublisher`
     ///     already used.
