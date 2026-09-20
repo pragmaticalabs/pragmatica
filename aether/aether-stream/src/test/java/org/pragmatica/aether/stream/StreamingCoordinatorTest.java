@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
@@ -65,7 +66,9 @@ class StreamingCoordinatorTest {
         segmentSink = StorageSegmentSink.storageSegmentSink(storage, segmentIndex);
         recoveredEvents = new CopyOnWriteArrayList<>();
         eventCounter = new AtomicLong(0);
-        failoverHandler = GovernorFailoverHandler.governorFailoverHandler(ReplicaRegistry.replicaRegistry(), recordingRecovery());
+        failoverHandler = GovernorFailoverHandler.governorFailoverHandler(ReplicaRegistry.replicaRegistry(),
+                                                                          recordingRecovery(),
+                                                                          ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
     }
 
     @Nested
