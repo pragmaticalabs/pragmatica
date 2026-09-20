@@ -24,6 +24,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -87,7 +88,7 @@ class StreamWritePathContractTest {
 
         @BeforeEach
         void setUp() {
-            partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {}, recordingReplication());
+            partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> Result.unitResult(), recordingReplication());
             partitionManager.createStream(config(STREAM, ConsistencyMode.EVENTUAL)).onFailureRun(Assertions::fail);
             partitionManager.createStream(config(STRONG_STREAM, ConsistencyMode.STRONG)).onFailureRun(Assertions::fail);
             partitionManager.createStream(config(UNKNOWN_STREAM, ConsistencyMode.UNKNOWN)).onFailureRun(Assertions::fail);
@@ -218,7 +219,7 @@ class StreamWritePathContractTest {
     class UnknownSelf {
         @BeforeEach
         void setUp() {
-            partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {}, recordingReplication());
+            partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> Result.unitResult(), recordingReplication());
             partitionManager.createStream(config(STREAM, ConsistencyMode.EVENTUAL)).onFailureRun(Assertions::fail);
             forwardClient = new RecordingForwardClient();
         }

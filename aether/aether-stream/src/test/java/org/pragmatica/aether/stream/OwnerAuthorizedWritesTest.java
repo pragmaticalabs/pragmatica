@@ -274,8 +274,7 @@ class OwnerAuthorizedWritesTest {
                                                           Option.some(forwardClient),
                                                           SELF,
                                                           Option.<Fn0<Option<NodeId>>> none(),
-                                                          Option.some(ownerResolver),
-                                                          MIN_SYNC_TWO)
+                                                          Option.some(ownerResolver))
                                    .publish("e0".getBytes())
                                    .await()
                                    .onFailure(cause -> Assertions.fail(cause.message()))
