@@ -83,7 +83,10 @@ import org.slf4j.LoggerFactory;
 /// reconcile-tick window during an ownership or placement change, in which the old and new assignee
 /// may both deliver; and from resuming at the last checkpoint (≤1000 events or ≤1s of progress — 500ms for durable-topic groups)
 /// rather than the last delivered offset after an UNGRACEFUL move — a graceful detach flushes the
-/// exact cursor. Replay after an ungraceful move is bounded by that checkpoint cadence. This is NOT
+/// exact cursor. Replay after an ungraceful move is bounded by that checkpoint cadence, and the cadence
+/// is DELIVERY-driven, not timer-driven: `ConsumerRuntimeState.checkpointIfNeeded` runs only from
+/// `advanceCursor`, so the time half is evaluated when the NEXT delivery lands. A lone trailing event
+/// stays un-checkpointed until then, and a move in that window replays it (#1385). This is NOT
 /// effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment
 /// views can both deliver and both write the cursor, last write winning.
 ///

@@ -28,5 +28,9 @@
   satisfy the old `>= 1`. A run in which no warm-up can be placed in the log before the attach skips
   the arm with the readings in the message, since nothing in that run can speak about the backlog
   read. The deterministic form of this arm is #739.
+- `StreamConsumerManager`'s guarantee doc said replay after an ungraceful move is bounded by the
+  checkpoint cadence "≤1s of progress — 500ms for durable-topic groups"; the cadence is evaluated only
+  when a delivery advances the cursor, so a lone trailing event is not checkpointed until the next
+  delivery and a move in that window replays it (#1385). The line now says so.
 - Publish outcomes (#1236) and pre-durability visibility (#1235) have no arm. This harness cannot
   drive either without losing quorum or failing over the owner. [unverified: no arm reaches them]
