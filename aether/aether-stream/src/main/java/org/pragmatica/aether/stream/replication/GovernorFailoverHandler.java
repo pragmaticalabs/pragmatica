@@ -25,9 +25,13 @@ public sealed interface GovernorFailoverHandler {
                                  SegmentIndex segmentIndex,
                                  SegmentReader segmentReader);
 
+    /// `durability` is the replica WAL barrier a replay run commits through once it has applied its last
+    /// event (#1244 × #1235); production wires `StreamPartitionManager::syncReplicated`, WAL-less callers
+    /// pass [ReplicationReceiveHandler#NO_DURABILITY_BARRIER].
     static GovernorFailoverHandler governorFailoverHandler(ReplicaRegistry registry,
-                                                           StreamPartitionRecovery partitionRecovery) {
-        return new DefaultGovernorFailoverHandler(registry, partitionRecovery);
+                                                           StreamPartitionRecovery partitionRecovery,
+                                                           ReplicationReceiveHandler.ReplicaDurability durability) {
+        return new DefaultGovernorFailoverHandler(registry, partitionRecovery, durability);
     }
 
     record unused() implements GovernorFailoverHandler {
@@ -42,16 +46,27 @@ public sealed interface GovernorFailoverHandler {
     }
 }
 
+/// #1244 backfill-commit ruling, applied to this failover path on 2026-09-20 (CTO ruling, #1235 × #1244):
+/// replica WAL frames carry no per-record fsync and a WAL-backed record becomes visible on this replica
+/// only at the barrier, so a replay run commits through the replica WAL barrier
+/// (`StreamPartitionManager::syncReplicated`) ONCE, after its last `appendRecoveredEvent` — one fsync per
+/// run, and the replayed records are visible here when the run completes instead of when the next live
+/// batch's barrier happens to cover them. The segments it reads are already durable elsewhere; the barrier
+/// is what makes them durable and visible HERE.
 final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
     private static final Logger log = LoggerFactory.getLogger(DefaultGovernorFailoverHandler.class);
     private static final int MAX_EVENTS_PER_SEGMENT_READ = 10_000;
 
     private final ReplicaRegistry registry;
     private final StreamPartitionRecovery partitionRecovery;
+    private final ReplicationReceiveHandler.ReplicaDurability durability;
 
-    DefaultGovernorFailoverHandler(ReplicaRegistry registry, StreamPartitionRecovery partitionRecovery) {
+    DefaultGovernorFailoverHandler(ReplicaRegistry registry,
+                                   StreamPartitionRecovery partitionRecovery,
+                                   ReplicationReceiveHandler.ReplicaDurability durability) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
+        this.durability = durability;
     }
 
     @Override
@@ -113,7 +128,7 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
 
         return segmentReader.readEvents(streamName, partition, fromOffset, MAX_EVENTS_PER_SEGMENT_READ)
                             .map(events -> applyEvents(streamName, partition, events))
-                            .mapToUnit();
+                            .flatMap(_ -> durability.sync(streamName, partition));
     }
 
     private long applyEvents(String streamName, int partition, List<RawEvent> events) {

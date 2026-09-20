@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.nio.file.Path;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.node.ProvisioningContextCaptureFactory.CapturedProvisioningContext;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.ProvisioningContext;
@@ -51,6 +53,9 @@ class AetherNodeContentStorageWiringBootTest {
 
     private AetherNode node;
 
+    @TempDir
+    Path tempDir;
+
     @AfterEach
     void tearDown() {
         if (node != null) {
@@ -74,7 +79,8 @@ class AetherNodeContentStorageWiringBootTest {
 
         node = AetherNode.aetherNode(AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
                                                                                        Option.none(),
-                                                                                       configProvider),
+                                                                                       configProvider,
+                                                                                       tempDir),
                                      () -> {})
                           .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                           .unwrap();

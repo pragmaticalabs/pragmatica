@@ -14,7 +14,11 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig events, double hysteresisMargin) {
+public record AlertConfig(boolean enabled,
+                          WebhookConfig webhook,
+                          EventConfig events,
+                          double hysteresisMargin,
+                          EntityCheckpointLag entityCheckpointLag) {
     /// Default hysteresis margin (#969, #957): a breached threshold clears only once the metric falls
     /// below its clear point, and **the clear point differs by severity** —
     /// `max(critical * (1 - margin), warning)` for a CRITICAL alert, and plain `warning * (1 - margin)`
@@ -40,11 +44,20 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
                                                            EventConfig.eventConfig(),
                                                            DEFAULT_HYSTERESIS_MARGIN).unwrap();
 
+    /// The default entity checkpoint-lag thresholds ([EntityCheckpointLag#entityCheckpointLag()]).
     public static Result<AlertConfig> alertConfig(boolean enabled,
                                                   WebhookConfig webhook,
                                                   EventConfig events,
                                                   double hysteresisMargin) {
-        return success(new AlertConfig(enabled, webhook, events, hysteresisMargin));
+        return alertConfig(enabled, webhook, events, hysteresisMargin, EntityCheckpointLag.entityCheckpointLag());
+    }
+
+    public static Result<AlertConfig> alertConfig(boolean enabled,
+                                                  WebhookConfig webhook,
+                                                  EventConfig events,
+                                                  double hysteresisMargin,
+                                                  EntityCheckpointLag entityCheckpointLag) {
+        return success(new AlertConfig(enabled, webhook, events, hysteresisMargin, entityCheckpointLag));
     }
 
     public static AlertConfig alertConfig() {
@@ -66,7 +79,9 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
     /// fire refuses at boot rather than accepting and dropping.
     public Result<AlertConfig> check() {
         return webhook.check()
-                      .flatMap(_ -> checkHysteresisMargin());
+                      .flatMap(_ -> checkHysteresisMargin())
+                      .flatMap(_ -> entityCheckpointLag.check())
+                      .map(_ -> this);
     }
 
     /// A margin of 0 disables damping (clear point == breach point, the pre-#969 behaviour) and is
@@ -119,6 +134,46 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
             return ! enabled || timeout.millis() >= 100
                    ? success(this)
                    : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.timeout must be >= 100ms").result();
+        }
+    }
+
+    /// Durable-entity checkpoint lag alert thresholds (#1302), in log RECORDS: the metric
+    /// `entity.checkpoint.lag.max` is a node's largest per-(keyspace, partition) distance between the
+    /// log head and the last committed checkpoint. Config keys `alerts.entity_checkpoint_lag_warning`
+    /// and `alerts.entity_checkpoint_lag_critical`; seeded as the metric's threshold only when the
+    /// cluster holds none, so an operator's `/api/v1/thresholds` value always wins.
+    ///
+    /// **Why 5,000 / 10,000.** An entity partition's ring holds 10,000 records
+    /// (`StreamEntityLogSubstrate.ENTITY_RING_CAPACITY`). A recovery whose checkpoint lags the head by
+    /// less than that replays from the ring; past it, the replay must read sealed storage (#1240) and
+    /// recovery slows. CRITICAL therefore sits AT the ring capacity — recovery has left the ring — and
+    /// WARNING at half of it, the headroom to act before it does. At the 30s checkpoint interval a
+    /// healthy partition sustaining more than ~166 writes/s also reaches WARNING between ticks; that is
+    /// the same recovery-cost signal, not a false alarm, and the keys exist for workloads where it is
+    /// expected.
+    public record EntityCheckpointLag(double warning, double critical) {
+        public static final double DEFAULT_WARNING = 5_000;
+        public static final double DEFAULT_CRITICAL = 10_000;
+        private static final EntityCheckpointLag DEFAULT = new EntityCheckpointLag(DEFAULT_WARNING, DEFAULT_CRITICAL);
+
+        public static EntityCheckpointLag entityCheckpointLag() {
+            return DEFAULT;
+        }
+
+        /// Total, like [AlertConfig#alertConfig]: validation runs at node boot through [AlertConfig#check],
+        /// so a loader building this stays total and a bad value refuses at boot instead of here.
+        public static EntityCheckpointLag entityCheckpointLag(double warning, double critical) {
+            return new EntityCheckpointLag(warning, critical);
+        }
+
+        /// Both positive, and CRITICAL not below WARNING — an inverted ladder would raise CRITICAL
+        /// for a lag that never reached WARNING. Refused rather than corrected, like the margin.
+        public Result<EntityCheckpointLag> check() {
+            return warning > 0 && critical >= warning
+                   ? success(this)
+                   : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("alerts.entity_checkpoint_lag_warning must be > 0 and"
+                                                                           + " alerts.entity_checkpoint_lag_critical >= it, got " + warning
+                                                                           + " / " + critical).result();
         }
     }
 

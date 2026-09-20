@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
@@ -143,7 +145,23 @@ public final class StreamApiRoutes implements RouteSource {
 
     public record PublishResponse(String address, long offset) {}
 
-    public record PublishBatchResponse(String address, int published, List<Long> offsets) {}
+    /// #1342: a batch is not atomic, so the response carries one outcome per request item, in request order,
+    /// and the counts are derived from them. `published` items are durably in the log at `offset`; an
+    /// `OUTCOME_UNKNOWN` item was refused or timed out AFTER it may have been appended (#1236) — retrying it can
+    /// duplicate; a `NOT_ATTEMPTED` item was rejected before any write and is safe to retry. The former
+    /// `Result.allOf` fold reported one failure and discarded the offsets that DID land.
+    public record PublishBatchResponse(String address,
+                                       int published,
+                                       int notPublished,
+                                       List<PublishItemOutcome> outcomes) {}
+
+    public record PublishItemOutcome(int index, PublishItemStatus status, Option<Long> offset, Option<String> cause) {}
+
+    public enum PublishItemStatus {
+        PUBLISHED,
+        OUTCOME_UNKNOWN,
+        NOT_ATTEMPTED
+    }
 
     public record GroupCreateRequest(String groupId, String initialPosition) {}
 
@@ -625,28 +643,82 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                                            offset)));
     }
 
-    private Promise<PublishBatchResponse> publishBatch(String namespace,
-                                                       String stream,
-                                                       String version,
-                                                       String publishBatchLiteral,
-                                                       PublishRequest[] requests) {
+    /// Package-visible for direct unit coverage, like [#publishEvent].
+    Promise<PublishBatchResponse> publishBatch(String namespace,
+                                               String stream,
+                                               String version,
+                                               String publishBatchLiteral,
+                                               PublishRequest[] requests) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
                               .async()
                               .flatMap(addr -> publishMany(addr, requests));
     }
 
+    /// Every item is written concurrently and reports its own outcome (#1342); a failed item never hides the
+    /// offsets of the items that landed. The item promises never fail, so `allOf` yields one outcome per item.
+    ///
+    /// The stream is ensured ONCE, before the fan-out (#1282): a STREAM-LEVEL admission failure — a reserved
+    /// name (`400`), an unavailable stream (`409`) — fails the whole batch with its own typed status and writes
+    /// nothing; a per-item `NOT_ATTEMPTED` would erase that refusal. An EMPTY batch publishes nothing and so
+    /// ensures (and creates) nothing. Per item only the PARTITION-level admission remains (CTO ruling,
+    /// #1342 × #1299): out of range → `NOT_ATTEMPTED`; a router refusal → `OUTCOME_UNKNOWN`.
     private Promise<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
-        var perEvent = Arrays.stream(requests).map(req -> publishOne(addr, req)).toList();
-
-        return Promise.allOf(perEvent).flatMap(results -> collectOffsets(addr, results));
+        return requests.length == 0
+               ? publishEach(addr, requests)
+               : ensureThenPublishEach(addr, requests);
     }
 
-    private Promise<PublishBatchResponse> collectOffsets(ResourceAddress addr, List<Result<Long>> results) {
-        return Result.allOf(results)
-                     .map(offsets -> new PublishBatchResponse(addr.asString(),
-                                                              offsets.size(),
-                                                              offsets))
-                     .async();
+    private Promise<PublishBatchResponse> ensureThenPublishEach(ResourceAddress addr, PublishRequest[] requests) {
+        return ensureStreamExists(StreamManager.engineKey(addr)).async()
+                                 .flatMap(_ -> publishEach(addr, requests));
+    }
+
+    private Promise<PublishBatchResponse> publishEach(ResourceAddress addr, PublishRequest[] requests) {
+        var perItem = Arrays.stream(requests).map(req -> publishOneOutcome(addr, req)).toList();
+
+        return Promise.allOf(perItem).map(outcomes -> batchResponse(addr, outcomes));
+    }
+
+    private static PublishBatchResponse batchResponse(ResourceAddress addr, List<Result<PublishOutcome>> outcomes) {
+        var items = new ArrayList<PublishItemOutcome>(outcomes.size());
+
+        for (var index = 0; index < outcomes.size(); index++) {
+            items.add(itemOutcome(index,
+                                  outcomes.get(index).fold(PublishOutcome.OutcomeUnknown::new, outcome -> outcome)));
+        }
+
+        var published = (int) items.stream().filter(item -> item.status() == PublishItemStatus.PUBLISHED).count();
+
+        return new PublishBatchResponse(addr.asString(), published, items.size() - published, items);
+    }
+
+    private static PublishItemOutcome itemOutcome(int index, PublishOutcome outcome) {
+        return switch (outcome) {
+            case PublishOutcome.Published(var offset) -> new PublishItemOutcome(index,
+                                                                                PublishItemStatus.PUBLISHED,
+                                                                                Option.some(offset),
+                                                                                Option.none());
+            case PublishOutcome.OutcomeUnknown(var cause) -> new PublishItemOutcome(index,
+                                                                                    PublishItemStatus.OUTCOME_UNKNOWN,
+                                                                                    Option.none(),
+                                                                                    Option.some(cause.message()));
+            case PublishOutcome.NotAttempted(var cause) -> new PublishItemOutcome(index,
+                                                                                  PublishItemStatus.NOT_ATTEMPTED,
+                                                                                  Option.none(),
+                                                                                  Option.some(cause.message()));
+        };
+    }
+
+    /// The batch form of [#publishOne]. The stream was ensured by [#publishMany] before the fan-out, so the only
+    /// per-item admission left is the partition: an out-of-range item never reached the write and is
+    /// [PublishOutcome.NotAttempted]; an item the router refused is [PublishOutcome.OutcomeUnknown], because
+    /// the refusal may follow the append (#1236).
+    private Promise<PublishOutcome> publishOneOutcome(ResourceAddress addr, PublishRequest request) {
+        var streamName = StreamManager.engineKey(addr);
+        var partition = Option.option(request.partition()).or(DEFAULT_PUBLISH_PARTITION);
+
+        return validatePartition(streamName, partition).fold(cause -> Promise.success(new PublishOutcome.NotAttempted(cause)),
+                                                             _ -> write(streamName, partition, request).fold(result -> Promise.success(PublishOutcome.attempted(result))));
     }
 
     /// Owner-routed publish to an explicit `partition` (#524: default 0 — unchanged from the earlier
@@ -660,15 +732,23 @@ public final class StreamApiRoutes implements RouteSource {
     /// materializes a stream under a different key than the one STREAM_CREATE minted.
     private Promise<Long> publishOne(ResourceAddress addr, PublishRequest request) {
         var streamName = StreamManager.engineKey(addr);
-        var payload = decodePayload(request.data());
         var partition = Option.option(request.partition()).or(DEFAULT_PUBLISH_PARTITION);
 
-        return ensureStreamExists(streamName).async()
-                                 .flatMap(_ -> validatePartition(streamName, partition).async())
-                                 .flatMap(_ -> streamWriteRouter().publish(streamName,
-                                                                           partition,
-                                                                           payload,
-                                                                           System.currentTimeMillis()));
+        return admit(streamName, partition).async()
+                    .flatMap(_ -> write(streamName, partition, request));
+    }
+
+    /// The pre-write admission checks, separated from the write so the batch form can tell "rejected before
+    /// writing" from "refused after possibly writing" (#1342).
+    private Result<Unit> admit(String streamName, int partition) {
+        return ensureStreamExists(streamName).flatMap(_ -> validatePartition(streamName, partition));
+    }
+
+    private Promise<Long> write(String streamName, int partition, PublishRequest request) {
+        return streamWriteRouter().publish(streamName,
+                                           partition,
+                                           decodePayload(request.data()),
+                                           System.currentTimeMillis());
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the
@@ -716,17 +796,28 @@ public final class StreamApiRoutes implements RouteSource {
     /// call path entirely. So it must never be swallowed: on success `streams` is guaranteed to hold
     /// the entry (making [#validatePartition]'s read safe), and on failure this reports a typed 409
     /// naming the stream and cause instead of silently proceeding with an unknown partition count.
+    ///
+    /// #1282: the management default is never fabricated under a reserved kind prefix — a `topic`/`entity`
+    /// namespace address yields a `topic:`/`entity:` engine key, which only internal provisioning may
+    /// mint. A committed config for such a name is the real resource's and is still adopted.
     private Result<Unit> ensureStreamExists(String streamName) {
-        var config = nodeSupplier.get()
-                                 .kvStore()
-                                 .getTyped(StreamConfigKey.streamConfigKey(streamName),
-                                           StreamConfigValue.class)
-                                 .map(StreamConfigValue::config)
-                                 .or(() -> StreamConfig.streamConfig(streamName,
-                                                                     DEFAULT_PARTITIONS,
-                                                                     MANAGEMENT_API_RETENTION,
-                                                                     "latest"));
+        return nodeSupplier.get()
+                           .kvStore()
+                           .getTyped(StreamConfigKey.streamConfigKey(streamName),
+                                     StreamConfigValue.class)
+                           .map(value -> Result.success(value.config()))
+                           .or(() -> managementDefaultConfig(streamName))
+                           .flatMap(config -> materializeForPublish(streamName, config));
+    }
 
+    private static Result<StreamConfig> managementDefaultConfig(String streamName) {
+        return ReservedStreamNames.requireUnreserved(streamName).map(unreserved -> StreamConfig.streamConfig(unreserved,
+                                                                                                             DEFAULT_PARTITIONS,
+                                                                                                             MANAGEMENT_API_RETENTION,
+                                                                                                             "latest"));
+    }
+
+    private Result<Unit> materializeForPublish(String streamName, StreamConfig config) {
         return streamManager().ensureStreamMaterialized(config)
                             .mapError(cause -> new ManagementServerError.StreamUnavailable(streamName,
                                                                                            cause.message()));
@@ -748,11 +839,22 @@ public final class StreamApiRoutes implements RouteSource {
     /// Idempotent on an already-registered address (mirrors [StreamRoutes#createStreamWithConfig]'s
     /// check-exists-first shape): a repeat `create` for the same address reports `"exists"` rather
     /// than re-attempting registration and hitting [StreamRegistry.StreamRegistryError.General#ALREADY_REGISTERED].
+    ///
+    /// #1282: the reserved-kind refusal runs BEFORE the catalog lookup, so an existing reserved address is
+    /// refused rather than reported `"exists"` — no existence oracle for internally provisioned streams.
     private Result<CreateResponse> createAtAddress(ResourceAddress addr, CreateRequest request) {
+        return ReservedStreamNames.requireUnreserved(StreamManager.engineKey(addr)).flatMap(engineKey -> createOrReportExisting(addr,
+                                                                                                                                engineKey,
+                                                                                                                                request));
+    }
+
+    private Result<CreateResponse> createOrReportExisting(ResourceAddress addr,
+                                                          String engineKey,
+                                                          CreateRequest request) {
         return namespacesService.lookup(addr)
                                 .map(_ -> Result.success(new CreateResponse(addr.asString(),
                                                                             "exists")))
-                                .or(() -> materializeAndRegister(addr, request));
+                                .or(() -> materializeAndRegister(addr, engineKey, request));
     }
 
     /// Registers a PERMANENT catalog reference ([StreamRegistryEntry.RegisteredByKind#OPERATOR]): no
@@ -762,17 +864,21 @@ public final class StreamApiRoutes implements RouteSource {
     /// which is the ASYNC publish-auto-create path used by [#ensureStreamExists]), tolerating its
     /// `STREAM_ALREADY_EXISTS` duplicate-create sentinel via [StreamCreateOutcome] like every other
     /// idempotent caller of that method.
-    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr, CreateRequest request) {
-        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
-        var config = StreamConfig.streamConfig(StreamManager.engineKey(addr),
-                                               partitions,
-                                               MANAGEMENT_API_RETENTION,
-                                               "latest");
+    ///
+    /// Reached only through [#createAtAddress], whose reserved-kind refusal has already run on `engineKey`.
+    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr,
+                                                          String engineKey,
+                                                          CreateRequest request) {
+        return mintOperatorStream(engineKey, request).flatMap(_ -> registerCatalogEntry(addr))
+                                 .map(_ -> new CreateResponse(addr.asString(),
+                                                              "created"));
+    }
 
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config))
-                                  .flatMap(_ -> registerCatalogEntry(addr))
-                                  .map(_ -> new CreateResponse(addr.asString(),
-                                                               "created"));
+    private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
+        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
+        var config = StreamConfig.streamConfig(engineKey, partitions, MANAGEMENT_API_RETENTION, "latest");
+
+        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
     }
 
     private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {

@@ -78,6 +78,20 @@ class ForwardCatchupTransportTest {
         assertThat(source.reads().get()).isEqualTo(1);
     }
 
+    /// #1235: catch-up pages are REPLICATION reads, answered up to the source's appended head. A plain
+    /// read would be bounded by the source's visible position and could starve the very replica whose
+    /// ack makes the missing events visible.
+    @Test
+    void requestCatchup_pagesThroughTheReplicationRead_neverTheConsumerRead() {
+        var source = new FakeForwardSource(eventsFrom(0, 3));
+        var transport = forwardCatchupTransport(source, 2);
+
+        transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+
+        assertThat(source.catchupReads().get()).isEqualTo(2);
+        assertThat(source.reads().get()).isEqualTo(2);
+    }
+
     @Test
     void requestCatchup_sourceUnreachable_failsWithoutCorruption() {
         var transport = forwardCatchupTransport(new UnreachableForwardSource(), 4);
@@ -115,6 +129,7 @@ class ForwardCatchupTransportTest {
     private static final class FakeForwardSource implements StreamForwardClient {
         private final List<RawEventDto> events;
         private final AtomicInteger reads = new AtomicInteger(0);
+        private final AtomicInteger catchupReads = new AtomicInteger(0);
 
         private FakeForwardSource(List<RawEventDto> events) {
             this.events = List.copyOf(events);
@@ -122,6 +137,19 @@ class ForwardCatchupTransportTest {
 
         AtomicInteger reads() {
             return reads;
+        }
+
+        AtomicInteger catchupReads() {
+            return catchupReads;
+        }
+
+        @Override public Promise<ReadForwardResult> readRemoteCatchup(NodeId sourceId,
+                                                                      String streamName,
+                                                                      int partition,
+                                                                      long fromOffset,
+                                                                      int maxEvents) {
+            catchupReads.incrementAndGet();
+            return readRemote(sourceId, streamName, partition, fromOffset, maxEvents);
         }
 
         @Override public Promise<Long> publishRemote(NodeId governorId,

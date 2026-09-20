@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 
 
 /// Where a consumer's committed offset lives.
@@ -20,18 +20,32 @@ import org.pragmatica.lang.Unit;
 /// `fetch` returning [Option#empty] means "no cursor recorded", which callers read as
 /// create-from-earliest (offset 0), NOT as "start at the head".
 public interface ConsumerCursorStore {
-    Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset);
+    Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset);
     Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition);
 
-    /// #654 round 2: a store composed of sub-stages (e.g. the node's cluster-aware store, which
-    /// chains a consensus checkpoint publish after the local commit) may recover an inner stage's
-    /// failure rather than fail `commit(...)` itself, per its own documented rule for what a
-    /// sub-stage failure is allowed to do to the outer result. When it does, it reports the detail
-    /// here so the runtime still counts and surfaces the failure even though `commit(...)`'s Promise
-    /// settled successfully. The runtime reads this immediately after `commit(...)` resolves — it
-    /// reflects only the most recent attempt for this key, not an accumulating log. A store with no
-    /// such sub-stages (e.g. the plain local store) always returns [Option#empty].
-    default Option<String> lastRecoveredFailure(String consumerGroup, String streamName, int partition) {
-        return Option.empty();
+    /// #1239: what a SUCCESSFUL `commit(...)` actually persisted, carried on that commit's own promise.
+    /// A store composed of stages (the node's cluster-aware store chains a consensus checkpoint after the
+    /// local write) may let a later stage fail without failing the commit; the outcome says so, for THIS
+    /// commit only. It replaces a per-key side channel (`lastRecoveredFailure`) that overlapping commits
+    /// for one key could read for each other — reporting one commit's cause against another, or losing
+    /// it when the other cleared the entry. A failed `commit(...)` promise still means the first (local)
+    /// stage failed.
+    sealed interface CommitOutcome {
+        /// Every stage this store has persisted the offset; for a single-stage store, its one write.
+        record Persisted() implements CommitOutcome {}
+
+        /// The local write succeeded and a later stage did not; `cause` is that stage's failure. The
+        /// consumer runtime counts it and retries the periodic checkpoint until it persists.
+        record LocalOnly(Cause cause) implements CommitOutcome {}
+
+        CommitOutcome PERSISTED = new Persisted();
+
+        static CommitOutcome persisted() {
+            return PERSISTED;
+        }
+
+        static CommitOutcome localOnly(Cause cause) {
+            return new LocalOnly(cause);
+        }
     }
 }

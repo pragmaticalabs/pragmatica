@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
@@ -61,7 +62,6 @@ class DefaultStreamPublisherForwardRetryTest {
                                                       Option.<Function<byte[], Object>> none(),
                                                       ConsistencyMode.EVENTUAL,
                                                       Option.none(),
-                                                      0,
                                                       Option.some(forwardClient),
                                                       Option.<Fn0<Option<NodeId>>> none(),
                                                       Option.some(ownerResolver),
@@ -90,6 +90,21 @@ class DefaultStreamPublisherForwardRetryTest {
 
         publisher(forwardClient).publish("e0".getBytes()).await().onSuccessRun(Assertions::fail).onFailure(cause -> assertThat(cause.message()).contains("Remote publish retryable"));
         assertThat(forwardClient.publishCalls).isEqualTo(3);
+    }
+
+    /// #1236: an outcome-unknown forward means the owner may already have appended. Re-sending it would
+    /// write a duplicate under the same bytes but a new offset, so the forward layer must NOT retry it —
+    /// only `RemotePublishRetryable` (the owner never appended) is retried.
+    @Test
+    void forwardToOwner_doesNotRetry_whenOwnerReportsOutcomeUnknown() {
+        var forwardClient = ScriptedForwardClient.of(outcomeUnknown(), success());
+
+        publisher(forwardClient).publish("e0".getBytes()).await().onSuccessRun(Assertions::fail).onFailure(cause -> assertThat(cause).isInstanceOf(PublishOutcomeUnknown.class));
+        assertThat(forwardClient.publishCalls).isEqualTo(1);
+    }
+
+    private static Supplier<Promise<Long>> outcomeUnknown() {
+        return () -> PublishOutcomeUnknown.FACTORY.apply(new StreamForwardError.RemotePublishFailed("acks timed out")).promise();
     }
 
     private static Supplier<Promise<Long>> retryable() {
