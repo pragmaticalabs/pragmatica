@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.nio.file.Path;
+
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
@@ -11,11 +13,11 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface StreamError extends Cause {
-    /// `General` implements {@link ResourceCapacityExhausted} so the ONE capacity-class constant —
-    /// `STREAM_MEMORY_EXCEEDED` — is classified TRANSIENT by the slice-loading / resource-provisioning
-    /// path (retry, then `DeploymentFailed` after MAX_RETRIES; spec §6 / decision #7). Every other
-    /// constant overrides the marker predicate to false, so only off-heap budget exhaustion is
-    /// retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
+    /// `General` implements {@link ResourceCapacityExhausted} so the capacity-class constants —
+    /// `STREAM_MEMORY_EXCEEDED`, and `SEALING_BEHIND` since #1234 — are classified TRANSIENT by the
+    /// slice-loading / resource-provisioning path (retry, then `DeploymentFailed` after MAX_RETRIES; spec
+    /// §6 / decision #7). Every other constant overrides the marker predicate to false, so only capacity
+    /// shortages are retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
     /// preserved — `cause == STREAM_MEMORY_EXCEEDED` checks elsewhere are unaffected (spec §8).
     enum General implements StreamError, ResourceCapacityExhausted {
         BUFFER_CLOSED("Ring buffer is closed"),
@@ -28,10 +30,14 @@ public sealed interface StreamError extends Cause {
         CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed"),
         STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded"),
         CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream"),
+        UNREADABLE_CONSISTENCY_MODE("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
+                                   + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG"),
         BUFFER_FULL("Ring buffer is full, STRONG consistency prevents eviction"),
+        EVENT_DROPPED("Event dropped: larger than the ring's allocation, and the ring cannot grow"),
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
         STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
-        PARTITION_NOT_LOCAL("Stream partition is not owned by this node");
+        PARTITION_NOT_LOCAL("Stream partition is not owned by this node"),
+        SEALING_BEHIND("Pending-seal cap reached on a partition with no WAL: storage has not accepted enough sealed segments for the ring to hand over more; append refused until sealing catches up");
         private final String message;
         General(String message) {
             this.message = message;
@@ -40,11 +46,14 @@ public sealed interface StreamError extends Cause {
         public String message() {
             return message;
         }
-        /// Only `STREAM_MEMORY_EXCEEDED` is a transient capacity shortage (the pool may clear as other
-        /// streams are destroyed / right-sized); every other constant is a non-capacity error.
+        /// `STREAM_MEMORY_EXCEEDED` (the pool may clear as other streams are destroyed / right-sized) and
+        /// `SEALING_BEHIND` (a partition WITHOUT a WAL — the non-crash-durable mode, e.g. Ember or Forge with no
+        /// data dir — whose segment sealer's heap copies have reached their cap; it clears as pending seals land,
+        /// #1234) are transient capacity shortages; every other constant is a non-capacity error. With a WAL the
+        /// sealer spills to WAL-backed ranges instead and never raises it.
         @Override
         public boolean transientCapacity() {
-            return this == STREAM_MEMORY_EXCEEDED;
+            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND;
         }
     }
 
@@ -71,6 +80,39 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Ring seed rejected (base=%d, head=%d): requires fresh ring, base>=0".formatted(base, currentHead);
+        }
+    }
+
+    /// WAL recovery refused (#1232): the recovered tail, placed by STORED offset, has a gap between
+    /// records (`foundOffset` above `expectedOffset`) or a duplicate (`foundOffset` below it). A gap
+    /// BEFORE the first record is not refused — it is reclaimed history (#1258 review B2). Recovery never
+    /// renumbers (that silently shifts every later record against replicas, segments and cursors), so the
+    /// STREAM stays unmaterialized on this node when it is being created (a lazy per-partition materialize
+    /// leaves only this partition unbuilt) until an operator acts; the message says how without advising
+    /// anything that could discard a correct tail. #1345 raises it BEFORE any record is appended, so a refused
+    /// recovery hands the sealer nothing. Node shape, traced to the producers: the node stays up; the ERROR
+    /// is logged per ATTEMPT, and attempts are boot hydration, once when this node newly becomes a replica
+    /// (`ReplicaSetController.reconcilePartition` → `onBecameReplica`, only on the registration edge), and
+    /// every publish (`ensureStreamMaterialized` / the owner-append safety valve) — reads never materialize
+    /// and nothing periodic re-attempts (`redriveIncompleteBackfills` backfills only). Each publish fails with
+    /// this cause.
+    record WalReplayMismatch(String streamName, int partition, Path walFile, long expectedOffset, long foundOffset) implements StreamError {
+        @Override
+        public String message() {
+            return ("WAL recovery refused for stream '%s' on this node: partition %d expected offset %d but %s holds %d (%s),"
+                   + " and records are never renumbered, so the stream is not materialized here. Keep the file — do not delete,"
+                   + " truncate or move it: records below offset %d are intact and may be the only copy. Operator action: archive"
+                   + " a copy for diagnosis; the other nodes keep serving the stream when replicas >= 2. Remove the file from"
+                   + " this node only after confirming another replica holds this partition beyond offset %d").formatted(streamName,
+                                                                                                                         partition,
+                                                                                                                         expectedOffset,
+                                                                                                                         walFile,
+                                                                                                                         foundOffset,
+                                                                                                                         foundOffset < expectedOffset
+                                                                                                                         ? "duplicate"
+                                                                                                                         : "gap",
+                                                                                                                         expectedOffset,
+                                                                                                                         foundOffset);
         }
     }
 
@@ -151,6 +193,16 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A ring's index or offset arithmetic produced an out-of-bounds native access (#1247) — a defect in
+    /// the ring, never the closed-arena race. Distinct from {@link General#BUFFER_CLOSED} so a corrupted
+    /// ring is not reported as a benign release; `detail` carries the JDK's bounds message.
+    record RingIndexCorrupted(String streamName, int partition, String detail) implements StreamError {
+        @Override
+        public String message() {
+            return "Ring index corrupted at %s[%d]: %s".formatted(streamName, partition, detail);
+        }
+    }
+
     record EventProcessingFailed(String streamName, int partition, long offset, String reason) implements StreamError {
         @Override
         public String message() {
@@ -206,6 +258,22 @@ public sealed interface StreamError extends Cause {
                                                                                                                                                  partition,
                                                                                                                                                  presented,
                                                                                                                                                  current);
+        }
+    }
+
+    /// Owner-write admission refusal (#1230): an application append reached `publishLocal` on a node that is
+    /// not the COMMITTED owner of `(streamName, partition)` — the committed `StreamPartitionOwnershipValue`
+    /// names `committedOwner`. The epoch fence cannot catch this: a live non-owner stamps the same committed
+    /// epoch the owner does, so without this refusal a replica holding the partition ring became an
+    /// undeclared second writer assigning offsets the owner also assigns. Transient: during a reshuffle the
+    /// HRW-routed target refuses until the leader commits the ownership change, so the forwarder retries and
+    /// a local caller redirects to `committedOwner`.
+    record NotOwnerAppend(String streamName, int partition, NodeId committedOwner) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream append refused for %s[%d]: the committed owner is %s, not this node".formatted(streamName,
+                                                                                                          partition,
+                                                                                                          committedOwner);
         }
     }
 

@@ -184,12 +184,20 @@ public sealed interface ManagementApiResponses {
     /// filter client-side on `details.artifact`]; `statusUrl`'s outcome record is the durable summary,
     /// not a replacement for the timeline. See `aether/docs/reference/management-api.md`
     /// `POST /api/blueprints/deploy`.
+    /// #1336: `rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
+    /// blueprint WITHOUT binding — each by its TOML `field`, the `rule` it failed and the diagnostic.
+    /// Empty when every declaration bound. A slice using a rejected alias fails to load naming that
+    /// alias; this is where the operator learns why, at the point where it is actionable. Rules whose
+    /// violation leaves nothing to bind refuse the publish instead (`422`), so they never appear here.
     record BlueprintResponse(String status,
                              String blueprint,
                              int targetInstances,
                              int activeInstances,
                              int failedInstances,
-                             String statusUrl) {}
+                             String statusUrl,
+                             List<RejectedStreamBinding> rejectedStreamBindings) {}
+
+    record RejectedStreamBinding(String field, String rule, String message) {}
 
     record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 
@@ -862,11 +870,18 @@ public sealed interface ManagementApiResponses {
     /// `committedOffset` is the next offset this consumer will read — one past the last delivered
     /// event. `lastCursorCommitFailure` (#654) is this partition's most recent cursor commit failure
     /// detail while the consumer stays attached, empty when its last commit succeeded — same
-    /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`.
+    /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`. `deadLetterInFlight` /
+    /// `retryInFlight` (#1266): the delivery loop is held behind a dead-letter append or a scheduled
+    /// retry of the head event — a frozen offset with all three `false` is a quiet partition.
+    /// `awaitingCursorFetch`: the consumer has not started at all, because its cursor fetch keeps failing
+    /// and is being retried.
     record DeclarativeConsumerPartition(int partition,
                                         long committedOffset,
                                         boolean stalled,
-                                        String lastCursorCommitFailure) {}
+                                        String lastCursorCommitFailure,
+                                        boolean deadLetterInFlight,
+                                        boolean retryInFlight,
+                                        boolean awaitingCursorFetch) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
@@ -1044,13 +1059,20 @@ public sealed interface ManagementApiResponses {
     ///
     /// A partition this node has never folded is ABSENT from `checkpointedThrough` rather than reported
     /// as `0`: "nothing to say about it" and "checkpointed through offset 0" are different claims.
+    ///
+    /// `checkpointLag` (#1302, #1330) is, per partition this node OWNS, the log head minus the COMMITTED
+    /// checkpoint in consensus KV — how far a recovery would replay. A replica reports none (its fold is a
+    /// read-side cache), and the baseline is never this node's own save record, which a fenced save leaves
+    /// claiming coverage the cluster refused. Its node-wide maximum is the
+    /// `entity.checkpoint.lag.max` metric the alert threshold evaluates; this map names the partition.
     record EntityCheckpointsResponse(List<EntityKeyspaceCheckpointView> keyspaces) {}
 
     record EntityKeyspaceCheckpointView(String keyspace,
                                         int partitionCount,
                                         long writes,
                                         long failures,
-                                        Map<Integer, Long> checkpointedThrough) {}
+                                        Map<Integer, Long> checkpointedThrough,
+                                        Map<Integer, Long> checkpointLag) {}
 
     /// Per-keyspace HOSTING view (#634-3, entity hosting-set fold-in, owner-ruled 2026-08-24): the set
     /// of nodes with a committed per-node registration IS the candidate set the leader mints entity-arc

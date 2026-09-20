@@ -516,7 +516,22 @@ public final class ConfigLoader {
         var enabled = doc.getBoolean("alerts", "enabled").or(true);
         var margin = doc.getDouble("alerts", "hysteresis_margin").or(AlertConfig.DEFAULT_HYSTERESIS_MARGIN);
 
-        builder.alerts(AlertConfig.alertConfig(enabled, webhookFromToml(doc), eventsFromToml(doc), margin).unwrap());
+        builder.alerts(AlertConfig.alertConfig(enabled,
+                                               webhookFromToml(doc),
+                                               eventsFromToml(doc),
+                                               margin,
+                                               entityCheckpointLagFromToml(doc)).unwrap());
+    }
+
+    /// `alerts.entity_checkpoint_lag_warning` / `_critical` (#1302); each defaults independently, and
+    /// the pair is validated at boot by [AlertConfig#check].
+    private static AlertConfig.EntityCheckpointLag entityCheckpointLagFromToml(TomlDocument doc) {
+        return AlertConfig.EntityCheckpointLag.entityCheckpointLag(doc.getDouble("alerts",
+                                                                                 "entity_checkpoint_lag_warning")
+                                                                      .or(AlertConfig.EntityCheckpointLag.DEFAULT_WARNING),
+                                                                   doc.getDouble("alerts",
+                                                                                 "entity_checkpoint_lag_critical")
+                                                                      .or(AlertConfig.EntityCheckpointLag.DEFAULT_CRITICAL));
     }
 
     /// Any alert section at all, INCLUDING a sub-section written without its parent header.

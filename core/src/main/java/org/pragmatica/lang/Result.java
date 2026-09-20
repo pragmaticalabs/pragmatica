@@ -1114,6 +1114,7 @@ public sealed interface Result<T> permits Success, Failure {
     //------------------------------------------------------------------------------------------------------------------
     /// **[Factory]**
     /// Wrap value returned by provided lambda into success [Result] if the call succeeds or into failure [Result] if call throws exception.
+    /// A [VirtualMachineError] is rethrown, never mapped (#1311): an exhausted stack or heap is not a failure a Cause can carry.
     ///
     /// @param exceptionMapper the function which will transform exception into instance of [Cause]
     /// @param supplier        the call to wrap
@@ -1123,6 +1124,8 @@ public sealed interface Result<T> permits Success, Failure {
         try {
             return success(supplier.apply());
         } catch (Throwable e) {
+            Causes.rethrowIfFatal(e);
+
             return failure(exceptionMapper.apply(e));
         }
     }
@@ -1241,13 +1244,15 @@ public sealed interface Result<T> permits Success, Failure {
     /// @param exceptionMapper the function which will transform exception into instance of [Cause]
     /// @param runnable        the call to wrap
     ///
-    /// @return Unit result which is success if no exceptions were thrown or failure otherwise
+    /// @return Unit result which is success if no exceptions were thrown or failure otherwise; a [VirtualMachineError] is rethrown, never mapped (#1311)
     static Result<Unit> lift(Fn1<? extends Cause, ? super Throwable> exceptionMapper, ThrowingRunnable runnable) {
         try {
             runnable.run();
 
             return unitResult();
         } catch (Throwable e) {
+            Causes.rethrowIfFatal(e);
+
             return failure(exceptionMapper.apply(e));
         }
     }

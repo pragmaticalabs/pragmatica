@@ -74,24 +74,35 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// partition was capacity-deferred — so the forwarder re-attempts a BOUNDED number of times with short
     /// backoff instead of surfacing it as permanent. A `false` value (the default `failureResponse`
     /// factory) means a permanent failure, served exactly as before.
+    ///
+    /// `outcomeUnknown` (#1236) marks a failure the owner reported AFTER appending — its min-sync barrier
+    /// did not confirm — so the event may be in the log. Without it the sender could only rebuild a
+    /// permanent failure and would report "not in the log" for an event that is.
     record PublishForwardResponse(NodeId sender,
                                   String correlationId,
                                   boolean success,
                                   long offset,
                                   String errorMessage,
-                                  boolean retryable) implements StreamForwardMessage {
+                                  boolean retryable,
+                                  boolean outcomeUnknown) implements StreamForwardMessage {
         public static PublishForwardResponse successResponse(NodeId sender, String correlationId, long offset) {
-            return new PublishForwardResponse(sender, correlationId, true, offset, "", false);
+            return new PublishForwardResponse(sender, correlationId, true, offset, "", false, false);
         }
 
         public static PublishForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
-            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, false);
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, false, false);
         }
 
         public static PublishForwardResponse retryableResponse(NodeId sender,
                                                                String correlationId,
                                                                String errorMessage) {
-            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, true);
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, true, false);
+        }
+
+        public static PublishForwardResponse outcomeUnknownResponse(NodeId sender,
+                                                                    String correlationId,
+                                                                    String errorMessage) {
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, false, true);
         }
     }
 
@@ -100,20 +111,26 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// check + epoch fence + no-op round + catch-up gate) instead of an unguarded local read — closing
     /// the forward-guard asymmetry. A `false` value (the default factory) means a replica-class read
     /// served by a plain local read, exactly as before.
+    ///
+    /// `catchup` (#1235) marks a replication read — a replica backfilling, or a new owner pulling from a
+    /// survivor — which the serving node answers up to its APPENDED head. Every other forwarded read is a
+    /// consumer read and is answered only up to the VISIBLE position. A catch-up bounded by visibility
+    /// could deadlock: the events it cannot fetch are the ones only its own ack would make visible.
     record ReadForward(NodeId sender,
                        String correlationId,
                        String streamName,
                        int partition,
                        long fromOffset,
                        int maxEvents,
-                       boolean linearizable) implements StreamForwardMessage {
+                       boolean linearizable,
+                       boolean catchup) implements StreamForwardMessage {
         public static ReadForward readForward(NodeId sender,
                                               String correlationId,
                                               String streamName,
                                               int partition,
                                               long fromOffset,
                                               int maxEvents) {
-            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, false);
+            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, false, false);
         }
 
         public static ReadForward readForward(NodeId sender,
@@ -123,7 +140,32 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                               long fromOffset,
                                               int maxEvents,
                                               boolean linearizable) {
-            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, linearizable);
+            return new ReadForward(sender,
+                                   correlationId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   maxEvents,
+                                   linearizable,
+                                   false);
+        }
+
+        public static ReadForward readForward(NodeId sender,
+                                              String correlationId,
+                                              String streamName,
+                                              int partition,
+                                              long fromOffset,
+                                              int maxEvents,
+                                              boolean linearizable,
+                                              boolean catchup) {
+            return new ReadForward(sender,
+                                   correlationId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   maxEvents,
+                                   linearizable,
+                                   catchup);
         }
     }
 

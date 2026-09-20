@@ -107,6 +107,7 @@ public final class EntityCheckpointRoutes implements RouteSource {
                                                 keyspace.partitionCount(),
                                                 keyspace.writes(),
                                                 keyspace.failures(),
-                                                keyspace.checkpointedThrough());
+                                                keyspace.checkpointedThrough(),
+                                                keyspace.checkpointLag());
     }
 }
