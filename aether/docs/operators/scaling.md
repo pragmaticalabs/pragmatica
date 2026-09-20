@@ -251,29 +251,15 @@ aether status --watch
 
 ### Metrics API
 
-Port 5040 and `/metrics/slices` do not exist; the real management route is
-`SLICES_STATUS` on the management port (8080), prefixed `/api/v1` (`ManagementRoute.java`). The
-response body below is illustrative and unverified against the route's actual schema.
+`GET /api/v1/metrics/comprehensive` returns `ComprehensiveMetricsResponse` on the management
+port (8080). The following command selects real response fields; latency percentiles describe
+interval means, not a pooled request-latency distribution. Numeric values depend on collected samples.
 
 ```bash
-curl http://localhost:8080/api/v1/slices/status
-
-{
-  "order-processor": {
-    "instances": 5,
-    "targetInstances": 7,
-    "cpuPercent": 72,
-    "intervalMeanLatencyP50Ms": 23,
-    "intervalMeanLatencyP95Ms": 89,
-    "intervalMeanLatencyP99Ms": 145,
-    "requestsPerSecond": 1250,
-    "scaling": {
-      "status": "scaling-up",
-      "reason": "CPU above threshold (72% > 70%)",
-      "lastScaleEvent": "2025-01-15T14:32:00Z"
-    }
-  }
-}
+curl -s http://localhost:8080/api/v1/metrics/comprehensive | jq '{
+  minuteTimestamp, avgCpuUsage, totalInvocations,
+  intervalMeanLatencyP50, intervalMeanLatencyP95, intervalMeanLatencyP99
+}'
 ```
 
 ### Scaling Events
