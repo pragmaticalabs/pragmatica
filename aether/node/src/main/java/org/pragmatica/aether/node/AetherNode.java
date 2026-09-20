@@ -1905,9 +1905,8 @@ public interface AetherNode extends ManageableNode {
             private Promise<Unit> startClusterUnlessSwimFails() {
                 var swimStart = Promise.<Unit> promise();
 
-                clusterNode.network()
-                           .whenReady(() -> startSwimTrigger.get()
-                                                            .onResult(swimStart::resolve));
+                clusterNode.network().whenReady(() -> startSwimTrigger.get()
+                                                                      .onResult(swimStart::resolve));
 
                 return formationUnlessSwimFails(startClusterAsync(), swimStart);
             }
