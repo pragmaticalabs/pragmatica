@@ -109,6 +109,11 @@ class OffHeapRingBufferIndexCorruptionTest {
         assertThat(cause.message()).startsWith("Ring index corrupted at corrupt[3]: ");
     }
 
+    /// A listener that records synchronously and takes the events (#1234): the ring reclaims them in the same pass.
+    private static Result<Unit> accepted(boolean recorded) {
+        return Result.unitResult();
+    }
+
     private static OffHeapRingBuffer corruptedRing(EvictionListener listener) {
         var buffer = offHeapRingBuffer("corrupt", 3, CAPACITY, DATA_REGION, listener);
 
@@ -146,10 +151,5 @@ class OffHeapRingBufferIndexCorruptionTest {
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("controlSegment field not reachable", e);
         }
-    }
-
-    /// The listener reports it took the events (#1234 contract); the recording itself is the side effect.
-    private static Result<Unit> accepted(boolean recorded) {
-        return Result.unitResult();
     }
 }

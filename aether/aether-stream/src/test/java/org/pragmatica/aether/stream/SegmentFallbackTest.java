@@ -238,8 +238,6 @@ class SegmentFallbackTest {
         @Test
         void fetch_mixedRange_corruptedRing_failsWithRingIndexCorrupted_notTruncated() {
             publishEvents(10);
-            // #1234 (merge of #1297 and #1294): the evicted prefix must be SEALED before the fetch, or the
-            // read is answered by the transient SealInFlight gate before it reaches the corrupted ring.
             awaitSealedThrough(RING_CAPACITY - 1);
             corruptEveryIndexSlot(partitionManager.partitionBuffer(STREAM, PARTITION)
                                                   .fold(() -> org.junit.jupiter.api.Assertions.fail("no ring"),

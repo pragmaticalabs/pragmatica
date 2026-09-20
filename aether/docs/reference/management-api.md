@@ -5099,6 +5099,18 @@ this node has never folded is ABSENT from `checkpointedThrough` rather than repo
 say about it" and "checkpointed through offset 0" are different claims. An empty `keyspaces` list means
 this node hosts no durable-entity keyspace — a true answer, not an error.
 
+**Checkpoint lag (#1302).** `checkpointLag` is, per partition this node folds, the log head offset minus the
+COMMITTED checkpoint in consensus KV — the pointer the retention floor and every recovery use: how far a
+recovery of that partition would have to replay. It is reported only for partitions this node OWNS, and is
+ABSENT (never 0) for the rest: a replica's fold is a read-side cache whose checkpoints the cluster refuses,
+and a released partition leaves the map. The baseline is never this node's own recorded save — a fenced
+save still resolves success, so a local record can claim coverage the cluster never committed — which is
+also why a takeover raises no spurious alert: the previous owner's committed checkpoint is the baseline
+from the first tick. The node's largest value is published as the metric `entity.checkpoint.lag.max` and evaluated
+by the threshold alert path, with a default threshold of WARNING 5,000 / CRITICAL 10,000 records
+(`[alerts] entity_checkpoint_lag_warning` / `entity_checkpoint_lag_critical`, overridable per cluster with
+`POST /api/v1/thresholds`). The alert names the node; this map names the partition.
+
 Assembled ON REQUEST from counters the checkpoint tick already maintains; no hot-path accounting is added.
 
 **Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The dashboard is
@@ -5120,7 +5132,8 @@ Revisit if a cluster-wide "keyspaces with stalled checkpointing" alert is wanted
       "partitionCount": 8,
       "writes": 214,
       "failures": 0,
-      "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}
+      "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502},
+      "checkpointLag": {"0": 59, "3": 12, "5": 0}
     }
   ]
 }

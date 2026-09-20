@@ -7,15 +7,15 @@ package org.pragmatica.aether.stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
-import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.Option;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -99,90 +99,6 @@ class StreamPartitionManagerRecoveryTest {
         assertThat(readFrom(rebuilt, 0)).isEmpty();
 
         rebuilt.close();
-    }
-
-    /// #1232 acceptance 1: a WAL holding offset 1 ("v1") BEFORE offset 0 ("v0") — the file order the
-    /// pre-fix owner path could produce. Each record lands at its STORED offset; before the fix recovery
-    /// numbered them in scan order and `readLocal(0)` returned "v1".
-    @Test
-    void rebuild_placesEachRecordAtItsStoredOffset_whenWalFramesAreOutOfOrder() throws IOException {
-        writeRawWal(frame(1, "v1"), frame(0, "v0"));
-
-        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-        createStream(recovered);
-
-        var events = readFrom(recovered, 0);
-
-        assertThat(events).extracting(RawEvent::offset).containsExactly(0L, 1L);
-        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v0");
-        assertThat(new String(events.get(1).data(), UTF_8)).isEqualTo("v1");
-
-        recovered.close();
-    }
-
-    /// #1232 acceptance 2: two frames for one offset. Recovery refuses with the distinct
-    /// [StreamError.WalReplayMismatch] instead of shifting every later record by one.
-    @Test
-    void rebuild_failsLoudly_whenWalHoldsDuplicateOffset() throws IOException {
-        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(1, "v1-again"), frame(2, "v2"));
-
-        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)), 2L, 1L);
-    }
-
-    /// A missing frame above the sealed bound: recovery refuses instead of numbering offset 5's record as 4.
-    @Test
-    void rebuild_failsLoudly_whenWalTailHasGapAboveSealedBound() throws IOException {
-        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(3, "v3"), frame(5, "v5"));
-
-        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 4L, 5L);
-    }
-
-    /// #1258 review B2 (CTO ruling): a gap BEFORE the first WAL record is indistinguishable today from
-    /// retention having reclaimed every sealed segment (the sealed floor then drops to -1 while compaction
-    /// already removed the records below the old floor). It is accepted: the ring is seeded just below
-    /// the first record, the records land at their stored offsets, and the head gap is counted and WARNed.
-    @Test
-    void rebuild_acceptsLeadingGap_asReclaimedHistory_whenSealedFloorRegressed() throws IOException {
-        writeRawWal(frame(5, "v5"), frame(6, "v6"), frame(7, "v7"));
-        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
-
-        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-        createStream(recovered);
-
-        var events = readFrom(recovered, 5);
-
-        assertThat(events).extracting(RawEvent::offset).containsExactly(5L, 6L, 7L);
-        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v5");
-        assertCursorExpired(recovered, 0);
-        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).isEqualTo(1);
-
-        recovered.close();
-    }
-
-    /// #1258 review round 2 (R2-3, reviewer probe D): the file still physically holds records at and below
-    /// the floor (lazy truncation), so a missing offset right above the floor is a HOLE, not reclaimed
-    /// history. A leading gap is accepted only when the file's LOWEST stored offset is above floor + 1.
-    @Test
-    void rebuild_failsLoudly_whenHoleSitsDirectlyAboveTheFloor_andEarlierRecordsExist() throws IOException {
-        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(4, "v4"), frame(5, "v5"));
-        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
-
-        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 3L, 4L);
-        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).as("not counted as reclaimed")
-                                                                                         .isZero();
-    }
-
-    @Test
-    void rebuild_acceptsLeadingGap_aboveSealedBound() throws IOException {
-        writeRawWal(frame(4, "v4"), frame(5, "v5"));
-
-        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L));
-        createStream(recovered);
-
-        assertThat(readFrom(recovered, 4)).extracting(RawEvent::offset).containsExactly(4L, 5L);
-        assertCursorExpired(recovered, 3);
-
-        recovered.close();
     }
 
     /// #1234: segment 1 ([0-1]) failed to seal while a later segment ([2-3]) is sealed, then the node
@@ -274,6 +190,90 @@ class StreamPartitionManagerRecoveryTest {
         storageDown.set(false);
     }
 
+    /// #1232 acceptance 1: a WAL holding offset 1 ("v1") BEFORE offset 0 ("v0") — the file order the
+    /// pre-fix owner path could produce. Each record lands at its STORED offset; before the fix recovery
+    /// numbered them in scan order and `readLocal(0)` returned "v1".
+    @Test
+    void rebuild_placesEachRecordAtItsStoredOffset_whenWalFramesAreOutOfOrder() throws IOException {
+        writeRawWal(frame(1, "v1"), frame(0, "v0"));
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        createStream(recovered);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(events).extracting(RawEvent::offset).containsExactly(0L, 1L);
+        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v0");
+        assertThat(new String(events.get(1).data(), UTF_8)).isEqualTo("v1");
+
+        recovered.close();
+    }
+
+    /// #1232 acceptance 2: two frames for one offset. Recovery refuses with the distinct
+    /// [StreamError.WalReplayMismatch] instead of shifting every later record by one.
+    @Test
+    void rebuild_failsLoudly_whenWalHoldsDuplicateOffset() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(1, "v1-again"), frame(2, "v2"));
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)), 2L, 1L);
+    }
+
+    /// A missing frame above the sealed bound: recovery refuses instead of numbering offset 5's record as 4.
+    @Test
+    void rebuild_failsLoudly_whenWalTailHasGapAboveSealedBound() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(3, "v3"), frame(5, "v5"));
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 4L, 5L);
+    }
+
+    /// #1258 review B2 (CTO ruling): a gap BEFORE the first WAL record is indistinguishable today from
+    /// retention having reclaimed every sealed segment (the sealed floor then drops to -1 while compaction
+    /// already removed the records below the old floor). It is accepted: the ring is seeded just below
+    /// the first record, the records land at their stored offsets, and the head gap is counted and WARNed.
+    @Test
+    void rebuild_acceptsLeadingGap_asReclaimedHistory_whenSealedFloorRegressed() throws IOException {
+        writeRawWal(frame(5, "v5"), frame(6, "v6"), frame(7, "v7"));
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        createStream(recovered);
+
+        var events = readFrom(recovered, 5);
+
+        assertThat(events).extracting(RawEvent::offset).containsExactly(5L, 6L, 7L);
+        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v5");
+        assertCursorExpired(recovered, 0);
+        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).isEqualTo(1);
+
+        recovered.close();
+    }
+
+    /// #1258 review round 2 (R2-3, reviewer probe D): the file still physically holds records at and below
+    /// the floor (lazy truncation), so a missing offset right above the floor is a HOLE, not reclaimed
+    /// history. A leading gap is accepted only when the file's LOWEST stored offset is above floor + 1.
+    @Test
+    void rebuild_failsLoudly_whenHoleSitsDirectlyAboveTheFloor_andEarlierRecordsExist() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(4, "v4"), frame(5, "v5"));
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 3L, 4L);
+        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).as("not counted as reclaimed")
+                                                                                         .isZero();
+    }
+
+    @Test
+    void rebuild_acceptsLeadingGap_aboveSealedBound() throws IOException {
+        writeRawWal(frame(4, "v4"), frame(5, "v5"));
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L));
+        createStream(recovered);
+
+        assertThat(readFrom(recovered, 4)).extracting(RawEvent::offset).containsExactly(4L, 5L);
+        assertCursorExpired(recovered, 3);
+
+        recovered.close();
+    }
+
     // === helpers ===
 
     /// Storage refuses every seal while it is down; once up, it records the segment in the index as
@@ -283,11 +283,13 @@ class StreamPartitionManagerRecoveryTest {
                ? Causes.cause("disk full").promise()
                : indexed(index, segment);
     }
+
     private static Promise<Unit> indexed(SegmentIndex index, SealedSegment segment) {
         index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
 
         return Promise.unitPromise();
     }
+
     private static void createStream(StreamPartitionManager manager, int ringEvents) {
         var retention = RetentionPolicy.retentionPolicy(ringEvents, 64 * 1024, 600_000);
 

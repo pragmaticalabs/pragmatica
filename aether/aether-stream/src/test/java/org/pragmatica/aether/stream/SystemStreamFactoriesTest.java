@@ -61,6 +61,26 @@ class SystemStreamFactoriesTest {
         return StreamConfig.streamConfig(STREAM, 1, retention, "earliest");
     }
 
+    /// #1230 item 4: every node holds a `system:cluster-events` replica ring (whole-cluster RF). A non-owner
+    /// emit must reach the owner, not append to the local replica ring as a second writer.
+    @Test
+    void systemStreamPublisher_forwardCapable_replicaForwardsEmitToOwner() {
+        var publisher = SystemStreamFactories.<byte[]>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS,
+                                                                            partitionManager,
+                                                                            identitySerializer(),
+                                                                            clusterEventsConfig(),
+                                                                            Option.some(forwardClient),
+                                                                            SELF,
+                                                                            Option.some(_ -> Option.some(OWNER)))
+                                             .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected publisher wiring success"))
+                                             .unwrap();
+
+        publisher.publish("evt".getBytes()).await().unwrap();
+
+        assertThat(forwardClient.publishTargets).containsExactly(OWNER);
+        assertThat(partitionManager.nextExpectedOffset(STREAM, 0)).isZero();
+    }
+
     @Test
     void systemStreamConsumer_forwardCapable_nonReplicaForwardsToCaughtUpReplica() {
         // SELF is NOT a replica of the system stream; OWNER is the sole caught-up replica.
@@ -179,6 +199,7 @@ class SystemStreamFactoriesTest {
     /// forwarded.
     private static final class RecordingForwardClient implements StreamForwardClient {
         private final List<NodeId> targets = new ArrayList<>();
+        private final List<NodeId> publishTargets = new ArrayList<>();
         private final java.util.Map<NodeId, List<RawEventDto>> scriptedSuccess = new java.util.concurrent.ConcurrentHashMap<>();
 
         void setSuccess(NodeId target, List<RawEventDto> events) {scriptedSuccess.put(target, events);}
@@ -186,6 +207,7 @@ class SystemStreamFactoriesTest {
         List<NodeId> targets() {return List.copyOf(targets);}
 
         @Override public Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp) {
+            publishTargets.add(governorId);
             return Promise.success(0L);
         }
 
