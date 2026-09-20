@@ -1,4 +1,4 @@
-### Changed (2026-09-20 — hierarchical cluster runtime)
+### Changed (2026-09-20 — #1390: durable core authority and hierarchical worker lifecycle)
 - **Explicit core voter authority and durable recovery** separate consensus eligibility from discovery and worker roles, preserve ordered application, and require an agreed handoff before retiring old voters. [verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaVoterRecoveryTest.java]
 - **Community authority and source placement** connect guarded governor acquisition, shared capacity reservations, provider-observed placement, workload evacuation and acknowledged retirement. [mechanism: CommunityPlacementReconciler and HierarchyStateWriter]
 - **Scoped worker metadata and producer-aware metrics** preserve source freshness and prevent partial metadata cuts from enabling worker invocation. [verified: aether/node/src/test/java/org/pragmatica/aether/worker/metadata/WorkerMetadataChannelTest.java]
