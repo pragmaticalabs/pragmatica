@@ -59,7 +59,7 @@ import org.pragmatica.lang.Unit;
 /// and asynchronous (§6), and a zombie consumer can still be reporting its pre-rewind position, so a report
 /// computed before the rewind can ARRIVE after it. Honoured, an in-range stale cursor makes the replay's own
 /// offsets answer [WriteOutcome#ALREADY_APPLIED] — acknowledged, never written, silently lost. So
-/// [#replayRewound] mints a [RewindToken] which the rebuild hands to whatever rewinds the cursor, every
+/// [#beginRewind] mints a [RewindToken] which the rebuild hands to whatever rewinds the cursor, every
 /// report carries it, and a report stamped by any other rewind is ignored.
 ///
 /// **Generation slot durability:** the counter must survive both [#reset] and process restart with
@@ -107,11 +107,14 @@ public interface ProjectionStore<S> {
     /// honoured, so a report produced before it — however late it arrives — cannot move the replay.
     record RewindToken(long generation, long rewind) {}
 
-    /// Mint the token for `generation`'s rewind, which the rebuild hands to whatever rewinds the cursor.
-    /// Minting VOIDS any earlier token. A stale generation changes nothing and its token is already dead.
-    Promise<RewindToken> replayRewound(long generation);
+    /// Begin `generation`'s rewind: mint its token, which the rebuild hands to whatever rewinds the cursor.
+    /// The cursor has NOT moved yet when this resolves — the rewind itself follows. Minting VOIDS any
+    /// earlier token. A stale generation changes nothing and its token is already dead.
+    Promise<RewindToken> beginRewind(long generation);
     /// The group's committed cursor for `partition` — the next offset it will read — as reported by the
-    /// consumer the rewind started, stamped with that rewind's `token`. While that partition is REBUILDING,
+    /// consumer the rewind started and READ AFTER the rewind took effect, stamped with that rewind's `token`
+    /// (a valid token on a cursor read before the rewind completed reproduces the stale-report loss). While
+    /// that partition is REBUILDING,
     /// advance its next replay offset to `max(next, committedCursor)` and take it LIVE once the cursor
     /// passes its head. A report stamped by any other rewind, or arriving before one, changes nothing.
     Promise<Unit> cursorCommitted(RewindToken token, int partition, long committedCursor);

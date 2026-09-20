@@ -153,7 +153,7 @@ class ProjectionTest {
         }
 
         @Override
-        public synchronized Promise<ProjectionStore.RewindToken> replayRewound(long expectedGeneration) {
+        public synchronized Promise<ProjectionStore.RewindToken> beginRewind(long expectedGeneration) {
             var minted = new ProjectionStore.RewindToken(expectedGeneration, ++rewinds);
 
             if (generation.get() == expectedGeneration) {

@@ -340,7 +340,7 @@ public record Projection<S, T>(String name,
     private Promise<Unit> rebuildGuarded() {
         return replayCursor.capture()
                            .mapWith(store::resetToNewGeneration, Rebuild::new)
-                           .mapWith(rebuild -> store.replayRewound(rebuild.generation()),
+                           .mapWith(rebuild -> store.beginRewind(rebuild.generation()),
                                     Projection::rewound)
                            .flatMap(rewound -> replayCursor.rewind(rewound.range(),
                                                                    rewound.token()));
