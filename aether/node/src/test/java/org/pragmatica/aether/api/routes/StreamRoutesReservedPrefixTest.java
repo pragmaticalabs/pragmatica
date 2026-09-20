@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
@@ -231,6 +232,9 @@ class StreamRoutesReservedPrefixTest {
         var substrate = StreamEntityLogSubstrate.streamEntityLogSubstrate(manager,
                                                                           (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                                 false),
+                                                                          null,
+                                                                          null,
+                                                                          EvictionListener.NOOP,
                                                                           null,
                                                                           null,
                                                                           null);

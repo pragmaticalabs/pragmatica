@@ -3728,10 +3728,12 @@ public interface AetherNode extends ManageableNode {
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
         // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
+        // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
+        var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
+                                                                                                    streamSegmentIndex),
+                                                              streamMaxMemoryBytes);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
-                                                                                   SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
-                                                                                                                                                     streamSegmentIndex),
-                                                                                                               streamMaxMemoryBytes),
+                                                                                   streamSegmentSealer,
                                                                                    streamReplicationManager,
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
@@ -4388,6 +4390,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                             config.self(),
                                                                                                                             stream,
                                                                                                                             partition),
+                                                                                   streamTieredReader,
+                                                                                   streamSegmentIndex,
+                                                                                   streamSegmentSealer,
                                                                                    streamStorage,
                                                                                    kvStore,
                                                                                    clusterCommandApplier);
