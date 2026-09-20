@@ -1756,24 +1756,31 @@ class StreamConsumerRuntimeTest {
         /// #1388 (CI run 35515972207, `expected: 2L but was: 1L`): the periodic commit's store call is STILL IN
         /// PROGRESS when `close()` runs — a stalled store, or the issuing thread descheduled between the store
         /// call and the registration. `issueTrackedCommit` used to register the commit only after the store
-        /// returned, so `close()`'s snapshot missed it and the bound counted the final commit alone. The
-        /// interleaving is forced through the store seam: `commit()` parks inside the call until the test
-        /// releases it after `close()` has returned, so the registration must already have happened for the
-        /// count to be 2.
+        /// returned, so `close()`'s snapshot missed it and the bound counted the final commit alone. Two pins,
+        /// both through the store seam: the stub reads [ConsumerRuntimeState#inFlightCommitCount] from INSIDE
+        /// `commit()` — the commit must already be registered at that instant — and then parks there until the
+        /// test releases it after `close()` has returned, so the bound can count 2 only if it was.
         @Test
         void close_countsAPeriodicCommitWhoseStoreCallIsStillInProgress_asUnsettled() throws InterruptedException {
             createTestStream("orders");
             var entered = new CountDownLatch(1);
             var gate = new CountDownLatch(1);
-            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), heldOnFirstCommit(entered, gate));
+            var runtimeRef = new AtomicReference<ConsumerRuntimeState>();
+            var inFlightAtStoreCall = new AtomicInteger(-1);
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager,
+                                                                               DeadLetterHandler.deadLetterHandler(),
+                                                                               heldOnFirstCommit(entered, gate, () -> inFlightAtStoreCall.set(runtimeRef.get().inFlightCommitCount())));
             var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
 
+            runtimeRef.set(observedRuntime);
             observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
             // As in the sibling above: the 10ms checkpoint interval elapses before the first event, so its
             // delivery trips the time-based checkpoint and issues the periodic commit.
             Thread.sleep(50);
             manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
             assertThat(entered.await(5, TimeUnit.SECONDS)).describedAs("the periodic commit's store call is in progress").isTrue();
+            assertThat(inFlightAtStoreCall.get()).describedAs("the periodic commit is registered in flight BEFORE its own store call is made")
+                                                 .isEqualTo(1);
 
             try {
                 observedRuntime.close();
@@ -1786,13 +1793,14 @@ class StreamConsumerRuntimeTest {
             }
         }
 
-        /// The first `commit` parks inside the call (counting down `entered` first) until `gate` opens, then
-        /// never settles; every later commit never settles either.
-        private static ConsumerCursorStore heldOnFirstCommit(CountDownLatch entered, CountDownLatch gate) {
+        /// The first `commit` runs `onEntry`, counts down `entered`, then parks inside the call until `gate`
+        /// opens; it never settles, and neither does any later commit.
+        private static ConsumerCursorStore heldOnFirstCommit(CountDownLatch entered, CountDownLatch gate, Runnable onEntry) {
             return new ConsumerCursorStore() {
                 @Override
                 public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
                     if (entered.getCount() > 0) {
+                        onEntry.run();
                         entered.countDown();
                         try {
                             gate.await();

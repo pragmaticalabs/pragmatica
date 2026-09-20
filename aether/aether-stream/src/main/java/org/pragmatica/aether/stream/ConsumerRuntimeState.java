@@ -237,6 +237,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return option(consumers.get(key)).map(ConsumerState::cursor);
     }
 
+    /// Test seam (#1388): how many cursor commits are registered in flight right now. A store stub reads it
+    /// from inside `commit()` to pin that a commit is registered BEFORE its own store call.
+    int inFlightCommitCount() {
+        return inFlightCommits.size();
+    }
+
     /// Test seam (rev1285d F1): whether this consumer's retry hold is set. Package-private for
     /// [StreamConsumerRuntimeTest], whose dead-letter sink reads it at append time — the only moment
     /// at which the hold ordering in [#handleRetryFailureAgain] is observable.

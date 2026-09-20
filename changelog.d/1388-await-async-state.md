@@ -14,14 +14,16 @@
   nor counted for THIS shutdown — and, because the periodic 5 s timeout is armed after the same return, its
   own failure could land after the shutdown bound too. That is CI run 35515972207's
   `close_countsBothUnsettledCommits_whenPeriodicAndFinalCommitShareOneConsumer` `expected: 2L but was: 1L`
-  at 5.06 s. The `TrackedCommit` now carries a handle minted and registered BEFORE the store call, settled
+  at 5.06 s. **Product change: a cursor commit is counted in flight from BEFORE its store call.** The
+  `TrackedCommit` carries a handle minted and registered before `store.commit(...)` is invoked, settled
   from the chain as an immediate completion; the outcome handlers stay on the chain itself so a
   synchronously-failing store is still counted before `close()` returns (the first attempt moved them to the
   pending handle and `close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound` went
   red: handlers on a pending promise dispatch asynchronously). [verified: new
-  `close_countsAPeriodicCommitWhoseStoreCallIsStillInProgress_asUnsettled` — the store parks INSIDE
-  `commit()` until the test releases it after `close()` returned; red at the base with `but was: 1L`,
-  green with the fix; the base also fails 3/3 under a 200 ms stall between the store call and the
+  `close_countsAPeriodicCommitWhoseStoreCallIsStillInProgress_asUnsettled` — the store stub reads the
+  package-private `inFlightCommitCount()` from INSIDE `commit()` (must already be 1) and then parks there
+  until the test releases it after `close()` returned; red at the base with `but was: 1L`, red 3/3 with
+  the registration moved back after the store call (`but was: 0`), green with the fix; the base also fails 3/3 under a 200 ms stall between the store call and the
   registration, and the fix passes 3/3 under the same stall placed after the call]
   [mechanism: `Promise.processActions` — `onResult`/`onSuccess`/`onFailure` attached to a pending promise
   run on `AsyncExecutor`, `withResult`/`map` completions run inline on resolution]
