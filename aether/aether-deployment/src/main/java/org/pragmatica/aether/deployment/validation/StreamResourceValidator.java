@@ -20,10 +20,15 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser.PartitionedStreamResources;
+import org.pragmatica.aether.slice.blueprint.StreamConfigParser.RefusedSection;
+import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
 import org.pragmatica.aether.slice.blueprint.StreamSourceError;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError;
+import org.pragmatica.aether.slice.resource.ResourceVersion.ResourceVersionError;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
+import org.pragmatica.aether.slice.stream.StreamVersionSpec.StreamVersionSpecError;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
@@ -32,6 +37,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes.CompositeCause;
+
+import static org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError.General.*;
 
 
 /// Deploy-time validator that enforces spec §15.1 runtime gates over a blueprint's stream
@@ -55,6 +62,16 @@ public sealed interface StreamResourceValidator {
     /// #1282: a blueprint `External` source naming a stream kind only the runtime provisions.
     String RULE_SOURCE_RESERVED_KIND = "source-reserved-kind";
     String RULE_RESOURCES_PARSE = "resources-toml-parse";
+    /// Per-section rule ids, one per parser cause TYPE ([#ruleFor]).
+    String RULE_VERSION_AND_SOURCE_EXCLUSIVE = "version-and-source-mutually-exclusive";
+    String RULE_PRODUCER_VERSION_EXACT = "producer-version-must-be-exact";
+    String RULE_PARTITIONS_OVER_CEILING = "partitions-over-ceiling";
+    String RULE_REPLICATION_INVALID = "replication-invalid";
+    String RULE_SOURCE_ADDRESS_INVALID = "source-address-invalid";
+    String RULE_NAMESPACE_INVALID = "namespace-invalid";
+    String RULE_STREAM_NAME_INVALID = "stream-name-invalid";
+    String RULE_VERSION_FORMAT_INVALID = "version-format-invalid";
+    String RULE_STREAM_RESOURCE_INVALID = "stream-resource-invalid";
     String RULE_BLUEPRINT_NAMESPACE = "blueprint-namespace-invalid";
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
@@ -123,10 +140,14 @@ public sealed interface StreamResourceValidator {
     ///    declaration the same way — a deliberate reach into a reserved namespace, not a config slip —
     ///    rather than drop the alias and let the slice fail at load. Listed in [#GATING_SECTION_RULES].
     ///
-    /// Every other rule is per-section: the parser's (`version-and-source-mutually-exclusive`,
-    /// `producer-version-must-be-exact`, `version-or-source-required`, address and version format,
-    /// the partition ceiling and replication knobs) and #576's inert config keys
-    /// ([#RULE_INERT_STREAM_CONFIG], [#RULE_INERT_CONSUMER_CONFIG]), which name the alias they sit under.
+    /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
+    /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
+    /// [#RULE_REPLICATION_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
+    /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
+    /// type not named here — and #576's inert config keys ([#RULE_INERT_STREAM_CONFIG],
+    /// [#RULE_INERT_CONSUMER_CONFIG]). Each names the alias it sits under, taken from the section the parser
+    /// refused, never from message text. [#RULE_NAMESPACE_RESERVED] on an External source has no producer at
+    /// this head: `ResourceAddress.resourceAddress(String)` accepts `system:` (spec §11.2 allows it).
     static Result<StreamValidationPartition> partition(Option<String> resourcesConfig,
                                                        Artifact blueprintArtifact,
                                                        Map<String, String> roleHints) {
@@ -138,7 +159,7 @@ public sealed interface StreamResourceValidator {
                               .or(Result.success(PartitionedStreamResources.partitionedStreamResources(Map.of(),
                                                                                                        List.of())))
                               .mapError(cause -> gating(namespaceFailures,
-                                                        List.of(toFailure(cause))))
+                                                        List.of(documentFailure(cause))))
                               .flatMap(parsed -> partition(parsed, resourcesConfig, roleHints, namespaceFailures));
     }
 
@@ -288,17 +309,48 @@ public sealed interface StreamResourceValidator {
         return Map.of();
     }
 
+    /// #1336 review B1/B2: the field is the alias the parser refused, the rule is the cause's TYPE. Nothing
+    /// is read from message text — the text quotes keys and lines (`Duplicate key … 'version'`), and a
+    /// keyword guess mislabelled a document-level parse failure as `version-format-invalid` at
+    /// `[streams.version]`, and an unparseable `source` as `namespace-invalid` at `[streams]`.
     private static StreamValidationFailure toFailure(Cause cause) {
-        var message = cause.message();
-
-        return StreamValidationFailure.streamValidationFailure(extractField(message), ruleFor(cause, message), message);
+        return switch (cause) {
+            case RefusedSection refused -> StreamValidationFailure.streamValidationFailure("[streams." + refused.alias() + "]",
+                                                                                           ruleFor(refused.cause()),
+                                                                                           refused.message());
+            default -> documentFailure(cause);
+        };
     }
 
-    /// Typed parser failures carry their rule; the rest are still classified from the message text.
-    private static String ruleFor(Cause cause, String message) {
-        return cause instanceof StreamSourceError.ReservedKindSource
-               ? RULE_SOURCE_RESERVED_KIND
-               : inferRule(message);
+    /// A cause with no section: the document itself did not parse.
+    private static StreamValidationFailure documentFailure(Cause cause) {
+        return StreamValidationFailure.streamValidationFailure("[streams]", RULE_RESOURCES_PARSE, cause.message());
+    }
+
+    /// Every per-section cause the parser can raise at this head, by type. An unknown type is
+    /// [#RULE_STREAM_RESOURCE_INVALID] — a new parser refusal is reported honestly as "this section is
+    /// invalid" until a rule is named for it here.
+    private static String ruleFor(Cause cause) {
+        return switch (cause) {
+            case StreamSourceError.ReservedKindSource _ -> RULE_SOURCE_RESERVED_KIND;
+            case StreamDeclarationError.VersionAndSourceBothSet _ -> RULE_VERSION_AND_SOURCE_EXCLUSIVE;
+            case StreamDeclarationError.ProducerVersionLatest _ -> RULE_PRODUCER_VERSION_EXACT;
+            case StreamDeclarationError.PartitionsOverCeiling _ -> RULE_PARTITIONS_OVER_CEILING;
+            case StreamDeclarationError.ReplicationInvalid _ -> RULE_REPLICATION_INVALID;
+            case ResourceAddressError.General address -> addressRule(address);
+            case ResourceVersionError _ -> RULE_VERSION_FORMAT_INVALID;
+            case StreamVersionSpecError _ -> RULE_VERSION_FORMAT_INVALID;
+            default -> RULE_STREAM_RESOURCE_INVALID;
+        };
+    }
+
+    private static String addressRule(ResourceAddressError.General address) {
+        return switch (address) {
+            case NULL_VALUE, BLANK_VALUE, WRONG_FORMAT -> RULE_SOURCE_ADDRESS_INVALID;
+            case NAMESPACE_INVALID -> RULE_NAMESPACE_INVALID;
+            case NAMESPACE_RESERVED_FOR_APPS -> RULE_NAMESPACE_RESERVED;
+            case NAME_INVALID, NAME_RESERVED -> RULE_STREAM_NAME_INVALID;
+        };
     }
 
     /// #576: a blueprint's `[streams.X]`/`[streams.X.consumers.Y]` config parses and diffs cleanly,
@@ -417,60 +469,6 @@ public sealed interface StreamResourceValidator {
                                                               + "no production caller, per #576); every declarative consumer runs with hardcoded "
                                                               + "defaults regardless of this key. Remove it: per-consumer tuning is not supported "
                                                               + "in 1.0 (descoped in #677; post-GA wiring is its own epic).");
-    }
-
-    private static String extractField(String message) {
-        var openQuote = message.indexOf('\'');
-
-        if (openQuote < 0) {
-            return "[streams]";
-        }
-
-        var closeQuote = message.indexOf('\'', openQuote + 1);
-
-        if (closeQuote < 0) {
-            return "[streams]";
-        }
-
-        return "[streams." + message.substring(openQuote + 1, closeQuote) + "]";
-    }
-
-    private static String inferRule(String message) {
-        var lower = message.toLowerCase();
-
-        if (lower.contains("must not set both")) {
-            return "version-and-source-mutually-exclusive";
-        }
-
-        if (lower.contains("producer") && lower.contains("latest")) {
-            return "producer-version-must-be-exact";
-        }
-
-        if (lower.contains("must specify either")) {
-            return "version-or-source-required";
-        }
-
-        if (lower.contains("namespace") && lower.contains("reserved")) {
-            return RULE_NAMESPACE_RESERVED;
-        }
-
-        if (lower.contains("namespace")) {
-            return "namespace-invalid";
-        }
-
-        if (lower.contains("stream name")) {
-            return "stream-name-invalid";
-        }
-
-        if (lower.contains("version")) {
-            return "version-format-invalid";
-        }
-
-        if (lower.contains("parse error")) {
-            return RULE_RESOURCES_PARSE;
-        }
-
-        return "stream-resource-invalid";
     }
 
     /// Spec §11.1.3 multi-version warning: when a blueprint declares two or more

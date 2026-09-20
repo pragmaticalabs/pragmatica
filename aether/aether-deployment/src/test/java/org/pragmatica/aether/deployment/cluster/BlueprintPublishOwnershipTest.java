@@ -991,7 +991,11 @@ class BlueprintPublishOwnershipTest {
             publishBody(repository).onSuccess(_ -> Assertions.fail("conflicting declarations of one alias must refuse the publish"))
                                    .onFailure(cause -> assertThat(cause.message()).contains("conflicting-stream-declaration")
                                                                                   .contains(NAMESPACE + ":" + ORDER_EVENTS + ":1.0.0")
-                                                                                  .contains(NAMESPACE + ":" + ORDER_EVENTS + ":2.0.0"));
+                                                                                  .contains(NAMESPACE + ":" + ORDER_EVENTS + ":2.0.0"))
+                                   .onFailure(cause -> assertThat(cause).as("#1336: this refusal is the artifact author's content, answered 422 — not a 500")
+                                                                        .isInstanceOf(HttpStatusAware.class)
+                                                                        .extracting(c -> ((HttpStatusAware) c).httpStatus())
+                                                                        .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
             assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
         }
 
@@ -1141,6 +1145,21 @@ class BlueprintPublishOwnershipTest {
             assertThat(cluster.batches).as("the publish proceeds").isNotEmpty();
         }
 
+        /// Same as the case above with NO `resources.toml` in either slice jar: the derivation must still run
+        /// once so the body path reports the reserved namespace exactly as the artifact path does (rev1363 NIT-5).
+        @Test
+        void publish_reportsAReservedBlueprintNamespace_whenNoSliceShipsAResourcesToml() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJarWithoutResources(PUBLISHER_SLICE),
+                                                    CONSUMER_SLICE, sliceJarWithoutResources(CONSUMER_SLICE)));
+            var published = BlueprintService.blueprintService(cluster, store, repository)
+                                            .publish(STREAM_APP_DSL.replace("id = \"org.example:stream-app:1.0.0\"", "id = \"system.example:stream-app:1.0.0\""))
+                                            .await()
+                                            .onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(rejectedFieldsAndRules(published))
+                    .containsExactly("system.example:stream-app:1.0.0::" + StreamResourceValidator.RULE_NAMESPACE_RESERVED);
+        }
+
         private static final String UNPARSEABLE = """
                 [streams.order-events
                 partitions = 1
@@ -1245,6 +1264,14 @@ class BlueprintPublishOwnershipTest {
         }
 
         private Path sliceJar(Artifact slice, String resourcesToml) {
+            return sliceJar(slice, Option.some(resourcesToml));
+        }
+
+        private Path sliceJarWithoutResources(Artifact slice) {
+            return sliceJar(slice, Option.none());
+        }
+
+        private Path sliceJar(Artifact slice, Option<String> resourcesToml) {
             var manifest = new Manifest();
             var attributes = manifest.getMainAttributes();
 
@@ -1258,7 +1285,10 @@ class BlueprintPublishOwnershipTest {
             try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
                 out.putNextEntry(new ZipEntry("org/example/stream/"));
                 out.closeEntry();
-                writeEntry(out, "META-INF/resources.toml", resourcesToml);
+
+                if (resourcesToml.isPresent()) {
+                    writeEntry(out, "META-INF/resources.toml", resourcesToml.unwrap());
+                }
             } catch (IOException e) {
                 throw new IllegalStateException("Failed to build test slice jar", e);
             }

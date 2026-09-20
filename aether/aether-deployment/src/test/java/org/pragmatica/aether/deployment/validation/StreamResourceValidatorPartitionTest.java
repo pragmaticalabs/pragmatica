@@ -110,6 +110,51 @@ class StreamResourceValidatorPartitionTest {
                                                                              + StreamResourceValidator.RULE_INERT_CONSUMER_CONFIG);
         }
 
+        /// rev1363 B1 (P3–P6): the alias is carried from the section the parser refused and the rule comes
+        /// from the cause's type. The message-text guess this replaces reported every address/version failure
+        /// at `[streams]` — the operator could not tell WHICH alias was dropped — and called an unparseable
+        /// source `namespace-invalid`.
+        @Test
+        void everyAddressAndVersionRefusal_namesItsAlias_andRulesByType() {
+            var partition = partition("""
+                                      [streams.orders]
+                                      version = "1.0.0"
+
+                                      [streams.bad-format]
+                                      source = "not-an-address"
+
+                                      [streams.reserved-name]
+                                      source = "com.other:latest:1.0.0"
+
+                                      [streams.bad-source-version]
+                                      source = "com.other:audit:not.a.version"
+
+                                      [streams.bad-owned-version]
+                                      version = "not.a.version"
+
+                                      [streams.too-many]
+                                      version = "1.0.0"
+                                      partitions = 4096
+
+                                      [streams.no-replicas]
+                                      version = "1.0.0"
+                                      replicas = 0
+                                      """,
+                                      APP_ARTIFACT);
+
+            assertThat(partition.accepted()).containsOnlyKeys("orders");
+            assertThat(fieldsAndRules(partition.rejected()))
+                    .containsExactlyInAnyOrder("[streams.bad-format]::" + StreamResourceValidator.RULE_SOURCE_ADDRESS_INVALID,
+                                               "[streams.reserved-name]::" + StreamResourceValidator.RULE_STREAM_NAME_INVALID,
+                                               "[streams.bad-source-version]::" + StreamResourceValidator.RULE_VERSION_FORMAT_INVALID,
+                                               "[streams.bad-owned-version]::" + StreamResourceValidator.RULE_VERSION_FORMAT_INVALID,
+                                               "[streams.too-many]::" + StreamResourceValidator.RULE_PARTITIONS_OVER_CEILING,
+                                               "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICATION_INVALID);
+            assertThat(partition.rejected()).extracting(StreamValidationFailure::field)
+                                            .as("no refusal may lose its alias")
+                                            .doesNotContain("[streams]");
+        }
+
         @Test
         void aCleanDocument_rejectsNothing() {
             var partition = partition("""
@@ -144,6 +189,35 @@ class StreamResourceValidatorPartitionTest {
 
             result.onSuccess(_ -> fail("an unparseable document has no section to keep — it must gate"))
                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_RESOURCES_PARSE));
+        }
+
+        /// rev1363 B2 (P1): a TOML failure whose message quotes a key (`Duplicate key … 'version'`) was labelled
+        /// `version-format-invalid` at `[streams.version]` by the text guess. The path knows it is a document
+        /// failure; it is built as one.
+        @Test
+        void aDuplicateKeyParseFailure_isReportedAsTheParseRule_atTheDocument() {
+            var result = StreamResourceValidator.partition(Option.some("""
+                                                                       [streams.orders]
+                                                                       version = "1.0.0"
+                                                                       version = "2.0.0"
+                                                                       """),
+                                                           APP_ARTIFACT,
+                                                           Map.of());
+
+            result.onSuccess(_ -> fail("instrument check: the fixture must not parse"))
+                  .onFailure(cause -> assertThat(fieldsAndRules(((StreamValidationFailures) cause).failures()))
+                          .containsExactly("[streams]::" + StreamResourceValidator.RULE_RESOURCES_PARSE));
+        }
+
+        /// rev1363 M6: the blueprint-namespace failure rides a document-level refusal too.
+        @Test
+        void aReservedBlueprintNamespace_ridesAParseRefusal() {
+            var result = StreamResourceValidator.partition(Option.some("[streams.orders\n"), RESERVED_ARTIFACT, Map.of());
+
+            result.onSuccess(_ -> fail("instrument check: the fixture must not parse"))
+                  .onFailure(cause -> assertThat(fieldsAndRules(((StreamValidationFailures) cause).failures()))
+                          .containsExactlyInAnyOrder("system.framework:audit:1.0.0::" + StreamResourceValidator.RULE_NAMESPACE_RESERVED,
+                                                     "[streams]::" + StreamResourceValidator.RULE_RESOURCES_PARSE));
         }
 
         @Test

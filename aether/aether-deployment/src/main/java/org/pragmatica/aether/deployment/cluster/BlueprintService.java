@@ -840,14 +840,17 @@ class BlueprintServiceInstance implements BlueprintService {
                                                                                                                                                         declarations));
     }
 
+    /// A blueprint whose slices ship no `resources.toml` at all still runs the derivation once, with no
+    /// document: `partition` owns the blueprint-namespace guard, and skipping it here left the body path
+    /// silent about a reserved namespace the artifact path reports (#1336 review, NIT-5).
     private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId,
                                                                List<Option<String>> declarations) {
-        return Result.allOf(declarations.stream()
-                                        .flatMap(Option::stream)
-                                        .map(toml -> streamBindings(blueprintId,
-                                                                    Option.some(toml),
-                                                                    Map.of()))
-                                        .toList()).flatMap(BlueprintServiceInstance::unionSliceBindings);
+        var present = declarations.stream().flatMap(Option::stream).toList();
+        var perSlice = present.isEmpty()
+                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of()))
+                       : present.stream().map(toml -> streamBindings(blueprintId, Option.some(toml), Map.of())).toList();
+
+        return Result.allOf(perSlice).flatMap(BlueprintServiceInstance::unionSliceBindings);
     }
 
     private static Result<StreamBindings> unionSliceBindings(List<StreamBindings> perSlice) {

@@ -753,10 +753,13 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint **
   "targetInstances": 3,
   "activeInstances": 0,
   "failedInstances": 0,
-  "statusUrl": "/api/v1/blueprints/status/my-blueprint",
-  "rejectedStreamBindings": []
+  "statusUrl": "/api/v1/blueprints/status/my-blueprint"
 }
 ```
+
+`rejectedStreamBindings` (#1336) appears only when the publish accepted the blueprint WITHOUT binding one
+or more `[streams.*]` declarations — it is **omitted when empty**, so read it as absent-or-list. Shape and
+rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy).
 
 > **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
 
@@ -952,19 +955,24 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 ```
 
 #1336 — **`rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
-blueprint WITHOUT binding**, each by its TOML `field`, the `rule` it failed and the diagnostic. Empty
-when every declaration bound. The other declarations are bound as usual; a slice that uses a
+blueprint WITHOUT binding**, each by its TOML `field` (the section the parser refused, `[streams.<alias>]`),
+the `rule` it failed and the diagnostic. **Omitted when every declaration bound** — the key is absent, not
+`[]`. The other declarations are bound as usual; a slice that uses a
 rejected alias fails to load naming that alias (`UnboundStreamAlias`), and this list is where the
 operator learns why, at the point where it is actionable. The same shape is returned by
 [`POST /api/v1/blueprints`](#post-apiv1blueprints) and `POST /api/v1/blueprints/publish`. Rules
-whose violation leaves nothing to bind refuse the publish outright with **`422`** and the same
-`field`/`rule`/`message` triples in the error body: a `resources.toml` that does not parse
+whose violation leaves nothing to bind refuse the publish outright with **`422`**; the error body is the
+usual problem document, whose `detail` is the text `Stream resource validation failed (N errors):` followed
+by one `[rule] field — message` line per failure (not the structured triples above): a `resources.toml` that does not parse
 (`resources-toml-parse`), a blueprint whose own namespace cannot be derived
 (`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, and an
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
-exactly as the management API refuses it on every mint path). Every other rule — the parser's per-section rules and
-#576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`) — costs only its own
-alias. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
+exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
+the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
+`partitions-over-ceiling`, `replication-invalid`, `source-address-invalid`, `namespace-invalid`,
+`stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
+names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
+derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
 declarations included.
 
 #759 — `status` is earned off the deployment map at response time, not assumed from a successful
