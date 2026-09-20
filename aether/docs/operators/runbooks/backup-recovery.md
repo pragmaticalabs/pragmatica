@@ -41,7 +41,10 @@ is bounded by the refs in the latest snapshot on disk (#1345).
 stops part-way — disk full, process killed — leaves the previous snapshot and the previous `LATEST`
 intact and removes its partial
 (`SnapshotDurableWriteTest#forceSnapshot_latestWriteInterrupted_previousSnapshotStillRestores`,
-`#forceSnapshot_snapshotWriteInterrupted_leavesNoTornFileUnderAnyName`). Before #1353 both files
+`#forceSnapshot_snapshotWriteInterrupted_leavesNoTornFileUnderAnyName`). Snapshot writes are
+serialised (`forceSnapshot()` holds a lock; the tick and the HTTP `POST …/snapshot` route can call
+it at once), so one writer owns the partial names at a time
+(`#forceSnapshot_concurrentCallers_leaveOnlyCompleteCorrectlyNamedFiles`). Before #1353 both files
 were truncated in place, and a torn `LATEST` restored NOTHING although a complete snapshot sat
 beside it. `[unverified: power loss — the rename's directory entry is not fsynced, the same bound
 as `GitBackedPersistence` above; the pinned property is torn-file behaviour.]`
@@ -50,7 +53,7 @@ as `GitBackedPersistence` above; the pinned property is torn-file behaviour.]`
 fails its content-hash check, the retained snapshots are tried newest-first and the first complete
 one is restored, at WARN:
 
-    Snapshot <dir>/snapshot-000042.dat named by LATEST is unreadable; restored previous retained
+    Snapshot <dir>/snapshot-000042.dat named by LATEST is unreadable; restored another retained
     snapshot snapshot-000041.dat (epoch=41) instead. Metadata recorded only in the unreadable
     file is lost unless a WAL replays it. See docs/operators/runbooks/backup-recovery.md
 
@@ -184,5 +187,5 @@ git show HEAD:state.toml   # Current snapshot: "# Phase: N" + base64 of the bina
 | Push fails | Invalid remote or credentials | Verify remote URL and SSH keys |
 | Restored state ignored | Nodes were still running when `state.toml` was checked out | Stop all nodes before restoring; the file is read at sync time only |
 | Empty backup | KV-Store has no entries | Normal for fresh cluster |
-| `named by LATEST is unreadable; restored previous retained snapshot` WARN at boot | The newest metadata snapshot of a storage instance is torn (power loss, half-copied file) | Nothing required; see "Storage metadata snapshots" above for what was lost and how to remove the file |
+| `named by LATEST is unreadable; restored another retained snapshot` WARN at boot | The newest metadata snapshot of a storage instance is torn (power loss, half-copied file) | Nothing required; see "Storage metadata snapshots" above for what was lost and how to remove the file |
 | `BOOT FUTURE-HISTORY` WARN after an intentional reset | Node kept its old `[backup] path` across the reset | Stop the node, clear its backup directory, restart — see "Intentionally resetting a cluster" above |
