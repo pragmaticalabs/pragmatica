@@ -3847,7 +3847,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                         streamOwnerEpochSource.currentOwnerEpoch(s,
                                                                                                                                                                  p));
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
-                                                                                    streamPartitionRecovery);
+                                                                                    streamPartitionRecovery,
+                                                                                    streamPartitionManager::syncReplicated);
         // A4: production catch-up wiring. The forward transport/client are constructed here (ahead of
         // the A6 read-forwarding wiring further below, which reuses the same instances) so the
         // ReplicaSetController can be given a real onBecameReplica backfill callback instead of the

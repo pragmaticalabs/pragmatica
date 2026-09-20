@@ -169,8 +169,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// makes it durable at [#syncReplicated] (#634 item 1, #1244).
     private final Option<Path> walBaseDir;
     /// The latest replicated WAL write per `(stream, partition)` key (#1244): what [#syncReplicated]
-    /// commits. Updated inside the partition's ordered append section, so it always holds the highest
-    /// offset written.
+    /// commits, and the offset it then makes visible (#1235). Updated inside the partition's ordered append
+    /// section, so it always holds the highest offset written.
     private final ConcurrentHashMap<String, ReplicatedWrite> lastReplicatedWalWrite = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
@@ -1608,19 +1608,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                          payload,
                                                                                          timestamp,
                                                                                          ownerEpoch))
-                                 .onSuccess(offset -> visibleWhenReplicaDurable(streamName, partition, offset))
+                                 .onSuccess(offset -> visibleAtOnceWithoutWal(streamName, partition, offset))
                                  .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
     /// #1235, replica side: a replicated record becomes visible to reads served BY THIS NODE once its own
-    /// WAL write is durable (at once with no WAL). A replica does not learn the owner's visible position,
-    /// so this bounds a replica-local read by the replica's durability, not by the owner's min-sync acks.
-    /// A failed WAL write poisons the chain, so the failure is dropped here by design: nothing at or after
-    /// it becomes visible, and the failure itself surfaces where the receive handler awaits
-    /// [#syncReplicated] before acking.
+    /// WAL write is durable — at once when the partition has no WAL, otherwise at the batch barrier
+    /// ([#syncReplicated]), which advances visibility to the offset it committed. A replica does not learn
+    /// the owner's visible position, so this bounds a replica-local read by the replica's durability, not
+    /// by the owner's min-sync acks.
+    ///
+    /// #1235 × #1244: requesting the record's own group commit here — one commit request per record — made
+    /// the barrier's "one fsync per batch" hold only when the async commits happened to coalesce, so the
+    /// advance is the barrier's step, not the append's. A failed WAL write poisons the chain: nothing at or
+    /// after it becomes visible, and the failure surfaces where the receive handler awaits the barrier
+    /// before acking.
     @Contract
-    private void visibleWhenReplicaDurable(String streamName, int partition, long offset) {
-        syncReplicated(streamName, partition).onSuccess(_ -> replicaDurable(streamName, partition, offset));
+    private void visibleAtOnceWithoutWal(String streamName, int partition, long offset) {
+        if (walFor(streamName, partition).isEmpty()) {
+            replicaDurable(streamName, partition, offset);
+        }
     }
 
     @Contract
@@ -1682,6 +1689,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         walFor(streamName, partition).onPresent(wal -> recordReplicatedWrite(streamName,
                                                                              partition,
                                                                              new ReplicatedWrite(wal,
+                                                                                                 offset,
                                                                                                  wal.write(offset,
                                                                                                            payload,
                                                                                                            timestamp))));
@@ -1717,15 +1725,30 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// The durability barrier for replicated records: ONE group commit covering every WAL frame
     /// [#appendRecovered] has written for `(streamName, partition)` so far (#1244) — a batch of N records
-    /// costs one fsync, not N. Fails while the latest replicated write on this WAL failed. WAL-less
-    /// deployments (legacy, Forge, the explicit non-durable opt-in) resolve immediately — the ack then
-    /// means exactly what it meant before the WAL existed.
+    /// costs one commit request and one fsync, not N. Once that commit succeeds, and before the returned
+    /// promise resolves, the records up to the committed write's offset become visible to reads served by
+    /// this node (#1235) — so a caller that acks after this barrier acks records this replica already
+    /// serves. Fails while the latest replicated write on this WAL failed, and then advances nothing.
+    /// WAL-less deployments (legacy, Forge, the explicit non-durable opt-in) resolve immediately — the ack
+    /// then means exactly what it meant before the WAL existed.
     public Promise<Unit> syncReplicated(String streamName, int partition) {
-        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition))).map(ReplicatedWrite::commit)
+        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition))).map(write -> commitAndExpose(streamName,
+                                                                                                                      partition,
+                                                                                                                      write))
                      .or(Promise::unitPromise);
     }
 
-    /// A replicated WAL frame write: the WAL it went to and its write sequence (or the write failure).
+    /// [Promise#withSuccess] runs the advance as a step of the barrier promise, not as a detached completion
+    /// handler: the caller's success implies the advance already happened.
+    private Promise<Unit> commitAndExpose(String streamName, int partition, ReplicatedWrite write) {
+        return write.commit()
+                    .withSuccess(_ -> replicaDurable(streamName,
+                                                     partition,
+                                                     write.offset()));
+    }
+
+    /// A replicated WAL frame write: the WAL it went to, the record's offset — the position the barrier
+    /// exposes once this write is durable (#1235) — and its write sequence (or the write failure).
     ///
     /// The latest write replaces the previous one; no separate poison flag is kept. A later success after
     /// a failed write would leave a hole the ring does not have, but a failed frame write or fsync
@@ -1736,7 +1759,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `[design intent — unverified: reachable only through a ring/WAL head mismatch such as a frozen-ring
     /// drop during recovery (#1233); no test induces it]`. The entry is forgotten when its WAL is released
     /// ([#forgetReplicatedWrites]), so a rebuilt partition's first barrier never targets a closed WAL.
-    private record ReplicatedWrite(PartitionWal wal, Result<Long> writeSeq) {
+    private record ReplicatedWrite(PartitionWal wal, long offset, Result<Long> writeSeq) {
         Promise<Unit> commit() {
             return writeSeq.async()
                            .flatMap(wal::commit);
