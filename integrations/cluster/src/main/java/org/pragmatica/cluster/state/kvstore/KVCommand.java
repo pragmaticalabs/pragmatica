@@ -13,17 +13,6 @@ public sealed interface KVCommand<K extends StructuredKey> extends Command {
 
     record Put<K extends StructuredKey, V>(K key, V value) implements KVCommand<K> {}
 
-    /// Atomically changes a value only while both its previous value and the core leader match.
-    record LeaderPut<K extends StructuredKey, V>(K key,
-                                                 Option<V> expected,
-                                                 V value,
-                                                 LeaderValue leader,
-                                                 List<ReadWitness<K>> guards) implements KVCommand<K> {
-        public LeaderPut {
-            guards = List.copyOf(guards);
-        }
-    }
-
     @Codec
     record ReadWitness<K extends StructuredKey>(K key, Option<Object> expected) {}
 
@@ -44,6 +33,7 @@ public sealed interface KVCommand<K extends StructuredKey> extends Command {
     record Mutation<K extends StructuredKey, V>(K key, Option<V> expected, Option<V> replacement) {}
 
     /// Correlation survives consensus batch merging; callers must select their own transaction ID.
+    /// Refusal identifies the transaction, not the conflicting key; callers may re-read to diagnose it.
     @Codec
     record TransactionResult(String transactionId, boolean accepted) {}
 
@@ -66,7 +56,8 @@ public sealed interface KVCommand<K extends StructuredKey> extends Command {
     /// applier ([KVStore]) rejects a delete of a key whose committed value is fenced UNLESS the
     /// witness is present, of the matching kind, and current (#379) — so a deposed owner cannot
     /// delete a fenced key, even with a bare `Remove(key)`. A legitimate deleter of a fenced key
-    /// reads the current committed value and passes it as the witness. Deleting a NON-fenced key
+    /// passes an appropriate authority witness; OwnerFenced deletion requires a strictly newer
+    /// owner epoch. Deleting a NON-fenced key
     /// (lock, blueprint, registry entry) needs no witness: use the convenience
     /// [#Remove(StructuredKey)] constructor.
     record Remove<K extends StructuredKey>(K key, Option<Object> witness) implements KVCommand<K> {

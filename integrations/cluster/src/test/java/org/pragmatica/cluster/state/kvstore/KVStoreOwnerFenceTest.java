@@ -61,4 +61,16 @@ class KVStoreOwnerFenceTest {
         put(store, "unfenced");
         assertThat(store.get(KEY).unwrap()).isEqualTo(owner);
     }
+    @Test
+    void witnessedSameOwnerRemovalCannotClearFenceForSameEpochContender() {
+        var store = store();
+        var owner = new Owner(7L, "a", "initial");
+        put(store, owner);
+        store.process(store.createBatch(List.of(new KVCommand.Remove<>(KEY, Option.some(owner)))));
+        put(store, new Owner(7L, "b", "contender"));
+        assertThat(store.get(KEY).unwrap()).isEqualTo(owner);
+        store.process(store.createBatch(List.of(new KVCommand.Remove<>(KEY, Option.some(new Owner(8L, "a", "release"))))));
+        assertThat(store.get(KEY).isEmpty()).isTrue();
+    }
+
 }

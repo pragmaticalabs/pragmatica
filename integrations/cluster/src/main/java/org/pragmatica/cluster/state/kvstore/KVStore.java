@@ -179,7 +179,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             case Put<?, ?> put -> put.value() instanceof LeaderAuthorized || storage.get(put.key()) instanceof LeaderAuthorized
                                   ? Option.option(storage.get(put.key()))
                                   : handlePut((Put<K, V>) put);
-            case KVCommand.LeaderPut<?, ?> put -> handleLeaderPut((KVCommand.LeaderPut<K, V>) put);
             case KVCommand.LeaderTransaction<?, ?> transaction -> handleLeaderTransaction((KVCommand.LeaderTransaction<K, V>) transaction);
             case Remove<?> remove -> handleRemove((Remove<K>) remove);
             case Noop<?> ignored -> Option.none();
@@ -192,20 +191,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         publish(new ValueGet<>(get, value));
 
         return value;
-    }
-
-    private Option<V> handleLeaderPut(KVCommand.LeaderPut<K, V> put) {
-        var current = Option.option(storage.get(put.key()));
-
-        handleLeaderTransaction(new KVCommand.LeaderTransaction<>(put.key(),
-                                                                  "",
-                                                                  put.leader(),
-                                                                  put.guards(),
-                                                                  List.of(new KVCommand.Mutation<>(put.key(),
-                                                                                                   put.expected(),
-                                                                                                   Option.some(put.value())))));
-
-        return current;
     }
 
     /// Validate the complete read/write set before changing storage. Notifications run only after
@@ -392,7 +377,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// [LeaderValue]) is rejected — applied to nothing, NO `ValueRemove` emitted — UNLESS it carries a
     /// witness that is (a) present, (b) the SAME fenced kind as the committed value (an `EpochBearing`
     /// witness for an `EpochBearing`-valued key, a `LeaderValue` for the `LeaderKey`), and (c) current
-    /// (equal-or-newer epoch, or strictly-greater `viewSequence`). A missing, wrong-typed, or stale
+    /// (equal-or-newer ordinary epoch, strictly-newer OwnerFenced epoch, or strictly-greater `viewSequence`). A missing, wrong-typed, or stale
     /// witness fails, so a deposed owner cannot delete a fenced key even with a bare `Remove(key)` —
     /// closing the witnessless-delete gap. A non-fenced committed value, or an absent key, deletes
     /// freely — preserving every existing unfenced remover (locks, blueprints, registry entries; no
@@ -408,9 +393,17 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return switch (storage.get(key)) {
             case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed,
                                                                                               remove.witness());
+            case OwnerFenced<?, ?> committed -> !newerOwnerWitness(committed, remove.witness());
             case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
             case null, default -> false;
         };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <E extends Comparable<E>> boolean newerOwnerWitness(OwnerFenced<E, ?> committed, Option<Object> witness) {
+        return witness.map(value -> value instanceof OwnerFenced<?, ?> owner
+                                    && ((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0)
+                      .or(false);
     }
 
     /// A witness authorizes deleting an `EpochBearing`-valued key iff it is present, itself

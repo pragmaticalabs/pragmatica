@@ -12,7 +12,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class KVStoreLeaderPutTest {
+class KVStoreAuthorizedMutationTest {
     private record Key(String id) implements StructuredKey {}
     private record Value(String text) implements LeaderAuthorized {}
     private static final Key KEY = new Key("authority");
@@ -28,18 +28,18 @@ class KVStoreLeaderPutTest {
     }
 
     @Test
-    void concurrentClaim_oneWinnerAndVisibleReadback() {
+    void sequentialClaims_onlyFirstSucceeds() {
         apply(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
         var first = new Value("a");
-        apply(new KVCommand.LeaderPut<>(KEY, Option.none(), first, LEADER, java.util.List.of()));
-        apply(new KVCommand.LeaderPut<>(KEY, Option.none(), new Value("b"), LEADER, java.util.List.of()));
+        apply(new KVCommand.LeaderTransaction<>(KEY, "first", LEADER, List.of(), List.of(new KVCommand.Mutation<>(KEY, Option.none(), Option.some(first)))));
+        apply(new KVCommand.LeaderTransaction<>(KEY, "claim", LEADER, java.util.List.of(), List.of(new KVCommand.Mutation<>(KEY, Option.none(), Option.some(new Value("b"))))));
         assertThat(store.get(KEY).unwrap()).isEqualTo(first);
     }
 
     @Test
     void staleLeaderCannotApplyEvenWithMatchingValue() {
         apply(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(new NodeId("other"), 2)));
-        apply(new KVCommand.LeaderPut<>(KEY, Option.none(), new Value("a"), LEADER, java.util.List.of()));
+        apply(new KVCommand.LeaderTransaction<>(KEY, "claim", LEADER, java.util.List.of(), List.of(new KVCommand.Mutation<>(KEY, Option.none(), Option.some(new Value("a"))))));
         assertThat(store.get(KEY).isEmpty()).isTrue();
     }
 
@@ -49,7 +49,7 @@ class KVStoreLeaderPutTest {
         assertThat(store.get(KEY).isEmpty()).isTrue();
         apply(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
         var value = new Value("accepted");
-        apply(new KVCommand.LeaderPut<>(KEY, Option.none(), value, LEADER, java.util.List.of()));
+        apply(new KVCommand.LeaderTransaction<>(KEY, "claim", LEADER, java.util.List.of(), List.of(new KVCommand.Mutation<>(KEY, Option.none(), Option.some(value)))));
         apply(new KVCommand.Put<>(KEY, "unfenced"));
         apply(new KVCommand.Remove<>(KEY, Option.some(value)));
         assertThat(store.get(KEY).unwrap()).isEqualTo(value);

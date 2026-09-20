@@ -22,7 +22,14 @@ class KVStoreLeaderTransactionTest {
     private static final Key FIRST = new Key("first");
     private static final Key SECOND = new Key("second");
     private static final LeaderValue LEADER = new LeaderValue(new NodeId("core"), 1);
-    private final KVStore<StructuredKey, Object> store = new KVStore<>(MessageRouter.mutable(), new Serializer() {
+    private final java.util.concurrent.atomic.AtomicInteger notifications = new java.util.concurrent.atomic.AtomicInteger();
+    private MessageRouter router() {
+        var router = MessageRouter.mutable();
+        router.addRoute(KVStoreNotification.ValuePut.class, _ -> notifications.incrementAndGet());
+        router.addRoute(KVStoreNotification.ValueRemove.class, _ -> notifications.incrementAndGet());
+        return router;
+    }
+    private final KVStore<StructuredKey, Object> store = new KVStore<>(router(), new Serializer() {
         @Override public <T> void write(ByteBuf buffer, T value) {}
     }, new Deserializer() {
         @Override public <T> T read(ByteBuf buffer) { return null; }
@@ -80,4 +87,28 @@ class KVStoreLeaderTransactionTest {
         assertThat(store.get(FIRST).isEmpty()).isTrue();
         assertThat(store.get(SECOND).isEmpty()).isTrue();
     }
+    @Test
+    void secondReadGuardConflictChangesNoWrittenKeyAndEmitsNoNotification() {
+        apply(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+        var firstRead = new Key("first-read");
+        var secondRead = new Key("second-read");
+        apply(new KVCommand.Put<>(firstRead, "unchanged"));
+        apply(new KVCommand.Put<>(secondRead, "changed"));
+        var result = (KVCommand.TransactionResult) apply(new KVCommand.LeaderTransaction<>(FIRST, "read-conflict", LEADER,
+            List.of(new KVCommand.ReadWitness<StructuredKey>(firstRead, Option.some("unchanged")),
+                    new KVCommand.ReadWitness<StructuredKey>(secondRead, Option.some("old"))),
+            List.of(insert(FIRST, "a"), insert(SECOND, "b"))));
+        assertThat(result).isEqualTo(new KVCommand.TransactionResult("read-conflict", false));
+        assertThat(store.get(FIRST).isEmpty()).isTrue();
+        assertThat(store.get(SECOND).isEmpty()).isTrue();
+        assertThat(notifications.get()).isEqualTo(3);
+    }
+
+    @Test
+    void staleLeaderSingleMutationReportsCallerChosenCorrelation() {
+        apply(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(new NodeId("successor"), 2)));
+        assertThat(transaction("my-single-write", List.of(insert(FIRST, "a"))))
+            .isEqualTo(new KVCommand.TransactionResult("my-single-write", false));
+    }
+
 }

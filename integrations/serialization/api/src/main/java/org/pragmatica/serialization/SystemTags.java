@@ -221,7 +221,11 @@ public interface SystemTags {
         pin(table, 120, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest");
         pin(table, 121, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationTransfer");
         pin(table, 122, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationInstalled");
-        // ---- 125..127 RESERVED: guarded transaction protocol tags. ----
+        // Tag 123 retired: uncorrelated LeaderPut. Do not reuse.
+        pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
+        pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
+        pin(table, 126, "org.pragmatica.cluster.state.kvstore.KVCommand.Mutation");
+        pin(table, 127, "org.pragmatica.cluster.state.kvstore.KVCommand.TransactionResult");
         // ---- 128..16383: two-byte system tags. ----
         // worker bootstrap (rare, large payloads)  [base 128]
         // artifact coordinates  [base 192]
@@ -483,11 +487,6 @@ public interface SystemTags {
         pin(table, 1677, "org.pragmatica.aether.slice.kvstore.AetherValue.NodePlacementValue");
         pin(table, 1678, "org.pragmatica.aether.worker.governor.GovernorAuthorityMessage.Request");
         pin(table, 1679, "org.pragmatica.aether.worker.governor.GovernorAuthorityMessage.Response");
-        pin(table, 123, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderPut");
-        pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
-        pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
-        pin(table, 126, "org.pragmatica.cluster.state.kvstore.KVCommand.Mutation");
-        pin(table, 127, "org.pragmatica.cluster.state.kvstore.KVCommand.TransactionResult");
         pin(table, 1682, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementOperationKey");
         pin(table, 1683, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue");
         pin(table, 1684, "org.pragmatica.aether.slice.kvstore.AetherValue.PlacementOperationPhase");
