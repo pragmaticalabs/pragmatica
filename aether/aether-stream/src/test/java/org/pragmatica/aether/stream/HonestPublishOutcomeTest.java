@@ -69,6 +69,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationManager.replic
 class HonestPublishOutcomeTest {
     private static final NodeId SELF = new NodeId("owner-1");
     private static final NodeId SENDER = new NodeId("sender-1");
+    private static final NodeId PEER = new NodeId("peer-1");
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int MIN_SYNC = 2;
@@ -193,6 +194,77 @@ class HonestPublishOutcomeTest {
     }
 
     /// After the append nothing can be taken back, so a barrier that does not confirm must be reported
+    /// #1290 review M2: the pre-append floor is `min-sync - 1` PEERS — the owner counts itself. With exactly
+    /// one in-sync peer and `min-sync = 2`, every owner-local site must ADMIT the publish; a floor of
+    /// `min-sync` would refuse it (one target < two) although the barrier is satisfiable. RED under that
+    /// off-by-one at each site. The peer's watermark already covers offset 0, so the post-append barrier
+    /// resolves from the registry (#262.3) without a transport.
+    @Nested
+    class ReplicaFloorBoundary {
+        @Test
+        void durablePublish_succeeds_withExactlyMinSyncMinusOnePeers() {
+            var manager = ringOnlyManager(ownerPlusOnePeerReplication());
+
+            try {
+                createStream(manager);
+                var publisher = new DurableTopicPublisher<String>(TO_STRING_BYTES, envelopePublisher(manager));
+
+                publisher.publish("order-1")
+                         .await()
+                         .onFailure(cause -> fail("one in-sync peer meets a min-sync-2 floor: " + cause.message()));
+                assertThat(ringHead(manager)).isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void streamAccessPublish_succeeds_withExactlyMinSyncMinusOnePeers() {
+            var manager = ringOnlyManager(ownerPlusOnePeerReplication());
+
+            try {
+                createStream(manager);
+                var access = PartitionedStreamAccess.<String>streamAccess(manager,
+                                                                          TO_STRING_BYTES,
+                                                                          UNUSED_DESERIALIZER,
+                                                                          STREAM,
+                                                                          1,
+                                                                          Option.none(),
+                                                                          Option.none(),
+                                                                          SELF,
+                                                                          Option.none(),
+                                                                          Option.none(),
+                                                                          MIN_SYNC);
+
+                access.publish("order-1")
+                      .await()
+                      .onFailure(cause -> fail("one in-sync peer meets a min-sync-2 floor: " + cause.message()))
+                      .onSuccess(offset -> assertThat(offset).isEqualTo(0L));
+                assertThat(ringHead(manager)).isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void writeRouterPublish_succeeds_withExactlyMinSyncMinusOnePeers() {
+            var manager = ringOnlyManager(ownerPlusOnePeerReplication());
+
+            try {
+                createStream(manager);
+
+                StreamWriteRouter.localOnly(manager)
+                                 .publish(STREAM, PARTITION, payload(), 1000L)
+                                 .await()
+                                 .onFailure(cause -> fail("one in-sync peer meets a min-sync-2 floor: " + cause.message()))
+                                 .onSuccess(offset -> assertThat(offset).isEqualTo(0L));
+                assertThat(ringHead(manager)).isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+    }
+
     /// as an UNKNOWN outcome — and the log assertions prove why: the event is there.
     @Nested
     class PostAppendBarrier {
@@ -354,6 +426,18 @@ class HonestPublishOutcomeTest {
         ReplicaRegistry registry = replicaRegistry();
 
         registry.registerReplica(STREAM, PARTITION, SELF);
+
+        return replicationManager(SELF, registry, (_, _) -> {});
+    }
+
+    /// The real replication manager over a registry holding the owner and ONE peer whose confirmed
+    /// offset already covers the first append: a `min-sync = 2` floor is met exactly, with no slack.
+    private static ReplicationManager ownerPlusOnePeerReplication() {
+        ReplicaRegistry registry = replicaRegistry();
+
+        registry.registerReplica(STREAM, PARTITION, SELF);
+        registry.registerReplica(STREAM, PARTITION, PEER);
+        registry.updateWatermark(STREAM, PARTITION, PEER, 0L);
 
         return replicationManager(SELF, registry, (_, _) -> {});
     }
