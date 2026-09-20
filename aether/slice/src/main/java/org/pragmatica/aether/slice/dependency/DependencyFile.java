@@ -15,7 +15,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -23,8 +22,6 @@ import org.pragmatica.lang.io.StreamError;
 import org.pragmatica.lang.io.StreamOps;
 import org.pragmatica.lang.utils.Causes;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -138,7 +135,6 @@ public record DependencyFile(List<ArtifactDependency> shared,
 
     private static final Set<String> FRAMEWORK_ARTIFACTS = Set.of("slice-api", "infra-api", "slice-annotations");
 
-    private static final Logger log = LoggerFactory.getLogger(DependencyFile.class);
     private static final String DEPENDENCIES_DIR = "META-INF/dependencies/";
     private static final DependencyFile EMPTY = new DependencyFile(List.of(), List.of(), List.of());
 
@@ -149,29 +145,34 @@ public record DependencyFile(List<ArtifactDependency> shared,
         return StreamOps.readString(inputStream).flatMap(DependencyFile::dependencyFile);
     }
 
+    /// Read the slice's dependency file through `classLoader`. An ABSENT file is the dependency-free slice
+    /// and answers [#EMPTY]. A file that is PRESENT but cannot be read or parsed REFUSES the load with
+    /// [DependencyFileError.Unreadable] naming the jar and the underlying error (#1372): loading the slice
+    /// as dependency-free would start it without its declared dependencies and fail further from the cause.
     public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
         var resource = DEPENDENCIES_DIR + sliceClassName;
 
         return StreamOps.readResource(classLoader, resource)
                         .flatMap(DependencyFile::dependencyFile)
-                        .onFailure(cause -> warnIfPresentButUnreadable(resource, classLoader, cause))
-                        .orElse(success(EMPTY));
+                        .fold(cause -> emptyOnlyIfAbsent(resource, classLoader, cause), Result::success);
     }
 
-    /// An ABSENT dependency file is the normal shape of a slice without dependencies and stays silent. A
-    /// file that is present but cannot be read or parsed is still answered as EMPTY — the contract every
-    /// caller relies on — but said out loud with the jar and the cause: silently dropping a slice's
-    /// declared dependencies is the swallow class #1351 removed from the manifest readers (#1357 review).
-    @Contract
-    private static void warnIfPresentButUnreadable(String resource, ClassLoader classLoader, Cause cause) {
-        if (cause instanceof StreamError.ResourceNotFound) {
-            return;
-        }
+    private static Result<DependencyFile> emptyOnlyIfAbsent(String resource, ClassLoader classLoader, Cause cause) {
+        return cause instanceof StreamError.ResourceNotFound
+               ? success(EMPTY)
+               : new DependencyFileError.Unreadable(resource, jarOf(classLoader), cause).result();
+    }
 
-        log.warn("Dependency file {} in {} is present but unreadable; treating the slice as dependency-free: {}",
-                 resource,
-                 jarOf(classLoader),
-                 cause.message());
+    public sealed interface DependencyFileError extends Cause {
+        /// The dependency file exists in the jar but could not be read or parsed; `origin` is the read or
+        /// parse error, so the message names the offending line.
+        record Unreadable(String resource, String jar, Cause origin) implements DependencyFileError, Cause.Wrapped {
+            @Override
+            public String message() {
+                return "Dependency file " + resource + " in " + jar
+                     + " is present but cannot be read; refusing to load the slice: " + origin.message();
+            }
+        }
     }
 
     private static String jarOf(ClassLoader classLoader) {
