@@ -26,6 +26,7 @@ import org.pragmatica.lang.Functions.*;
 import org.pragmatica.lang.Option.None;
 import org.pragmatica.lang.Option.Some;
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Tuple.tuple;
 
@@ -1122,6 +1123,8 @@ public sealed interface Option<T> permits Some, None {
         try {
             return option(function.apply());
         } catch (Throwable e) {
+            Causes.rethrowIfFatal(e);
+
             return Option.empty();
         }
     }
