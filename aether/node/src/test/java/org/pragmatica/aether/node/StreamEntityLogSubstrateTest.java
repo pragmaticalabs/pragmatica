@@ -9,6 +9,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
@@ -17,6 +19,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLogSubstrate;
 
 /// #345 I3 — `awaitBarrier` must pass `minSyncReplicas - 1` to `StreamPartitionManager.awaitReplication`,
@@ -111,6 +114,32 @@ class StreamEntityLogSubstrateTest {
         substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
 
         assertThat(capturedMinAcks.get()).isEqualTo(2);
+    }
+
+    /// #1233: an entity keyspace log is durable state even at replicationFactor = 1 with no WAL (Forge,
+    /// embedded, or the non-durable opt-in). A record the frozen partition ring cannot store must FAIL the
+    /// append, never be acked as a committed write. Driven through the real `ensureLog`/`append` path so
+    /// the `entity:` naming the drop rule keys on (`EntityPartitionArc.arcName` here,
+    /// `StreamPartitionManager`'s entity prefix there) cannot drift apart unnoticed.
+    @Test
+    void append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal() {
+        // Exactly one entity partition floor (10k index slots + the 256 KiB first segment of the 64 MiB
+        // cap, per StreamEntityLogSubstrate's ring sizing): creation fits, every growth is refused.
+        var floor = OffHeapRingBuffer.floorBytes(10_000L, 64L * 1024 * 1024);
+        var partitionManager = StreamPartitionManager.streamPartitionManager(floor);
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("ledger", 1, 1, 1).unwrap();
+        substrate.append("ledger", 0, new byte[16]).await().unwrap();
+
+        substrate.append("ledger", 0, new byte[300_000])
+                 .await()
+                 .onSuccess(offset -> fail("an entity record the frozen ring dropped was acked at offset " + offset))
+                 .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
     }
 
     private static ReplicationManager capturingReplicationManager(AtomicInteger capturedMinAcks) {

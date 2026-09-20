@@ -14,6 +14,7 @@ import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -72,6 +73,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     private final Option<LinearizableBarrier> barrier;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
+    private final ForwardingReadRouter<StreamEvent<T>> readRouter;
 
     private PartitionedStreamAccess(StreamPartitionManager partitionManager,
                                     Serializer serializer,
@@ -114,7 +116,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
 
     /// #345 item 1e-c: full constructor adding the three `LINEARIZABLE` pipeline components — the
     /// committed-owner source, the ownership epoch high-water, and the no-op-round barrier — that the
-    /// typed read path threads into {@link #forwardingReadRouter()} so a `LINEARIZABLE` read runs the
+    /// typed read path threads into {@link #buildReadRouter()} so a `LINEARIZABLE` read runs the
     /// same owner-routed fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path. Every
     /// other overload delegates here with [Option#none] components (no behaviour change).
     private PartitionedStreamAccess(StreamPartitionManager partitionManager,
@@ -159,6 +161,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         this.barrier = barrier;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
+        this.readRouter = buildReadRouter();
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -648,13 +651,16 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
             return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
                                    .async();
         }
-
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
+        // #1236: floor before the append (a refusal is not in the log); after it, an unconfirmed
+        // barrier is an unknown outcome.
+        return partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
+                               .flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
                                .async()
                                .flatMap(offset -> partitionManager.awaitReplication(streamName,
                                                                                     partition,
                                                                                     offset,
                                                                                     minSyncReplicas - 1)
+                                                                  .mapError(PublishOutcomeUnknown.FACTORY)
                                                                   .map(_ -> offset));
     }
 
@@ -739,7 +745,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     }
 
     private Promise<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
-        return forwardingReadRouter().route(streamName, partition, fromOffset, maxEvents);
+        return readRouter().route(streamName, partition, fromOffset, maxEvents);
     }
 
     /// Fix #3 (forward-read): build the shared forward-read core for this stream's typed reads. The
@@ -756,7 +762,11 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path (1e-a). With [Option#none]
     /// components the `LINEARIZABLE` arm degrades to the replica-routed read; the non-linearizable arms
     /// ignore all three.
-    private ForwardingReadRouter<StreamEvent<T>> forwardingReadRouter() {
+    ///
+    /// #1264: built ONCE, as the constructor's last step, from `final` fields only — not per partition
+    /// read. What is cached is the mechanism, never the answer: {@link #resolveOwner} runs inside the
+    /// router at route time, so an ownership change between two reads reaches the new owner.
+    private ForwardingReadRouter<StreamEvent<T>> buildReadRouter() {
         return ForwardingReadRouter.forwardingReadRouter(replicaRegistry,
                                                          selfNodeId,
                                                          forwardClient,
@@ -770,6 +780,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                          committedOwnerSource,
                                                          epochHighWater,
                                                          barrier);
+    }
+
+    ForwardingReadRouter<StreamEvent<T>> readRouter() {
+        return readRouter;
     }
 
     private List<StreamEvent<T>> decodeAll(List<RawEventDto> events, int partition) {
