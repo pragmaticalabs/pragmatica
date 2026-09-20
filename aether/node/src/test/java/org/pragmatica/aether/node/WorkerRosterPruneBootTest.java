@@ -9,6 +9,7 @@ import org.pragmatica.cluster.metrics.MetricObservation;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -17,7 +18,9 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.resource.ResourceProvider;
@@ -59,6 +62,10 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// ingress is the SWIM observation tap and the QUIC peer-state listener, neither routable through
 /// `AetherNode.route`. `SwimHintInstallBootTest` records the same boundary for its own third site.
 class WorkerRosterPruneBootTest {
+    /// #1276: node storage lives here, never under the machine-global `/data/aether/...` default.
+    @TempDir
+    Path tempDir;
+
     private static final NodeId WORKER = NodeId.nodeId("node-worker-ghost").unwrap();
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
     private static final Duration PRUNE_BOUND = Duration.ofSeconds(10);
@@ -109,7 +116,7 @@ class WorkerRosterPruneBootTest {
     }
 
     private AetherNode bootedNode() {
-        var booted = AetherNode.aetherNode(minimalConfig(), () -> {})
+        var booted = AetherNode.aetherNode(minimalConfig(tempDir), () -> {})
                                .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                                .unwrap();
 
@@ -122,7 +129,7 @@ class WorkerRosterPruneBootTest {
 
     /// The #858 single-node boot fixture, as `SwimHintInstallBootTest` uses it: `self` in `coreNodes`
     /// (TopologyObserver requires it), mutual self-signed QUIC TLS, management and app HTTP off.
-    private static AetherNodeConfig minimalConfig() {
+    private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("worker-roster-prune-boot-" + UUID.randomUUID()).unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -139,6 +146,8 @@ class WorkerRosterPruneBootTest {
                                .certificateProvider(Option.none())
                                .configProvider(Option.none())
                                .environment(Option.none())
+                               .managementHttpProtocol(HttpProtocol.H1)
+                               .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                .build();
     }
 

@@ -16,6 +16,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -63,6 +65,7 @@ class StreamPartitionManagerWalTest {
     void appendRecovered_afterSyncReplicated_isFsyncDurable_inTheSameWal() {
         var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
         createStream(manager);
+        var fsyncsBefore = fsyncCount(manager);
 
         IntStream.range(0, EVENTS)
                  .forEach(i -> manager.appendRecovered(STREAM, PARTITION, payload(i), 1000L + i)
@@ -70,6 +73,10 @@ class StreamPartitionManagerWalTest {
         manager.syncReplicated(STREAM, PARTITION)
                .await()
                .onFailure(cause -> fail(cause.message()));
+
+        // #1277 review R1: a second reader sees the page cache, not the disk, so the fsync itself is
+        // observed through the WAL's own counter.
+        assertThat(fsyncCount(manager) - fsyncsBefore).as("the barrier fsynced the replicated records").isPositive();
 
         var verifier = PartitionWal.open(walFile()).unwrap();
         var records = replayAll(verifier);
@@ -80,6 +87,33 @@ class StreamPartitionManagerWalTest {
         IntStream.range(0, EVENTS).forEach(i -> assertRecord(records.get(i), i));
 
         verifier.close();
+        manager.close();
+    }
+
+    /// #1277 review N3: a barrier racing the partition's release must not resolve before the released WAL's
+    /// close-time fsync has run. With the latest-write entry forgotten BEFORE the close, `syncReplicated`
+    /// found no entry and resolved at once — acking frames still only in the page cache. Forgotten AFTER it,
+    /// the barrier reaches the closed WAL through the still-recorded entry and either shares a real fsync
+    /// or fails on the closed channel; never a silent ack.
+    @Test
+    void syncReplicated_racingTheRelease_neverResolvesBeforeTheClosingFsync() throws Exception {
+        var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        createStream(manager);
+        manager.appendRecovered(STREAM, PARTITION, payload(0), 1000L).onFailure(cause -> fail(cause.message()));
+        var wal = GatedWalFsync.walOf(manager, STREAM, PARTITION);
+        var gate = GatedWalFsync.inject(wal);
+        var release = CompletableFuture.supplyAsync(() -> manager.destroyStream(STREAM));
+
+        assertThat(gate.forceEntered.await(10, TimeUnit.SECONDS)).as("the release reached its close-time fsync").isTrue();
+        var barrier = manager.syncReplicated(STREAM, PARTITION);
+
+        assertThat(barrier.isResolved()).as("the barrier resolved while the released WAL's frame was still unsynced")
+                                        .isFalse();
+        gate.forceProceed.countDown();
+        release.get(10, TimeUnit.SECONDS).onFailure(cause -> fail(cause.message()));
+        barrier.await()
+               .onSuccess(_ -> assertThat(wal.stats().fsyncCount()).as("a barrier that resolved shared a real fsync")
+                                                                    .isPositive());
         manager.close();
     }
 
@@ -110,6 +144,17 @@ class StreamPartitionManagerWalTest {
     }
 
     // === helpers ===
+
+    private static long fsyncCount(StreamPartitionManager manager) {
+        return manager.walSnapshot()
+                      .streams()
+                      .stream()
+                      .flatMap(view -> view.partitions().stream())
+                      .filter(view -> view.partition() == PARTITION)
+                      .flatMap(view -> view.wal().stream())
+                      .mapToLong(PartitionWal.WalStats::fsyncCount)
+                      .sum();
+    }
 
     private Path walFile() {
         return walDir.resolve(STREAM).resolve(PARTITION + ".wal");

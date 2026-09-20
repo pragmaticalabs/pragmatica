@@ -8,9 +8,9 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -29,6 +29,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.RollbackConfig;
@@ -84,6 +85,10 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// swallowed, as in production without a provider), and the leader-change toggle that activates the CTM in
 /// production — a single node never elects itself, so the CTM is activated through its public API.
 class SwimFaultyReArmBootTest {
+    /// #1276: node storage lives here, never under the machine-global `/data/aether/...` default.
+    @TempDir
+    Path tempDir;
+
     private static final String CTM_LOGGER = ClusterTopologyManager.class.getName();
     private static final String SWIM_LOGGER = SwimProtocol.class.getName();
     private static final NodeId PHANTOM = NodeId.nodeId("node-phantom").unwrap();
@@ -271,7 +276,7 @@ class SwimFaultyReArmBootTest {
                                 .configProvider(Option.none())
                                 .environment(Option.none())
                                 .managementHttpProtocol(HttpProtocol.H1)
-                                .storageConfig(Map.of())
+                                .storageConfig(HermeticStorage.nodeStorageIn(tempDir, false))
                                 .backupConfig(Option.none())
                                 .membership(Option.none())
                                 .streaming(StreamingConfig.streamingConfig())

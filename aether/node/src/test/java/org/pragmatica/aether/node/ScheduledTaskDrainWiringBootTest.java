@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -30,8 +31,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.ExecutionMode;
@@ -95,6 +98,10 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// The node is booted with an injected `jvmExit` (the Forge/Ember overload), so the drain running to
 /// completion does not halt the test JVM.
 class ScheduledTaskDrainWiringBootTest {
+    /// #1276: node storage lives here, never under the machine-global `/data/aether/...` default.
+    @TempDir
+    Path tempDir;
+
     private static final String LOGGER_NAME = "org.pragmatica.aether";
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:drain-wiring:1.0.0").unwrap();
     private static final String DRAIN_COMMAND_SEEN = "includes self — invoking local drain handler";
@@ -174,7 +181,7 @@ class ScheduledTaskDrainWiringBootTest {
 
     private void boot() {
         delegateRouter = MessageRouter.DelegateRouter.delegate();
-        node = AetherNode.aetherNode(minimalConfig(),
+        node = AetherNode.aetherNode(minimalConfig(tempDir),
                                       delegateRouter,
                                       NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
                                       jvmExits::incrementAndGet)
@@ -214,7 +221,7 @@ class ScheduledTaskDrainWiringBootTest {
 
     /// The #858 single-node boot fixture: `self` in `coreNodes`, mutual self-signed QUIC TLS, management
     /// and app HTTP off.
-    private static AetherNodeConfig minimalConfig() {
+    private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("scheduled-drain-wiring-boot-" + UUID.randomUUID()).unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -231,6 +238,8 @@ class ScheduledTaskDrainWiringBootTest {
                                 .certificateProvider(Option.none())
                                 .configProvider(Option.none())
                                 .environment(Option.none())
+                                .managementHttpProtocol(HttpProtocol.H1)
+                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
     }
 

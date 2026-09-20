@@ -37,10 +37,10 @@ import static org.pragmatica.lang.Result.all;
 ///
 /// ## What it builds, and why the context is mandatory (#345 I1)
 /// Until I1 this factory ignored its config and unconditionally returned the NO-ARG
-/// [InMemoryDurableEntity] — a bare map with no fence and no owner routing — so a five-node cluster gave
-/// every node its own private copy of every key. It now builds the fenced
-/// [PartitionFencedDurableEntity] from node-wide SPI extensions registered by
-/// `AetherNode.registerEntityExtensionsOnSpi`, following the `StreamAccessFactory` template.
+/// `InMemoryDurableEntity` — a bare map with no fence and no owner routing, now a test-only fixture in
+/// this module's test sources (#1270) — so a five-node cluster gave every node its own private copy of
+/// every key. It now builds the fenced [PartitionFencedDurableEntity] from node-wide SPI extensions
+/// registered by `AetherNode.registerEntityExtensionsOnSpi`, following the `StreamAccessFactory` template.
 ///
 /// The context-free [#provision(DurableEntityConfig)] overload cannot reach those extensions, so it
 /// REFUSES rather than silently rebuilding the unfenced entity — the #345 I1 owner ruling on an absent
@@ -195,7 +195,8 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
                                       .onSuccess(driver -> driver.register(config.keyspace(),
                                                                            config.partitionCount(),
                                                                            fenced.fold(),
-                                                                           fence.substrate()));
+                                                                           fence.substrate(),
+                                                                           fenced::isPartitionOwned));
         // Timers (#345 I4) are OPTIONAL on the same terms as checkpointing, and for the same reason the
         // shape of a refusal has to match the size of the loss: an absent driver costs TIMELINESS, not
         // safety. Every scheduled timer is still durable, fenced and replicated — it is in the log — so a

@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -107,6 +108,20 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                    int maxRetries);
 
     <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
+
+    /// Why a non-default [SliceInvoker] refuses [#invokeLocalWithContext].
+    Cause CONTEXT_DELIVERY_NOT_SUPPORTED = Causes.cause("Context-carrying local delivery not supported by this invoker");
+
+    /// #1295: deliver a durable-topic event with its [MessageContext] to the slice loaded on THIS node,
+    /// through [SliceBridge#invokeWithContext]. Resolves the slice exactly as [#invokeLocal] does and
+    /// FAILS when it is not local — it never forwards, because the context is an in-process value that
+    /// no wire message carries. Implementations without a local slice registry refuse.
+    default Promise<Unit> invokeLocalWithContext(Artifact slice,
+                                                 MethodName method,
+                                                 byte[] eventBytes,
+                                                 MessageContext context) {
+        return new SliceInvokerError.InvocationError(slice, method, CONTEXT_DELIVERY_NOT_SUPPORTED).promise();
+    }
 
     /// Returns true when the target slice is loaded on this node. Callers that need to
     /// invoke a slice with a request whose codec lives only inside the slice's loader
@@ -844,6 +859,22 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                    bridge,
                                                                                                    method,
                                                                                                    request)));
+    }
+
+    /// Same local resolution as [#invokeLocal] and the same observability wrapping; no network path.
+    @Override
+    public Promise<Unit> invokeLocalWithContext(Artifact slice,
+                                                MethodName method,
+                                                byte[] eventBytes,
+                                                MessageContext context) {
+        return invocationHandler.localSlice(slice)
+                                .async(SLICE_NOT_FOUND)
+                                .flatMap(bridge -> ObservabilityCells.around(bridge,
+                                                                             method.name(),
+                                                                             () -> bridge.invokeWithContext(method.name(),
+                                                                                                            eventBytes,
+                                                                                                            context)))
+                                .mapToUnit();
     }
 
     @SuppressWarnings("unchecked")

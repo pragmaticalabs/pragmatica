@@ -65,11 +65,42 @@ class TypedPublisherTest {
         assertThat(asPublisher).isNotNull();
     }
 
+    /// #1237: the typed facade is what codegen injects for a topic-constant publisher, so a key it
+    /// dropped would reach no slice at all — the facade must forward the keyed overload, not fall
+    /// back to the keyless one.
+    @Test
+    void publishWithKey_forwardsKeyToWrappedPublisher() {
+        var capturedKey = new AtomicReference<String>();
+        var publisher = TypedPublisher.typedPublisher(SEAT_SOLD, keyCapturingPublisher(capturedKey));
+
+        publisher.publish(new SeatSold("A1"), "seat-A1-sold")
+                 .await()
+                 .onFailure(cause -> fail(cause.message()));
+
+        assertThat(capturedKey.get()).isEqualTo("seat-A1-sold");
+    }
+
     @Test
     void topic_isRetained() {
         var publisher = TypedPublisher.typedPublisher(SEAT_SOLD, capturingPublisher(new AtomicReference<>()));
 
         assertThat(publisher.topic()).isEqualTo(SEAT_SOLD);
+    }
+
+    private static Publisher<SeatSold> keyCapturingPublisher(AtomicReference<String> keySink) {
+        return new Publisher<>() {
+            @Override
+            public Promise<Unit> publish(SeatSold message) {
+                return PUBLISH_FAILED.promise();
+            }
+
+            @Override
+            public Promise<Unit> publish(SeatSold message, String idempotencyKey) {
+                keySink.set(idempotencyKey);
+
+                return Promise.unitPromise();
+            }
+        };
     }
 
     private static Publisher<SeatSold> capturingPublisher(AtomicReference<SeatSold> sink) {

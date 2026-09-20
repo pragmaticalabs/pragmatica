@@ -32,18 +32,6 @@ public interface SliceManifest {
         return readManifest(jarUrl).flatMap(SliceManifest::parseManifest);
     }
 
-    static Result<SliceManifestInfo> readFromClassLoader(ClassLoader classLoader) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> classLoader.getResource(JarFile.MANIFEST_NAME))
-                     .flatMap(SliceManifest::resolveManifestUrl)
-                     .flatMap(SliceManifest::parseManifest);
-    }
-
-    private static Result<Manifest> resolveManifestUrl(URL url) {
-        return option(url).toResult(MANIFEST_NOT_FOUND)
-                     .flatMap(SliceManifest::readManifestFromUrl);
-    }
-
     private static Result<Manifest> readManifest(URL jarUrl) {
         var path = jarUrl.getPath();
 
@@ -70,15 +58,6 @@ public interface SliceManifest {
         try (jarFile) {
             return option(jarFile.getManifest());
         }
-    }
-
-    private static Result<Manifest> readManifestFromUrl(URL manifestUrl) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> {
-                               try (var is = manifestUrl.openStream()) {
-                               return new Manifest(is);
-                           }
-                           });
     }
 
     private static Result<SliceManifestInfo> parseManifest(Manifest manifest) {
@@ -115,8 +94,6 @@ public interface SliceManifest {
 
     Fn1<Cause, String> UNSUPPORTED_ENVELOPE_VERSION = Causes.forOneValue("Envelope format version %s not supported by this runtime (supported: " + SUPPORTED_ENVELOPE_VERSIONS
                                                                         + ")");
-
-    Cause MANIFEST_NOT_FOUND = Causes.cause("Manifest not found in ClassLoader resources");
 
     Cause MISSING_ARTIFACT_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_ARTIFACT_ATTR
                                               + ". Slice JARs must declare artifact coordinates in manifest.");

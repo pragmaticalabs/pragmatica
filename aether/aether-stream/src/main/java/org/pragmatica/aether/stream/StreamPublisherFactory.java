@@ -104,7 +104,6 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                       keyExtractor,
                                                       config.consistencyMode(),
                                                       Option.none(),
-                                                      config.minSyncReplicas(),
                                                       forwardClient,
                                                       governorResolver,
                                                       partitionOwnerResolver,

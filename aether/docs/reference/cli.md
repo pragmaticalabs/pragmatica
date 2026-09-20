@@ -1648,14 +1648,8 @@ aether streams read my-events 0 --since 100 --limit 50
 
 ### `aether streams create <name> [--partitions N]`
 
-Create a new event stream. The optional `--partitions N` flag overrides the server-side
-default partition count. The underlying `POST /api/streams` route is idempotent — calling
-`create` on an existing stream returns the existing metadata (status `exists`).
-
-```bash
-aether streams create my-events
-aether streams create my-events --partitions 8
-```
+Removed (#1224): the command refuses unconditionally, because the body-carried create never registered a
+catalog entry. Use [`aether stream create`](#aether-stream-create-namespacestreamversion---partitions-n).
 
 ### `aether streams delete <name-or-address> [--force]`
 
@@ -1816,6 +1810,23 @@ aether stream tail orders:order-events:1.0.0 --no-follow   # one-shot drain, the
 | `--from-offset` | Initial offset to read from (default `0` — from beginning) |
 | `--max-events` | Max events per poll page (default `100`, server-capped at `1000`) |
 | `--follow` / `--no-follow` | Keep polling (default) vs. one-shot drain then exit |
+
+### `aether stream create <namespace:stream:version> [--partitions N]`
+
+Create a stream at a catalog address and register it in the catalog. Idempotent: an address that
+already exists reports `exists`. `--partitions N` overrides the server-side default partition count.
+Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}`.
+
+An address in the `topic` or `entity` namespace is refused with `400` (`ReservedStreamName`), because
+those stream kinds are created only by internal provisioning (durable topics, entity keyspaces). The
+command prints the server's problem detail, for example `Failed to create stream: Stream name
+'topic:foo:1.0.0' uses the reserved prefix 'topic:'; streams under it are created only by internal
+provisioning`, and exits non-zero. See the management API's *Reserved stream-name prefixes*.
+
+```bash
+aether stream create orders:order-events:1.0.0
+aether stream create orders:order-events:1.0.0 --partitions 8
+```
 
 ### `aether stream delete <namespace:stream:version> [--force]`
 
@@ -2692,7 +2703,10 @@ A checkpoint is the only thing that bounds an entity log: until a partition is c
 floor reclaims nothing for it. **`writes` climbing is the signal that the driver is alive** — writes and
 reads keep succeeding even when checkpointing has stopped, so a flat `writes` under load is the fault to
 act on. `failures` and `checkpointedThrough` say which partitions are stuck; a partition this node has
-never folded is absent rather than reported as offset 0.
+never folded is absent rather than reported as offset 0. `checkpointLag` (#1302) is, per folded partition,
+the log head minus the COMMITTED checkpoint in consensus KV, for partitions this node OWNS — how far a
+recovery would replay; its node-wide
+maximum drives the `entity.checkpoint.lag.max` threshold alert (default WARNING 5,000 / CRITICAL 10,000).
 
 Output is the endpoint's JSON, pretty-printed:
 
@@ -2700,7 +2714,8 @@ Output is the endpoint's JSON, pretty-printed:
 {
   "keyspaces": [
     {"keyspace": "orders", "partitionCount": 8, "writes": 214, "failures": 0,
-     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}}
+     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502},
+     "checkpointLag": {"0": 59, "3": 12, "5": 0}}
   ]
 }
 ```
@@ -2792,7 +2807,12 @@ WAL counters (`sizeBytes`, replayable window `(truncatedUpto, lastOffset]`, fsyn
 `sealedThrough` / `earliestSegment` — the durable sealed bound and the earliest retained sealed
 segment; `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest offset reachable from
 any local source; `violated` / `violation` — the tri-floor invariant verdict. `walTotalBytes` at the
-root is this node's total live WAL footprint. Full schema and the precise invariant in the
+root is this node's total live WAL footprint; `walRecoveryHeadGapsAccepted` counts WAL recoveries that
+accepted a gap before a WAL file's first record as reclaimed history (non-zero without retention
+having reclaimed that partition means records were lost — the WARN log names the range);
+`walReclamationHeldBackTicks` counts consecutive truncation ticks in which the on-disk sealed watermark
+sat below the live one without advancing (non-zero and climbing means the streams metadata snapshot
+cannot be written or read, and WAL reclamation is halted until it can). Full schema and the precise invariant in the
 Management API section linked above.
 
 **A `violated: true` row means this node cannot rebuild that partition from its checkpoint** — the

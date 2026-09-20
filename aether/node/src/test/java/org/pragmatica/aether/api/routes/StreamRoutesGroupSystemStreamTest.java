@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// [org.pragmatica.aether.slice.stream.SystemStreams]. The coordinator's `joinGroup`/`leaveGroup`
 /// both `rebalance`, which proposes real, replicated `KVCommand.Put` assignment records under the
 /// named stream — so a caller could commit durable consumer-group state against `cluster-events`.
-/// Same shape and same predicate as `#createFreshStream`'s guard (`SystemStreams.isForbiddenEngineKey`),
+/// Same shape and same predicate as `#createStreamWithConfig`'s guard (`SystemStreams.isForbiddenEngineKey`),
 /// pinned the same way: with full privileges, naming a framework stream in the body.
 ///
 /// `ConsumerGroupCoordinator` is sealed, so the harness uses the real `noOp()` coordinator, which

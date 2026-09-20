@@ -5,19 +5,21 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 
-/// Shared bounded forward-publish retry for the three owner-forward sites — {@link StreamWriteRouter}
-/// (the management/API write path) and {@link DefaultStreamPublisher} / {@link PartitionedStreamAccess}
-/// (the app publish paths). Each site previously carried its own verbatim copy of this retry
-/// state-machine, so a fix landing on one lagged the others — the exact divergence #485 and #506
-/// corrected — and this indirection collapses the three copies into ONE policy so that class cannot recur.
+/// Bounded forward-publish retry for the owner-forward arm of {@link StreamWriteRouter}, the one stream write
+/// operation that the management/API publish, {@link DefaultStreamPublisher} and {@link PartitionedStreamAccess}
+/// all delegate to (#1263). It began as three verbatim copies, one per site, so a fix landing on one lagged
+/// the others — the exact divergence #485 and #506 corrected; #1263 then removed the sites themselves.
 ///
 /// Semantics (owner-config-lag absorption): re-attempt a forward ONLY when the owner reported the failure
 /// as retryable ({@link StreamForwardError.RemotePublishRetryable} — its committed-config view had not yet
@@ -43,6 +45,22 @@ sealed interface StreamForwardRetry {
     /// same target, identical to an inline per-site retry but with no per-call argument threading.
     static Promise<Long> withBoundedRetry(Fn0<Promise<Long>> sendAttempt) {
         return attempt(sendAttempt, 1, Deadline.current());
+    }
+
+    /// #1230 ownership-lag redirect for the owner-local arm of {@link StreamWriteRouter}: a local append refused
+    /// with {@link StreamError.NotOwnerAppend} — HRW placement already names this node but the leader has
+    /// not yet committed the ownership change — is re-sent to the refusal's COMMITTED owner, which is still
+    /// the fenced single writer for the partition, via `forwardTo` (itself bounded-retried at the call site).
+    /// Strategy: FER — the write degrades forward to the authoritative writer instead of failing the app;
+    /// it earns "no second writer" because the committed owner's own admission re-checks on arrival, and a
+    /// target whose view has moved answers retryable rather than appending. `forwardTo` yields
+    /// [Option#none] when no forward client is wired; the refusal then propagates unchanged, as does every
+    /// other cause.
+    static <T> Promise<T> redirectNotOwner(Cause cause, Fn1<Option<Promise<T>>, NodeId> forwardTo) {
+        return cause instanceof StreamError.NotOwnerAppend refused
+               ? forwardTo.apply(refused.committedOwner())
+                          .or(cause::promise)
+               : cause.promise();
     }
 
     private static Promise<Long> attempt(Fn0<Promise<Long>> sendAttempt, int attemptNo, Deadline deadline) {

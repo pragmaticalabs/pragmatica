@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.nio.file.Path;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.SecretsProvider;
 import org.pragmatica.aether.resource.ResourceProvider;
@@ -39,6 +41,9 @@ class AetherNodeSecretResolutionRefusalBootTest {
 
     private AetherNode node;
 
+    @TempDir
+    Path tempDir;
+
     @AfterEach
     void tearDown() {
         if (node != null) {
@@ -62,7 +67,7 @@ class AetherNodeSecretResolutionRefusalBootTest {
         var environment = Option.some(EnvironmentIntegration.environmentIntegration(Option.none(),
                                                                                     Option.some(failing),
                                                                                     Option.none()));
-        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(environment, Option.none(), configProvider);
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(environment, Option.none(), configProvider, tempDir);
 
         AetherNode.aetherNode(config, () -> {})
                   .onSuccess(booted -> {
@@ -98,7 +103,7 @@ class AetherNodeSecretResolutionRefusalBootTest {
         var configProvider = ConfigurationProvider.builder()
                                                   .withDefaults(Map.of(CONFIG_KEY, "${secrets:" + SECRET_PATH + "}"))
                                                   .build();
-        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), configProvider);
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), configProvider, tempDir);
 
         AetherNode.aetherNode(config, () -> {})
                   .onSuccess(booted -> {
@@ -133,7 +138,7 @@ class AetherNodeSecretResolutionRefusalBootTest {
         var environment = Option.some(EnvironmentIntegration.environmentIntegration(Option.none(),
                                                                                     Option.none(),
                                                                                     Option.none()));
-        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(environment, Option.none(), configProvider);
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(environment, Option.none(), configProvider, tempDir);
 
         AetherNode.aetherNode(config, () -> {})
                   .onFailure(cause -> fail("control: a provider with no ${secrets:...} placeholder and no "

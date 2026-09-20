@@ -106,6 +106,22 @@ class StreamPartitionManagerTest {
             fenced.close();
         }
 
+        /// #1230 ordering pin (adopted from rev1290): the epoch fence runs BEFORE owner admission, so a deposed
+        /// writer presenting a stale epoch is told it is deposed (`StaleEpochAppend`, permanent) rather than
+        /// redirected (`NotOwnerAppend`, transient). Admission-before-fence reddens this test alone.
+        @Test
+        void publishLocal_staleEpochFromNonOwner_isRejectedByTheFenceBeforeAdmission() {
+            var fenced = fencedManager(highWaterAt(Epoch.epoch(1, 3)));
+            assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
+            fenced.ownerWriteAdmission((_, _) -> Option.some(new NodeId("successor")));
+
+            var rejected = fenced.publishLocal(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, Epoch.epoch(1, 2));
+
+            assertThat(rejected.isFailure()).isTrue();
+            rejected.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StaleEpochAppend.class));
+            fenced.close();
+        }
+
         private static StreamPartitionManager fencedManager(OwnershipEpochHighWater highWater) {
             return StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
                                                                  EvictionListener.NOOP,
@@ -114,7 +130,8 @@ class StreamPartitionManagerTest {
                                                                  highWater,
                                                                  StreamOwnerEpochSource.zero(),
                                                                  Option.none(),
-                                                                 LastSealedOffsetSource.none());
+                                                                 LastSealedOffsetSource.none(),
+                                                                 DurableSealedOffsetSource.none());
         }
 
         private static OwnershipEpochHighWater highWaterAt(Epoch epoch) {
