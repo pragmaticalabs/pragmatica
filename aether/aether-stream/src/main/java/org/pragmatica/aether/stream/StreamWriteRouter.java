@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
-import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.consensus.NodeId;
@@ -94,7 +93,7 @@ public final class StreamWriteRouter {
     private Promise<Long> awaitMinSync(String streamName, int partition, long offset, int minSyncReplicas) {
         return minSyncReplicas > 1
                ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
-                                 .mapError(PublishOutcomeUnknown.FACTORY)
+                                 .mapError(StreamError::barrierFailure)
                                  .map(_ -> offset)
                : Promise.success(offset);
     }

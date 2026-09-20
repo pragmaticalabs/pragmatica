@@ -14,7 +14,9 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -345,6 +347,33 @@ final class DefaultReplicationManager implements ReplicationManager {
             pendingAcks.remove(key);
             pending.promise().resolve(success(unit()));
         }
+    }
+
+    /// The pending entry is removed here, under the caller's ring section, so a racing ack or the timeout finds
+    /// nothing to resolve; the promise itself is resolved OFF this thread. The caller is the ring's eviction
+    /// path, which runs under the partition's append lock, and a publisher's continuation is foreign code that
+    /// may publish again or block — it must never run under that lock (the same rule as the ring's listeners).
+    @Contract
+    @Override
+    public void failPendingAcks(String streamName,
+                                int partition,
+                                long fromOffset,
+                                long toOffset,
+                                Fn1<Cause, Long> causeFor) {
+        pendingAcks.keySet()
+                   .stream()
+                   .filter(key -> key.streamName()
+                                     .equals(streamName) && key.partition() == partition)
+                   .filter(key -> key.offset() >= fromOffset && key.offset() <= toOffset)
+                   .toList()
+                   .forEach(key -> failPendingAck(key,
+                                                  causeFor.apply(key.offset())));
+    }
+
+    @Contract
+    private void failPendingAck(PendingAckKey key, Cause cause) {
+        option(pendingAcks.remove(key)).onPresent(pending -> pending.promise()
+                                                                    .async(promise -> promise.resolve(cause.result())));
     }
 
     private void timeoutPendingAck(PendingAckKey key) {

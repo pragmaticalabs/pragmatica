@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
@@ -13,6 +14,19 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface StreamError extends Cause {
+    /// The publisher-facing cause for a replication barrier that failed AFTER the owner appended (#1236): the
+    /// event may be in the log, so the failure is reported as [PublishOutcomeUnknown] and a retry must reuse the
+    /// message ID. The one known outcome is [UnacknowledgedEvicted] (#1352): the event was evicted before any
+    /// peer acknowledged it and is definitively NOT in the log, so it passes through as the definite failure it
+    /// is — wrapping it would tell the caller "maybe in the log" about an event that can simply be republished.
+    /// Every writer that awaits the barrier (`PartitionedStreamAccess`, `DefaultStreamPublisher`,
+    /// `StreamWriteRouter`, `StreamForwardHandler`) classifies through this one function.
+    static Cause barrierFailure(Cause cause) {
+        return cause instanceof UnacknowledgedEvicted
+               ? cause
+               : PublishOutcomeUnknown.FACTORY.apply(cause);
+    }
+
     /// `General` implements {@link ResourceCapacityExhausted} so the capacity-class constants —
     /// `STREAM_MEMORY_EXCEEDED`, and `SEALING_BEHIND` since #1234 — are classified TRANSIENT by the
     /// slice-loading / resource-provisioning path (retry, then `DeploymentFailed` after MAX_RETRIES; spec
@@ -68,6 +82,20 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Cursor at offset %d has expired, oldest available is %d".formatted(requestedOffset, tailOffset);
+        }
+    }
+
+    /// The publish at `offset` was evicted by DROP_OLDEST before `minSyncReplicas - 1` peers acknowledged it
+    /// (#1352): it was never visible, it was not sealed to the durable tier, and it is definitively NOT in the
+    /// log. Reported to the publisher's pending await at eviction time — never as a replication timeout, which
+    /// would read as outcome-unknown for an outcome that is known. Not [Cause.Transient]: retrying the same
+    /// await cannot succeed; the caller republishes if it still wants the event.
+    record UnacknowledgedEvicted(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Event %s[%d]@%d was evicted before its replicas acknowledged it: not in the log".formatted(streamName,
+                                                                                                               partition,
+                                                                                                               offset);
         }
     }
 

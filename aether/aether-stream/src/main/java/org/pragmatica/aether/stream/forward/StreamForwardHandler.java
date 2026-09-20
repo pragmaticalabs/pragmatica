@@ -154,6 +154,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     ///
     /// #1236: this barrier runs AFTER the append, so a failure here is an unknown outcome
     /// ([PublishOutcomeUnknown]), never a clean failure — the clean refusal is the pre-append floor in [#onPublishForward].
+    /// The one exception is an unacknowledged eviction (#1352, [StreamError#barrierFailure]): the event is
+    /// definitively not in the log, so the sender gets a plain failure it may simply republish.
     private Promise<Long> awaitMinSync(PublishForward request, long offset) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(request.streamName());
 
@@ -162,7 +164,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                    request.partition(),
                                                    offset,
                                                    minSyncReplicas - 1)
-                                 .mapError(PublishOutcomeUnknown.FACTORY)
+                                 .mapError(StreamError::barrierFailure)
                                  .map(_ -> offset)
                : Promise.success(offset);
     }

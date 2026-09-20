@@ -358,6 +358,145 @@ class HonestPublishOutcomeTest {
         }
     }
 
+    /// #1352: the barrier can also fail because the appended event was EVICTED before any peer acknowledged
+    /// it. That outcome is known — the event is not in the log — so every writer reports the definite
+    /// [StreamError.UnacknowledgedEvicted] rather than wrapping it as outcome-unknown, and the forwarded
+    /// reply is a plain failure, not `outcomeUnknown`.
+    @Nested
+    class UnacknowledgedEvictionBarrier {
+        private static final StreamError.UnacknowledgedEvicted DROPPED = new StreamError.UnacknowledgedEvicted(STREAM, PARTITION, 0L);
+
+        @Test
+        void durablePublish_reportsTheDrop_notOutcomeUnknown() {
+            var manager = ringOnlyManager(droppingReplication());
+
+            try {
+                createStream(manager);
+                var publisher = new DurableTopicPublisher<String>(TO_STRING_BYTES, envelopePublisher(manager));
+
+                publisher.publish("order-1")
+                         .await()
+                         .onSuccess(_ -> fail("a dropped event must not report success"))
+                         .onFailure(cause -> assertThat(cause).isEqualTo(DROPPED));
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void forwardedPublish_repliesPlainFailure_notOutcomeUnknown() {
+            var manager = ringOnlyManager(droppingReplication());
+            var responses = new CopyOnWriteArrayList<StreamForwardMessage>();
+
+            try {
+                createStream(manager);
+                var handler = StreamForwardHandler.streamForwardHandler(SELF,
+                                                                        manager,
+                                                                        (_, message) -> responses.add(message));
+
+                handler.onPublishForward(publishForward(SENDER, "c-1", STREAM, PARTITION, payload(), 1000L));
+
+                assertThat(responses).hasSize(1);
+                assertThat(responses.getFirst()).isInstanceOfSatisfying(PublishForwardResponse.class, response -> {
+                    assertThat(response.success()).isFalse();
+                    assertThat(response.retryable()).isFalse();
+                    assertThat(response.outcomeUnknown()).as("the event is definitively not in the log").isFalse();
+                    assertThat(response.errorMessage()).isEqualTo(DROPPED.message());
+                });
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void streamAccessPublish_reportsTheDrop_notOutcomeUnknown() {
+            var manager = ringOnlyManager(droppingReplication());
+
+            try {
+                createStream(manager);
+                var access = PartitionedStreamAccess.<String>streamAccess(manager,
+                                                                          TO_STRING_BYTES,
+                                                                          UNUSED_DESERIALIZER,
+                                                                          STREAM,
+                                                                          1,
+                                                                          Option.none(),
+                                                                          Option.none(),
+                                                                          SELF,
+                                                                          Option.none(),
+                                                                          Option.none(),
+                                                                          MIN_SYNC);
+
+                access.publish("order-1")
+                      .await()
+                      .onSuccess(_ -> fail("a dropped event must not report success"))
+                      .onFailure(cause -> assertThat(cause).isEqualTo(DROPPED));
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void writeRouterPublish_reportsTheDrop_notOutcomeUnknown() {
+            var manager = ringOnlyManager(droppingReplication());
+
+            try {
+                createStream(manager);
+
+                StreamWriteRouter.localOnly(manager)
+                                 .publish(STREAM, PARTITION, payload(), 1000L)
+                                 .await()
+                                 .onSuccess(_ -> fail("a dropped event must not report success"))
+                                 .onFailure(cause -> assertThat(cause).isEqualTo(DROPPED));
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// The barrier's verdict when DROP_OLDEST evicted offset 0 before any peer acknowledged it — what
+        /// `DefaultReplicationManager.failPendingAcks` resolves the await with (pinned end-to-end in
+        /// `StreamPartitionManagerUnacknowledgedEvictionTest`), without the ring and the eviction.
+        private static ReplicationManager droppingReplication() {
+            return new ReplicationManager() {
+                @Contract
+                @Override
+                public void replicateEvent(String streamName,
+                                           int partition,
+                                           long offset,
+                                           byte[] payload,
+                                           long timestamp,
+                                           Epoch ownerEpoch) {}
+
+                @Contract
+                @Override
+                public void handleAck(ReplicationMessage.ReplicateAck ack) {}
+
+                @Override
+                public ReplicaRegistry registry() {
+                    return replicaRegistry();
+                }
+
+                @Override
+                public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+                    return DROPPED.promise();
+                }
+
+                @Override
+                public long replicatedThrough(String streamName, int partition, int minAcks) {
+                    return -1L;
+                }
+
+                @Override
+                public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+                    return -1L;
+                }
+
+                @Contract
+                @Override
+                public void observeAcks(AckObserver observer) {}
+            };
+        }
+    }
+
     // === fixtures ===
 
     private static void assertCleanFailure(PublishForwardResponse response) {
