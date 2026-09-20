@@ -35,9 +35,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// too, and that is exactly the hang. Reverting the join turns this red with the `START_BOUND`
 /// `Timeout` cause instead of `Address already in use`.
 class EmberClusterSwimStartFailureTest {
-    private static final int BASE_PORT = 26300;
-    private static final int BASE_MGMT_PORT = 26340;
-    private static final int BASE_APP_HTTP_PORT = 26380;
+    /// Above every computed candidate range in this module (`EmberClusterObservedNodeStateTest` 25700–27500,
+    /// `EmberBootstrapAdminKeyAuthTest` 27700–29500, `EmberClusterCurrentLeaderTest` 29700–31500, each
+    /// reaching base + 102) and every literal block, so a parallel fork's prober never lands on these.
+    private static final int BASE_PORT = 31700;
+    private static final int BASE_MGMT_PORT = 31740;
+    private static final int BASE_APP_HTTP_PORT = 31780;
     private static final String NODE_PREFIX = "swimfail";
     /// Well above the measured green (node 1's stop plus the abort's bounded stops of the other two),
     /// well below the 90 s the reviewer's probe hung for: a `Timeout` here IS the hang.

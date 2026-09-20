@@ -34,9 +34,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// makes the failure REACH the node (reverting it: the release settles, but the node's management
 /// port is still bound).
 class EmberClusterHeldBackSwimStartFailureTest {
-    private static final int BASE_PORT = 26450;
-    private static final int BASE_MGMT_PORT = 26490;
-    private static final int BASE_APP_HTTP_PORT = 26530;
+    /// Above every computed candidate range in this module (the highest, `EmberClusterCurrentLeaderTest`,
+    /// ends at base 31500 + 102) and the 31700 block of `EmberClusterSwimStartFailureTest`.
+    private static final int BASE_PORT = 31900;
+    private static final int BASE_MGMT_PORT = 31940;
+    private static final int BASE_APP_HTTP_PORT = 31980;
     private static final String NODE_PREFIX = "heldswim";
     private static final String HELD_BACK_ID = NODE_PREFIX + "-3";
     private static final int HELD_BACK_SLOT = 2;

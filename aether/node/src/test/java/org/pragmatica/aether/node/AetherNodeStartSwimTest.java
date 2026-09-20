@@ -9,6 +9,7 @@ import java.net.SocketException;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -58,7 +59,7 @@ class AetherNodeStartSwimTest {
         var detector = detectorWithSwimPort(swimPort);
 
         try (var holder = new DatagramSocket(swimPort)) {
-            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail);
+            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail, Promise.promise());
 
             assertThat(failed.await(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("a SWIM start that cannot bind UDP %d must fail the node", swimPort)
@@ -80,7 +81,7 @@ class AetherNodeStartSwimTest {
         var detector = detectorWithSwimPort(freeUdpPort());
 
         try {
-            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail);
+            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail, Promise.promise());
 
             assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("a started SWIM must announce the join")
@@ -137,38 +138,66 @@ class AetherNodeStartSwimTest {
         }
     }
 
-    /// #1308 (rev1343 BLOCKING-1) — the node's start outcome is `formationUnlessSwimFails(formation,
-    /// swimStart)`. A SWIM start failure must settle it AS THAT FAILURE while formation is still
-    /// pending: in a single-JVM host `failNode` only stops this node, whose formation then never
-    /// resolves, so an outcome that waited on formation alone hung forever. Reverting the join
-    /// (`startSwimTrigger` back to a fire-and-forget Runnable) has no unit-level seam; the wiring is
-    /// pinned end-to-end by `EmberClusterSwimStartFailureTest` in `aether/ember`.
+    /// rev1343 NIT-R2 — a failed SWIM start fails the node's start outcome BEFORE `failNode` runs.
+    /// In Ember `failNode` blocks for the node's own stop (~6 s), and peers' hellos can complete
+    /// formation inside that window; the outcome is first-settlement-wins, so an outcome settled only
+    /// after `failNode` could be won by formation and report a started node that is being stopped.
+    /// `failNode` here records whether the outcome was already settled when it ran. Reverting the
+    /// order (registering `startOutcome::fail` after `refuseToRunWithoutSwim`) turns this red.
     @Test
-    void formationUnlessSwimFails_swimStartFails_failsTheStartWithTheSwimCause_whileFormationIsPending() {
+    void startSwim_swimPortAlreadyBound_failsTheStartOutcomeBeforeFailNodeRuns() throws Exception {
+        var swimPort = freeUdpPort();
+        var detector = detectorWithSwimPort(swimPort);
+        var outcome = Promise.<Unit> promise();
+        var outcomeSettledWhenFailNodeRan = new AtomicBoolean();
+
+        try (var holder = new DatagramSocket(swimPort)) {
+            AetherNode.startSwim(detector,
+                                 network(),
+                                 encryptor(),
+                                 this::announce,
+                                 () -> outcomeSettledWhenFailNodeRan.set(outcome.isResolved()),
+                                 outcome);
+
+            var settled = outcome.await(timeSpan(WAIT_SECONDS).seconds());
+
+            assertThat(settled.isFailure()).as("the start outcome carries the SWIM failure: %s", settled).isTrue();
+            assertThat(settled.fold(Cause::message, _ -> "success"))
+                .as("the cause names the bind failure, not a timeout")
+                .contains("Address already in use");
+            assertThat(outcomeSettledWhenFailNodeRan)
+                .as("the outcome must be settled by the time failNode runs, or formation can win the race")
+                .isTrue();
+        }
+    }
+
+    /// #1308 (rev1343 BLOCKING-1) — the node's start outcome is `formationUnlessSwimFails(formation,
+    /// outcome)`: formation settles it, and a SWIM failure `startSwim` has already put into it wins
+    /// over a later formation success. In a single-JVM host `failNode` only stops this node, whose
+    /// formation then never resolves, so an outcome that waited on formation alone hung forever.
+    /// Reverting the join (`startSwimTrigger` back to a fire-and-forget Runnable) has no unit-level
+    /// seam; the wiring is pinned end-to-end by `EmberClusterSwimStartFailureTest` in `aether/ember`.
+    @Test
+    void formationUnlessSwimFails_swimFailureAlreadyLanded_formationSuccessDoesNotOverrideIt() {
         var formation = Promise.<Unit> promise();
-        var swimStart = Promise.<Unit> promise();
-        var outcome = AetherNode.formationUnlessSwimFails(formation, swimStart);
+        var outcome = Promise.<Unit> promise();
 
-        assertThat(outcome.isResolved()).as("nothing has settled yet").isFalse();
+        outcome.fail(SWIM_BIND_FAILED);
+        AetherNode.formationUnlessSwimFails(formation, outcome);
+        formation.succeed(Unit.unit());
 
-        swimStart.fail(SWIM_BIND_FAILED);
-
-        // The failure handler is dispatched (AsyncExecutor), so the settlement is bounded, not inline.
         assertThat(outcome.await(timeSpan(1).seconds()))
-            .as("the start fails with the SWIM cause, not a timeout")
+            .as("the start fails with the SWIM cause; formation cannot override it")
             .isEqualTo(SWIM_BIND_FAILED.result());
-        assertThat(formation.isResolved()).as("formation is still pending — the outcome did not wait for it").isFalse();
     }
 
     /// A SWIM start SUCCESS settles nothing: the node has started only once formation resolves.
     @Test
     void formationUnlessSwimFails_swimStartSucceeds_startFollowsFormation() {
         var formation = Promise.<Unit> promise();
-        var swimStart = Promise.<Unit> promise();
-        var outcome = AetherNode.formationUnlessSwimFails(formation, swimStart);
+        var outcome = Promise.<Unit> promise();
 
-        swimStart.succeed(Unit.unit());
-
+        assertThat(AetherNode.formationUnlessSwimFails(formation, outcome)).isSameAs(outcome);
         assertThat(outcome.isResolved()).as("SWIM up alone is not a started node").isFalse();
 
         formation.succeed(Unit.unit());
@@ -181,8 +210,7 @@ class AetherNodeStartSwimTest {
     @Test
     void formationUnlessSwimFails_swimStartPending_formationFailureFailsTheStart() {
         var formation = Promise.<Unit> promise();
-        var swimStart = Promise.<Unit> promise();
-        var outcome = AetherNode.formationUnlessSwimFails(formation, swimStart);
+        var outcome = AetherNode.formationUnlessSwimFails(formation, Promise.promise());
 
         formation.fail(FORMATION_FAILED);
 
