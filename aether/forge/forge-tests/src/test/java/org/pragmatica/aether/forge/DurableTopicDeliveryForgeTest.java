@@ -200,6 +200,11 @@ class DurableTopicDeliveryForgeTest {
     private static final Pattern ATTACHED_SUBSCRIPTIONS = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
     private static final Pattern SERVED_BY_OWNER = Pattern.compile("\"servedByOwner\"\\s*:\\s*true");
     private static final Pattern OWNER_HEAD_OFFSET = Pattern.compile("\"ownerHeadOffset\"\\s*:\\s*(-?\\d+)");
+    /// One replica row's acked watermark and owner flag, adjacent in `ReplicaStateDetail`'s component
+    /// order (`nodeId, state, confirmedOffset, isHrwOwner`). A parser over a body is a parser: a
+    /// reordered record turns every peer-ack read into "not acked", which withholds the pre-attach claim
+    /// rather than granting it.
+    private static final Pattern REPLICA_ROW = Pattern.compile("\"confirmedOffset\"\\s*:\\s*(-?\\d+)\\s*,\\s*\"isHrwOwner\"\\s*:\\s*(true|false)");
 
     /// The engine key of the `order-events` topic's backing stream: `topic:` + the blueprint-namespaced
     /// address (`DurableTopicNames.TOPIC_STREAM_PREFIX`). Four colon-separated parts, so no
@@ -321,8 +326,8 @@ class DurableTopicDeliveryForgeTest {
     /// warm-up, a retry delivered by the listener after the attach would satisfy it while the backlog
     /// read it claims to prove was missing (rev1341 F2). The precondition is OBSERVED per run, not
     /// assumed: `attachedSubscriptions` must read 0 on every node AFTER the event is known to be in the
-    /// log — an append that completed before any node put the group into its active set completed
-    /// before any listener was installed. `attachedSubscriptions` counts durable-topic groups too (they
+    /// log AND visible (peer-acked, rev1341 F5) — an append that was readable before any node put the
+    /// group into its active set was readable before any listener was installed. `attachedSubscriptions` counts durable-topic groups too (they
     /// join `StreamConsumerManager.active` like registry consumers), which is what makes the read speak
     /// about this group. An unknown outcome is resolved from the owner's head offset rather than
     /// discarded, because the first publish to a fresh topic routinely times out at 5 s with its event
@@ -719,11 +724,12 @@ class DurableTopicDeliveryForgeTest {
     /// before the attach:
     ///
     ///  - an in-flight sample ([#observeAppendBeforeAttach]) saw the owner's head offset advance by
-    ///    EXACTLY one over the pre-attempt baseline while `attachedSubscriptions` read 0 on every node;
+    ///    EXACTLY one over the pre-attempt baseline AND a peer acked through that offset (the append is
+    ///    visible to a reader, not merely appended) while `attachedSubscriptions` read 0 on every node;
     ///  - the publish returned success and `attachedSubscriptions` then read 0 on every node; or
     ///  - the outcome came back unknown (the 5 s replication timeout, #1236: "the event may already be
-    ///    in the log") and the head offset read after the call returned had advanced by exactly one,
-    ///    with `attachedSubscriptions` still 0 after that read. Either way the outcome is resolved by
+    ///    in the log") and the head offset read after the call returned had advanced by exactly one and
+    ///    was peer-acked, with `attachedSubscriptions` still 0 after that read. Either way the outcome is resolved by
     ///    observation rather than excluded: the append is in the log at a known offset, and the attach
     ///    had not happened when the offset was read. Attempt 0 runs against a topic materialized at
     ///    deploy under a fresh `@TempDir`, so its baseline is 0 by construction even before the partition
@@ -743,7 +749,7 @@ class DurableTopicDeliveryForgeTest {
 
         var attempt = warmupAttempts++;
         var id = WARMUP_ID + "-" + attempt;
-        var headBefore = orderEventsHeadOffset().or(attempt == 0 ? 0L : -1L);
+        var headBefore = ownerReplicaView().flatMap(DurableTopicDeliveryForgeTest::ownerHeadOffset).or(attempt == 0 ? 0L : -1L);
         var responseRef = new AtomicReference<>(ERROR_FALLBACK);
         var port = ports.getFirst();
         var started = Instant.now();
@@ -776,8 +782,9 @@ class DurableTopicDeliveryForgeTest {
             return true;
         }
 
-        var headAfter = orderEventsHeadOffset().or(-1L);
-        var landedAlone = headBefore >= 0 && headAfter == headBefore + 1;
+        var viewAfter = ownerReplicaView();
+        var headAfter = viewAfter.flatMap(DurableTopicDeliveryForgeTest::ownerHeadOffset).or(-1L);
+        var landedAlone = headBefore >= 0 && headAfter == headBefore + 1 && viewAfter.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false);
         var attachedAfterRead = landedAlone
                                 ? attachedSubscriptionsClusterWide()
                                 : -1;
@@ -785,7 +792,7 @@ class DurableTopicDeliveryForgeTest {
         if (landedAlone) {
             establishPreAttachId(id,
                                  attachedAfterRead,
-                                 "its publish outcome was unknown (%s) and the owner's head offset read %d -> %d after the call returned".formatted(response,
+                                 "its publish outcome was unknown (%s) and the owner's head offset read %d -> %d, peer-acked, after the call returned".formatted(response,
                                                                                                                                                        headBefore,
                                                                                                                                                        headAfter));
         }
@@ -794,33 +801,47 @@ class DurableTopicDeliveryForgeTest {
             return false;
         }
 
-        excludedWarmupIds.add(id + "(head " + headBefore + "->" + headAfter + ", attached " + attachedAfterRead + " after return; no in-flight sample saw the append before the attach)");
+        excludedWarmupIds.add(id + "(head " + headBefore + "->" + headAfter + ", peer-acked " + viewAfter.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false)
+                              + ", attached " + attachedAfterRead + " after return; no in-flight sample saw the append visible before the attach)");
 
         return false;
     }
 
-    /// While the publish call is in flight, samples the owner's head offset and then the cluster-wide
-    /// attach count, and returns the first sample in which the head had advanced by exactly one over
-    /// `headBefore` while no group was attached anywhere — the append observed before the attach,
-    /// with the reading order making the claim sound (attach state is read AFTER the head). A read
-    /// taken only after the call returns cannot place a 5 s timed-out append against an attach that
-    /// happened inside those 5 s (measured: head 0->1 and attachedSubscriptions=3 at return, attach 1.2 s
-    /// before the return). Sampling stops at the first such sample or when the call returns; empty when
-    /// neither happened.
+    /// While the publish call is in flight, samples the owner's replica view and then the cluster-wide
+    /// attach count, and returns the first sample in which the append was VISIBLE while no group was
+    /// attached anywhere — with the reading order making the claim sound (attach state is read AFTER
+    /// the view). A read taken only after the call returns cannot place a 5 s timed-out append against
+    /// an attach that happened inside those 5 s (measured: head 0->1 and attachedSubscriptions=3 at
+    /// return, attach 1.2 s before the return).
+    ///
+    /// Visible, not merely appended (rev1341 F5): `ownerHeadOffset` is the RAW append head, but a
+    /// subscribe-time kick reads only up to the ring's visible watermark, `min(durable, the offset
+    /// `min_sync_replicas - 1` peers have acked)` (`StreamPartitionManager.ackedVisible`/`refreshVisible`).
+    /// An append seen with 0 attached that becomes visible only after the attach is delivered by the
+    /// visible-advance notification, and the arm would read green without any backlog read. So the same
+    /// owner sample must also show a NON-owner replica row acked through the new event's offset
+    /// (`min_sync_replicas = 2` here, so one peer); the owner's own row is substituted with its raw head
+    /// and is excluded. Owner-side durability has no management surface and is assumed to precede or
+    /// closely follow the peer ack `[unverified: no black-box read of the owner's durable offset]`.
+    /// Sampling continues while the append is not yet peer-acked, stops at the first qualifying sample
+    /// or when the call returns, and is empty when no sample qualified.
     private Option<String> observeAppendBeforeAttach(Thread publisher, long headBefore) {
         var samples = 0;
 
         while (publisher.isAlive()) {
             samples++;
-            var head = orderEventsHeadOffset().or(-1L);
+            var view = ownerReplicaView();
+            var head = view.flatMap(DurableTopicDeliveryForgeTest::ownerHeadOffset).or(-1L);
+            var visible = headBefore >= 0 && head == headBefore + 1 && view.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false);
 
-            if (headBefore >= 0 && head == headBefore + 1) {
+            if (visible) {
                 var attached = attachedSubscriptionsClusterWide();
 
                 if (attached == 0) {
-                    return Option.some("in-flight sample %d saw the owner's head offset at %d (was %d) with attachedSubscriptions=0 on every node".formatted(samples,
-                                                                                                                                                                 head,
-                                                                                                                                                                 headBefore));
+                    return Option.some("in-flight sample %d saw the owner's head offset at %d (was %d), a peer acked through offset %d, and attachedSubscriptions=0 on every node".formatted(samples,
+                                                                                                                                                                                              head,
+                                                                                                                                                                                              headBefore,
+                                                                                                                                                                                              headBefore));
                 }
 
                 return Option.none();
@@ -841,22 +862,28 @@ class DurableTopicDeliveryForgeTest {
         }
     }
 
-    /// The order-events partition's next-expected offset as reported by its OWNER, i.e. the number of
-    /// events appended so far; empty until some node answers `servedByOwner=true`. Read per node over
-    /// `GET /api/v1/streams/{name}/{partition}/replicas-local`, the one stream read route that takes the
-    /// raw engine key (`STREAM_REPLICAS_LOCAL`, `LOCAL`: the answering node reports its own view, and
-    /// only the owner's `ownerHeadOffset` is the tail). Non-owner answers are ignored.
-    private Option<Long> orderEventsHeadOffset() {
+    /// The order-events partition's replica view as answered by its OWNER (`servedByOwner=true`); empty
+    /// until some node is the owner. Read per node over `GET /api/v1/streams/{name}/{partition}/replicas-local`,
+    /// the one stream read route that takes the raw engine key (`STREAM_REPLICAS_LOCAL`, `LOCAL`: the
+    /// answering node reports its own view). Non-owner answers are ignored. The body carries
+    /// `ownerHeadOffset` (next-expected offset, i.e. events appended so far) and one row per replica
+    /// with its acked watermark.
+    private Option<String> ownerReplicaView() {
         return cluster.status()
                       .nodes()
                       .stream()
                       .map(node -> httpGet(node.mgmtPort(), "/api/v1/streams/" + ORDER_EVENTS_TOPIC_STREAM + "/0/replicas-local"))
                       .filter(body -> SERVED_BY_OWNER.matcher(body).find())
-                      .map(DurableTopicDeliveryForgeTest::ownerHeadOffset)
-                      .flatMap(Option::stream)
                       .findFirst()
                       .map(Option::some)
                       .orElseGet(Option::none);
+    }
+
+    /// Whether some NON-owner replica row in the owner's view has acked through `offset`.
+    private static boolean peerConfirmedAtLeast(String body, long offset) {
+        return REPLICA_ROW.matcher(body)
+                          .results()
+                          .anyMatch(row -> "false".equals(row.group(2)) && Long.parseLong(row.group(1)) >= offset);
     }
 
     private static Option<Long> ownerHeadOffset(String body) {
