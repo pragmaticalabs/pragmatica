@@ -37,8 +37,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
@@ -309,6 +311,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerEpochSource = ownerEpochSource;
         this.walBaseDir = walBaseDir;
         this.lastSealedOffset = lastSealedOffset;
+        replicationManager.observeAcks(this::onReplicaAck);
     }
 
     /// See [#WAL_RECOVERY_HEAD_GAPS].
@@ -1287,8 +1290,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// get distinct contiguous offsets, the WAL file is in offset order (recovery places records by it) and
     /// replicas receive events in offset order (their `fromOffset` check rejects anything else). Only the
     /// group-commit fsync is awaited after the section is released, so concurrent publishers still share
-    /// fsyncs. A publish whose fsync then fails has already been replicated; it was already readable from
-    /// the owner's ring before the fsync, so this adds no new exposure.
+    /// fsyncs. A publish whose fsync then fails has already been replicated.
+    ///
+    /// Visibility (#1235): the appended event is NOT readable by consumers and wakes no push listener
+    /// until it is durable here AND acknowledged by `minSyncReplicas - 1` distinct peers ([#refreshVisible]).
+    /// A failed frame write or fsync therefore never exposes the event, even when a peer acks it later.
     ///
     /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] when the committed owner of
     /// `(streamName, partition)` is another node — see [OwnerWriteAdmission]. It runs AFTER the epoch fence,
@@ -1319,8 +1325,54 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                 partition,
                                                                                                 minAcks)))
                                  .flatMap(this::awaitDurable)
+                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset))
                                  .fold(cause -> handleDrop(cause, streamName, partition),
                                        Result::success);
+    }
+
+    /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
+    /// offset order, so the whole prefix is. Visibility is recomputed BEFORE the publish returns, so an
+    /// owner-only (`minSyncReplicas <= 1`) publisher can read its own write. A ring released in the
+    /// meantime has no reader left to expose the event to, so its absence is ignored.
+    @Contract
+    private void ownerDurable(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerDurable(ring, streamName, partition, offset));
+    }
+
+    @Contract
+    private void ownerDurable(OffHeapRingBuffer ring, String streamName, int partition, long offset) {
+        ring.markDurable(offset);
+        refreshVisible(ring, streamName, partition);
+    }
+
+    /// Owner-side ack observer (#1235). The replication manager runs it BEFORE it records the ack in the
+    /// registry, so no waiter can be resolved — by an await or a registry read — before the event is
+    /// visible. It runs a second time after the registry update; see [#refreshVisible] for why.
+    @Contract
+    private void onReplicaAck(ReplicationMessage.ReplicateAck ack) {
+        resolvePartitionBuffer(ack.streamName(), ack.partition()).onSuccess(ring -> ackedVisible(ring, ack));
+    }
+
+    /// Reads the ack through the overlay, because this observer runs BEFORE the registry records it.
+    @Contract
+    private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
+        ring.advanceVisible(Math.min(ring.durableOffset(),
+                                     replicationManager.replicatedThrough(ack, minSyncReplicasFor(ack.streamName()) - 1)));
+    }
+
+    /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).
+    /// Both inputs cover a contiguous prefix — group commit resolves in offset order, and a replica acks
+    /// only its verified contiguous run (#260) — so the minimum is a prefix too. No advance is lost to a
+    /// race between the fsync path and the ack path. The fsync path writes `durable` and then reads the
+    /// registry. The ack's second observer call runs after the registry write and then reads `durable`.
+    /// Both are volatile accesses, so at least one of the two sees both inputs.
+    @Contract
+    private void refreshVisible(OffHeapRingBuffer ring, String streamName, int partition) {
+        ring.advanceVisible(Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
+    }
+
+    private long peerAcknowledgedThrough(String streamName, int partition) {
+        return replicationManager.replicatedThrough(streamName, partition, minSyncReplicasFor(streamName) - 1);
     }
 
     /// Frozen-ring drop handling (#1233). The ring reports [StreamError.General#EVENT_DROPPED] BEFORE the
@@ -1478,8 +1530,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(streams.get(streamName)).flatMap(entry -> entry.walFor(partition));
     }
 
+    /// The publish path's replication barrier. Visibility is refreshed inline when it resolves (rev1309 F1):
+    /// an await can resolve from the registry SNAPSHOT — two concurrent acks each overlay only their own
+    /// ack in the pre-update observer call, both registry rows then land, and the await resolves before
+    /// either post-update observer call — so without this the continuation could miss its own acked write.
+    /// A ring released in the meantime has no reader left to expose the event to.
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
-        return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
+        return replicationManager.awaitReplication(streamName, partition, offset, minAcks)
+                                 .onSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
+                                                                                                                                streamName,
+                                                                                                                                partition)));
     }
 
     /// #1262 fail-closed guard, applied by every write entry point (`PartitionedStreamAccess`,
@@ -1548,7 +1608,30 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                          payload,
                                                                                          timestamp,
                                                                                          ownerEpoch))
+                                 .onSuccess(offset -> visibleWhenReplicaDurable(streamName, partition, offset))
                                  .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+    }
+
+    /// #1235, replica side: a replicated record becomes visible to reads served BY THIS NODE once its own
+    /// WAL write is durable (at once with no WAL). A replica does not learn the owner's visible position,
+    /// so this bounds a replica-local read by the replica's durability, not by the owner's min-sync acks.
+    /// A failed WAL write poisons the chain, so the failure is dropped here by design: nothing at or after
+    /// it becomes visible, and the failure itself surfaces where the receive handler awaits
+    /// [#syncReplicated] before acking.
+    @Contract
+    private void visibleWhenReplicaDurable(String streamName, int partition, long offset) {
+        syncReplicated(streamName, partition).onSuccess(_ -> replicaDurable(streamName, partition, offset));
+    }
+
+    @Contract
+    private void replicaDurable(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset));
+    }
+
+    @Contract
+    private static void replicaDurable(OffHeapRingBuffer ring, long offset) {
+        ring.markDurable(offset);
+        ring.advanceVisible(offset);
     }
 
     /// The replica append shares the owner's ordered section (#1231): it and any concurrent local append
@@ -1755,11 +1838,33 @@ public final class StreamPartitionManager implements AutoCloseable {
         return resolvePartitionBuffer(streamName, partition).option();
     }
 
+    /// Consumer read of the local ring, bounded by the partition's VISIBLE position (#1235).
     public Result<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
                                                               int partition,
                                                               long fromOffset,
                                                               int maxEvents) {
         return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.read(fromOffset, maxEvents));
+    }
+
+    /// Whether `nodeId` is a registered replica of `(streamName, partition)` in the SAME registry the
+    /// replication manager sends to and counts acks from (#1235). Gates the appended-head catch-up read:
+    /// a node outside the replica set gets a consumer read instead.
+    public boolean isRegisteredReplica(String streamName, int partition, NodeId nodeId) {
+        return replicationManager.registry()
+                                 .replicasFor(streamName, partition)
+                                 .stream()
+                                 .map(ReplicaDescriptor::nodeId)
+                                 .anyMatch(nodeId::equals);
+    }
+
+    /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up
+    /// and survivor pulls, which must see events that are not yet visible, and the entity log fold, whose
+    /// head is the appended head. Never a consumer path.
+    public Result<List<OffHeapRingBuffer.RawEvent>> readAppended(String streamName,
+                                                                 int partition,
+                                                                 long fromOffset,
+                                                                 int maxEvents) {
+        return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.readAppended(fromOffset, maxEvents));
     }
 
     public Option<StreamInfo> streamInfo(String streamName) {
