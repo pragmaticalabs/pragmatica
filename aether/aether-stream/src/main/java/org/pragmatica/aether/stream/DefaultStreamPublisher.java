@@ -20,21 +20,14 @@ import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
 
 
 public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
-    /// #964: raised when the configured consistency mode decoded to `UNKNOWN`, i.e. the blueprint was
-    /// written by a node running a newer `ConsistencyMode`. Publishing anyway would mean promising an
-    /// acknowledgement semantics this node picked by default.
-    private static final Cause UNREADABLE_CONSISTENCY_MODE = Causes.cause("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
-                                                                         + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG");
-
     private final StreamPartitionManager partitionManager;
     private final Serializer serializer;
     private final String streamName;
@@ -176,7 +169,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
             // #964, fail closed: EVENTUAL and STRONG differ in what the caller is promised on
             // acknowledgement, so guessing either one is a durability claim this node cannot back.
             // Refusing hands the choice back to the caller with a diagnosable cause.
-            case UNKNOWN -> UNREADABLE_CONSISTENCY_MODE.promise();
+            case UNKNOWN -> StreamError.General.UNREADABLE_CONSISTENCY_MODE.promise();
         };
     }
 
@@ -192,14 +185,26 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         // #964: the batch path tested only for STRONG, so an UNKNOWN mode would have taken the
         // EVENTUAL branch by default -- the same fail-open the single-event switch above refuses.
         if (consistencyMode == ConsistencyMode.UNKNOWN) {
-            return UNREADABLE_CONSISTENCY_MODE.promise();
+            return StreamError.General.UNREADABLE_CONSISTENCY_MODE.promise();
         }
 
         return publishBatchEventual(events);
     }
 
+    /// #1262 B3: with no consensus path the whole batch is refused up front with the same typed cause a single
+    /// publish gets. With one, `Promise.allOf` yields every per-event `Result` and they are folded into ONE
+    /// result, so any refusal fails the batch — `.mapToUnit()` on the list alone had acknowledged a batch of
+    /// refusals as success, a false acknowledgement with nothing written.
     private Promise<Unit> publishBatchStrong(List<T> events) {
-        return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
+        return consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)
+                            .flatMap(_ -> Promise.allOf(events.stream().map(this::publish).toList()))
+                            .flatMap(DefaultStreamPublisher::allSucceeded);
+    }
+
+    private static Promise<Unit> allSucceeded(List<Result<Unit>> results) {
+        return Result.allOf(results)
+                     .mapToUnit()
+                     .async();
     }
 
     /// #266: an EVENTUAL batch is grouped by each event's COMPUTED partition (not routed wholesale to
@@ -249,7 +254,23 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// appends locally rather than sending to self (which QUIC silently drops, hanging the forward). The
     /// local append is admitted only for the committed owner ({@link StreamPartitionManager.OwnerWriteAdmission}).
     /// Mirrors {@link StreamWriteRouter} and {@link PartitionedStreamAccess}'s owner-routed publish.
+    ///
+    /// #1262: the stream's COMMITTED consistency is checked first (the same guard `PartitionedStreamAccess` and
+    /// `StreamWriteRouter` apply), not only the mode this publisher was built with — the hardcoded-EVENTUAL
+    /// system/DLQ publishers, or a config adopted after construction, must not append EVENTUAL to a stream
+    /// committed STRONG or UNKNOWN. The guard sits at the entry points rather than in
+    /// `StreamPartitionManager.publishLocal` because every reachable caller is covered here and
+    /// `publishLocal` is the hot path — a second map lookup per append buys nothing (rev1301 M21 measured the
+    /// guard in `publishLocal` green against the whole module, so no test constrains the placement). The one
+    /// direct `publishLocal` caller, `StreamEntityLogSubstrate`, builds an EVENTUAL config by construction;
+    /// a future direct caller on a STRONG stream is the residual.
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
+        return partitionManager.ensureWritableConsistency(streamName)
+                               .async()
+                               .flatMap(_ -> routeEventual(partition, bytes, timestamp));
+    }
+
+    private Promise<Unit> routeEventual(int partition, byte[] bytes, long timestamp) {
         return resolveOwner(partition).filter(this::isRemote)
                            .flatMap(owner -> forwardTo(owner, partition, bytes, timestamp))
                            .or(() -> publishLocalEventual(partition, bytes, timestamp));

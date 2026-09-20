@@ -340,6 +340,60 @@ class StreamResourceValidatorTest {
                                               .contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
         }
 
+        /// #1262: no production caller wires the consensus publish path, so a STRONG declaration cannot be
+        /// honoured — it is rejected here, naming the ticket, instead of deploying and being written as EVENTUAL.
+        @Test
+        void strongConsistencyIsRejected_namingTheTicket() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    consistency = "strong"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .filteredOn(failure -> failure.rule()
+                                                                            .equals(StreamResourceValidator.RULE_UNSUPPORTED_CONSISTENCY))
+                                              .extracting(StreamValidationFailure::message)
+                                              .anySatisfy(message -> assertThat(message).contains("consistency")
+                                                                                        .contains("#1262")));
+        }
+
+        /// #1262 B2: `consistency_mode` is the key the runtime binder actually reads, so a STRONG declared
+        /// there is the one that would reach the write path. It must be refused too, naming the key.
+        @Test
+        void strongConsistencyModeIsRejected_underTheKeyTheBinderReads() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    consistency_mode = "strong"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .filteredOn(failure -> failure.rule()
+                                                                            .equals(StreamResourceValidator.RULE_UNSUPPORTED_CONSISTENCY))
+                                              .extracting(StreamValidationFailure::message)
+                                              .anySatisfy(message -> assertThat(message).contains("consistency_mode")
+                                                                                        .contains("#1262")));
+        }
+
+        @Test
+        void eventualConsistencyIsAccepted() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    consistency = "eventual"
+                    """;
+
+            StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
+                                   .onFailure(cause -> fail("Expected success: " + cause.message()));
+        }
+
         @Test
         void explicitAutoOffsetResetLatestIsRejected() {
             var toml = """

@@ -1178,17 +1178,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `NOT_ENOUGH_REPLICAS` about replication this node does not own. The caller reads `minAcks` from the
     /// stream it knows; on the lazy-materialization path that stream was unknown (`min-sync` 0), so the
     /// retry takes its floor from the committed config it materializes from (#1290 review M1).
+    ///
+    /// The owner re-checks the stream's consistency ({@link #ensureWritableConsistency}, #1262) on BOTH
+    /// attempts — the first append and the post-materialize retry — rather than trusting the forwarder to
+    /// have refused: a STRONG or UNKNOWN stream is never appended here as EVENTUAL.
     public Result<Long> publishForwarded(String streamName,
                                          int partition,
                                          byte[] payload,
                                          long timestamp,
                                          int minAcks) {
-        return publishLocalAtFloor(streamName, partition, payload, timestamp, minAcks).fold(cause -> recoverForwardedPublish(cause,
-                                                                                                                             streamName,
-                                                                                                                             partition,
-                                                                                                                             payload,
-                                                                                                                             timestamp),
-                                                                                            Result::success);
+        return writableAppend(streamName, partition, payload, timestamp, minAcks).fold(cause -> recoverForwardedPublish(cause,
+                                                                                                                        streamName,
+                                                                                                                        partition,
+                                                                                                                        payload,
+                                                                                                                        timestamp),
+                                                                                       Result::success);
     }
 
     private Result<Long> recoverForwardedPublish(Cause cause,
@@ -1221,11 +1225,19 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                 int partition,
                                                 byte[] payload,
                                                 long timestamp) {
-        return ensureStreamMaterialized(config).flatMap(_ -> publishLocalAtFloor(streamName,
-                                                                                 partition,
-                                                                                 payload,
-                                                                                 timestamp,
-                                                                                 config.minSyncReplicas() - 1));
+        return ensureStreamMaterialized(config).flatMap(_ -> writableAppend(streamName,
+                                                                            partition,
+                                                                            payload,
+                                                                            timestamp,
+                                                                            config.minSyncReplicas() - 1));
+    }
+
+    private Result<Long> writableAppend(String streamName, int partition, byte[] payload, long timestamp, int minAcks) {
+        return ensureWritableConsistency(streamName).flatMap(_ -> publishLocalAtFloor(streamName,
+                                                                                      partition,
+                                                                                      payload,
+                                                                                      timestamp,
+                                                                                      minAcks));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
@@ -1464,6 +1476,29 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
+    }
+
+    /// #1262 fail-closed guard, applied by every write entry point (`PartitionedStreamAccess`,
+    /// `StreamWriteRouter`) and by the owner-side {@link #publishForwarded}: a stream whose declared
+    /// consistency no write path can honour is refused rather than appended as EVENTUAL.
+    ///   - `STRONG` promises consensus-ordered acknowledgement, and `ConsensusPublishPath` has no production
+    ///     caller → [StreamError.General#CONSENSUS_PATH_UNAVAILABLE], the cause `DefaultStreamPublisher`
+    ///     already used.
+    ///   - `UNKNOWN` (#964) was written by a node running a newer `ConsistencyMode` and may be STRONG there →
+    ///     [StreamError.General#UNREADABLE_CONSISTENCY_MODE].
+    /// An unknown stream passes; the append path reports it. `StreamResourceValidator` rejects STRONG at
+    /// deploy time first, so this is defence in depth for streams created by other routes.
+    public Result<Unit> ensureWritableConsistency(String streamName) {
+        return option(streams.get(streamName)).map(entry -> writableConsistency(entry.config().consistencyMode()))
+                     .or(Result::unitResult);
+    }
+
+    private static Result<Unit> writableConsistency(ConsistencyMode mode) {
+        return switch (mode) {
+            case EVENTUAL -> Result.unitResult();
+            case STRONG -> StreamError.General.CONSENSUS_PATH_UNAVAILABLE.result();
+            case UNKNOWN -> StreamError.General.UNREADABLE_CONSISTENCY_MODE.result();
+        };
     }
 
     /// Pre-append replica-floor check (#1236). Publish paths call this BEFORE {@link #publishLocal}, so a
