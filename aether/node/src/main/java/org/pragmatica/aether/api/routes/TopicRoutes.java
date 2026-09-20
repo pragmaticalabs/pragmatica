@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -54,9 +56,9 @@ import org.pragmatica.lang.utils.Causes;
 /// **rebuild** — resolves the group to a projection attached on this node and drives
 /// `Projection.rebuild`: capture bounds, reset the store to a new generation, rewind the group's cursor
 /// under a fenced epoch. Answers the new generation, the rewind token and the captured range. `409` when
-/// no projection for the group is attached here (the response names the hosting node per partition) or
-/// when the group's projection cannot be attributed (two durable subscribers on the topic, method not
-/// named). A refused capture or an uncommitted rewind (`NodeReplayCursor`) surfaces as the cause it was.
+/// no projection for the group is attached here, when this node consumes none of the group's partitions
+/// (the response names the consuming node per partition), or when the group's projection cannot be
+/// attributed (two durable subscribers on the topic, method not named). A refused capture or an uncommitted rewind (`NodeReplayCursor`) surfaces as the cause it was.
 public final class TopicRoutes implements RouteSource {
     private static final String UNKNOWN = "UNKNOWN";
     private static final String LIVE = "LIVE";
@@ -248,17 +250,38 @@ public final class TopicRoutes implements RouteSource {
                                               .orElseGet(Option::none));
     }
 
+    /// `group` is `artifactBase#method`; the `#` must travel percent-encoded (`%23`) or a client drops it
+    /// as a fragment, and the router hands the segment over undecoded — so it is decoded here. The CLI's
+    /// `RouteAssembler.encodeSegment` encodes it; a plain group id without `%` decodes to itself.
     private Promise<RebuildResponse> rebuild(String namespace, String topic, String version, String rebuildLiteral, String group) {
         return ResourceAddress.resourceAddress(namespace, topic, version)
                               .async()
-                              .flatMap(address -> rebuildGroup(DurableTopicNames.topicStream(address.asString()), group));
+                              .flatMap(address -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
+                                                               URLDecoder.decode(group, StandardCharsets.UTF_8)));
     }
 
+    /// Two conditions, both LOCAL: the projection must be attached here AND this node must consume at
+    /// least one of the group's partitions. The second is what makes a per-node projection store (the
+    /// in-process backing) coherent — a rebuild on a slice-hosting node that consumes nothing would reset
+    /// THAT node's never-written store and rewind the consuming node's cursor into a store that is not
+    /// rebuilding, so the replays would dedupe into nothing. `[design intent — unverified: a shared
+    /// ProjectionStore backing could relax the second condition; none exists]`
     private Promise<RebuildResponse> rebuildGroup(String topicStream, String group) {
         var node = nodeSupplier.get();
 
-        return hostedProjection(node, topicStream, group).map(handle -> runRebuild(topicStream, group, handle))
+        return hostedProjection(node, topicStream, group).filter(_ -> consumesHere(node, topicStream, group))
+                                                         .map(handle -> runRebuild(topicStream, group, handle))
                                                          .or(() -> notHostedHere(node, topicStream, group).promise());
+    }
+
+    private static boolean consumesHere(ManageableNode node, String topicStream, String group) {
+        return node.streamConsumerManager()
+                   .topicGroupStatuses(topicStream)
+                   .stream()
+                   .filter(status -> status.consumerGroup()
+                                           .equals(group))
+                   .anyMatch(status -> !status.assignedPartitions()
+                                              .isEmpty());
     }
 
     private static Promise<RebuildResponse> runRebuild(String topicStream, String group, ProjectionHandle handle) {
@@ -315,8 +338,8 @@ public final class TopicRoutes implements RouteSource {
                                      .or("");
 
         return HttpError.httpError(HttpStatus.CONFLICT,
-                                   Causes.cause("No projection for consumer group '" + group + "' on " + topicStream
-                                               + " is attached on node " + node.self().id()
+                                   Causes.cause("Node " + node.self().id() + " hosts no projection for consumer group '" + group
+                                               + "' on " + topicStream + " that it also consumes"
                                                + "; the rebuild route is LOCAL — POST it to the node consuming the group's"
                                                + " partitions (" + String.join(", ", hosting) + ")"
                                                + (attributionProblem.isEmpty()
