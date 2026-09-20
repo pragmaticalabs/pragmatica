@@ -460,11 +460,7 @@ class CursorStoreTest {
         }
 
         private static StorageInstance diskStorage(String name, Path dir, MetadataStore metadataStore) {
-            var tier = LocalDiskTier.localDiskTier(dir, ONE_GB)
-                                    .fold(cause -> {
-                                        org.junit.jupiter.api.Assertions.fail("disk tier: " + cause.message());
-                                        return null;
-                                    }, t -> t);
+            var tier = LocalDiskTier.localDiskTier(dir, ONE_GB).unwrap();
 
             return StorageInstance.storageInstance(name, List.of(tier), metadataStore);
         }
