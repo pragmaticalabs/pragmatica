@@ -646,23 +646,27 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// the in-sync set, so only the remaining peers are awaited. `awaitReplication` registers the
     /// pending ack against the already-fired replication (the manager seeds it from the registry to
     /// close the ack-before-register race). With `minSyncReplicas <= 1` it resolves on the local write
-    /// (0 = eventual, 1 = owner-only).
+    /// (0 = eventual, 1 = owner-only). A refusal because the committed owner is another node (the #1230
+    /// ownership-lag window) is redirected to that owner via {@link StreamForwardRetry#redirectNotOwner}.
     private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 1) {
-            return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                                   .async();
-        }
-        // #1236: floor before the append (a refusal is not in the log); after it, an unconfirmed
-        // barrier is an unknown outcome.
-        return partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
-                               .flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
-                               .async()
-                               .flatMap(offset -> partitionManager.awaitReplication(streamName,
-                                                                                    partition,
-                                                                                    offset,
-                                                                                    minSyncReplicas - 1)
-                                                                  .mapError(PublishOutcomeUnknown.FACTORY)
-                                                                  .map(_ -> offset));
+        // #1236: floor before the append (a refusal is not in the log), after the #1230 owner admission.
+        return partitionManager.publishLocalAtFloor(streamName, partition, bytes, timestamp, minSyncReplicas - 1)
+                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                  owner -> forwardClient.map(client -> forwardToOwner(client,
+                                                                                                                                      owner,
+                                                                                                                                      partition,
+                                                                                                                                      bytes,
+                                                                                                                                      timestamp))),
+                                     offset -> awaitMinSync(partition, offset));
+    }
+
+    /// #1236: after the append, an unconfirmed barrier is an unknown outcome.
+    private Promise<Long> awaitMinSync(int partition, long offset) {
+        return minSyncReplicas > 1
+               ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
+                                 .map(_ -> offset)
+               : Promise.success(offset);
     }
 
     @Override
