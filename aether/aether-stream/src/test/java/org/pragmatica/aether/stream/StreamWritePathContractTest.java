@@ -230,6 +230,13 @@ class StreamWritePathContractTest {
         /// frozen mode UNKNOWN over a stream whose COMMITTED config is EVENTUAL publishes — the committed
         /// config is the authority (#1262 round 2). Re-adding a DSP-local `case UNKNOWN -> refuse` reddens
         /// this; `publish_refusesUnreadableConsistencyMode` keeps the committed-UNKNOWN refusal.
+        ///
+        /// The state is SYNTHETIC: no deployment path builds a publisher with frozen UNKNOWN
+        /// (`StreamConfigParser.parseConsistencyMode` yields STRONG or EVENTUAL, never UNKNOWN; the DLQ and
+        /// substrate factories hard-code EVENTUAL; only the `@Codec` ordinal sentinel produces it, on a wire
+        /// decode). What this pins is therefore WHERE the UNKNOWN decision lives — in the shared guard, not in
+        /// this class — which with a committed-UNKNOWN stream is unobservable, since the guard refuses either
+        /// way. It is a mechanism probe, not a specification of a reachable state.
         @Test
         void streamPublisher_builtUnknown_overAnEventualCommittedStream_publishes() {
             var publisher = publisher(STREAM, SELF, Option.none(), Option.some(SELF), ConsistencyMode.UNKNOWN);

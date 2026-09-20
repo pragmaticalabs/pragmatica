@@ -307,7 +307,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// precisely the failure replication is there to survive. At `replicationFactor = 2` there is only
     /// one non-self replica in existence, so no entity write could ever succeed.
     ///
-    /// Both stream writers already subtract: `StreamWriteRouter:78` and
+    /// Both stream writers already subtract: `StreamWriteRouter.awaitMinSync` and
     /// `StreamForwardHandler.awaitMinSync`. This is the third writer on the same barrier and it was the
     /// odd one out.
     private Promise<Long> awaitBarrier(String keyspace, String stream, int partition, long offset) {

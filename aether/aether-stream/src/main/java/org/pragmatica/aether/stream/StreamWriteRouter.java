@@ -34,15 +34,18 @@ import org.pragmatica.lang.Promise;
 /// (the harness hits any node's mgmt API) must reach the owner instead of failing
 /// {@link StreamError.General#PARTITION_NOT_LOCAL} on {@code publishLocal}.
 ///
-/// **The one write operation (#1263).** Three entry points delegate to this router whole: the slice
-/// {@link DefaultStreamPublisher}, {@code StreamAccess.publish} ({@link PartitionedStreamAccess}) and the
-/// management publish. There is a deliberate FOURTH arm that is NOT on the router: the entity-log substrate
+/// There is a deliberate FOURTH write arm that is NOT on the router: the entity-log substrate
 /// ({@code StreamEntityLogSubstrate}) calls {@link StreamPartitionManager#publishLocal} directly — it is
 /// owner-local by construction and builds an EVENTUAL config itself, so neither the owner routing nor the
 /// #1262 consistency guard applies to it. The owner side of a forwarded publish
-/// ({@code StreamForwardHandler}) is the router's counterpart on the receiving node; note that it reads
+/// ({@code StreamForwardHandler}) is the router's counterpart on the receiving node. It reads
 /// {@code min-sync-replicas} TWICE (once for the pre-append floor, once for the barrier) where this router
-/// reads it ONCE and feeds both from that value ({@link #publishLocal}).
+/// reads it ONCE and feeds both from that value ({@link #publishLocal}) — and that asymmetry is
+/// DELIBERATE, not drift: on the handler's lazy-materialization arm the first read is {@code 0} (the stream
+/// is not yet in the owner's map; {@link StreamPartitionManager#publishForwarded} materializes it from the
+/// committed config), so the barrier MUST read again after the materialization or a forwarded publish to an
+/// unmaterialized owner would ack on the local fsync alone. Harmonising the handler to a single read is a
+/// silent data-loss regression that no test currently reddens (#1391 is the missing pin).
 public final class StreamWriteRouter {
     private final StreamPartitionManager partitionManager;
     private final Option<StreamForwardClient> forwardClient;
