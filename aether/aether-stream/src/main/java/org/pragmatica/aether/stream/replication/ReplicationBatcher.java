@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -19,6 +21,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
@@ -41,11 +46,23 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// `close()` ends the batcher's life (#1246 review N6): it cancels every pending one-shot and drains what was
 /// accepted, and any later `add` is refused with [ReplicationError.Lifecycle#BATCHER_CLOSED]. An `add` that
-/// passed the closed check while `close()` runs may still append; `close()` drains it, or — if it lands after
-/// the drain — its own one-shot flushes it, so an accepted event is never stranded.
+/// passed the closed check while `close()` runs either appends — `close()` drains it, or, if it opened a fresh
+/// accumulator after the drain pass, its own one-shot flushes it — or finds its accumulator already retired
+/// and is refused by the retry's re-check of `closed`. Refused, not stranded: no accepted event is lost.
+///
+/// #1380: `close()` is also a barrier for flushes already in flight. A one-shot body runs on a scheduler
+/// thread and `cancel(false)` cannot stop one that has started; a body that has already drained its
+/// accumulator holds the only copy of that batch while `close()`'s own drain of it yields `EMPTY`. So
+/// `close()` waits, after its drain pass, for every flush that entered `flushPartition` to leave it — bounded
+/// by `closeBarrier` (default [#DEFAULT_CLOSE_BARRIER]). At the bound, or if the closing thread is
+/// interrupted, it logs a WARN naming the number still in flight and returns; the flushes still complete on
+/// their own threads (late, never lost), and `close()` never hangs on a transport that does not return.
 public final class ReplicationBatcher implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(ReplicationBatcher.class);
     static final int DEFAULT_MAX_EVENTS = 100;
     static final TimeSpan DEFAULT_MAX_DELAY = TimeSpan.timeSpan(1).millis();
+    static final TimeSpan DEFAULT_CLOSE_BARRIER = TimeSpan.timeSpan(5).seconds();
+    private static final long BARRIER_POLL_NANOS = 100_000L;
 
     private final ConcurrentHashMap<PartitionKey, BatchAccumulator> accumulators = new ConcurrentHashMap<>();
     private final ReplicationTransport transport;
@@ -53,8 +70,10 @@ public final class ReplicationBatcher implements AutoCloseable {
     private final NodeId governorId;
     private final int maxEvents;
     private final TimeSpan maxDelay;
+    private final TimeSpan closeBarrier;
     private final FlushScheduler flushScheduler;
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicInteger inFlightFlushes = new AtomicInteger();
 
     /// Schedules one batch's one-shot flush. Production uses `SharedScheduler.schedule`; tests substitute a
     /// capturing scheduler to observe cancellation.
@@ -68,12 +87,14 @@ public final class ReplicationBatcher implements AutoCloseable {
                                NodeId governorId,
                                int maxEvents,
                                TimeSpan maxDelay,
+                               TimeSpan closeBarrier,
                                FlushScheduler flushScheduler) {
         this.transport = transport;
         this.registry = registry;
         this.governorId = governorId;
         this.maxEvents = maxEvents;
         this.maxDelay = maxDelay;
+        this.closeBarrier = closeBarrier;
         this.flushScheduler = flushScheduler;
     }
 
@@ -85,6 +106,7 @@ public final class ReplicationBatcher implements AutoCloseable {
                                       governorId,
                                       DEFAULT_MAX_EVENTS,
                                       DEFAULT_MAX_DELAY,
+                                      DEFAULT_CLOSE_BARRIER,
                                       SharedScheduler::schedule);
     }
 
@@ -102,7 +124,24 @@ public final class ReplicationBatcher implements AutoCloseable {
                                                  int maxEvents,
                                                  TimeSpan maxDelay,
                                                  FlushScheduler flushScheduler) {
-        return new ReplicationBatcher(transport, registry, governorId, maxEvents, maxDelay, flushScheduler);
+        return replicationBatcher(transport,
+                                  registry,
+                                  governorId,
+                                  maxEvents,
+                                  maxDelay,
+                                  DEFAULT_CLOSE_BARRIER,
+                                  flushScheduler);
+    }
+
+    /// Test seam: `closeBarrier` bounds how long `close()` waits for in-flight flushes.
+    static ReplicationBatcher replicationBatcher(ReplicationTransport transport,
+                                                 ReplicaRegistry registry,
+                                                 NodeId governorId,
+                                                 int maxEvents,
+                                                 TimeSpan maxDelay,
+                                                 TimeSpan closeBarrier,
+                                                 FlushScheduler flushScheduler) {
+        return new ReplicationBatcher(transport, registry, governorId, maxEvents, maxDelay, closeBarrier, flushScheduler);
     }
 
     /// Accept one event into its partition's batch, or refuse it with
@@ -118,18 +157,26 @@ public final class ReplicationBatcher implements AutoCloseable {
                : accept(partitionKey(streamName, partition), offset, payload, timestamp, ownerEpoch);
     }
 
-    /// Cancels every pending one-shot and drains what was accepted; idempotent.
+    /// Cancels every pending one-shot, drains what was accepted, then waits (bounded by `closeBarrier`) for
+    /// flushes already in flight to hand their batch to the transport; idempotent.
     @Contract
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
-            accumulators.forEach(this::closePartition);
+            accumulators.forEach(this::cancelAndFlush);
+            awaitInFlightFlushes();
         }
     }
 
+    /// Drains every pending batch now. The one-shots those batches armed are cancelled rather than left to
+    /// fire as no-ops on the process-wide scheduler.
     @Contract
     void flushAll() {
-        accumulators.forEach(this::flushPartition);
+        accumulators.forEach(this::cancelAndFlush);
+    }
+
+    int inFlightFlushes() {
+        return inFlightFlushes.get();
     }
 
     int accumulatorCount() {
@@ -186,20 +233,52 @@ public final class ReplicationBatcher implements AutoCloseable {
         return add(key.streamName(), key.partition(), offset, payload, timestamp, ownerEpoch);
     }
 
-    private void closePartition(PartitionKey key, BatchAccumulator accumulator) {
+    private void cancelAndFlush(PartitionKey key, BatchAccumulator accumulator) {
         accumulator.cancelFlush();
         flushPartition(key, accumulator);
     }
 
+    /// Counted in flight from before the drain until the send returns, so `close()` can see a flush that
+    /// already owns a batch it will never find in the map.
     private void flushPartition(PartitionKey key, BatchAccumulator accumulator) {
-        var snapshot = accumulator.drain();
+        inFlightFlushes.incrementAndGet();
+        try {
+            var snapshot = accumulator.drain();
 
-        accumulators.remove(key, accumulator);
-        if (snapshot.isEmpty()) {
-            return;
+            accumulators.remove(key, accumulator);
+            if (snapshot.isEmpty()) {
+                return;
+            }
+
+            sendBatch(key, snapshot);
+        } finally {
+            inFlightFlushes.decrementAndGet();
         }
+    }
 
-        sendBatch(key, snapshot);
+    /// Returns when no flush is in flight, or at the bound, or when the closing thread is interrupted (the
+    /// interrupt flag is left set; a parked-then-interrupted wait would otherwise spin to the deadline, #914).
+    private void awaitInFlightFlushes() {
+        var deadline = System.nanoTime() + closeBarrier.nanos();
+
+        while (inFlightFlushes.get() > 0) {
+            if (Thread.currentThread().isInterrupted()) {
+                log.warn("ReplicationBatcher.close() interrupted with {} flush(es) still in flight; they complete on their own threads",
+                         inFlightFlushes.get());
+
+                return;
+            }
+
+            if (System.nanoTime() - deadline >= 0) {
+                log.warn("ReplicationBatcher.close() gave up after {} ms with {} flush(es) still in flight; they complete on their own threads",
+                         closeBarrier.millis(),
+                         inFlightFlushes.get());
+
+                return;
+            }
+
+            LockSupport.parkNanos(this, BARRIER_POLL_NANOS);
+        }
     }
 
     private void sendBatch(PartitionKey key, BatchSnapshot snapshot) {

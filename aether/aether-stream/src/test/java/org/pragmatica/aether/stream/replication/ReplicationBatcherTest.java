@@ -20,8 +20,10 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -106,6 +108,30 @@ class ReplicationBatcherTest {
 
             var message = (ReplicationMessage.ReplicateEvents) sentMessages.getFirst().message();
             assertThat(message.payloads()).hasSize(2);
+
+            batcher.close();
+        }
+
+        /// #1380 tangential: a drained batch's one-shot has nothing left to do; leaving it armed put 10,000 no-op
+        /// timers on the process-wide scheduler for `maxDelay` after `flushAll_tenThousandPartitionsGoneIdle…`.
+        @Test
+        void flushAll_cancelsTheOneShotOfEveryBatchItDrains() {
+            var scheduled = new ArrayList<ScheduledFuture<?>>();
+            ReplicationBatcher.FlushScheduler capturing = (flush, delay) -> {
+                scheduled.add(SharedScheduler.schedule(flush, delay));
+
+                return scheduled.getLast();
+            };
+
+            batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 100, TimeSpan.timeSpan(10).seconds(), capturing);
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+            assertThat(scheduled).hasSize(1);
+            assertThat(scheduled.getFirst().isCancelled()).isFalse();
+
+            batcher.flushAll();
+
+            assertThat(scheduled.getFirst().isCancelled()).as("flushAll cancels the one-shot it made redundant").isTrue();
+            assertThat(sentMessages).hasSize(1);
 
             batcher.close();
         }
@@ -451,6 +477,149 @@ class ReplicationBatcherTest {
 
             return future;
         }
+    }
+
+    /// #1380: deterministic interleaving of "a one-shot flush has drained its accumulator and is inside
+    /// `transport.send` when `close()` runs". The one-shot body is captured through the `FlushScheduler` seam and
+    /// run on a thread of the test's own; the transport counts down `entered` and then blocks on `gate`. The
+    /// property under test is the barrier `add_concurrentWithSizeAndTimerFlushes_losesNoEvent` relies on: when
+    /// `close()` returns, every event accepted before it was called has been handed to the transport.
+    @Nested
+    class CloseBarrier {
+        private static final int EVENTS = 5;
+
+        private final AtomicInteger delivered = new AtomicInteger();
+        private final CountDownLatch entered = new CountDownLatch(1);
+        private final CountDownLatch gate = new CountDownLatch(1);
+        private final AtomicReference<Runnable> capturedFlush = new AtomicReference<>();
+
+        private final ReplicationBatcher.FlushScheduler capturing = (flush, _) -> {
+            capturedFlush.set(flush);
+
+            return SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(1).hours());
+        };
+
+        /// Blocks inside `send` until the test opens the gate.
+        private final ReplicationTransport held = (_, message) -> {
+            entered.countDown();
+            try {
+                gate.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            delivered.addAndGet(((ReplicationMessage.ReplicateEvents) message).payloads().size());
+        };
+
+        @Test
+        void close_oneShotFlushBetweenDrainAndSend_waitsForItBeforeReturning() throws InterruptedException {
+            batcher = replicationBatcher(held, registry, GOVERNOR, 7, TimeSpan.timeSpan(1).millis(), capturing);
+
+            var flush = startCapturedFlushAndAwaitEntered();
+            var closer = startCloser();
+
+            var returnedBeforeRelease = closer.returned().await(300, TimeUnit.MILLISECONDS);
+
+            gate.countDown();
+            flush.join();
+
+            assertThat(closer.returned().await(2, TimeUnit.SECONDS))
+                .as("close() returns promptly once the in-flight flush completes, not at the barrier bound")
+                .isTrue();
+            assertThat(closer.deliveredAtClose().get())
+                .as("delivered as of close() returning — the pristine test's assertion at :323")
+                .isEqualTo(EVENTS);
+            assertThat(returnedBeforeRelease).as("close() did not return while a drained flush was in transport.send")
+                                             .isFalse();
+            assertThat(batcher.accumulatorCount()).isZero();
+        }
+
+        /// The bound: the transport never returns while `close()` waits. `close()` must give up at the bound and
+        /// return — never hang — leaving the flush to complete on its own thread (late, not lost).
+        @Test
+        void close_inFlightFlushOutlivesTheBound_returnsAtTheBoundWithoutLosingTheBatch() throws InterruptedException {
+            var bound = TimeSpan.timeSpan(200).millis();
+            batcher = replicationBatcher(held, registry, GOVERNOR, 7, TimeSpan.timeSpan(1).millis(), bound, capturing);
+
+            var flush = startCapturedFlushAndAwaitEntered();
+            var closer = startCloser();
+
+            assertThat(closer.returned().await(5, TimeUnit.SECONDS)).as("close() returned at the bound rather than hanging")
+                                                                   .isTrue();
+            assertThat(closer.elapsedNanos().get()).as("close() waited the full bound before giving up")
+                                                   .isGreaterThanOrEqualTo(bound.nanos());
+            assertThat(closer.deliveredAtClose().get()).as("the flush was still held when close() gave up").isZero();
+            assertThat(batcher.inFlightFlushes()).as("close() gave up on a flush that is genuinely still in flight")
+                                                 .isEqualTo(1);
+
+            gate.countDown();
+            flush.join();
+
+            assertThat(delivered.get()).as("the abandoned wait did not abandon the batch").isEqualTo(EVENTS);
+            assertThat(batcher.inFlightFlushes()).isZero();
+        }
+
+        /// An interrupted closer leaves the barrier at once with the flag intact (#914 shape: a parked wait that
+        /// ignores the interrupt spins to the deadline instead).
+        @Test
+        void close_closerInterruptedWhileWaiting_returnsWithFlagSetWithoutLosingTheBatch() throws InterruptedException {
+            batcher = replicationBatcher(held, registry, GOVERNOR, 7, TimeSpan.timeSpan(1).millis(), capturing);
+
+            var flush = startCapturedFlushAndAwaitEntered();
+            var closer = startCloser();
+
+            assertThat(closer.returned().await(300, TimeUnit.MILLISECONDS)).as("close() is waiting on the barrier").isFalse();
+
+            closer.thread().interrupt();
+
+            assertThat(closer.returned().await(2, TimeUnit.SECONDS)).as("the interrupt ended the wait, well inside the 5 s default bound")
+                                                                   .isTrue();
+            assertThat(closer.interruptedAtReturn().get()).as("the interrupt flag is preserved for the caller").isTrue();
+            assertThat(closer.deliveredAtClose().get()).isZero();
+
+            gate.countDown();
+            flush.join();
+
+            assertThat(delivered.get()).isEqualTo(EVENTS);
+        }
+
+        private Thread startCapturedFlushAndAwaitEntered() throws InterruptedException {
+            for (long offset = 0; offset < EVENTS; offset++) {
+                batcher.add(STREAM, PARTITION, offset, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+            }
+            assertThat(capturedFlush.get()).as("one-shot scheduled for the opened batch").isNotNull();
+
+            var flush = Thread.ofVirtual().start(capturedFlush.get());
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("flush drained and entered transport.send").isTrue();
+
+            return flush;
+        }
+
+        private Closer startCloser() {
+            var returned = new CountDownLatch(1);
+            var deliveredAtClose = new AtomicInteger(-1);
+            var elapsedNanos = new AtomicLong();
+            var interruptedAtReturn = new AtomicBoolean();
+            var thread = Thread.ofPlatform().start(() -> {
+                var started = System.nanoTime();
+
+                batcher.close();
+                elapsedNanos.set(System.nanoTime() - started);
+                interruptedAtReturn.set(Thread.currentThread().isInterrupted());
+                deliveredAtClose.set(delivered.get());
+                returned.countDown();
+            });
+
+            return new Closer(thread, returned, deliveredAtClose, elapsedNanos, interruptedAtReturn);
+        }
+
+        /// One `close()` on its own thread: when it returned, what `delivered` read at that instant, how long it
+        /// took, and whether the thread's interrupt flag was still set.
+        private record Closer(Thread thread,
+                              CountDownLatch returned,
+                              AtomicInteger deliveredAtClose,
+                              AtomicLong elapsedNanos,
+                              AtomicBoolean interruptedAtReturn) {}
     }
 
     /// #1246 review N4: deterministic interleaving of "drainer retired the accumulator but is descheduled
