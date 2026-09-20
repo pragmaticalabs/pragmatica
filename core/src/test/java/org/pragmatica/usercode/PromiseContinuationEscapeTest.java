@@ -15,7 +15,7 @@
  *
  */
 
-package org.pragmatica.lang;
+package org.pragmatica.usercode;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -39,6 +39,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.CoreError;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,7 +49,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #1311 — THE PIN for what happens when a Throwable escapes a Promise continuation.
 ///
-/// Before the fix, [PromiseImpl.AsyncExecutor#runAsync(Runnable)] submitted continuations through
+/// Before the fix, `PromiseImpl.AsyncExecutor.runAsync(Runnable)` submitted continuations through
 /// `ExecutorService.submit` and discarded the Future, so a Throwable thrown by a continuation on an
 /// executor thread vanished: the dependent promise never resolved, nothing was logged, every event
 /// handler queued behind the thrower on the same promise was skipped, and a thread already parked in
@@ -63,6 +65,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// The `StackOverflowError` cases use a real unbounded recursion and the `OutOfMemoryError` case asks
 /// the JVM for an array it cannot address (`Requested array size exceeds VM limit`), so the JVM itself
 /// raises both; a `new StackOverflowError()` thrown by hand would only prove that `catch` works.
+///
+/// **This class lives outside `org.pragmatica.lang` on purpose.** The origin named in the Cause is the
+/// first frame whose class is not under `java.`/`jdk.`/`sun.`/`org.pragmatica.lang.`, so a pin that asserts
+/// "the origin is my frame" has to be shaped like a caller — in a caller's package.
 ///
 /// **This class is an instrument, so it carries a positive control**: [#SENTINEL] is emitted through the
 /// same logger the appender is bound to and asserted present, so a detached appender fails the class
@@ -348,6 +354,141 @@ class PromiseContinuationEscapeTest {
         assertThat(dependent.isResolved()).isTrue();
         assertVmeEscape(dependent.await(), "replaceResult", OutOfMemoryError.class);
         assertErrorLogged("replaceResult", "OutOfMemoryError");
+    }
+
+    // ---- 2b. rev1362 pins: VME on already-resolved paths, and a VME must not strand the batch -----------
+
+    /// rev1362 P1a. Before the fix the already-resolved `map` failed + logged but did NOT rethrow, so the
+    /// VME semantics depended on whether the source resolved before or after `map` was attached.
+    @Test
+    void stackOverflowInMap_onResolvedPromise_isLoggedAndRethrown() {
+        var promise = Promise.success(1);
+
+        assertThatThrownBy(() -> promise.map(PromiseContinuationEscapeTest::recurseForever))
+            .isInstanceOf(StackOverflowError.class);
+
+        assertErrorLogged("replaceResult", "StackOverflowError");
+    }
+
+    /// rev1362 P1b.
+    @Test
+    void stackOverflowInFlatMap_onResolvedPromise_isLoggedAndRethrown() {
+        var promise = Promise.success(1);
+
+        assertThatThrownBy(() -> promise.flatMap(value -> {
+                recurseForever(value);
+
+                return Promise.success(value);
+            }))
+            .isInstanceOf(StackOverflowError.class);
+
+        assertErrorLogged("fold", "StackOverflowError");
+    }
+
+    /// rev1362 P2. `processActions` CAS-claims the whole batch; before the fix the VME left the loop at
+    /// the thrower, so the sibling map never resolved and the thread parked in `await()` on the (resolved)
+    /// source was never unparked — the ticket's wedge re-created for a StackOverflowError in one mapper.
+    @Test
+    void stackOverflowInMap_onExecutor_siblingMapAndAwaiterStillComplete() throws InterruptedException {
+        var previous = Thread.getDefaultUncaughtExceptionHandler();
+
+        Thread.setDefaultUncaughtExceptionHandler((_, _) -> {});
+
+        try {
+            var source = Promise.<Integer>promise();
+            var awaited = new AtomicReference<Result<Integer>>();
+            var parked = new CountDownLatch(1);
+            var waiter = Thread.ofPlatform().name("s1311-waiter-p2").start(() -> {
+                parked.countDown();
+                awaited.set(source.await());
+            });
+
+            assertThat(parked.await(2, TimeUnit.SECONDS)).isTrue();
+            spinUntilParked(waiter);
+
+            var thrower = source.map(PromiseContinuationEscapeTest::recurseForever);
+            var sibling = source.map(value -> value + 1);
+
+            source.async(promise -> promise.succeed(1));
+
+            assertVmeEscape(thrower.await(timeSpan(2).seconds()), "replaceResult", StackOverflowError.class);
+            assertThat(sibling.await(timeSpan(2).seconds())).as("sibling map of the same source must still resolve")
+                      .isEqualTo(Result.success(2));
+            waiter.join(TimeUnit.SECONDS.toMillis(2));
+            assertThat(waiter.isAlive()).as("thread parked in await() on the resolved source must be unparked").isFalse();
+            assertThat(awaited.get()).isEqualTo(Result.success(1));
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previous);
+        }
+    }
+
+    /// rev1362 P2b: the same for event handlers — a handler queued behind an overflowing one still runs.
+    @Test
+    void stackOverflowInOnResult_onExecutor_handlerQueuedBehindStillRuns() throws InterruptedException {
+        var previous = Thread.getDefaultUncaughtExceptionHandler();
+
+        Thread.setDefaultUncaughtExceptionHandler((_, _) -> {});
+
+        try {
+            var source = Promise.<Integer>promise();
+            var second = new CountDownLatch(1);
+
+            source.onResult(_ -> recurseForever(0));
+            source.onResult(_ -> second.countDown());
+            source.async(promise -> promise.succeed(1));
+
+            assertThat(second.await(2, TimeUnit.SECONDS)).as("handler queued behind the overflowing one must still run").isTrue();
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previous);
+        }
+    }
+
+    /// rev1362 P7: the caller-thread variant — `succeed()` rethrows the VME, but only AFTER the sibling
+    /// map has resolved and the awaiter has been unparked.
+    @Test
+    void stackOverflowInMap_resolvedOnCallerThread_siblingAndAwaiterCompleteBeforeTheRethrow() throws InterruptedException {
+        var source = Promise.<Integer>promise();
+        var parked = new CountDownLatch(1);
+        var waiter = Thread.ofPlatform().name("s1311-waiter-p7").start(() -> {
+            parked.countDown();
+            source.await();
+        });
+
+        assertThat(parked.await(2, TimeUnit.SECONDS)).isTrue();
+        spinUntilParked(waiter);
+
+        var thrower = source.map(PromiseContinuationEscapeTest::recurseForever);
+        var sibling = source.map(value -> value * 10);
+
+        assertThatThrownBy(() -> source.succeed(1)).isInstanceOf(StackOverflowError.class);
+
+        assertThat(sibling.isResolved()).as("sibling map must have resolved before the rethrow").isTrue();
+        assertThat(sibling.await()).isEqualTo(Result.success(10));
+        assertVmeEscape(thrower.await(), "replaceResult", StackOverflowError.class);
+        waiter.join(TimeUnit.SECONDS.toMillis(2));
+        assertThat(waiter.isAlive()).as("awaiter must be unparked before the rethrow").isFalse();
+    }
+
+    /// rev1362 P4: the origin must name the continuation, not the JDK throw site. A mapper that calls
+    /// `Integer.parseInt` throws from `NumberFormatException.forInputString`; before the fix that was the
+    /// frame in the Cause message and the user's frame was absent.
+    @Test
+    void originFrame_whenMapperThrowsFromInsideAJdkCall_namesTheContinuation() {
+        var source = Promise.<Integer>promise();
+        var dependent = source.map(_ -> Integer.parseInt("not-a-number"));
+
+        source.async(promise -> promise.succeed(1));
+
+        var result = dependent.await(timeSpan(2).seconds());
+
+        assertThat(result).isInstanceOf(Result.Failure.class);
+
+        var message = ((Result.Failure<?>) result).cause().message();
+
+        assertThat(message).contains("replaceResult")
+                  .contains(THIS_CLASS)
+                  .as("the JDK frame must not be the named origin")
+                  .doesNotContain("continuation at java.base");
     }
 
     // ---- 3. Promise.lift*: the mapper converts exceptions, a VirtualMachineError still escapes --------

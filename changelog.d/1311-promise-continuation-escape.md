@@ -14,7 +14,11 @@
   at ERROR by the `org.pragmatica.lang.Promise` logger with the stack trace; and, for a
   `VirtualMachineError`, is rethrown after both. `runAsync` uses `execute`, so the rethrown error
   reaches the virtual thread's uncaught-exception handler instead of a dead Future. The behaviour
-  is the same whether the source resolved before or after the continuation was attached.
+  is the same whether the source resolved before or after the continuation was attached, and a
+  `VirtualMachineError` from one continuation does not strand the rest of its resolution batch:
+  sibling dependents resolve and parked `await()` callers wake before it is rethrown. The origin
+  named in the cause is the first frame outside the JDK and `org.pragmatica.lang` — the caller's
+  line, not `NumberFormatException.forInputString`.
   `[verified: core/src/test/java/org/pragmatica/lang/PromiseContinuationEscapeTest.java]` — real
   recursion for `StackOverflowError`, an unaddressable array for `OutOfMemoryError`.
 - **No lift in `core` converts a `VirtualMachineError` any more.** `Result.lift` ×2, `Unit.lift`,

@@ -95,10 +95,16 @@ import static org.pragmatica.lang.utils.ResultCollector.resultCollector;
 /// continuation — a mapper, a `fold`, an `onResult`/`onSuccess`/`onFailure` handler, or the consumer
 /// given to `async`/`Promise.promise(consumer)` — is not lost: the dependent promise (for `async`,
 /// the promise the consumer was given) fails with a [CoreError.Exception] whose message names the
-/// continuation and the top stack frame of the escape and whose `cause()` is the Throwable; the
-/// escape is logged at ERROR by the `org.pragmatica.lang.Promise` logger with its stack trace; and a
-/// [VirtualMachineError] is rethrown after both, so an exhausted stack or heap is never hidden
-/// behind a failed `Result`. Handlers queued behind the thrower on the same promise still run.
+/// continuation and the first non-JDK, non-`org.pragmatica.lang` frame of the escape and whose
+/// `cause()` is the Throwable; the escape is logged at ERROR by the `org.pragmatica.lang.Promise`
+/// logger with its stack trace; and a [VirtualMachineError] is rethrown after both, so an exhausted
+/// stack or heap is never hidden behind a failed `Result`. The behaviour is the same whether the
+/// source resolved before or after the continuation was attached. Every other completion claimed in
+/// the same resolution batch — sibling dependents, handlers queued behind the thrower, threads parked
+/// in `await()` — still runs before the error is rethrown. Where the rethrow goes depends on the
+/// thread: the caller of `succeed()`/`map()`, the virtual thread's uncaught-exception handler for
+/// event handlers and `async` consumers, or — absorbed — the `ScheduledFuture` of the timeout
+/// scheduler for a promise resolved by `.timeout()`/`async(delay, …)`.
 /// `Promise.lift*` map ordinary exceptions through their mapper as before; a `VirtualMachineError` is
 /// rethrown by [Result#lift] and takes the same route as any other escape. This is containment of a
 /// bug, not an error channel: a mapper that relies on it is still wrong.
@@ -3281,7 +3287,11 @@ final class PromiseImpl<T> implements Promise<T> {
             try {
                 return action.apply(result);
             } catch (Throwable escape) {
-                return new PromiseImpl<>(escaped(FOLD, escape).result());
+                var cause = escaped(FOLD, escape);
+
+                rethrowIfFatal(escape);
+
+                return new PromiseImpl<>(cause.result());
             }
         } else {
             return chain(action);
@@ -3294,7 +3304,11 @@ final class PromiseImpl<T> implements Promise<T> {
             try {
                 return new PromiseImpl<>(transformation.apply(result));
             } catch (Throwable escape) {
-                return new PromiseImpl<>(escaped(REPLACE_RESULT, escape).result());
+                var cause = escaped(REPLACE_RESULT, escape);
+
+                rethrowIfFatal(escape);
+
+                return new PromiseImpl<>(cause.result());
             }
         } else {
             var dependency = new PromiseImpl<U>(null);
@@ -3402,9 +3416,19 @@ final class PromiseImpl<T> implements Promise<T> {
     @Override
     public Promise<T> resolve(Result<T> value) {
         if (RESULT.compareAndSet(this, null, value)) {
+            VirtualMachineError fatal = null;
+
             do {
-                processActions();
+                try {
+                    processActions();
+                } catch (VirtualMachineError escape) {
+                    fatal = fatal == null
+                            ? escape
+                            : fatal;
+                }
             } while (this.stack != null);
+
+            rethrowIfFatal(fatal);
         }
 
         return this;
@@ -3462,24 +3486,33 @@ final class PromiseImpl<T> implements Promise<T> {
         }
 
         runEventHandlers(events);
-        runSequentialActions(actions);
-        runJoins(joins);
+        rethrowIfFatal(runAll(joins, runAll(actions, null)));
     }
 
+    /// #1311: a VirtualMachineError rethrown by one completion must not abandon the rest of the batch this
+    /// call CAS-claimed — the sibling dependents would never resolve and a thread parked in `await()` would
+    /// never be unparked, which is the ticket's own wedge re-created for a StackOverflowError in one mapper.
+    /// Every completion of the batch runs; the first error is returned and rethrown by the caller once the
+    /// joins have been unparked, so "rethrown after logging" still holds, one batch later. The call site
+    /// nests the two calls: the inner (argument) runs the sequential actions first, the outer the joins
+    /// after — the original order.
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private void runJoins(Completion current) {
-        while (current != null) {
-            current.complete(result);
-            current = current.next;
-        }
-    }
+    private VirtualMachineError runAll(Completion current, VirtualMachineError first) {
+        var fatal = first;
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private void runSequentialActions(Completion current) {
         while (current != null) {
-            current.complete(result);
+            try {
+                current.complete(result);
+            } catch (VirtualMachineError escape) {
+                fatal = fatal == null
+                        ? escape
+                        : fatal;
+            }
+
             current = current.next;
         }
+
+        return fatal;
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -3488,14 +3521,7 @@ final class PromiseImpl<T> implements Promise<T> {
             return;
         }
 
-        AsyncExecutor.INSTANCE.runAsync(() -> {
-            var current = asyncEvents;
-
-            while (current != null) {
-                current.complete(result);
-                current = current.next;
-            }
-        });
+        AsyncExecutor.INSTANCE.runAsync(() -> rethrowIfFatal(runAll(asyncEvents, null)));
     }
 
     private <U> Promise<U> chain(Fn1<Promise<U>, Result<T>> transformer) {
@@ -3551,12 +3577,8 @@ final class PromiseImpl<T> implements Promise<T> {
     /// [Cause.Transient]: an escape is a bug, and whether a retry can help is the caller's call
     /// (#1297's sealer retries its drain after a pause by design).
     static Cause escaped(String continuation, Throwable escape) {
-        var trace = escape.getStackTrace();
-        var origin = trace.length == 0
-                     ? "unknown origin (empty stack trace)"
-                     : trace[0].toString();
         var cause = new CoreError.Exception("Throwable escaped " + continuation
-                                           + " continuation at " + origin
+                                           + " continuation at " + originOf(escape)
                                            + ": " + escape,
                                             escape);
 
@@ -3565,6 +3587,32 @@ final class PromiseImpl<T> implements Promise<T> {
         return cause;
     }
 
+    /// The origin named in the Cause is the first frame that belongs to neither the JDK nor this library:
+    /// a mapper that calls `Integer.parseInt` throws from `NumberFormatException.forInputString`, and that
+    /// frame would tell a reader nothing about which continuation broke. Falls back to the top frame when
+    /// every frame is framework (a JDK-internal recursion), and says so when the trace is empty.
+    private static String originOf(Throwable escape) {
+        var trace = escape.getStackTrace();
+
+        if (trace.length == 0) {
+            return "unknown origin (empty stack trace)";
+        }
+
+        for (var frame : trace) {
+            if (!isFrameworkFrame(frame.getClassName())) {
+                return frame.toString();
+            }
+        }
+
+        return trace[0].toString();
+    }
+
+    private static boolean isFrameworkFrame(String className) {
+        return className.startsWith("java.") || className.startsWith("jdk.") || className.startsWith("sun.") || className.startsWith("org.pragmatica.lang.");
+    }
+
+    /// Also the rethrow-after-the-batch primitive: `Causes.rethrowIfFatal(null)` is a no-op, so the
+    /// batch loops hand it whatever they collected without a null check of their own.
     private static void rethrowIfFatal(Throwable escape) {
         Causes.rethrowIfFatal(escape);
     }
