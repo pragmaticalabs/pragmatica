@@ -5581,13 +5581,14 @@ cause, rather than validated against a guessed count. `[mechanism: ManagementSer
 ProblemResponses HttpStatusAware dispatch]`
 
 **Batch publish is not atomic, and the response says per item what happened (#1342).** `publish-batch`
-validates and writes each item independently and concurrently, and answers `200` with one outcome per
-item, in request order, for every batch that ran — partial included:
+validates and writes each item independently and concurrently. **`200` means the batch RAN, not that
+every event landed — read `notPublished`.** The top-level `published` / `notPublished` counts and one
+outcome per item, in request order, come back for every batch that ran, partial included:
 
 ```json
-{"address": "acme:orders:1.0.0", "published": 1, "notPublished": 1,
- "outcomes": [{"index": 0, "status": "PUBLISHED", "offset": 41},
-              {"index": 1, "status": "NOT_ATTEMPTED", "cause": "Partition 4 is out of range; this stream has partitions [0, 4)"}]}
+{"address":"acme:orders:1.0.0","published":1,"notPublished":1,
+ "outcomes":[{"index":0,"status":"PUBLISHED","offset":41},
+             {"index":1,"status":"NOT_ATTEMPTED","cause":"Partition 4 is out of range; this stream has partitions [0, 4)"}]}
 ```
 
 - `PUBLISHED`: durably in the log at `offset`.
@@ -5596,10 +5597,12 @@ item, in request order, for every batch that ran — partial included:
 - `OUTCOME_UNKNOWN`: the write was refused or timed out AFTER it may have been appended (#1236) — it may be
   in the log; retrying it can duplicate.
 
-Check `notPublished`, not the HTTP status: a partial batch is still `200`. Before #1342 the response on a
-partial batch was the first failure alone, and the offsets of the items that had landed were discarded.
-`[mechanism: publishMany fires every item concurrently via Promise.allOf with no short-circuit; each item's
-Result becomes its own PublishItemOutcome]`
+A client that treats `200` as "every event landed" misreads a partial batch; check `notPublished`. Before
+#1342 the response on a partial batch was the first failure alone, and the offsets of the items that had
+landed were discarded. `[mechanism: publishMany fires every item concurrently via Promise.allOf with no
+short-circuit; each item's Result becomes its own PublishItemOutcome]` `[verified:
+StreamApiRoutesPublishBatchTest.partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset —
+the real route through ManagementRouter, asserting the written status and JSON]`
 
 ### Delete Stream Version
 

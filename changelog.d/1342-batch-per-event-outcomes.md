@@ -27,10 +27,15 @@
   event `Published` at its batch index (it has no log).
 - **Management API `publish-batch` reports every item.** `PublishBatchResponse` is now
   `{address, published, notPublished, outcomes:[{index, status, offset?, cause?}]}` with status `PUBLISHED`
-  / `OUTCOME_UNKNOWN` / `NOT_ATTEMPTED`, returned with 200 for every batch that ran — partial included. The
-  former `Result.allOf` fold returned only the first failure and discarded the offsets of the items that had
-  landed. An item rejected before writing (stream unavailable, partition out of range) is `NOT_ATTEMPTED`; an
-  item the write router refused is `OUTCOME_UNKNOWN` (#1236).
-  [verified: `StreamApiRoutesPublishBatchTest`, 3 tests]
-  [unverified: the JSON rendering of `Option<Long>`/`Option<String>` fields over HTTP is exercised by the
-  existing codec, not by this test, which calls the route method directly]
+  / `OUTCOME_UNKNOWN` / `NOT_ATTEMPTED`, returned with 200 for every batch that ran — partial included.
+  **Hazard: `200` means the batch RAN, not that every event landed. A client that reads only the status
+  misreads a partial batch; read `notPublished`.** A typed non-2xx that carries structured offsets needs
+  `ManagementRouter` to support typed success statuses, which is a follow-up. The former `Result.allOf`
+  fold returned only the first failure and discarded the offsets of the items that had landed. An item
+  rejected before writing (stream unavailable, partition out of range) is `NOT_ATTEMPTED`; an item the
+  write router refused is `OUTCOME_UNKNOWN` (#1236).
+  [verified: `StreamApiRoutesPublishBatchTest`, 4 tests, including
+  `partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset` — the real route through
+  `ManagementRouter`, asserting the written status 200 and the JSON body
+  `{"published":1,"notPublished":1,"outcomes":[{"index":0,"status":"PUBLISHED","offset":0},…]}`; absent
+  `Option` fields are omitted from the JSON]

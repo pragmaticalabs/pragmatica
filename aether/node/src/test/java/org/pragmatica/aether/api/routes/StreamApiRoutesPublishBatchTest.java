@@ -5,10 +5,15 @@
 package org.pragmatica.aether.api.routes;
 
 import java.lang.reflect.Proxy;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.api.routes.StreamApiRoutes.PublishItemOutcome;
 import org.pragmatica.aether.api.routes.StreamApiRoutes.PublishItemStatus;
 import org.pragmatica.aether.api.routes.StreamApiRoutes.PublishRequest;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -21,6 +26,13 @@ import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpRequest;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.QueryParams;
+import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
@@ -129,6 +141,84 @@ class StreamApiRoutesPublishBatchTest {
             assertThat(response.outcomes().getFirst().cause().or("")).contains("#964");
         } finally {
             manager.close();
+        }
+    }
+
+    /// CTO ruling (s25, #1342): a partial batch answers 200 — the batch RAN — with `notPublished > 0` and the
+    /// landed offsets in the body, so a reader who checks only the status misreads it. Pinned at the WIRE:
+    /// the real route dispatched through `ManagementRouter` with the JSON body a client sends, and the status
+    /// and JSON the router writes back.
+    @Test
+    void partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset() throws InterruptedException {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        try {
+            createStream(manager, ConsistencyMode.EVENTUAL);
+            var router = ManagementRouter.managementRouter(routesFor(manager));
+            var recorder = new RecordingResponseWriter();
+            var path = ManagementRoute.STREAMS_PUBLISH_BATCH.assemble(NAMESPACE, STREAM, VERSION).unwrap();
+            var body = "[{\"data\":\"ok\",\"partition\":0},{\"data\":\"bad\",\"partition\":" + PARTITIONS + "}]";
+
+            assertThat(router.handle(new PostRequest(path, body), recorder)).as("route matched and dispatched").isTrue();
+            assertThat(recorder.written.await(5, TimeUnit.SECONDS)).as("a response was written").isTrue();
+
+            assertThat(recorder.status.get()).isEqualTo(HttpStatus.OK);
+            assertThat(recorder.body()).contains("\"published\":1")
+                                       .contains("\"notPublished\":1")
+                                       .contains("\"status\":\"PUBLISHED\"")
+                                       .contains("\"offset\":0")
+                                       .contains("\"status\":\"NOT_ATTEMPTED\"")
+                                       .contains("out of range");
+        } finally {
+            manager.close();
+        }
+    }
+
+    private record PostRequest(String path, String json) implements HttpRequest {
+        @Override
+        public String requestId() {
+            return "req-1342";
+        }
+
+        @Override
+        public HttpMethod method() {
+            return HttpMethod.POST;
+        }
+
+        @Override
+        public Headers headers() {
+            return Headers.empty();
+        }
+
+        @Override
+        public QueryParams queryParams() {
+            return QueryParams.empty();
+        }
+
+        @Override
+        public byte[] body() {
+            return json.getBytes(StandardCharsets.UTF_8);
+        }
+    }
+
+    private static final class RecordingResponseWriter implements ResponseWriter {
+        private final AtomicReference<HttpStatus> status = new AtomicReference<>();
+        private final AtomicReference<byte[]> bytes = new AtomicReference<>(new byte[0]);
+        private final CountDownLatch written = new CountDownLatch(1);
+
+        @Override
+        public void write(HttpStatus status, byte[] body, ContentType contentType) {
+            this.status.set(status);
+            this.bytes.set(body);
+            written.countDown();
+        }
+
+        @Override
+        public ResponseWriter header(String name, String value) {
+            return this;
+        }
+
+        String body() {
+            return new String(bytes.get(), StandardCharsets.UTF_8);
         }
     }
 
