@@ -844,7 +844,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                 collectAddresses(server),
                                 InstanceType.ON_DEMAND,
                                 labels,
-                                Option.option(labels.get(NODE_ID_LABEL)));
+                                Option.option(labels.get(NODE_ID_LABEL)),
+                                Option.option(server.location()).flatMap(location -> Option.option(location.name())));
     }
 
     private static Map<String, String> safeLabels(Server server) {

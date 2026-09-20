@@ -340,7 +340,7 @@ class PhaseDataTest {
         }
 
         @Test
-        void uses_batchId_as_tiebreaker() {
+        void rejects_plurality_without_quorum() {
             var batch1 = createBatch("batch1");
             var batch2 = createBatch("batch2");
             phaseData.registerProposal(NODE_1, batch1);
@@ -350,8 +350,8 @@ class PhaseDataTest {
 
             var batch = phaseData.findAgreedProposal(QUORUM_SIZE);
 
-            // Should choose deterministically based on BatchId
-            assertThat(batch.isNotEmpty()).isTrue();
+            // Neither proposal has quorum support.
+            assertThat(batch.isNotEmpty()).isFalse();
         }
 
         @Test
@@ -363,7 +363,7 @@ class PhaseDataTest {
 
             var batch = phaseData.findAgreedProposal(QUORUM_SIZE);
 
-            assertThat(batch.id()).isEqualTo(realBatch.id());
+            assertThat(batch.isNotEmpty()).isFalse();
         }
 
         @Test
@@ -421,11 +421,8 @@ class PhaseDataTest {
 
             var outcome = phaseData.processRound2Completion(NODE_1, F_PLUS_ONE, QUORUM_SIZE);
 
-            // Coin flip only happens when ALL votes are VQUESTION
-            assertThat(outcome).isInstanceOf(Round2Outcome.Decided.class);
-            var decision = ((Round2Outcome.Decided<TestCommand>) outcome).decision();
-            // Phase 1 has value 1, which is odd -> V1
-            assertThat(decision.stateValue()).isEqualTo(StateValue.V1);
+            assertThat(outcome).isInstanceOf(Round2Outcome.CarryForward.class);
+            assertThat(outcome.lockedValue()).isEqualTo(StateValue.V1);
         }
 
         @Test
@@ -528,7 +525,7 @@ class PhaseDataTest {
         @Test
         void round1_vote_is_idempotent_same_node_phase() {
             phaseData.registerRound1Vote(NODE_1, StateValue.V1);
-            phaseData.registerRound1Vote(NODE_1, StateValue.V0); // Second registration overwrites
+            phaseData.registerRound1Vote(NODE_1, StateValue.V0); // Conflicting duplicate cannot replace first ballot
 
             // Map semantics: only one vote per node
             assertThat(phaseData.countRound1VotesForValue(StateValue.V1) +

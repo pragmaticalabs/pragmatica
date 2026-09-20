@@ -113,17 +113,20 @@ public final class EmberCluster {
     /// and existing-test path (plain [#start] holds nothing back).
     private final Map<String, AetherNode> heldBackNodes = new ConcurrentHashMap<>();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
-    /// #694: per-instance tag maps, stamped by the compute provider at provision time (see
-    /// `EmberComputeProvider.stampAndDescribe`). Keyed by node id; nodes created outside the
-    /// provider (initial cluster, direct addNode calls) have no entry and read as UNTAGGED — the
-    /// pre-#694 shape, preserved deliberately so only provisioned instances change what
-    /// listInstances returns. Entries survive a restart (labels live on the VM in production) and
-    /// die with terminate/kill or cluster teardown.
+    /// Immutable provider identity. Initial/manual nodes use the harness prefix as cluster name,
+    /// their explicit source (or default), and configured role. Provider-created nodes retain the
+    /// exact ProvisionContext identity. Tags survive restart and disappear with the instance.
     private final Map<String, Map<String, String>> instanceTags = new ConcurrentHashMap<>();
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
     private final int initialClusterSize;
+    private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private final Path consensusBase = Path.of(System.getProperty("java.io.tmpdir"),
+                                               "aether-ember-" + java.util.UUID.randomUUID());
+
     private final int basePort;
     private final int baseMgmtPort;
     private final int baseAppHttpPort;
@@ -244,25 +247,19 @@ public final class EmberCluster {
             return ProviderDefaults.providerDefaults("in-jvm", "", "", "", Option.none(), false);
         }
 
-        /// Provisions an in-JVM node advertising the role the request ALREADY carries (#590).
-        ///
-        /// Every production provider translates [ProvisionContext#role] into its native encoding
-        /// (`-e AETHER_ROLE=` / `-l aether-role=`), which the booting node then re-asserts as its SWIM
-        /// [NodeInfo#LABEL_ROLE] via `Main.collectNodeLabels`. This provider used to drop that field on
-        /// the floor and call the bare [#addNode], so a CTM-minted worker came up in-JVM classifying as
-        /// a CORE — the same infidelity [#addWorkerNode] documents, on the path that no test can opt out
-        /// of. Faithful-by-construction is the fix: the role rides the request, so it rides the node.
-        ///
-        /// The label is stamped VERBATIM — no normalisation, no mapping. `MemberDescriptor.isCoreRole`
-        /// compares against the literal `worker`, so normalising here would mask exactly the mislabel a
-        /// harness exists to expose. A blank role stamps NO label, mirroring a production node booted
-        /// without `AETHER_ROLE` (`collectNodeLabels` only puts the key when the env var is present);
-        /// blank and `core` are equivalent through `isCoreRole`, which is what keeps every existing
-        /// core-provisioning path unchanged — pinned, not assumed, by `EmberAddNodeRoleLabelTest`.
+        /// Provisioned roles are explicit node configuration. An omitted provider role defaults
+        /// to core, matching provider tags; unknown explicit roles remain unknown and inadmissible.
         @Override
         public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
-            return addNode(roleLabels(request.context().role())).map(nodeId -> stampAndDescribe(request.context(),
-                                                                                                nodeId.id()));
+            return request.context()
+                          .nodeId()
+                          .map(id -> NodeId.nodeId(id)
+                                           .async()
+                                           .flatMap(node -> addProvisionedNode(node,
+                                                                               provisionLabels(request.context()))))
+                          .or(() -> addNode(provisionLabels(request.context())))
+                          .map(node -> stampAndDescribe(request.context(),
+                                                        node.id()));
         }
 
         /// #694: the tag map is built from the provisioning context AT PROVISION TIME and stored per
@@ -308,7 +305,8 @@ public final class EmberCluster {
                                     addresses,
                                     InstanceType.ON_DEMAND,
                                     Option.option(instanceTags.get(nodeIdStr)).or(Map.of()),
-                                    Option.some(nodeIdStr));
+                                    Option.some(nodeIdStr),
+                                    org.pragmatica.lang.Option.none());
         }
 
         /// Mirrors `HetznerComputeProvider.labelsFor`, the reference native stamping: the three
@@ -459,8 +457,10 @@ public final class EmberCluster {
     }
 
     private EnvironmentIntegration resolveEnvironment(EnvironmentIntegration existing) {
-        return Option.option(existing).or(() -> EnvironmentIntegration.withCompute(computeProviderDecorator.get()
-                                                                                                           .apply(new EmberComputeProvider())));
+        return Option.option(existing).or(() -> EnvironmentIntegration.withLocalCompute(computeProviderDecorator.get()
+                                                                                                                .apply(new EmberComputeProvider()),
+                                                                                        localCoreAdmissions::contains,
+                                                                                        localWorkerAdmissions::contains));
     }
 
     public static EmberCluster emberCluster() {
@@ -606,6 +606,7 @@ public final class EmberCluster {
             var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
 
             initialNodes.add(info);
+            instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, Map.of()));
             nodeInfos.put(nodeId.id(), info);
             slotsByNodeId.put(nodeId.id(), slot);
         }
@@ -924,19 +925,67 @@ public final class EmberCluster {
         return addNode(Map.of(NodeInfo.LABEL_ROLE, WORKER_ROLE));
     }
 
-    /// The one place a provisioning role becomes a SWIM label. `Verify.Is.present` is non-null AND
-    /// non-blank, so an unset role yields an EMPTY map rather than `role=""` — a node advertising a
-    /// blank role and a node advertising none are indistinguishable to `isCoreRole` today, but only
-    /// the empty map matches what production actually puts on the wire.
-    private static Map<String, String> roleLabels(String role) {
-        return Verify.Is.present(role)
-               ? Map.of(NodeInfo.LABEL_ROLE, role)
-               : Map.of();
+    /// Provider source and configured role become immutable advertised identity.
+    private static Map<String, String> provisionLabels(ProvisionContext context) {
+        var labels = new java.util.HashMap<>(roleLabels(context.role()));
+
+        labels.put(NodeInfo.LABEL_SOURCE,
+                   context.sourceName().value());
+
+        return Map.copyOf(labels);
+    }
+
+    static Map<String, String> roleLabels(String role) {
+        return Map.of(NodeInfo.LABEL_ROLE,
+                      Verify.Is.present(role)
+                      ? role
+                      : "core");
     }
 
     /// Shared implementation. `labels` are attached to the node's advertised `NodeInfo`, which is what
     /// peers and its own `MemberDescriptor` classify from — the same field production populates.
     public Promise<NodeId> addNode(Map<String, String> labels) {
+        return addConfiguredNode(configuredNodeLabels(labels));
+    }
+
+    static Map<String, String> configuredNodeLabels(Map<String, String> labels) {
+        var configured = new java.util.HashMap<>(labels);
+
+        configured.putIfAbsent(NodeInfo.LABEL_ROLE, "core");
+
+        return Map.copyOf(configured);
+    }
+
+    private Promise<NodeId> addConfiguredNode(Map<String, String> labels) {
+        var nodeId = nodeId(nodeIdPrefix + "-" + nodeCounter.incrementAndGet()).unwrap();
+
+        if ("core".equalsIgnoreCase(labels.getOrDefault(NodeInfo.LABEL_ROLE, "core"))) {
+            localCoreAdmissions.add(nodeId.id());
+        } else if ("worker".equalsIgnoreCase(labels.get(NodeInfo.LABEL_ROLE)) || "spot".equalsIgnoreCase(labels.get(NodeInfo.LABEL_ROLE))) {
+            localWorkerAdmissions.add(nodeId.id());
+        }
+
+        instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, labels));
+
+        return addProvisionedNode(nodeId, labels);
+    }
+
+    private Map<String, String> harnessInstanceTags(NodeId node, Map<String, String> labels) {
+        return Map.of("aether-cluster",
+                      nodeIdPrefix,
+                      "aether-source",
+                      labels.getOrDefault(NodeInfo.LABEL_SOURCE, "default"),
+                      "aether-role",
+                      labels.getOrDefault(NodeInfo.LABEL_ROLE, "core"),
+                      "aether.node-id",
+                      node.id());
+    }
+
+    private Promise<NodeId> addProvisionedNode(NodeId nodeId, Map<String, String> labels) {
+        if (nodes.containsKey(nodeId.id())) {
+            return EnvironmentError.operationNotSupported("Node identity already exists: " + nodeId.id()).promise();
+        }
+
         var slotOpt = Option.option(availableSlots.poll());
 
         if (slotOpt.isEmpty()) {
@@ -946,8 +995,6 @@ public final class EmberCluster {
         }
 
         var slot = slotOpt.unwrap();
-        var nodeNum = nodeCounter.incrementAndGet();
-        var nodeId = nodeId(nodeIdPrefix + "-" + nodeNum).unwrap();
         var port = basePort + slot;
         var mgmtPort = baseMgmtPort + slot;
         var appHttpPort = baseAppHttpPort + slot;
@@ -1227,7 +1274,7 @@ public final class EmberCluster {
                                                                       apiVersionHeaderName.get())
                                                        .unwrap(),
                                           ControllerConfig.forgeDefaults(),
-                                          configProvider,
+                                          Option.some(nodeConfiguration(nodeId)),
                                           Option.some(emberEnvironment()),
                                           AutoHealConfig.DEFAULT,
                                           observability,
@@ -1311,10 +1358,27 @@ public final class EmberCluster {
         }
     }
 
-    private Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
-        return dataBaseDir.get()
-                          .map(base -> artifactsStorageConfig(base, nodeId))
-                          .or(Map.of());
+    /// Genesis identity and consensus storage survive all in-process restarts of this cluster.
+    private ConfigurationProvider nodeConfiguration(NodeId nodeId) {
+        var genesis = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
+                                                .mapToObj(index -> nodeIdPrefix + "-" + index)
+                                                .collect(java.util.stream.Collectors.joining(","));
+        var directory = dataBaseDir.get().or(consensusBase).resolve(nodeId.id()).resolve("consensus");
+        var builder = ConfigurationProvider.builder().withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
+                                                                                                                  Map.of("cluster.genesis_voters",
+                                                                                                                         genesis,
+                                                                                                                         "cluster.consensus_path",
+                                                                                                                         directory.toString()),
+                                                                                                                  Integer.MAX_VALUE));
+
+        configProvider.onPresent(builder::withSource);
+
+        return builder.build();
+    }
+
+    Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
+        return artifactsStorageConfig(dataBaseDir.get().or(consensusBase),
+                                      nodeId);
     }
 
     private static Map<String, StorageConfig> artifactsStorageConfig(Path base, NodeId nodeId) {

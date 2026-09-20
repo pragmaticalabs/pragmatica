@@ -113,11 +113,11 @@ class MembershipDeltaProjectorTest {
         }
 
         @Test
-        void blankRole_countsAsCore_isAnnounced() {
+        void blankRole_isNotAnnouncedAsCore() {
             projector.onDelta(joined(A, ""));
 
-            assertThat(decisions).hasSize(1);
-            assertThat(decisions.getFirst()).isInstanceOf(MembershipDecision.NodeJoined.class);
+            assertThat(decisions).isEmpty();
+            assertThat(projector.announcedCoreMembers()).isEmpty();
         }
     }
 

@@ -52,6 +52,19 @@ class InvocationDeadlineCapTest {
     private static final long BUDGET_MILLIS = 300L;
 
     @Test
+    void workerDeparture_resolvesPendingInvocationWithoutWaitingForConfiguredTimeout() {
+        var invoker = remoteInvoker();
+        var result = invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {});
+        result.await(TimeSpan.timeSpan(20).millis());
+        assertThat(invoker.pendingCount()).isEqualTo(1);
+        invoker.onNodeDeparture(REMOTE);
+        result.await(TimeSpan.timeSpan(1).seconds());
+        assertThat(result.isResolved()).isTrue();
+        assertThat(invoker.pendingCount()).isZero();
+        invoker.stop().await();
+    }
+
+    @Test
     void invoke_underBoundedDeadline_failsAtTheRemainingBudget_notTheConfiguredTimeout() {
         var invoker = remoteInvoker();
 

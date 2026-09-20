@@ -1027,6 +1027,36 @@ public sealed interface AetherKey extends StructuredKey {
     /// Desired-state community identity (worker-membership-spec §2, D1): a leader-minted, stable,
     /// committed KV fact keyed on the immutable `communityId`. Mirrors [GovernorAnnouncementKey]
     /// (the governor-owned *observed* statement for the same community) at the key level.
+    record CapacityLedgerKey() implements AetherKey {
+        public static final CapacityLedgerKey INSTANCE = new CapacityLedgerKey();
+
+        @Override
+        public String asString() {
+            return "capacity-ledger/current";
+        }
+    }
+
+    record CapacityReservationKey(NodeId nodeId) implements AetherKey {
+        @Override
+        public String asString() {
+            return "capacity-reservation/" + nodeId.id();
+        }
+    }
+
+    record CommunityPlacementOperationKey(String communityId) implements AetherKey {
+        @Override
+        public String asString() {
+            return "community-placement-operation/" + communityId;
+        }
+    }
+
+    record NodePlacementKey(NodeId nodeId) implements AetherKey {
+        @Override
+        public String asString() {
+            return "node-placement/" + nodeId.id();
+        }
+    }
+
     record CommunityKey(String communityId) implements AetherKey {
         private static final String PREFIX = "community/";
 

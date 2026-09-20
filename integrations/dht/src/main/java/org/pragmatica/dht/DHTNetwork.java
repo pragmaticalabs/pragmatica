@@ -25,8 +25,7 @@ import org.pragmatica.lang.Promise;
 
 
 /// Minimal network abstraction for DHT inter-node messaging.
-/// Implemented by both core cluster network (via ClusterNetwork adapter)
-/// and worker network (via WorkerDHTNetwork).
+/// Core replicas and worker clients use the ClusterNetwork adapter to reach the core DHT ring.
 @FunctionalInterface
 public interface DHTNetwork {
     /// Fire-and-forget send of a protocol message to the target peer. The synchronous

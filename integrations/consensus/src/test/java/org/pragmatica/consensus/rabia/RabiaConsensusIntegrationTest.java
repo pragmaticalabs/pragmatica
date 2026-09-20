@@ -216,10 +216,9 @@ class RabiaConsensusIntegrationTest {
 
             var outcome = phaseData.processRound2Completion(NODE_1, 2, 2);
 
-            assertThat(outcome).isInstanceOf(Round2Outcome.Decided.class);
-            var decision = ((Round2Outcome.Decided<TestCommand>) outcome).decision();
-            // Phase 1 is odd, so coin flip should be V1
-            assertThat(decision.stateValue()).isEqualTo(StateValue.V1);
+            assertThat(outcome).isInstanceOf(Round2Outcome.CarryForward.class);
+            assertThat(outcome.lockedValue()).isEqualTo(StateValue.V1);
+            assertThat(phaseData.isDecided()).isFalse();
         }
 
         @Test
@@ -740,7 +739,8 @@ class RabiaConsensusIntegrationTest {
 
         @Override
         public List<NodeId> topology() {
-            return List.of();
+            return java.util.stream.IntStream.rangeClosed(1, clusterSize)
+                       .mapToObj(index -> nodeId("node-" + index).unwrap()).toList();
         }
     }
 

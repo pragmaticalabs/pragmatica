@@ -131,7 +131,7 @@ class RabiaEnginePauseResumeTest {
 
             // While paused, apply a same-phase Decision — engine commits it, demonstrating
             // that committed-state can advance even during pause.
-            var nextDecision = new Decision<>(NODE_3, phaseBeforePause, StateValue.V1, Batch.<TestCommand>emptyBatch());
+            var nextDecision = new Decision<>(NODE_3, phaseBeforePause, StateValue.V0, Batch.<TestCommand>emptyBatch());
             engine.processDecision(nextDecision);
             Thread.sleep(80);
 
@@ -171,10 +171,10 @@ class RabiaEnginePauseResumeTest {
     }
 
     @Nested
-    class ReconfigureResets {
+    class ReconfigurePreservesState {
 
         @Test
-        void reconfigure_appliesNewMembership_resetsState() throws InterruptedException {
+        void reconfigure_rejectsUnadmittedVoters_preservingState() throws InterruptedException {
             activateEngine();
 
             // Advance state.
@@ -184,38 +184,21 @@ class RabiaEnginePauseResumeTest {
             Thread.sleep(80);
             assertThat(engine.currentPhaseForTesting()).isNotEqualTo(Phase.ZERO);
 
-            // Apply a new membership — must wipe state.
             var newConfig = ClusterConfig.clusterConfig(List.of(NODE_1, NODE_2, NODE_3,
                                                                 nodeId("node-4").unwrap(),
                                                                 nodeId("node-5").unwrap())).unwrap();
+            var phaseBefore = engine.currentPhaseForTesting();
             var reconfigureResult = engine.reconfigure(newConfig).await();
-            Thread.sleep(50);
-
-            assertThat(reconfigureResult.isSuccess()).as("reconfigure must succeed").isTrue();
-            assertThat(engine.currentPhaseForTesting())
-                .as("reconfigure must reset currentPhase to ZERO")
-                .isEqualTo(Phase.ZERO);
-            assertThat(engine.pendingBatchCountForTesting())
-                .as("reconfigure must clear pendingBatches")
-                .isZero();
-            assertThat(engine.isActive())
-                .as("after reconfigure engine awaits new quorum (Stopped, not Active)")
-                .isFalse();
-            var stored = engine.currentConfigForTesting();
-            assertThat(stored.isPresent()).as("reconfigure must store new config").isTrue();
-            stored.onPresent(cfg -> assertThat(cfg).isEqualTo(newConfig));
+            assertThat(reconfigureResult.isFailure()).isTrue();
+            reconfigureResult.onFailure(cause -> assertThat(cause).isEqualTo(ReconfigurationError.UNKNOWN_VOTER));
+            assertThat(engine.currentPhaseForTesting()).isEqualTo(phaseBefore);
+            assertThat(engine.isActive()).isTrue();
+            assertThat(engine.voterConfiguration().unwrap().epoch()).isZero();
         }
 
         @Test
         void reconfigure_sameMembership_isNoOp() throws InterruptedException {
-            // Lock in the membership BEFORE activation so the activation itself takes place
-            // under a known config — this matters because the very first reconfigure call
-            // (none → Some) is treated as a real change (it has to be: the engine was
-            // previously oblivious to its membership and may need to align).
             var sameMembers = ClusterConfig.clusterConfig(List.of(NODE_1, NODE_2, NODE_3)).unwrap();
-            engine.reconfigure(sameMembers).await();
-            Thread.sleep(30);
-
             activateEngine();
 
             // Advance state under same config.
@@ -350,7 +333,7 @@ class RabiaEnginePauseResumeTest {
 
         @Override public Option<NodeState> getState(NodeId id) { return Option.empty(); }
 
-        @Override public List<NodeId> topology() { return List.of(); }
+        @Override public List<NodeId> topology() { return java.util.stream.IntStream.rangeClosed(1, clusterSize).mapToObj(index -> nodeId("node-" + index).unwrap()).toList(); }
     }
 
     static class TestClusterNetwork implements ClusterNetwork {

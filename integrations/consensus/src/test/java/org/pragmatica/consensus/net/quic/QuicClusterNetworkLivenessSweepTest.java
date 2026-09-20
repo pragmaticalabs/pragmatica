@@ -402,6 +402,26 @@ class QuicClusterNetworkLivenessSweepTest {
             .contains(peerId);
     }
 
+    @Test
+    void canonicalDirectionSupersessionIgnoresDelayedLoserClose() {
+        var self = new NodeId("aaa-self");
+        var peer = new NodeId("zzz-peer");
+        var network = createNetwork(self);
+        var losingChannel = activeChannel();
+        var closed = new DefaultChannelPromise(losingChannel, ImmediateEventExecutor.INSTANCE);
+        when(losingChannel.closeFuture()).thenReturn(closed);
+        var loser = QuicPeerConnection.quicPeerConnection(peer, peer, losingChannel);
+        var winner = QuicPeerConnection.quicPeerConnection(peer, self, activeChannel());
+        var state = PeerState.peerState(peer, 0);
+        state.attach(loser, 1);
+        network.seedPeerForTests(peer, state);
+        network.registerCloseListenerForTests(peer, loser);
+        assertThat(state.attach(winner, 2).superseded().unwrap()).isSameAs(loser);
+        closed.setSuccess();
+        assertThat(network.connectedPeers()).contains(peer);
+        assertThat(state.activeConnection().unwrap()).isSameAs(winner);
+    }
+
     // --- Wave 9 Fix B: death-path provenance on the connectivity reporter ---
 
     @Test
@@ -528,6 +548,9 @@ class QuicClusterNetworkLivenessSweepTest {
 
     private TopologyObserver stubTopologyManager(NodeInfo self, TimeSpan helloTimeout) {
         return new TopologyObserver() {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {
                 return id.equals(self.id()) ? Option.some(self) : Option.empty();

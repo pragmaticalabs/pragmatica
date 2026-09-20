@@ -67,6 +67,19 @@ class HttpForwarderDeadlineTest {
     }
 
     @Test
+    void workerDeparture_resolvesPendingForwardWithoutWaitingForHopTimeout() {
+        var network = new RecordingClusterNetwork(Set.of(A));
+        var forwarder = forwarder(network, timeSpan(20).seconds(), Set.of(A));
+        var context = HttpRequestContext.httpRequestContext(PATH, METHOD, Map.of(), Map.of(), "worker-departure");
+        var result = forwarder.forward(context, METHOD, PREFIX, "worker-departure");
+        network.firstSend.await(timeSpan(1).seconds()).unwrap();
+        forwarder.onNodeDeparture(A);
+        result.await(timeSpan(1).seconds());
+        assertThat(result.isResolved()).isTrue();
+        assertThat(result.await().isFailure()).isTrue();
+    }
+
+    @Test
     void forward_underExhaustedBudget_failsTyped_withoutAnySend() {
         var network = new RecordingClusterNetwork(Set.of(A, B));
         var forwarder = forwarder(network, timeSpan(50).millis(), Set.of(A, B));
@@ -156,6 +169,7 @@ class HttpForwarderDeadlineTest {
     private static final class RecordingClusterNetwork implements ClusterNetwork {
         private final Set<NodeId> connected;
         private final List<ProtocolMessage> sentMessages = new ArrayList<>();
+        private final Promise<Unit> firstSend = Promise.promise();
 
         RecordingClusterNetwork(Set<NodeId> connected) {
             this.connected = new HashSet<>(connected);
@@ -173,6 +187,7 @@ class HttpForwarderDeadlineTest {
 
         @Override public synchronized <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
             sentMessages.add(message);
+            firstSend.succeed(Unit.unit());
             return unit();
         }
 

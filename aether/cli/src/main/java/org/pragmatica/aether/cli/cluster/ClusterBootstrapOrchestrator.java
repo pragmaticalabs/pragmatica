@@ -489,7 +489,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                             List<NodeAddress> addresses,
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
-                            Map<String, List<Long>> sshKeyIdsByProvider,
+                            Map<String, List<Long>> sshKeyIdsBySource,
                             Map<SourceName, List<FirewallId>> firewallIdsBySource,
                             String clusterSecret,
                             String rawTomlContent) {
@@ -516,7 +516,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
@@ -529,7 +529,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         List.copyOf(newAddresses),
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
@@ -542,7 +542,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         Option.some(key),
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
@@ -555,7 +555,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
@@ -568,16 +568,16 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         List.copyOf(keys),
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
         }
 
-        BootstrapContext withSshKeyIds(String provider, List<Long> ids) {
-            var merged = new HashMap<String, List<Long>>(sshKeyIdsByProvider);
+        BootstrapContext withSshKeyIds(String source, List<Long> ids) {
+            var merged = new HashMap<String, List<Long>>(sshKeyIdsBySource);
 
-            merged.put(provider, List.copyOf(ids));
+            merged.put(source, List.copyOf(ids));
 
             return new BootstrapContext(config,
                                         state,
@@ -598,7 +598,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         secret,
                                         rawTomlContent);
@@ -611,14 +611,14 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         toml);
         }
 
-        List<Long> sshKeyIdsFor(String provider) {
-            return sshKeyIdsByProvider.getOrDefault(provider, List.of());
+        List<Long> sshKeyIdsFor(String source) {
+            return sshKeyIdsBySource.getOrDefault(source, List.of());
         }
 
         BootstrapContext withFirewallIds(SourceName sourceName, List<FirewallId> ids) {
@@ -632,7 +632,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         Map.copyOf(merged),
                                         clusterSecret,
                                         rawTomlContent);

@@ -91,9 +91,9 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
         double avgLatency = recent.stream().mapToDouble(MinuteAggregate::avgLatencyMs).average().orElse(0);
         long totalInvocations = recent.stream().mapToLong(MinuteAggregate::totalInvocations).sum() / recent.size();
         long totalGc = recent.stream().mapToLong(MinuteAggregate::totalGcPauseMs).sum() / recent.size();
-        double p50 = recent.stream().mapToDouble(MinuteAggregate::latencyP50).average().orElse(0);
-        double p95 = recent.stream().mapToDouble(MinuteAggregate::latencyP95).average().orElse(0);
-        double p99 = recent.stream().mapToDouble(MinuteAggregate::latencyP99).average().orElse(0);
+        double p50 = recent.stream().mapToDouble(MinuteAggregate::intervalMeanLatencyP50).average().orElse(0);
+        double p95 = recent.stream().mapToDouble(MinuteAggregate::intervalMeanLatencyP95).average().orElse(0);
+        double p99 = recent.stream().mapToDouble(MinuteAggregate::intervalMeanLatencyP99).average().orElse(0);
         double errorRate = recent.stream().mapToDouble(MinuteAggregate::errorRate).average().orElse(0);
         int events = recent.stream().mapToInt(MinuteAggregate::eventCount).sum() / recent.size();
 

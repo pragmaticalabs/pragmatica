@@ -208,15 +208,35 @@ class ClusterOwnershipRoutesTest {
         }
     }
 
+    @Test
+    void workerOwnershipResponseExplicitlyIdentifiesItsPartialView() {
+        var response = ClusterTopologyRoutes.assembleOwnershipResponse(nodeOver(store, highWater, false), "community").unwrap();
+        assertThat(response.completeClusterView()).isFalse();
+        assertThat(response.entries()).hasSize(1);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private void seed(AetherKey key, AetherValue value) {
+        if (value instanceof GovernorAnnouncementValue) {
+            var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(GOVERNOR, 1);
+            store.process(store.createBatch((List) List.of(new Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, leader))));
+            store.process(store.createBatch(List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.LeaderPut<>(key, store.get(key), value, leader, java.util.List.of()))));
+            return;
+        }
         store.process(store.createBatch(List.of(new Put<>(key, value))));
     }
 
     private static ManageableNode nodeOver(KVStore<AetherKey, AetherValue> store, OwnershipEpochHighWater highWater) {
+        return nodeOver(store, highWater, true);
+    }
+
+    private static ManageableNode nodeOver(KVStore<AetherKey, AetherValue> store, OwnershipEpochHighWater highWater,
+                                          boolean complete) {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, _) -> switch (method.getName()) {
                                                            case "kvStore" -> store;
+                                                           case "hasCompleteClusterView" -> complete;
                                                            case "ownershipEpochHighWater" -> Option.some(highWater);
                                                            default -> unsupported(method.getName());
                                                        });

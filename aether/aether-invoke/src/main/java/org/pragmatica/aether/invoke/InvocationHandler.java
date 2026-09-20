@@ -61,6 +61,11 @@ public interface InvocationHandler {
     }
 
     Option<InvocationMetricsCollector> metricsCollector();
+
+    default Unit setInvocationAdmission(InvocationAdmission admission) {
+        return Unit.unit();
+    }
+
     TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(15).seconds();
 
     /// Bind the write-side registrar so a loaded slice's per-method observability cells (#277 increment
@@ -150,6 +155,14 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
     private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
     private volatile ObservabilityCellRegistrar cellRegistrar = ObservabilityCellRegistrar.NOOP;
+    private volatile InvocationAdmission admission = InvocationAdmission.open();
+
+    @Override
+    public Unit setInvocationAdmission(InvocationAdmission admission) {
+        this.admission = admission;
+
+        return Unit.unit();
+    }
 
     InvocationHandlerImpl(NodeId self,
                           ClusterNetwork network,
@@ -178,8 +191,10 @@ class InvocationHandlerImpl implements InvocationHandler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
-        localSlices.put(artifact, bridge);
-        classLoaderBridges.put(bridge.classLoader(), bridge);
+        var admitted = new AdmittedSliceBridge(bridge, () -> admission);
+
+        localSlices.put(artifact, admitted);
+        classLoaderBridges.put(bridge.classLoader(), admitted);
         bridge.observabilityCells().forEach(cellRegistrar::register);
         log.debug("Registered slice for invocation: {}", artifact);
     }

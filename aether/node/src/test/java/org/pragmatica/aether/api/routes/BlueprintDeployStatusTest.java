@@ -493,6 +493,11 @@ class BlueprintDeployStatusTest {
 
         @Override
         @Contract
+        public org.pragmatica.lang.Unit onNodeDeparture(org.pragmatica.consensus.NodeId node) {
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        @Override
         public void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved) {
             unsupported("onNodeRemoved");
         }

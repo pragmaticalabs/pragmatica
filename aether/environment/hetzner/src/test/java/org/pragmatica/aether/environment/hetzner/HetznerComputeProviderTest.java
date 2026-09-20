@@ -91,6 +91,13 @@ class HetznerComputeProviderTest {
         provider = HetznerComputeProvider.hetznerComputeProvider(testClient, CONFIG).unwrap();
     }
 
+    @Test
+    void observedZone_usesNativeLocationNotLabels() {
+        var server = new Server(1, "test", "running", serverType(), image(), null, null,
+                                Map.of("zone", "claimed"), new Server.Location("hel1"));
+        assertThat(HetznerComputeProvider.toInstanceInfo(server).observedZone().unwrap()).isEqualTo("hel1");
+    }
+
     @Nested
     class ProvisionTests {
 
@@ -796,7 +803,7 @@ class HetznerComputeProviderTest {
 
         @Test
         void collectAddresses_noAddresses_returnsEmpty() {
-            var server = new Server(1, "test", "running", serverType(), image(), null, null, Map.of());
+            var server = new Server(1, "test", "running", serverType(), image(), null, null, Map.of(), null);
             var addresses = HetznerComputeProvider.collectAddresses(server);
 
             assertThat(addresses).isEmpty();
@@ -818,7 +825,7 @@ class HetznerComputeProviderTest {
         @Test
         void toInstanceInfo_nullLabels_returnsEmptyMap() {
             var server = new Server(1, "test", "running", serverType(), image(),
-                                    publicNet("1.2.3.4"), List.of(), null);
+                                    publicNet("1.2.3.4"), List.of(), null, null);
             var info = HetznerComputeProvider.toInstanceInfo(server);
 
             assertThat(info.tags()).isEmpty();
@@ -921,12 +928,12 @@ class HetznerComputeProviderTest {
 
     private static Server runningServer(long id, String name) {
         return new Server(id, name, "running", serverType(), image(),
-                          publicNet("1.2.3.4"), List.of(), Map.of());
+                          publicNet("1.2.3.4"), List.of(), Map.of(), null);
     }
 
     private static Server initializingServer(long id, String name) {
         return new Server(id, name, "initializing", serverType(), image(),
-                          publicNet("5.6.7.8"), List.of(), Map.of());
+                          publicNet("5.6.7.8"), List.of(), Map.of(), null);
     }
 
     private static Server serverWithAddresses(String publicIp, List<String> privateIps) {
@@ -934,12 +941,12 @@ class HetznerComputeProviderTest {
                                     .map(ip -> new Server.PrivateNet(1L, ip))
                                     .toList();
         return new Server(1, "test", "running", serverType(), image(),
-                          publicNet(publicIp), privateNets, Map.of());
+                          publicNet(publicIp), privateNets, Map.of(), null);
     }
 
     private static Server serverWithLabels(long id, String name, Map<String, String> labels) {
         return new Server(id, name, "running", serverType(), image(),
-                          publicNet("1.2.3.4"), List.of(), labels);
+                          publicNet("1.2.3.4"), List.of(), labels, null);
     }
 
     private static Server.ServerType serverType() {

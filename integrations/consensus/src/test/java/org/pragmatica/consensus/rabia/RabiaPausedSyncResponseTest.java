@@ -226,6 +226,7 @@ class RabiaPausedSyncResponseTest {
         }
 
         @Override public NodeInfo self() { return self; }
+        @Override public boolean isConsensusMember(NodeId node) { return topology().contains(node) || node.equals(JOINER); }
 
         @Override public Option<NodeInfo> get(NodeId id) {
             return Option.option(NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("localhost", 5000).unwrap()));
@@ -245,7 +246,7 @@ class RabiaPausedSyncResponseTest {
 
         @Override public Option<NodeState> getState(NodeId id) { return Option.empty(); }
 
-        @Override public List<NodeId> topology() { return List.of(); }
+        @Override public List<NodeId> topology() { return java.util.stream.IntStream.rangeClosed(1, clusterSize).mapToObj(index -> nodeId("node-" + index).unwrap()).toList(); }
     }
 
     static class TestClusterNetwork implements ClusterNetwork {

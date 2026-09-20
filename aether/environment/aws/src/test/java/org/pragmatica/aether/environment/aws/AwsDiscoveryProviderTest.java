@@ -112,7 +112,7 @@ class AwsDiscoveryProviderTest {
             var stoppedInstance = new Instance("i-2", "t3.medium", "ami-12345",
                                                "10.0.0.2", null,
                                                new Instance.InstanceState("stopped", 80),
-                                               tagSet(Map.of("aether-cluster", "test-cluster")));
+                                               tagSet(Map.of("aether-cluster", "test-cluster")), null);
             var runningInstance = instanceWithTags("i-1", "10.0.0.1", null,
                                                    Map.of("aether-cluster", "test-cluster"));
 
@@ -181,7 +181,7 @@ class AwsDiscoveryProviderTest {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             privateIp, publicIp,
                             new Instance.InstanceState("running", 16),
-                            tagSet(tags));
+                            tagSet(tags), null);
     }
 
     private static Instance.TagSet tagSet(Map<String, String> tags) {

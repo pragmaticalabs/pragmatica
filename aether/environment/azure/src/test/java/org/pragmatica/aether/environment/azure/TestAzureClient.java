@@ -22,14 +22,14 @@ import java.util.Queue;
 /// Test stub for AzureClient that returns canned responses and captures arguments.
 final class TestAzureClient implements AzureClient {
     Promise<VirtualMachine> createVmResponse = Promise.success(
-        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null)));
+        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null), java.util.List.of()));
     Promise<Unit> deleteVmResponse = Promise.success(Unit.unit());
     Promise<VirtualMachine> getVmResponse = Promise.success(
-        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null)));
+        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null), java.util.List.of()));
     Promise<List<VirtualMachine>> listVmsResponse = Promise.success(List.of());
     Promise<Unit> restartVmResponse = Promise.success(Unit.unit());
     Promise<VirtualMachine> updateTagsResponse = Promise.success(
-        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null)));
+        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null), java.util.List.of()));
     Promise<AzureLoadBalancer> getLbResponse = Promise.success(
         new AzureLoadBalancer("lb-id", "test-lb", new AzureLoadBalancer.LbProperties(List.of())));
     Promise<AzureLoadBalancer> updateLbBackendPoolResponse = Promise.success(

@@ -484,7 +484,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                 addresses,
                                 request.market(),
                                 tags,
-                                Option.some(containerName));
+                                Option.some(containerName),
+                                org.pragmatica.lang.Option.none());
     }
 
     private static Map<String, String> buildInstanceTags(ProvisionRequest request, String containerName) {
@@ -552,7 +553,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                 tags,
                                 nodeId.isEmpty()
                                 ? Option.none()
-                                : Option.some(nodeId));
+                                : Option.some(nodeId),
+                                org.pragmatica.lang.Option.none());
     }
 
     private static String safePart(String[] parts, int index) {

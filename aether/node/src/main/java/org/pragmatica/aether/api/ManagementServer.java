@@ -949,8 +949,7 @@ class ManagementServerImpl implements ManagementServer {
                                         long startTime) {
         var node = nodeSupplier.get();
 
-        if (node.topologyConfig().coreNodes().stream().anyMatch(info -> info.id()
-                                                                            .equals(node.self()))) {
+        if (node.hasCompleteClusterView()) {
             return false;
         }
 
@@ -1176,11 +1175,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private static Set<NodeId> coreNodeIds(ManageableNode node) {
-        return node.topologyConfig()
-                   .coreNodes()
-                   .stream()
-                   .map(NodeInfo::id)
-                   .collect(Collectors.toSet());
+        return node.coreNodeIds();
     }
 
     private static Option<org.pragmatica.http.HttpMethod> parseRoutingMethod(String raw) {
@@ -1366,14 +1361,18 @@ class ManagementServerImpl implements ManagementServer {
         // does NOT run on this node — without this check a receiver that disagrees with the sender
         // about the owner answers anyway and returns 200 with `servedByOwner=false`, which is the
         // ambiguous answer #1039 exists to remove.
-        if (checkForwardedPartitionOwner(context.method(),
-                                         context.path(),
-                                         nodeSupplier.get().self(),
-                                         request.sender(),
-                                         this::resolvePartitionOwner).onFailure(cause -> sendManagementForwardError(network,
-                                                                                                                    request,
-                                                                                                                    cause.message()))
-                                        .isFailure()) {
+        if (checkCompleteView(context.method(),
+                              context.path(),
+                              nodeSupplier.get().hasCompleteClusterView()).flatMap(_ -> checkForwardedPartitionOwner(context.method(),
+                                                                                                                     context.path(),
+                                                                                                                     nodeSupplier.get()
+                                                                                                                                 .self(),
+                                                                                                                     request.sender(),
+                                                                                                                     this::resolvePartitionOwner))
+                             .onFailure(cause -> sendManagementForwardError(network,
+                                                                            request,
+                                                                            cause.message()))
+                             .isFailure()) {
             return;
         }
 
@@ -1433,6 +1432,17 @@ class ManagementServerImpl implements ManagementServer {
     ///
     /// An unmatched route yields success: `router.handle` and the legacy handlers below it own the
     /// 404, and refusing here would turn an unknown path into a 503.
+    static Result<Unit> checkCompleteView(String methodName, String path, boolean completeView) {
+        var requiresCore = parseRoutingMethod(methodName).flatMap(method -> ManagementRoute.match(method, path).option())
+                                             .map(matched -> matched.route()
+                                                                    .target() instanceof RouteTarget.AnyCoreNode)
+                                             .or(false);
+
+        return requiresCore && !completeView
+               ? new ManagementRouteError.IncompleteClusterView().result()
+               : Result.unitResult();
+    }
+
     static Result<Unit> checkForwardedPartitionOwner(String methodName,
                                                      String path,
                                                      NodeId self,

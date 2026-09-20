@@ -359,7 +359,17 @@ public final class PeerState {
     /// sub-millisecond dual-dial race during formation.
     private AttachOutcome attachOverConnected(QuicPeerConnection newConnection, long nowNanos) {
         if (connection != null && connection.isActive()) {
-            if (phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS) {
+            var directionOrder = connection.initiator()
+                                           .flatMap(current -> newConnection.initiator()
+                                                                            .map(current::compareTo))
+                                           .or(0);
+            // Both ends choose the physical link dialed by the lower identity, independently of
+            // arrival order. Same-direction reconnects retain the existing age-based policy.
+            if (directionOrder < 0) {
+                return new AttachOutcome(AttachResult.DUPLICATE, Option.empty());
+            }
+
+            if (directionOrder == 0 && phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS) {
                 return new AttachOutcome(AttachResult.DUPLICATE, Option.empty());
             }
 

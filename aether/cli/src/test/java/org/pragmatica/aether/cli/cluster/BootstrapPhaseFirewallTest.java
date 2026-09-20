@@ -125,7 +125,7 @@ class BootstrapPhaseFirewallTest {
                                                                     Map.of(source.name().value(), source),
                                                                     Map.of(),
                                                                     InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                                    OperationsConfig.defaultOperationsConfig());
+                                                                    OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
 
         return BootstrapContext.bootstrapContext(config,
                                                   BootstrapState.initialState(clusterName("test").unwrap(), "h", "now"),

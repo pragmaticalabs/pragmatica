@@ -209,18 +209,18 @@ class HetznerDiscoveryProviderTest {
 
     private static Server serverWithPrivateIpAndLabels(long id, String privateIp, Map<String, String> labels) {
         return new Server(id, "server-" + id, "running", serverType(), image(),
-                          null, List.of(new Server.PrivateNet(1L, privateIp)), labels);
+                          null, List.of(new Server.PrivateNet(1L, privateIp)), labels, null);
     }
 
     private static Server serverWithBothAddresses(long id, String publicIp, String privateIp,
                                                    Map<String, String> labels) {
         return new Server(id, "server-" + id, "running", serverType(), image(),
-                          publicNet(publicIp), List.of(new Server.PrivateNet(1L, privateIp)), labels);
+                          publicNet(publicIp), List.of(new Server.PrivateNet(1L, privateIp)), labels, null);
     }
 
     private static Server serverWithPublicOnly(long id, String publicIp, Map<String, String> labels) {
         return new Server(id, "server-" + id, "running", serverType(), image(),
-                          publicNet(publicIp), List.of(), labels);
+                          publicNet(publicIp), List.of(), labels, null);
     }
 
     private static Server.ServerType serverType() {

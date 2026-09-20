@@ -107,7 +107,7 @@ class BootstrapPhaseDeployHealthPollTest {
                                                              Map.of("eu-1", cloudSource(), "dc-1", sshCoreSource()),
                                                              Map.of(),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                             ops);
+                                                             ops, java.util.Map.of());
     }
 
     private static BootstrapContext contextWithThreeCloudNodes() {

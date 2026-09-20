@@ -32,6 +32,7 @@ import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.PlaceholderConfigResolver;
 import org.pragmatica.aether.config.cluster.ReplacementNodeConfigComposer;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceCloudBindings;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -114,7 +115,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicLong activationEpoch,
                                     Set<NodeId> abandonedReaps,
                                     ConcurrentHashMap<NodeId, NodeRole> provisionedRoleIntents,
-                                    ConcurrentHashMap<NodeId, RoleMismatch> roleMismatchLedger) implements ClusterTopologyManager {
+                                    ConcurrentHashMap<NodeId, RoleMismatch> roleMismatchLedger,
+                                    ConcurrentHashMap<NodeId, AetherValue.NodePlacementValue> recordedPlacements,
+                                    AtomicReference<Option<CommunityPlacementReconciler>> communityPlacement,
+                                    AtomicReference<Supplier<List<NodeId>>> genesisVoters,
+                                    AtomicReference<java.util.function.Predicate<NodeId>> retirementAllowed,
+                                    AtomicReference<HierarchyStateWriter> hierarchyWriter,
+                                    ConcurrentHashMap<NodeId, Long> pendingDrains,
+                                    org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -230,7 +238,51 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicLong(0L),
                                                 ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
-                                                new ConcurrentHashMap<>());
+                                                new ConcurrentHashMap<>(),
+                                                new ConcurrentHashMap<>(),
+                                                new AtomicReference<>(Option.none()),
+                                                new AtomicReference<>(List::of),
+                                                new AtomicReference<>(node -> false),
+                                                new AtomicReference<>(HierarchyStateWriter.unavailable()),
+                                                new ConcurrentHashMap<>(),
+                                                org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
+    }
+
+    @Override
+    public Unit setHierarchyStateWriter(HierarchyStateWriter writer) {
+        hierarchyWriter.set(writer.whileActive(active::get));
+
+        return unit();
+    }
+
+    @Override
+    public org.pragmatica.lang.Unit setGenesisVoters(Supplier<List<NodeId>> supplier) {
+        genesisVoters.set(supplier);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    @Override
+    public org.pragmatica.lang.Unit setRetirementAllowed(java.util.function.Predicate<NodeId> predicate) {
+        retirementAllowed.set(predicate);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    private TomlDocument withGenesisVoters(TomlDocument document) {
+        var sections = new java.util.HashMap<>(document.sections());
+        var cluster = new java.util.HashMap<>(sections.getOrDefault("cluster", java.util.Map.of()));
+
+        cluster.put("genesis_voters",
+                    genesisVoters.get()
+                                 .get()
+                                 .stream()
+                                 .sorted()
+                                 .map(NodeId::id)
+                                 .collect(java.util.stream.Collectors.joining(",")));
+        sections.put("cluster", java.util.Map.copyOf(cluster));
+
+        return new TomlDocument(sections, document.tableArrays());
     }
 
     private long nowMs() {
@@ -248,24 +300,31 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Override
     public Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count) {
-        // Both bounds are properties of the CORE tier only; worker and spot tiers may legitimately
-        // scale to zero and are deliberately unbounded above.
-        if (role == NodeRole.CORE && count < MINIMUM_CLUSTER_SIZE) {
-            return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)").promise();
+        if (count < 0) {
+            return Causes.cause("Source role count cannot be negative").promise();
         }
-        // #1019 — this had a floor and no ceiling, so a scale could grow the consensus tier past the
-        // supported maximum that `aether cluster init` refuses to author. Every consensus round is
-        // broadcast across this tier; the FLEET is unbounded, so capacity beyond the cap is added by
-        // scaling a worker role instead.
-        if (role == NodeRole.CORE && count > ConsensusTierBounds.MAXIMUM_CORE_NODES) {
-            return Causes.cause("Cluster size cannot exceed " + ConsensusTierBounds.MAXIMUM_CORE_NODES
-                               + " core nodes (consensus broadcast bound); scale a worker role for further capacity").promise();
+
+        if (role == NodeRole.WORKER && usesExplicitCommunities()) {
+            return Causes.cause("Explicit communities own worker capacity; change community.target_size").promise();
+        }
+
+        if (role == NodeRole.CORE) {
+            var aggregate = clusterConfigReader.get()
+                                               .map(current -> current.coreCount() - current.desiredCountFor(sourceName.value(),
+                                                                                                             role.value()) + count);
+
+            if (aggregate.filter(total -> total >= MINIMUM_CLUSTER_SIZE
+                                          && total <= ConsensusTierBounds.MAXIMUM_CORE_NODES
+                                          && total % 2 == 1)
+                         .isEmpty()) {
+                return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11").promise();
+            }
         }
 
         resetProvisioningCircuit("setDesiredCount " + sourceName + "/" + role.value() + "=" + count);
 
         return applyDesiredCount(clusterConfigReader,
-                                 commandApplier,
+                                 hierarchyWriter.get(),
                                  sourceName.value(),
                                  role.value(),
                                  count,
@@ -274,86 +333,35 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     static final int DESIRED_COUNT_CAS_ATTEMPTS = 3;
 
-    /// Fenced read-modify-write of one `(source, role)` desired count (RFC-0018, #570).
-    ///
-    /// The applier's successor fence rejects a `Put` built on a stale read, so a concurrent writer
-    /// (a scale racing an auto-heal) can no longer be silently overwritten — but the rejection is
-    /// invisible in the apply result: under batch merging every submitter receives the FULL merged
-    /// result list and cannot attribute an element to its own command. So this loop confirms
-    /// semantically instead — after the apply resolves, the local state machine has applied the
-    /// batch (the engine runs `process` before resolving the promise, and `setDesiredCount` is
-    /// leader-gated so the reader is the applying node), and a re-read tells us whether the count
-    /// we asked for landed. If it did not, we lost the race: recompute from the fresh committed
-    /// value and retry, bounded. If the reader lags the commit, a retry recomputes the same version
-    /// and loses again — burning an attempt but never lying.
-    ///
-    /// Static and collaborator-injected so the loop is testable without wiring the full CTM record.
+    /// Each retry re-reads desired intent and commits against that exact value and leader.
     static Promise<Unit> applyDesiredCount(Supplier<Option<ClusterConfigValue>> reader,
-                                           Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                           HierarchyStateWriter writer,
                                            String sourceName,
                                            String role,
                                            int count,
                                            int attemptsLeft) {
-        var existing = reader.get();
+        return reader.get()
+                     .fold(() -> Causes.cause("Cluster config must exist before scaling").promise(),
+                           current -> {
+                               var updated = current.withDesiredCount(sourceName, role, count);
 
-        if (existing.isEmpty()) {
-            return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted").promise();
-        }
+                               if (count < 0 || role.equals(NodeRole.CORE.value()) && (updated.coreCount() < MINIMUM_CLUSTER_SIZE || updated.coreCount() > ConsensusTierBounds.MAXIMUM_CORE_NODES || updated.coreCount() % 2 == 0)) {
+                               return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11; source counts cannot be negative").promise();
+                           }
 
-        var updated = existing.unwrap().withDesiredCount(sourceName, role, count);
-        @SuppressWarnings("unchecked")
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                                     updated);
-
-        return applier.apply(List.of(command))
-                      .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue {}/{}={}: {}",
-                                                   sourceName,
-                                                   role,
-                                                   count,
-                                                   cause.message()))
-                      .flatMap(_ -> confirmOrRetry(reader,
-                                                   applier,
-                                                   sourceName,
-                                                   role,
-                                                   count,
-                                                   attemptsLeft,
-                                                   updated.configVersion()));
-    }
-
-    private static Promise<Unit> confirmOrRetry(Supplier<Option<ClusterConfigValue>> reader,
-                                                Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                                String sourceName,
-                                                String role,
-                                                int count,
-                                                int attemptsLeft,
-                                                long intendedVersion) {
-        var landed = reader.get().map(fresh -> fresh.desiredCountFor(sourceName, role) == count).or(false);
-
-        if (landed) {
-            log.info("CTM: wrote ClusterConfigValue {}/{}={} (configVersion={})",
-                     sourceName,
-                     role,
-                     count,
-                     intendedVersion);
-
-            return Promise.unitPromise();
-        }
-
-        log.warn("CTM: desired-count CAS lost — {}/{}={} did not land at configVersion={}, {} attempt(s) left",
-                 sourceName,
-                 role,
-                 count,
-                 intendedVersion,
-                 attemptsLeft - 1);
-        if (attemptsLeft <= 1) {
-            return Causes.cause("Desired-count write for " + sourceName
-                               + "/" + role
-                               + "=" + count
-                               + " lost the version race " + DESIRED_COUNT_CAS_ATTEMPTS
-                               + " times — a concurrent writer keeps advancing the cluster config; re-issue the scale").promise();
-        }
-
-        return applyDesiredCount(reader, applier, sourceName, role, count, attemptsLeft - 1);
+                               return writer.put(ClusterConfigKey.CURRENT,
+                                                 Option.some(current),
+                                                 updated)
+                                            .fold(result -> result.fold(cause -> cause == HierarchyStateWriter.Refusal.CONFLICT && attemptsLeft > 1
+                                                                                 ? applyDesiredCount(reader,
+                                                                                                     writer,
+                                                                                                     sourceName,
+                                                                                                     role,
+                                                                                                     count,
+                                                                                                     attemptsLeft - 1)
+                                                                                 : cause.promise(),
+                                                                        _ -> Promise.unitPromise()));
+                           });
     }
 
     @Override
@@ -563,16 +571,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void recordRoleMismatch(NodeId nodeId, NodeRole intended, String advertisedRole) {
-        var classifiedAs = MemberDescriptor.isCoreRole(advertisedRole)
-                           ? "CORE"
-                           : "WORKER";
+        var classifiedAs = NodeRole.nodeRole(advertisedRole.toLowerCase(java.util.Locale.ROOT))
+                                   .map(NodeRole::name)
+                                   .or("UNKNOWN");
         var mismatch = new RoleMismatch(nodeId, intended.value(), advertisedRole, classifiedAs);
 
         roleMismatchLedger.put(nodeId, mismatch);
         log.warn("CTM: node {} was provisioned with intended role '{}' but joined with advertised role '{}'{} and is "
                 + "classified as {} — its role label never arrived or is wrong (AETHER_ROLE / aether-role label). "
-                + "Classification is unchanged (blank counts as core); every community-tier mechanism gated on a "
-                + "known role is suppressed on this node until it is relaunched with the right label. "
+                + "Unknown roles are ineligible for admission; a known role is immutable for the node identity. "
+                + "Correct the provisioning identity and role before relaunching the node. "
                 + "Visible at GET /api/v1/cluster/topology/role-mismatches (aether cluster topology role-mismatches).",
                  nodeId.id(),
                  intended.value(),
@@ -627,6 +635,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // #689: decommissioning is the CTM's own forget point for a provisioned id — the node is retired for
         // good, so its provisioning intent and any mismatch entry go with it.
         provisionedRoleIntents.remove(decommissioned.nodeId());
+        recordedPlacements.remove(decommissioned.nodeId());
         roleMismatchLedger.remove(decommissioned.nodeId());
         reapDepartedNode(decommissioned.nodeId());
     }
@@ -705,29 +714,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// record previously held.
     @Override
     public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
-        var prev = isAutoHealEnabled();
-        @SuppressWarnings("unchecked")
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(AetherKey.AutoHealStateKey.SINGLETON,
-                                                                                                     AutoHealStateValue.autoHealStateValue(enabled,
-                                                                                                                                           reason));
+        var previous = autoHealStateReader.get();
 
-        return commandApplier.apply(List.of(command))
-                             .onFailure(cause -> log.warn("CTM: failed to write AutoHealStateValue enabled={} reason={}: {}",
-                                                          enabled,
-                                                          reason,
-                                                          cause.message()))
-                             .map(_ -> {
-                                      log.warn("CTM: auto-heal {} (operator: {}) — prior value as this node saw it was {}",
-                                               enabled
-                                               ? "ENABLED"
-                                               : "DISABLED",
-                                               reason,
-                                               prev
-                                               ? "enabled"
-                                               : "disabled");
-
-                                      return prev;
-                                  });
+        return hierarchyWriter.get()
+                              .put(AetherKey.AutoHealStateKey.SINGLETON,
+                                   previous.map(value -> (AetherValue) value),
+                                   AutoHealStateValue.autoHealStateValue(enabled, reason))
+                              .map(_ -> previous.map(AutoHealStateValue::enabled)
+                                                .or(true));
     }
 
     /// Membership v2 / E2 — provision a replacement, PURE ACTUATOR.
@@ -778,6 +772,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                Set<NodeId> clusterMembers,
                                                                NodeRole intendedRole,
                                                                SourceName sourceName) {
+        if (intendedRole == NodeRole.CORE && (failedPeer.filter(newNodeId::equals).isPresent() || clusterMembers.contains(newNodeId) || genesisVoters.get()
+                                                                                                                                                     .get()
+                                                                                                                                                     .contains(newNodeId))) {
+            return Causes.cause("Core replacement requires a fresh voter identity; restore the original WAL for same-identity restart").promise();
+        }
+
         log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={}, source={})",
                  newNodeId,
                  failedPeer,
@@ -818,15 +818,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
-                                                   roleInstanceType(intendedRole),
+                                                   roleInstanceType(intendedRole, sourceName),
                                                    intendedRole.value(),
                                                    contextSeeded)
                                     .unwrap();
-        var renderedSpec = renderReplacementUserData(contextSeeded, intendedRole).map(baseSpec::withUserData)
-                                                    .or(baseSpec);
 
-        return provisionWithZoneRotation(renderedSpec,
-                                         replacementZones(intendedRole)).onFailure(this::recordProvisioningFailure)
+        return renderReplacementUserData(contextSeeded, intendedRole).map(userData -> userData.map(baseSpec::withUserData)
+                                                                                              .or(baseSpec))
+                                        .async()
+                                        .flatMap(renderedSpec -> provisionWithZoneRotation(renderedSpec,
+                                                                                           replacementZones(intendedRole,
+                                                                                                            sourceName)))
+                                        .onFailure(this::recordProvisioningFailure)
                                         .onSuccess(instance -> recordProvisionedReplacement(instance,
                                                                                             newNodeId,
                                                                                             intendedRole,
@@ -1032,11 +1035,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// [ClusterBootstrapConfigParser], the cloud [SourceProfile] backing the role, and its
     /// [SourceProfile#effectiveZones]. Empty (single-attempt, no zone pin) when the persisted TOML
     /// is blank/unparseable, no cloud source backs the role, or that source declares no zones.
-    private List<String> replacementZones(NodeRole intendedRole) {
+    private List<String> replacementZones(NodeRole intendedRole, SourceName sourceName) {
         return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
                      .filter(toml -> !toml.isBlank())
                      .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> cloudSourceFor(config, intendedRole))
+                     .flatMap(config -> sourceFor(config, sourceName, intendedRole))
                      .map(SourceProfile::effectiveZones)
                      .or(List.of());
     }
@@ -1052,11 +1055,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// would have booted on the CORE's fallback size. Falls back to `"default"` (provider-level
     /// `[cloud.compute] server_type` then applies) when the TOML is unparseable or the role
     /// declares no instance type.
-    private String roleInstanceType(NodeRole intendedRole) {
+    private String roleInstanceType(NodeRole intendedRole, SourceName sourceName) {
         return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
                      .filter(toml -> !toml.isBlank())
                      .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> cloudSourceFor(config, intendedRole))
+                     .flatMap(config -> sourceFor(config, sourceName, intendedRole))
                      .flatMap(source -> Option.option(source.roles().get(intendedRole)))
                      .flatMap(role -> role.instanceType())
                      .or("default");
@@ -1103,7 +1106,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// leader activation, matching the deferral semantics of [#provisionReplacement].
     @Contract
     @Override
-    public void reconcileWorkerTopology() {
+    public synchronized void reconcileWorkerTopology() {
         if (!active.get()) {
             return;
         }
@@ -1117,7 +1120,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        runWorkerReconcilePass().onResult(_ -> completeWorkerReconcilePass());
+        var epoch = activationEpoch.get();
+
+        runWorkerReconcilePass(epoch).onFailure(cause -> log.warn("CTM: worker topology reconciliation failed: {}",
+                                                                  cause.message()))
+                              .onResult(_ -> completeWorkerReconcilePass(epoch));
     }
 
     /// Release the serialization flag FIRST, then replay a missed trigger. In that order a trigger
@@ -1126,7 +1133,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// replay re-enters [#reconcileWorkerTopology], so it is leader-gated exactly like any other
     /// trigger.
     @Contract
-    private void completeWorkerReconcilePass() {
+    private synchronized void completeWorkerReconcilePass(long epoch) {
+        if (activationEpoch.get() != epoch) {
+            return;
+        }
+
         workerReconcileInFlight.set(false);
         if (workerReconcilePending.compareAndSet(true, false)) {
             log.debug("CTM: replaying worker reconcile trigger deferred during the previous pass");
@@ -1134,24 +1145,114 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
     }
 
-    private Promise<Unit> runWorkerReconcilePass() {
-        return clusterConfigReader.get()
-                                  .fold(Promise::unitPromise, this::reconcileWorkerEntries);
+    @Override
+    @Contract
+    public synchronized void installCommunityPlacement(CommunityPlacementReconciler reconciler) {
+        communityPlacement.set(Option.some(reconciler));
+        startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
     }
 
-    private Promise<Unit> reconcileWorkerEntries(ClusterConfigValue config) {
+    Unit startWorkerTopologyPolling(TimeSpan interval) {
+        if (active.get() && communityPlacement.get().isPresent()) {
+            var epoch = activationEpoch.get();
+
+            workerTopologyPolling.set(SharedScheduler.scheduleAtFixedRate(() -> pollWorkerTopology(epoch), interval));
+        }
+
+        return unit();
+    }
+
+    private synchronized Unit pollWorkerTopology(long epoch) {
+        if (active.get() && activationEpoch.get() == epoch) {
+            reconcileWorkerTopology();
+        }
+
+        return unit();
+    }
+
+    @Override
+    public Promise<Unit> provisionPlacementNode(AetherValue.CommunityPlacementOperationValue operation) {
+        if (!active.get()) {
+            return Causes.cause("Placement provisioning requires active core leader").promise();
+        }
+
+        var epoch = activationEpoch.get();
+        var source = SourceName.sourceNameOrDefault(operation.targetSource());
+        var context = buildProvisionContext(operation.targetNode(), NodeRole.WORKER, source);
+
+        if (context.peers().or("").isEmpty()) {
+            return Causes.cause("No ready core peers for placement provisioning").promise();
+        }
+
+        return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                           roleInstanceType(NodeRole.WORKER, source),
+                                           NodeRole.WORKER.value(),
+                                           context)
+                            .flatMap(spec -> renderReplacementUserData(context, NodeRole.WORKER).map(userData -> userData.map(spec::withUserData)
+                                                                                                                         .or(spec)))
+                            .map(rendered -> operation.targetZone()
+                                                      .map(zone -> rendered.withPlacement(PlacementHint.zoneHint(zone)))
+                                                      .or(rendered))
+                            .async()
+                            .flatMap(spec -> lifecycleManager.provisionNode(spec,
+                                                                            operation.sourceBinding()))
+                            .flatMap(instance -> recordPlacementProvision(instance,
+                                                                          operation.targetNode(),
+                                                                          source,
+                                                                          epoch));
+    }
+
+    private Promise<Unit> recordPlacementProvision(InstanceInfo instance, NodeId node, SourceName source, long epoch) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            return HierarchyStateWriter.Refusal.INACTIVE.promise();
+        }
+
+        var writer = hierarchyWriter.get();
+        var key = new AetherKey.NodePlacementKey(node);
+        var observed = new AetherValue.NodePlacementValue(source.value(),
+                                                          instance.observedZone(),
+                                                          instance.id().value());
+
+        return writer.put(key,
+                          writer.read().apply(key),
+                          observed)
+                     .map(_ -> rememberPlacementProvision(instance, node, source));
+    }
+
+    private Unit rememberPlacementProvision(InstanceInfo instance, NodeId node, SourceName source) {
+        recordProvisionedReplacement(instance, node, NodeRole.WORKER, source);
+        provisionedRoleIntents.put(node, NodeRole.WORKER);
+
+        return unit();
+    }
+
+    private Promise<Unit> runWorkerReconcilePass(long epoch) {
+        return communityPlacement.get()
+                                 .fold(Promise::unitPromise, CommunityPlacementReconciler::reconcile)
+                                 .flatMap(_ -> clusterConfigReader.get()
+                                                                  .fold(Promise::unitPromise,
+                                                                        config -> reconcileWorkerEntries(config, epoch)));
+    }
+
+    private Promise<Unit> reconcileWorkerEntries(ClusterConfigValue config, long epoch) {
         var entries = config.desiredTopology().stream().filter(entry -> !entry.isCore()).toList();
         var pass = Promise.unitPromise();
 
         for (var entry : entries) {
             pass = pass.flatMap(_ -> reconcileWorkerEntry(ClusterName.maybeClusterName(config.clusterName()),
-                                                          entry));
+                                                          entry,
+                                                          epoch));
         }
 
         return pass;
     }
 
-    private Promise<Unit> reconcileWorkerEntry(Option<ClusterName> clusterName, AetherValue.TopologyEntry entry) {
+    private Promise<Unit> reconcileWorkerEntry(Option<ClusterName> clusterName,
+                                               AetherValue.TopologyEntry entry,
+                                               long epoch) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            return Promise.unitPromise();
+        }
         // Renders an unresolvable persisted name as the EMPTY selector value, byte-identical to the
         // historical `.or("")` — the KV `ClusterConfigValue.clusterName` is a `String` written by the
         // bootstrap parser (which validated it), so the empty case is unreachable in practice and is
@@ -1164,7 +1265,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                             entry.role());
 
         return lifecycleManager.listInstances(filter)
-                               .flatMap(actual -> applyWorkerDelta(entry, actual))
+                               .flatMap(actual -> active.get() && activationEpoch.get() == epoch
+                                                  ? recordWorkerPlacement(entry, actual).flatMap(_ -> applyWorkerDelta(entry,
+                                                                                                                       actual,
+                                                                                                                       epoch))
+                                                  : Promise.unitPromise())
                                .onFailure(cause -> log.warn("CTM: worker reconcile for {}/{} failed: {}",
                                                             entry.sourceName(),
                                                             entry.role(),
@@ -1172,7 +1277,63 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                .fold(_ -> Promise.unitPromise());
     }
 
-    private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual) {
+    private Promise<Unit> recordWorkerPlacement(AetherValue.TopologyEntry entry, List<InstanceInfo> actual) {
+        var observations = new java.util.HashMap<NodeId, AetherValue.NodePlacementValue>();
+
+        for (var instance : actual) {
+            instance.nodeId()
+                    .flatMap(id -> NodeId.nodeId(id).option())
+                    .onPresent(id -> observations.put(id,
+                                                      new AetherValue.NodePlacementValue(entry.sourceName(),
+                                                                                         instance.observedZone(),
+                                                                                         instance.id().value())));
+        }
+
+        observations.entrySet()
+                    .removeIf(entryValue -> entryValue.getValue()
+                                                      .equals(recordedPlacements.get(entryValue.getKey())));
+        var writer = hierarchyWriter.get();
+        var mutations = observations.entrySet()
+                                    .stream()
+                                    .map(observation -> {
+                                             AetherKey key = new AetherKey.NodePlacementKey(observation.getKey());
+
+                                             return new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                   writer.read()
+                                                                                                         .apply(key),
+                                                                                                   Option.some(observation.getValue()));
+                                         })
+                                    .toList();
+
+        return writer.commit(mutations,
+                             List.of())
+                     .map(_ -> rememberPlacements(observations));
+    }
+
+    private Unit rememberPlacements(Map<NodeId, AetherValue.NodePlacementValue> observations) {
+        recordedPlacements.putAll(observations);
+
+        return unit();
+    }
+
+    @Override
+    public boolean usesExplicitCommunities() {
+        return clusterConfigReader.get()
+                                  .flatMap(config -> ClusterBootstrapConfigParser.parse(config.tomlContent()).option())
+                                  .filter(config -> !config.communities()
+                                                           .isEmpty())
+                                  .isPresent();
+    }
+
+    private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual, long epoch) {
+        if (entry.role().equals(NodeRole.WORKER.value()) && usesExplicitCommunities()) {
+            return Promise.unitPromise();
+        }
+
+        if (!active.get() || activationEpoch.get() != epoch) {
+            return Promise.unitPromise();
+        }
+
         var delta = entry.count() - actual.size();
 
         if (delta == 0) {
@@ -1190,11 +1351,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  Math.abs(delta));
 
         return delta > 0
-               ? provisionWorkers(entry, delta)
-               : terminateSurplusWorkers(actual, -delta);
+               ? provisionWorkers(entry, delta, epoch)
+               : terminateSurplusWorkers(entry, actual, -delta, epoch);
     }
 
-    private Promise<Unit> provisionWorkers(AetherValue.TopologyEntry entry, int deficit) {
+    private Promise<Unit> provisionWorkers(AetherValue.TopologyEntry entry, int deficit, long epoch) {
         var role = NodeRole.nodeRole(entry.role()).option().or(NodeRole.WORKER);
         var members = observer.coreNodes();
         var pass = Promise.unitPromise();
@@ -1202,7 +1363,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         for (int i = 0; i < deficit; i++) {
             var minted = mintWorkerNodeId(entry, i);
 
-            pass = pass.flatMap(_ -> provisionReplacement(minted, Option.none(), members, role, workerSourceName(entry)).mapToUnit());
+            pass = pass.flatMap(_ -> active.get() && activationEpoch.get() == epoch
+                                     ? provisionReplacement(minted,
+                                                            Option.none(),
+                                                            members,
+                                                            role,
+                                                            workerSourceName(entry)).mapToUnit()
+                                     : Promise.unitPromise());
         }
 
         return pass;
@@ -1233,7 +1400,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// bootstrap `-<index>` ids, and later mints sort after earlier ones). An instance without a
     /// node-id label cannot be terminated through the node-id path and is skipped — pre-#579
     /// orphans are the cloud reaper's job, not the reconciler's.
-    private Promise<Unit> terminateSurplusWorkers(List<InstanceInfo> actual, int surplus) {
+    private Promise<Unit> terminateSurplusWorkers(AetherValue.TopologyEntry entry,
+                                                  List<InstanceInfo> actual,
+                                                  int surplus,
+                                                  long epoch) {
         var victims = actual.stream()
                             .flatMap(instance -> instance.nodeId()
                                                          .stream())
@@ -1243,11 +1413,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var pass = Promise.unitPromise();
 
         for (var victim : victims) {
-            pass = pass.flatMap(_ -> lifecycleManager.terminateNode(NodeId.nodeId(victim).unwrap())
-                                                     .onFailure(cause -> log.warn("CTM: worker termination of {} failed: {}",
-                                                                                  victim,
-                                                                                  cause.message()))
-                                                     .fold(_ -> Promise.unitPromise()));
+            pass = pass.flatMap(_ -> !active.get() || activationEpoch.get() != epoch
+                                     ? Promise.unitPromise()
+                                     : communityPlacement.get()
+                                                         .fold(() -> org.pragmatica.lang.utils.Causes.cause("Worker retirement workflow is unavailable")
+                                                                                                     .promise(),
+                                                               placement -> placement.requestRetirement(NodeId.nodeId(victim).unwrap(),
+                                                                                                        entry)));
         }
 
         return pass;
@@ -1272,28 +1444,29 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// fallback) when the persisted TOML is blank/unparseable or no cloud source backs the role —
     /// non-cloud (Docker/forge) providers inject identity from the [ProvisionContext] directly and
     /// never consult user-data, so an absent render is correct there.
-    private Option<String> renderReplacementUserData(ProvisionContext context, NodeRole intendedRole) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
-                     .flatMap(toml -> renderFromToml(toml, context, intendedRole));
+    private Result<Option<String>> renderReplacementUserData(ProvisionContext context, NodeRole intendedRole) {
+        return clusterConfigReader.get()
+                                  .map(ClusterConfigValue::tomlContent)
+                                  .filter(toml -> !toml.isBlank())
+                                  .fold(() -> Result.success(Option.none()),
+                                        toml -> ClusterBootstrapConfigParser.parse(toml).flatMap(config -> renderFromConfig(config,
+                                                                                                                            context,
+                                                                                                                            intendedRole)));
     }
 
-    private Option<String> renderFromToml(String toml, ProvisionContext context, NodeRole intendedRole) {
-        return ClusterBootstrapConfigParser.parse(toml)
-                                           .option()
-                                           .flatMap(config -> renderFromConfig(config, context, intendedRole));
+    private Result<Option<String>> renderFromConfig(ClusterBootstrapConfig config,
+                                                    ProvisionContext context,
+                                                    NodeRole intendedRole) {
+        return sourceFor(config,
+                         context.sourceName(),
+                         intendedRole).toResult(Causes.cause("No configured source for replacement " + context.sourceName()
+                                                                                                              .value()))
+                        .flatMap(source -> source.type() == SourceType.CLOUD
+                                           ? renderFromSource(config, source, context, intendedRole).map(Option::some)
+                                           : Result.success(Option.none()));
     }
 
-    private Option<String> renderFromConfig(ClusterBootstrapConfig config,
-                                            ProvisionContext context,
-                                            NodeRole intendedRole) {
-        return cloudSourceFor(config, intendedRole).flatMap(source -> renderFromSource(config,
-                                                                                       source,
-                                                                                       context,
-                                                                                       intendedRole));
-    }
-
-    private Option<String> renderFromSource(ClusterBootstrapConfig config,
+    private Result<String> renderFromSource(ClusterBootstrapConfig config,
                                             SourceProfile source,
                                             ProvisionContext context,
                                             NodeRole intendedRole) {
@@ -1301,9 +1474,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                      source,
                                                      intendedRole,
                                                      clusterSecretFromEnv(),
-                                                     leaderSshKeyIds())
-                                            .option()
-                                            .map(this::resolvePlaceholders)
+                                                     sourceSshKeyIds(source.name()))
+                                            .flatMap(composed -> resolvePlaceholders(composed,
+                                                                                     config,
+                                                                                     source.name(),
+                                                                                     intendedRole))
+                                            .map(this::withGenesisVoters)
                                             .map(composed -> NodeUserDataRenderer.render(config,
                                                                                          source,
                                                                                          intendedRole,
@@ -1316,16 +1492,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                          peersList(context)));
     }
 
-    /// #442 — the operator SSH key ids the LEADER itself was provisioned with, read from its OWN
-    /// resolved `[cloud.compute] ssh_key_ids` (the same `resolvedLocalConfig` the #336 placeholder
-    /// resolution uses). Threaded into the replacement's composed config so a replacement that later
-    /// becomes leader inherits the keys and provisions ITS replacements from config — extending the
-    /// bootstrap-seeded inheritance across replacement generations WITHOUT persisting the ids in the
-    /// KV cluster config (a stored-format change). Empty for non-cloud / tests where no resolved
-    /// local config is available, in which case the provider's name-prefix fallback still applies.
-    private List<Long> leaderSshKeyIds() {
+    private List<Long> sourceSshKeyIds(SourceName source) {
         return resolvedLocalConfig.get()
-                                  .flatMap(toml -> toml.getString("cloud.compute", "ssh_key_ids"))
+                                  .flatMap(toml -> SourceCloudBindings.read(toml, source))
+                                  .flatMap(binding -> Option.option(binding.compute().get("ssh_key_ids")))
                                   .map(ClusterTopologyManagerRecord::parseSshKeyIds)
                                   .or(List.of());
     }
@@ -1340,18 +1510,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      .toList();
     }
 
-    /// #336 — substitute the literal `${env:...}` / `${secrets:...}` placeholders the composed
-    /// overlay inherited from the deliberately-unresolved persisted KV TOML with the leader's OWN
-    /// resolved values at the same TOML path (via [PlaceholderConfigResolver]). The leader runs with
-    /// its per-node overlay RESOLVED to literals, so a CTM-provisioned replacement boots with real
-    /// credentials instead of crashing on placeholders. Passes `composed` through UNCHANGED when no
-    /// resolved local config is available (non-cloud / forge / tests) — preserving prior behavior —
-    /// or when the resolution itself reports a failure (best-effort: a partial render that still
-    /// carries a placeholder is no worse than the pre-fix behavior the renderer already handled).
-    private TomlDocument resolvePlaceholders(TomlDocument composed) {
+    /// Resolve account-specific fields from the target source binding. A failed cloud render is
+    /// a failed provision, never permission to reuse the leader's positional credentials/user-data.
+    private Result<TomlDocument> resolvePlaceholders(TomlDocument composed,
+                                                     ClusterBootstrapConfig config,
+                                                     SourceName source,
+                                                     NodeRole role) {
         return resolvedLocalConfig.get()
-                                  .map(resolvedSource -> PlaceholderConfigResolver.resolve(composed, resolvedSource).or(composed))
-                                  .or(composed);
+                                  .fold(() -> SourceCloudBindings.resolveOverlayFromConfig(composed,
+                                                                                           config,
+                                                                                           source,
+                                                                                           role),
+                                        local -> SourceCloudBindings.resolveOverlay(composed, local, source, role));
     }
 
     /// Operator SSH public keys persisted into the cluster config TOML at bootstrap formation
@@ -1371,11 +1541,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// The cloud [SourceProfile] backing the given role: the first `CLOUD`-type source whose role
     /// table declares the role. Only cloud replacements consume user-data, so non-cloud sources are
     /// skipped (the empty result degrades the render to a no-op above).
+    private static Option<SourceProfile> sourceFor(ClusterBootstrapConfig config,
+                                                   SourceName sourceName,
+                                                   NodeRole role) {
+        return Option.option(config.sources().get(sourceName.value())).filter(source -> source.roles()
+                                                                                              .containsKey(role));
+    }
+
     private static Option<SourceProfile> cloudSourceFor(ClusterBootstrapConfig config, NodeRole role) {
         return Option.from(config.sources()
                                  .values()
                                  .stream()
                                  .filter(source -> source.type() == SourceType.CLOUD)
+                                 .sorted(java.util.Comparator.comparing(source -> source.name()
+                                                                                        .value()))
                                  .filter(source -> source.roles()
                                                          .containsKey(role))
                                  .findFirst());
@@ -1462,10 +1641,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// (`drainCommandClear`). Returns on the enqueue (the drain itself proceeds asynchronously via the
     /// heartbeat + backstop).
     @Override
-    public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+    public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+        if (!active.get() || !retirementAllowed.get().test(targetNodeId)) {
+            return org.pragmatica.lang.utils.Causes.cause("Node retirement awaits certified voter handoff")
+                                                   .promise();
+        }
+
+        var epoch = activationEpoch.get();
+
+        if (Option.option(pendingDrains.putIfAbsent(targetNodeId, epoch)).isPresent()) {
+            return Promise.unitPromise();
+        }
+
         log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command", targetNodeId, reason);
         drainCommandSink.accept(targetNodeId);
-        scheduleGraceTerminate(targetNodeId, reason);
+        scheduleGraceTerminate(targetNodeId, reason, epoch);
 
         return Promise.success(unit());
     }
@@ -1474,8 +1664,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// [#graceReapVerdict]) and clear the DRAIN command. Idempotent — `terminateNode` treats an instance
     /// that is already gone as done, and `drainCommandClear` no-ops on an absent target.
     @Contract
-    private void scheduleGraceTerminate(NodeId targetNodeId, DrainReason reason) {
-        SharedScheduler.schedule(() -> graceTerminate(targetNodeId, reason), autoHealConfig.provisioningTimeout());
+    private void scheduleGraceTerminate(NodeId targetNodeId, DrainReason reason, long epoch) {
+        SharedScheduler.schedule(() -> graceTerminate(targetNodeId, reason, epoch), autoHealConfig.provisioningTimeout());
     }
 
     /// Grace expiry. A non-surplus drain (`JOIN_GRACE_REAP`, `OPERATOR_COMMAND`) reaps as issued and never
@@ -1483,7 +1673,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// cleared in every branch and LAST: a deposed issuer must not re-deliver a stale DRAIN if it later
     /// regains leadership, and clearing last makes the clear the completion signal of the whole backstop.
     @Contract
-    private void graceTerminate(NodeId targetNodeId, DrainReason reason) {
+    private synchronized void graceTerminate(NodeId targetNodeId, DrainReason reason, long epoch) {
+        if (!pendingDrains.remove(targetNodeId, epoch)) {
+            return;
+        }
+
+        if (!active.get() || activationEpoch.get() != epoch) {
+            drainCommandClear.accept(targetNodeId);
+
+            return;
+        }
+
         if (reason.isSurplusTrim()) {
             surplusTrimGraceExpired(targetNodeId, reason);
         } else {
@@ -1495,6 +1695,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void reapDrainedNode(NodeId targetNodeId) {
+        if (!active.get() || !retirementAllowed.get().test(targetNodeId)) {
+            return;
+        }
+
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
         lifecycleManager.terminateNode(targetNodeId)
                         .onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
@@ -1675,6 +1879,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void terminateDeparted(NodeId nodeId) {
+        if (!active.get() || !retirementAllowed.get().test(nodeId)) {
+            return;
+        }
+
         abandonedReaps.remove(nodeId);
         lifecycleManager.terminateNode(nodeId)
                         .onFailure(cause -> log.debug("CTM: reap of departed node {} not actioned: {}",
@@ -1816,13 +2024,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     @Override
-    public void activate() {
+    public synchronized void activate() {
         if (!active.compareAndSet(false, true)) {
             return;
         }
         // The activation epoch is bumped FIRST: every deferred reap and replay read started under this
         // activation carries it, and a re-check or resolution that finds another epoch drops out.
         activationEpoch.incrementAndGet();
+        workerReconcileInFlight.set(false);
+        workerReconcilePending.set(false);
+        recordedPlacements.clear();
         resetProvisioningCircuit("activate (leader handoff)");
         formationAnchorMs.set(nowMs());
         // CTM v2: the internal slot-reconcile loop is OFF. The LeaderReconciler (spec §7) owns
@@ -1833,6 +2044,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // RFC-0017 stage 5 — leader gain is a worker-convergence point: a scale committed under the
         // previous leader may have died mid-provisioning, and only the active CTM acts on it.
         reconcileWorkerTopology();
+        startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
         // #1050 R4 — one-shot activation replay: reap orphaned core instances that nothing else replays.
         scheduleActivationReplay();
         // #689 — re-compare every retained provisioning intent against what membership holds now.
@@ -1891,7 +2103,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     @Override
-    public void deactivate() {
+    public synchronized void deactivate() {
         if (!active.compareAndSet(true, false)) {
             return;
         }
@@ -1900,6 +2112,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // A deposed view never reaps: parked (abandoned) reaps die with the activation. The next activation's
         // replay re-parks any such instance its own SWIM still reports alive (SF-1) and reaps the rest.
         abandonedReaps.clear();
+        workerTopologyPolling.cancel();
+        pendingDrains.keySet().forEach(drainCommandClear);
+        pendingDrains.clear();
         log.info("CTM: Deactivated");
     }
 

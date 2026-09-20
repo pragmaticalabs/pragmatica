@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.cluster.metrics.MetricObservation;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
@@ -132,12 +134,16 @@ class SwimHintInstallBootTest {
         // Site 1: `setUnreachableReporter(pingTimeoutReporter(...))`. The collector's report reaches
         // SWIM as a PING_TIMEOUT hint, whose origin is PEER_UNRESPONSIVE — not the LINK_LOST an inline
         // PEER_LEFT hint would carry.
-        node.metricsCollector().reportUnreachable(PEER);
-
+        node.membershipFsm().onMemberDescriptor(NodeInfo.nodeInfo(PEER,
+            nodeAddress("localhost", freePort()).unwrap(), java.util.Map.of(NodeInfo.LABEL_ROLE, "core")));
         await().atMost(HINT_BOUND)
-               .untilAsserted(() -> assertThat(appender.messages())
-                   .as("a ClusterSync missed-pong report must arrive in SWIM as a hint")
-                   .anyMatch(line -> line.contains(HINT_RECORDED)));
+               .untilAsserted(() -> {
+                   // Audience refresh is periodic; preserve real collector ingress for the probe.
+                   node.metricsCollector().reportUnreachable(PEER);
+                   assertThat(appender.messages())
+                       .as("a ClusterSync missed-pong report must arrive in SWIM as a hint")
+                       .anyMatch(line -> line.contains(HINT_RECORDED));
+               });
         assertThat(appender.messages())
             .as("the installed reporter is pingTimeoutReporter: the hint's origin is PEER_UNRESPONSIVE")
             .anyMatch(line -> line.contains(HINT_RECORDED + "PEER_UNRESPONSIVE)"))
@@ -145,7 +151,7 @@ class SwimHintInstallBootTest {
 
         // Site 2: `addPongListener(pongResponsiveReporter(...))`. A pong fanned out by the collector
         // retracts that hint in SWIM; with the listener not installed, nothing is retracted.
-        node.metricsCollector().onClusterSyncPong(ClusterSyncPong.clusterSyncPong(PEER, Map.of()));
+        node.metricsCollector().onClusterSyncPong(new ClusterSyncPong(PEER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()), 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         await().atMost(HINT_BOUND)
                .untilAsserted(() -> assertThat(appender.messages())

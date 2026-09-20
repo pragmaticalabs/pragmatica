@@ -129,6 +129,9 @@ public interface SliceInvoker extends SliceInvokerFacade {
     @SuppressWarnings("JBCT-RET-01")
     void onNodeRemoved(MembershipDecision.NodeRemoved event);
 
+    /// Role-neutral cleanup; does not mutate the core topology.
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
+
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event);
@@ -911,26 +914,28 @@ class SliceInvokerImpl implements SliceInvoker {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
-        handleNodeDeparture(event.nodeId());
+        onNodeDeparture(event.nodeId());
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {
-        handleNodeDeparture(event.nodeId());
+        onNodeDeparture(event.nodeId());
     }
 
     // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onSelfShutdown(TransportObservation.SelfShutdown event) {
-        handleNodeDeparture(event.nodeId());
+        onNodeDeparture(event.nodeId());
     }
 
-    private void handleNodeDeparture(NodeId departedNode) {
+    public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
         Option.option(pendingInvocationsByNode.remove(departedNode))
               .filter(ids -> !ids.isEmpty())
               .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     private void retryPendingForDepartedNode(NodeId departedNode, Set<String> correlationIds) {

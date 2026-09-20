@@ -154,6 +154,7 @@ class ClusterSyncCollectorPeriodicEmissionTest {
 
     private static ClusterSyncCollector newCollectorWithBuffer(PeerObservationStore store) {
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new NoopNetwork());
+        collector.setMetricsProducerEligibility(_ -> true);
         collector.setPeerObservationBuffer(store);
         return collector;
     }

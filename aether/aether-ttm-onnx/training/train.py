@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 FEATURE_NAMES = [
     "cpu_usage", "heap_usage", "event_loop_lag_ms", "latency_ms", "invocations",
-    "gc_pause_ms", "latency_p50", "latency_p95", "latency_p99", "error_rate", "event_count"
+    "gc_pause_ms", "interval_mean_latency_p50", "interval_mean_latency_p95", "interval_mean_latency_p99", "error_rate", "event_count"
 ]
 NUM_FEATURES = len(FEATURE_NAMES)
 

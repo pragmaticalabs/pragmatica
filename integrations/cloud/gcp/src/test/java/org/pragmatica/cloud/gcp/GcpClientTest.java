@@ -14,12 +14,15 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse.BodyHandler;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.cloud.gcp.api.Instance;
 import org.pragmatica.cloud.gcp.api.NetworkEndpoint;
 import org.pragmatica.cloud.gcp.api.Operation;
@@ -30,26 +33,29 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
-import java.net.http.HttpHeaders;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse.BodyHandler;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cloud.gcp.GcpConfig.gcpConfig;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 class GcpClientTest {
     private static final String BASE_URL = "https://test.compute.googleapis.com/compute/v1";
     private static final String PROJECT_ID = "test-project";
     private static final String ZONE = "us-central1-a";
-    private static final GcpConfig CONFIG = gcpConfig(PROJECT_ID, ZONE, "test@test.iam.gserviceaccount.com", "unused", BASE_URL);
+
+    private static final GcpConfig CONFIG = gcpConfig(PROJECT_ID,
+                                                      ZONE,
+                                                      "test@test.iam.gserviceaccount.com",
+                                                      "unused",
+                                                      BASE_URL);
+
     private static final String ZONE_PREFIX = BASE_URL + "/projects/" + PROJECT_ID + "/zones/" + ZONE;
 
     private final AtomicReference<HttpRequest> capturedRequest = new AtomicReference<>();
     private final JsonMapper mapper = JsonMapper.defaultJsonMapper();
-
     private GcpClient client;
     private TestHttpOperations testHttp;
 
@@ -57,21 +63,75 @@ class GcpClientTest {
     void setUp() {
         testHttp = new TestHttpOperations(capturedRequest);
         var tokenManager = new PresetTokenManager();
+
         client = new GcpClientRecord(CONFIG, testHttp, mapper, tokenManager);
+    }
+
+    @Test
+    void zoneQualifiedIdentityRoutesStatusDeleteRestartAndLabelsToObservedZone() {
+        testHttp.respondWith(200, GET_INSTANCE_RESPONSE);
+        client.getInstance("europe-west1-b/my-instance").await();
+        assertThat(capturedRequest.get().uri().getPath()).endsWith("/zones/europe-west1-b/instances/my-instance");
+        client.deleteInstance("europe-west1-b/my-instance").await();
+        assertThat(capturedRequest.get().uri().getPath()).endsWith("/zones/europe-west1-b/instances/my-instance");
+        testHttp.respondWith(200, RESET_OPERATION_RESPONSE);
+        client.resetInstance("europe-west1-b/my-instance").await();
+        assertThat(capturedRequest.get().uri().getPath()).endsWith("/zones/europe-west1-b/instances/my-instance/reset");
+        client.setLabels("europe-west1-b/my-instance", new SetLabelsRequest(Map.of(), "fp")).await();
+        assertThat(capturedRequest.get().uri().getPath()).endsWith("/zones/europe-west1-b/instances/my-instance/setLabels");
+    }
+
+    @Test
+    void insertDecodesOperationAndPreservesDeterministicRequestId() {
+        testHttp.respondWith(200, RESET_OPERATION_RESPONSE);
+        var request = new org.pragmatica.cloud.gcp.api.InsertInstanceRequest("stable-name",
+                                                                             "type",
+                                                                             List.of(),
+                                                                             List.of(),
+                                                                             Map.of(),
+                                                                             new org.pragmatica.cloud.gcp.api.InsertInstanceRequest.Metadata(List.of()),
+                                                                             org.pragmatica.lang.Option.some("europe-west1-b"));
+
+        assertThat(client.insertInstance(request).await().isSuccess()).isTrue();
+        var first = capturedRequest.get().uri();
+
+        assertThat(first.getPath()).endsWith("/zones/europe-west1-b/instances");
+        assertThat(first.getQuery()).startsWith("requestId=");
+        client.insertInstance(request).await();
+        assertThat(capturedRequest.get().uri()).isEqualTo(first);
+    }
+
+    @Test
+    void aggregateInventoryReadsEveryPageAndPreservesZones() {
+        testHttp.responseSequence.add("""
+            {"items":{"zones/us-central1-a":{"instances":[{"name":"east","status":"RUNNING","zone":"us-central1-a"}]}},"nextPageToken":"next"}
+            """);
+        testHttp.responseSequence.add("""
+            {"items":{"zones/europe-west1-b":{"instances":[{"name":"west","status":"RUNNING","zone":"europe-west1-b"}]}}}
+            """);
+        testHttp.responseStatus = 200;
+        var instances = client.listAllInstances("labels.aether-source=west").await().unwrap();
+
+        assertThat(instances).extracting(Instance::name).containsExactly("east", "west");
+        assertThat(capturedRequest.get().uri().getPath()).endsWith("/aggregated/instances");
+        assertThat(capturedRequest.get().uri().getQuery()).contains("pageToken=next", "returnPartialSuccess=false");
+    }
+
+    @Test
+    void incompleteAggregateInventoryFailsRatherThanReportingMissingNodes() {
+        testHttp.respondWith(200, "{\"items\":{},\"unreachables\":[\"zones/europe-west1-b\"]}");
+        assertThat(client.listAllInstances("").await().isFailure()).isTrue();
     }
 
     @Nested
     class InstanceOperations {
-
         @Test
         void getInstance_success_parsesResponse() {
             testHttp.respondWith(200, GET_INSTANCE_RESPONSE);
-
             client.getInstance("my-instance")
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(GcpClientTest::assertInstanceBasicFields);
-
             assertThat(capturedRequest.get().method()).isEqualTo("GET");
             assertThat(capturedRequest.get().uri().toString()).isEqualTo(ZONE_PREFIX + "/instances/my-instance");
             assertAuthorizationHeader();
@@ -80,12 +140,10 @@ class GcpClientTest {
         @Test
         void listInstances_success_parsesList() {
             testHttp.respondWith(200, LIST_INSTANCES_RESPONSE);
-
             client.listInstances()
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(GcpClientTest::assertSingleInstanceList);
-
             assertThat(capturedRequest.get().method()).isEqualTo("GET");
             assertThat(capturedRequest.get().uri().toString()).isEqualTo(ZONE_PREFIX + "/instances");
         }
@@ -93,21 +151,18 @@ class GcpClientTest {
         @Test
         void listInstances_withFilter_encodesFilter() {
             testHttp.respondWith(200, LIST_INSTANCES_RESPONSE);
-
             client.listInstances("labels.env=prod")
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(GcpClientTest::assertSingleInstanceList);
-
             assertThat(capturedRequest.get().method()).isEqualTo("GET");
-            assertThat(capturedRequest.get().uri().toString())
-                .isEqualTo(ZONE_PREFIX + "/instances?filter=labels.env%3Dprod");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo(ZONE_PREFIX
+                                                                        + "/instances?filter=labels.env%3Dprod");
         }
 
         @Test
         void listInstances_emptyResponse_returnsEmptyList() {
             testHttp.respondWith(200, EMPTY_LIST_RESPONSE);
-
             client.listInstances()
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
@@ -117,12 +172,10 @@ class GcpClientTest {
         @Test
         void deleteInstance_success_returnsUnit() {
             testHttp.respondWith(200, DELETE_OPERATION_RESPONSE);
-
             client.deleteInstance("my-instance")
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(unit -> assertThat(unit).isNotNull());
-
             assertThat(capturedRequest.get().method()).isEqualTo("DELETE");
             assertThat(capturedRequest.get().uri().toString()).isEqualTo(ZONE_PREFIX + "/instances/my-instance");
         }
@@ -130,12 +183,10 @@ class GcpClientTest {
         @Test
         void resetInstance_success_returnsOperation() {
             testHttp.respondWith(200, RESET_OPERATION_RESPONSE);
-
             client.resetInstance("my-instance")
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(GcpClientTest::assertResetOperation);
-
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
             assertThat(capturedRequest.get().uri().toString()).isEqualTo(ZONE_PREFIX + "/instances/my-instance/reset");
         }
@@ -143,87 +194,77 @@ class GcpClientTest {
         @Test
         void setLabels_success_returnsOperation() {
             testHttp.respondWith(200, SET_LABELS_OPERATION_RESPONSE);
-
-            client.setLabels("my-instance", new SetLabelsRequest(Map.of("env", "prod"), "abc123"))
+            client.setLabels("my-instance",
+                             new SetLabelsRequest(Map.of("env", "prod"),
+                                                  "abc123"))
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(op -> assertThat(op.operationType()).isEqualTo("setLabels"));
-
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
-            assertThat(capturedRequest.get().uri().toString())
-                .isEqualTo(ZONE_PREFIX + "/instances/my-instance/setLabels");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo(ZONE_PREFIX
+                                                                        + "/instances/my-instance/setLabels");
         }
     }
 
     @Nested
     class NetworkEndpointOperations {
-
         @Test
         void attachNetworkEndpoint_success_returnsOperation() {
             testHttp.respondWith(200, ATTACH_ENDPOINT_RESPONSE);
-
-            client.attachNetworkEndpoint("my-neg", new NetworkEndpoint("10.0.0.1", 8080, "my-instance"))
+            client.attachNetworkEndpoint("my-neg",
+                                         new NetworkEndpoint("10.0.0.1", 8080, "my-instance"))
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(op -> assertThat(op.operationType()).isEqualTo("attachNetworkEndpoints"));
-
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
-            assertThat(capturedRequest.get().uri().toString())
-                .isEqualTo(ZONE_PREFIX + "/networkEndpointGroups/my-neg/attachNetworkEndpoints");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo(ZONE_PREFIX
+                                                                        + "/networkEndpointGroups/my-neg/attachNetworkEndpoints");
         }
 
         @Test
         void detachNetworkEndpoint_success_returnsOperation() {
             testHttp.respondWith(200, DETACH_ENDPOINT_RESPONSE);
-
-            client.detachNetworkEndpoint("my-neg", new NetworkEndpoint("10.0.0.1", 8080, "my-instance"))
+            client.detachNetworkEndpoint("my-neg",
+                                         new NetworkEndpoint("10.0.0.1", 8080, "my-instance"))
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(op -> assertThat(op.operationType()).isEqualTo("detachNetworkEndpoints"));
-
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
         }
 
         @Test
         void listNetworkEndpoints_success_parsesList() {
             testHttp.respondWith(200, LIST_ENDPOINTS_RESPONSE);
-
             client.listNetworkEndpoints("my-neg")
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(GcpClientTest::assertSingleEndpointList);
-
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
-            assertThat(capturedRequest.get().uri().toString())
-                .isEqualTo(ZONE_PREFIX + "/networkEndpointGroups/my-neg/listNetworkEndpoints");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo(ZONE_PREFIX
+                                                                        + "/networkEndpointGroups/my-neg/listNetworkEndpoints");
         }
     }
 
     @Nested
     class SecretManagerOperations {
-
         @Test
         void accessSecretVersion_success_decodesPayload() {
             testHttp.respondWith(200, SECRET_RESPONSE);
-
             client.accessSecretVersion("my-secret")
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(secret -> assertThat(secret).isEqualTo("super-secret-value"));
-
             assertThat(capturedRequest.get().method()).isEqualTo("GET");
-            assertThat(capturedRequest.get().uri().toString())
-                .contains("/projects/" + PROJECT_ID + "/secrets/my-secret/versions/latest:access");
+            assertThat(capturedRequest.get().uri().toString()).contains("/projects/" + PROJECT_ID
+                                                                       + "/secrets/my-secret/versions/latest:access");
         }
     }
 
     @Nested
     class ErrorHandling {
-
         @Test
         void apiError_mapsToGcpError() {
             testHttp.respondWith(404, ERROR_NOT_FOUND_RESPONSE);
-
             client.getInstance("nonexistent")
                   .await()
                   .onSuccess(instance -> assertThat(instance).isNull())
@@ -233,7 +274,6 @@ class GcpClientTest {
         @Test
         void serverError_mapsToApiError() {
             testHttp.respondWith(500, ERROR_SERVER_RESPONSE);
-
             client.listInstances()
                   .await()
                   .onSuccess(instances -> assertThat(instances).isNull())
@@ -242,7 +282,6 @@ class GcpClientTest {
     }
 
     // --- Assertion helpers ---
-
     private static void assertInstanceBasicFields(Instance instance) {
         assertThat(instance.name()).isEqualTo("my-instance");
         assertThat(instance.status()).isEqualTo("RUNNING");
@@ -269,6 +308,7 @@ class GcpClientTest {
     private static void assertNotFoundError(Cause cause) {
         assertThat(cause).isInstanceOf(GcpError.ApiError.class);
         var apiError = (GcpError.ApiError) cause;
+
         assertThat(apiError.statusCode()).isEqualTo(404);
         assertThat(apiError.code()).isEqualTo("NOT_FOUND");
     }
@@ -276,11 +316,13 @@ class GcpClientTest {
     private static void assertServerErrorResponse(Cause cause) {
         assertThat(cause).isInstanceOf(GcpError.ApiError.class);
         var apiError = (GcpError.ApiError) cause;
+
         assertThat(apiError.statusCode()).isEqualTo(500);
     }
 
     private void assertAuthorizationHeader() {
         var authHeader = capturedRequest.get().headers().firstValue("Authorization");
+
         assertThat(authHeader).isPresent().hasValue("Bearer test-token");
     }
 
@@ -301,6 +343,7 @@ class GcpClientTest {
         private final AtomicReference<HttpRequest> capturedRequest;
         private int responseStatus;
         private String responseBody;
+        final java.util.Queue<String> responseSequence = new java.util.ArrayDeque<>();
 
         TestHttpOperations(AtomicReference<HttpRequest> capturedRequest) {
             this.capturedRequest = capturedRequest;
@@ -317,13 +360,15 @@ class GcpClientTest {
             @SuppressWarnings("unchecked")
             var result = new HttpResult<>(responseStatus,
                                           HttpHeaders.of(Map.of(), (a, b) -> true),
-                                          (T) responseBody);
+                                          (T)(responseSequence.isEmpty()
+                                              ? responseBody
+                                              : responseSequence.remove()));
+
             return Promise.success(result);
         }
     }
 
     // --- JSON fixtures ---
-
     private static final String GET_INSTANCE_RESPONSE = """
         {
           "name": "my-instance",

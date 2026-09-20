@@ -98,11 +98,24 @@ public record AetherNodeConfig(TopologyConfig topology,
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
+    private static boolean configuredCore(NodeInfo info, NodeId self, boolean worker) {
+        var role = info.labels().getOrDefault(NodeInfo.LABEL_ROLE,
+                                              info.id().equals(self) && worker
+                                              ? "worker"
+                                              : "core");
+
+        return "core".equalsIgnoreCase(role);
+    }
+
     public static SelfStage builder() {
         return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
-            var effectiveClusterSize = coreMax > 0
-                                       ? coreMax
-                                       : coreNodes.size();
+            // Capacity limits do not define the initial voting electorate.
+            var effectiveClusterSize = Math.max(1,
+                                                (int) coreNodes.stream()
+                                                               .filter(info -> configuredCore(info,
+                                                                                              self,
+                                                                                              workerConfig.isPresent()))
+                                                               .count());
             var topology = new TopologyConfig(self,
                                               effectiveClusterSize,
                                               timeSpan(5).seconds(),

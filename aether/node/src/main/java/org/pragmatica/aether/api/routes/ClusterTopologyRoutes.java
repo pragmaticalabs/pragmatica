@@ -205,7 +205,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                              snapshot.belowThreshold(),
                                              snapshot.armed(),
                                              node.coreAbsenceSnapshot().or(CORE_ABSENCE_UNWIRED),
-                                             members);
+                                             members,
+                                             node.hasCompleteClusterView());
     }
 
     /// Per-peer membership detail off the node's authoritative `MembershipFsm`: lifecycle state,
@@ -240,9 +241,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var descriptor = descriptors.getOrDefault(id, MemberDescriptor.UNKNOWN);
         // Descriptor role is a blank ("unknown") label on an all-core cluster (no role labels);
         // surface the FSM's effective core/worker classification so the field is always present.
-        var role = descriptor.isCore()
-                   ? "core"
-                   : "worker";
+        var role = descriptor.role().isBlank()
+                   ? "unknown"
+                   : descriptor.role();
 
         return new MembershipNodeDetail(id.id(),
                                         fsmState,
@@ -274,9 +275,15 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var highWater = highWaterSnapshot(node);
 
         return switch (domain) {
-            case DOMAIN_COMMUNITY -> Result.success(new OwnershipResponse(domain, communityOwnership(node, highWater)));
-            case DOMAIN_DHT -> Result.success(new OwnershipResponse(domain, dhtOwnership(node, highWater)));
-            case DOMAIN_STREAM -> Result.success(new OwnershipResponse(domain, streamOwnership(node, highWater)));
+            case DOMAIN_COMMUNITY -> Result.success(new OwnershipResponse(domain,
+                                                                          communityOwnership(node, highWater),
+                                                                          node.hasCompleteClusterView()));
+            case DOMAIN_DHT -> Result.success(new OwnershipResponse(domain,
+                                                                    dhtOwnership(node, highWater),
+                                                                    node.hasCompleteClusterView()));
+            case DOMAIN_STREAM -> Result.success(new OwnershipResponse(domain,
+                                                                       streamOwnership(node, highWater),
+                                                                       node.hasCompleteClusterView()));
             default -> new OwnershipError.UnknownDomain(domain).result();
         };
     }

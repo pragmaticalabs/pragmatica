@@ -35,6 +35,11 @@ public record DockerEnvironmentIntegration(DockerComputeProvider computeProvider
     }
 
     @Override
+    public Option<ComputeProvider> localCompute() {
+        return some(computeProvider);
+    }
+
+    @Override
     public Option<SecretsProvider> secrets() {
         return empty();
     }

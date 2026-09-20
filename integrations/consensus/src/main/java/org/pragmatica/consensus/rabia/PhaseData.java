@@ -15,7 +15,6 @@
  */
 package org.pragmatica.consensus.rabia;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,7 +24,6 @@ import java.util.stream.Collectors;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine.Batch;
-import org.pragmatica.consensus.StateMachine.Batch.Id;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.lang.Contract;
@@ -35,15 +33,22 @@ import static org.pragmatica.consensus.StateMachine.Batch.emptyBatch;
 
 
 /// Represents the outcome of Round 2 completion per Rabia specification.
-/// Three possible outcomes:
+/// Completion outcomes:
 /// 1. Decided - f+1 threshold met, commit the value
-/// 2. CarryForward - any non-question vote seen but < f+1, carry value to next phase without decision
+/// 2. CarryForward - continue the same log slot in another binary round
+/// 3. AwaitingProposal - V1 is established but the majority-supported batch is not yet available
 sealed interface Round2Outcome<C extends Command> {
     StateValue lockedValue();
 
     record Decided<C extends Command>(Decision<C> decision) implements Round2Outcome<C> {
         public StateValue lockedValue() {
             return decision.stateValue();
+        }
+    }
+
+    record AwaitingProposal<C extends Command>() implements Round2Outcome<C> {
+        public StateValue lockedValue() {
+            return StateValue.V1;
         }
     }
 
@@ -54,21 +59,85 @@ sealed interface Round2Outcome<C extends Command> {
     }
 }
 
-/// Data structure to hold all state related to a specific consensus phase.
+/// One log slot: immutable proposals and independently indexed binary-round ballots.
 ///
 /// This class tracks proposals, round 1 votes, round 2 votes, and decision state
-/// for a single phase of the Rabia consensus protocol.
+/// for one weak-MVC instance. A binary carry-forward does not complete this instance.
 ///
 /// @param <C> Command type
 final class PhaseData<C extends Command> {
     private final Phase phase;
+    private final long epoch;
+    private final Map<NodeId, ClusterConfig> configurations = new ConcurrentHashMap<>();
+
+    private record ProposalIdentity(Batch.Id batch, Option<ClusterConfig> configuration) {}
+
+    private record ProposalValue<C extends Command>(Batch<C> batch, Option<ClusterConfig> configuration) {
+        ProposalIdentity identity() {
+            return new ProposalIdentity(batch.id(), configuration);
+        }
+
+        boolean isNotEmpty() {
+            return batch.isNotEmpty() || configuration.isPresent();
+        }
+    }
+
     private final Map<NodeId, Batch<C>> proposals = new ConcurrentHashMap<>();
-    private final Map<NodeId, StateValue> round1Votes = new ConcurrentHashMap<>();
-    private final Map<NodeId, StateValue> round2Votes = new ConcurrentHashMap<>();
+
+    private record Ballots(Map<NodeId, StateValue> first, Map<NodeId, StateValue> second) {
+        static Ballots ballots() {
+            return new Ballots(new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
+        }
+    }
+
+    private final Map<Long, Ballots> ballots = new ConcurrentHashMap<>();
+    private long round;
+
+    org.pragmatica.lang.Unit restoreOwnRound(long restoredRound) {
+        round = Math.max(round, restoredRound);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    long round() {
+        return round;
+    }
+
+    private Ballots ballots(long index) {
+        return ballots.computeIfAbsent(index, _ -> Ballots.ballots());
+    }
+
+    org.pragmatica.lang.Unit advanceRound(NodeId self, StateValue value) {
+        round++;
+        registerRound1Vote(self, value);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     private final AtomicBoolean decided = new AtomicBoolean(false);
+    private Option<Decision<C>> completedDecision = Option.none();
+
+    Option<Decision<C>> completedDecision() {
+        return completedDecision;
+    }
+
+    org.pragmatica.lang.Unit completedDecision(Decision<C> decision) {
+        completedDecision = Option.some(decision);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
 
     PhaseData(Phase phase) {
+        this(phase, 0);
+    }
+
+    PhaseData(Phase phase, long epoch) {
         this.phase = phase;
+        this.epoch = epoch;
+    }
+
+    long epoch() {
+        return epoch;
     }
 
     Phase phase() {
@@ -78,8 +147,32 @@ final class PhaseData<C extends Command> {
     // ==================== Intent-Revealing API ====================
     /// Registers a proposal from a node. Idempotent - first proposal wins.
     @Contract
-    void registerProposal(NodeId node, Batch<C> batch) {
-        proposals.putIfAbsent(node, batch);
+    org.pragmatica.lang.Unit registerProposal(NodeId node, Batch<C> batch) {
+        registerProposal(node, batch, Option.none());
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    org.pragmatica.lang.Unit registerProposal(NodeId node, Batch<C> batch, Option<ClusterConfig> configuration) {
+        if (!proposals.containsKey(node)) {
+            configuration.onPresent(value -> configurations.put(node, value));
+            proposals.put(node, batch);
+        }
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    Option<ClusterConfig> configuration(NodeId node) {
+        return Option.option(configurations.get(node));
+    }
+
+    private List<ProposalValue<C>> proposalValues() {
+        return proposals.entrySet()
+                        .stream()
+                        .map(entry -> new ProposalValue<>(entry.getValue(),
+                                                          configuration(entry.getKey())))
+                        .filter(ProposalValue::isNotEmpty)
+                        .toList();
     }
 
     /// Checks if a node has already proposed in this phase.
@@ -104,34 +197,62 @@ final class PhaseData<C extends Command> {
 
     /// Checks if a node has already voted in round 1.
     boolean hasVotedRound1(NodeId node) {
-        return round1Votes.containsKey(node);
+        return ballots(round).first()
+                      .containsKey(node);
     }
 
     /// Registers a round 1 vote from a node.
     @Contract
-    void registerRound1Vote(NodeId node, StateValue value) {
-        round1Votes.put(node, value);
+    org.pragmatica.lang.Unit registerRound1Vote(NodeId node, StateValue value) {
+        registerRound1Vote(node, round, value);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    org.pragmatica.lang.Unit registerRound1Vote(NodeId node, long ballotRound, StateValue value) {
+        ballots(ballotRound).first().putIfAbsent(node, value);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    org.pragmatica.lang.Unit registerRound2Vote(NodeId node, long ballotRound, StateValue value) {
+        ballots(ballotRound).second().putIfAbsent(node, value);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    Option<StateValue> round1Vote(NodeId node, long ballotRound) {
+        return Option.option(ballots(ballotRound).first().get(node));
+    }
+
+    Option<StateValue> round2Vote(NodeId node, long ballotRound) {
+        return Option.option(ballots(ballotRound).second().get(node));
     }
 
     /// Returns this node's round 1 vote value, or null if not cast.
     StateValue getRound1Vote(NodeId node) {
-        return round1Votes.get(node);
+        return ballots(round).first()
+                      .get(node);
     }
 
     /// Checks if a node has already voted in round 2.
     boolean hasVotedRound2(NodeId node) {
-        return round2Votes.containsKey(node);
+        return ballots(round).second()
+                      .containsKey(node);
     }
 
     /// Returns this node's round 2 vote value, or null if not cast.
     StateValue getRound2Vote(NodeId node) {
-        return round2Votes.get(node);
+        return ballots(round).second()
+                      .get(node);
     }
 
     /// Registers a round 2 vote from a node.
     @Contract
-    void registerRound2Vote(NodeId node, StateValue value) {
-        round2Votes.put(node, value);
+    org.pragmatica.lang.Unit registerRound2Vote(NodeId node, StateValue value) {
+        registerRound2Vote(node, round, value);
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     /// Checks if a decision has been made for this phase.
@@ -158,36 +279,39 @@ final class PhaseData<C extends Command> {
     // ==================== Voting Logic ====================
     /// Checks if we have collected votes from a majority of nodes in round 1.
     boolean hasRound1MajorityVotes(int quorumSize) {
-        return round1Votes.size() >= quorumSize;
+        return ballots(round).first()
+                      .size() >= quorumSize;
     }
 
     /// Checks if we have collected votes from a majority of nodes in round 2.
     boolean hasRound2MajorityVotes(int quorumSize) {
-        return round2Votes.size() >= quorumSize;
+        return ballots(round).second()
+                      .size() >= quorumSize;
     }
 
-    /// Finds the agreed proposal when a V1 decision is made.
-    /// Returns the batch that has the most proposals (quorum support expected),
-    /// with deterministic tiebreaker by BatchId for consistency across nodes.
+    /// Only an actual proposal majority can supply a V1 command batch.
+    private Option<ProposalValue<C>> agreedValue(int quorumSize) {
+        return Option.from(proposalValues().stream()
+                                         .collect(Collectors.groupingBy(ProposalValue::identity))
+                                         .values()
+                                         .stream()
+                                         .filter(values -> values.size() >= quorumSize)
+                                         .map(List::getFirst)
+                                         .findFirst());
+    }
+
+    Option<ClusterConfig> agreedConfiguration(int quorumSize) {
+        return agreedValue(quorumSize).flatMap(ProposalValue::configuration);
+    }
+
+    Option<Batch<C>> agreedProposal(int quorumSize) {
+        return agreedValue(quorumSize).filter(value -> value.configuration()
+                                                            .isEmpty())
+                          .map(ProposalValue::batch);
+    }
+
     Batch<C> findAgreedProposal(int quorumSize) {
-        if (proposals.isEmpty()) {
-            return emptyBatch();
-        }
-        // Group batches by BatchId and count
-        var batchesById = proposals.values()
-                                   .stream()
-                                   .filter(Batch::isNotEmpty)
-                                   .collect(Collectors.groupingBy(Batch::id));
-        // Find the BatchId with most proposals (should have quorum for V1 decision)
-        // Use BatchId as tiebreaker for determinism across nodes
-        return batchesById.entrySet()
-                          .stream()
-                          .max(Comparator.<Map.Entry<Id, List<Batch<C>>>> comparingInt(e -> e.getValue()
-                                                                                             .size()).thenComparing(e -> e.getKey()
-                                                                                                                          .id()))
-                          .map(e -> e.getValue()
-                                     .getFirst())
-                          .orElse(emptyBatch());
+        return agreedProposal(quorumSize).or(Batch::emptyBatch);
     }
 
     /// Evaluates the initial round 1 vote based on collected proposals.
@@ -195,19 +319,12 @@ final class PhaseData<C extends Command> {
     ///
     /// This should only be called after hasQuorumProposals() returns true.
     VoteRound1 evaluateInitialVote(NodeId self, int quorumSize) {
-        // Count proposals by BatchId to find if any batch has quorum support
-        var countByBatchId = proposals.values()
-                                      .stream()
-                                      .filter(Batch::isNotEmpty)
-                                      .collect(Collectors.groupingBy(Batch::id,
-                                                                     Collectors.counting()));
-        // Check if any BatchId has quorum support
-        boolean hasQuorumAgreement = countByBatchId.values().stream().anyMatch(count -> count >= quorumSize);
+        boolean hasQuorumAgreement = agreedValue(quorumSize).isPresent();
         var stateValue = hasQuorumAgreement
                          ? StateValue.V1
                          : StateValue.V0;
 
-        return new VoteRound1(self, phase, stateValue);
+        return new VoteRound1(self, epoch, phase, round, stateValue);
     }
 
     /// Evaluates the round 2 vote based on round 1 voting results.
@@ -224,48 +341,41 @@ final class PhaseData<C extends Command> {
 
     /// Counts round 1 votes for a specific state value.
     int countRound1VotesForValue(StateValue value) {
-        return (int) round1Votes.values()
-                                .stream()
-                                .filter(v -> v == value)
-                                .count();
-    }
-
-    /// Checks if we have a super-majority agreement on a single value in Round 1.
-    /// If true, we can skip Round 2 and decide immediately (fast path).
-    ///
-    /// @param superMajoritySize the n - f threshold
-    /// @return the agreed value if super-majority exists, empty otherwise
-    Option<StateValue> getSuperMajorityRound1Value(int superMajoritySize) {
-        for (var value : List.of(StateValue.V0, StateValue.V1)) {
-            if (countRound1VotesForValue(value) >= superMajoritySize) {
-                return Option.some(value);
-            }
-        }
-
-        return Option.none();
+        return (int) ballots(round).first()
+                            .values()
+                            .stream()
+                            .filter(v -> v == value)
+                            .count();
     }
 
     /// Counts round 2 votes for a specific state value.
     int countRound2VotesForValue(StateValue value) {
-        return (int) round2Votes.values()
-                                .stream()
-                                .filter(v -> v == value)
-                                .count();
+        return (int) ballots(round).second()
+                            .values()
+                            .stream()
+                            .filter(v -> v == value)
+                            .count();
     }
 
     /// Processes round 2 completion and determines the outcome.
     /// Per Rabia spec (weak_mvc.ivy lines 163-171):
     /// 1. If f+1 nodes voted V1 or V0, decide that value
     /// 2. If any non-question vote seen (but < f+1), carry that value forward WITHOUT decision
-    /// 3. If all votes are VQUESTION, use coin flip to decide
+    /// 3. If all votes are VQUESTION, carry the common coin into the next binary round
     Round2Outcome<C> processRound2Completion(NodeId self, int fPlusOneSize, int quorumSize) {
         // Case 1: f+1 threshold met - DECIDE
         if (countRound2VotesForValue(StateValue.V1) >= fPlusOneSize) {
-            return new Round2Outcome.Decided<>(new Decision<>(self, phase, StateValue.V1, findAgreedProposal(quorumSize)));
+            return agreedValue(quorumSize).<Round2Outcome<C>> map(value -> new Round2Outcome.Decided<>(new Decision<>(self,
+                                                                                                                      epoch,
+                                                                                                                      phase,
+                                                                                                                      StateValue.V1,
+                                                                                                                      value.batch(),
+                                                                                                                      value.configuration())))
+                              .or(Round2Outcome.AwaitingProposal::new);
         }
 
         if (countRound2VotesForValue(StateValue.V0) >= fPlusOneSize) {
-            return new Round2Outcome.Decided<>(new Decision<>(self, phase, StateValue.V0, emptyBatch()));
+            return new Round2Outcome.Decided<>(new Decision<>(self, epoch, phase, StateValue.V0, emptyBatch()));
         }
         // Case 2: Any non-question vote seen (but < f+1) - carry forward WITHOUT decision
         for (var value : List.of(StateValue.V1, StateValue.V0)) {
@@ -273,20 +383,15 @@ final class PhaseData<C extends Command> {
                 return new Round2Outcome.CarryForward<>(value);
             }
         }
-        // Case 3: All VQUESTION - coin flip and DECIDE
-        var coinValue = coinFlip();
-        var batch = coinValue == StateValue.V1
-                    ? findAgreedProposal(quorumSize)
-                    : Batch.<C> emptyBatch();
-
-        return new Round2Outcome.Decided<>(new Decision<>(self, phase, coinValue, batch));
+        // The coin chooses the next binary-round state. It is never a decision.
+        return new Round2Outcome.CarryForward<>(coinFlip());
     }
 
     /// Gets a deterministic coin flip value for a phase.
     /// Must be deterministic across all nodes for consensus correctness.
     /// Uses bit-based check to avoid Math.abs(Long.MIN_VALUE) returning negative.
     StateValue coinFlip() {
-        long seed = phase.value();
+        long seed = phase.value() * 0x9E3779B97F4A7C15L + round;
 
         return (seed & 1) == 0
                ? StateValue.V0

@@ -36,6 +36,13 @@ public final class LeaderElectionEvents {
         }
     }
 
+    /// Verified current core directory on an immutable passive worker. It grants routing only.
+    public record PassiveDirectory(java.util.List<NodeId> members) implements ClusterFsmEvent {
+        public PassiveDirectory {
+            members = java.util.List.copyOf(members);
+        }
+    }
+
     /// Consensus sync has completed and the node is ready to propose a leader. Sent by
     /// `AetherNode.startClusterAsync` after `clusterNode.start()` succeeds.
     public record ConsensusReady() implements ClusterFsmEvent {}

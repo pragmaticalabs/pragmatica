@@ -38,6 +38,76 @@ class SystemStreamRegistrarTest {
         return LeaderNotification.leaderChange(Option.empty(), false);
     }
 
+    @Test
+    void leaderNotification_schedulesInitialPass_withoutCallingCommitOnNotificationThread() {
+        var scheduler = new CapturingScheduler();
+        var calls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            calls.incrementAndGet();
+            return unitResult();
+        }, Result::unitResult, scheduler);
+
+        registrar.onLeaderChange(gained());
+        registrar.onLeaderChange(gained());
+
+        assertThat(calls.get()).isZero();
+        assertThat(scheduler.delays()).hasSize(1);
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
+    }
+
+    @Test
+    void staleScheduledActivation_cannotRunOrClearNewTermPass() {
+        var scheduler = new CapturingScheduler();
+        var calls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            calls.incrementAndGet();
+            return unitResult();
+        }, Result::unitResult, scheduler);
+
+        registrar.onLeaderChange(gained());
+        registrar.onLeaderChange(lost());
+        registrar.onLeaderChange(gained());
+        scheduler.fireNext(); // Deliberately executes the cancelled old term callback.
+        assertThat(calls.get()).isZero();
+        assertThat(scheduler.hasPending()).isTrue();
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
+    }
+
+    @Test
+    void leadershipChangesDuringRegistration_doNotOverlapOrRunOldTermsSecondLeg() {
+        var scheduler = new CapturingScheduler();
+        var registrarRef = new AtomicReference<SystemStreamRegistrar>();
+        var calls = new AtomicInteger();
+        var bootstrapCalls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            if (calls.incrementAndGet() == 1) {
+                registrarRef.get().onLeaderChange(lost());
+                registrarRef.get().onLeaderChange(gained());
+                scheduler.fireNext(); // New term cannot overlap the still-running old term.
+                assertThat(calls.get()).isEqualTo(1);
+                return StreamError.General.STREAM_CONFIG_COMMIT_FAILED.result();
+            }
+            return unitResult();
+        }, () -> {
+            bootstrapCalls.incrementAndGet();
+            return unitResult();
+        }, scheduler);
+        registrarRef.set(registrar);
+
+        registrar.onLeaderChange(gained());
+        scheduler.fireNext();
+        assertThat(bootstrapCalls.get()).isZero();
+        assertThat(scheduler.hasPending()).isTrue();
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(bootstrapCalls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
+    }
+
     @Nested
     class RetryUntilCommitted {
 
@@ -53,9 +123,10 @@ class SystemStreamRegistrarTest {
                                                                         () -> StreamError.General.STREAM_ALREADY_EXISTS.result(),
                                                                         scheduler);
 
-            // Leader-gain runs the first pass immediately: createStream fails (transient) → a retry is
+            // Run the scheduled initial pass: createStream fails (transient) → a retry is
             // scheduled; bootstrap leg latches DONE (ALREADY_EXISTS).
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete()).isFalse();
             assertThat(scheduler.hasPending()).isTrue();
@@ -89,6 +160,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
 
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete())
@@ -113,6 +185,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(scheduler.hasPending()).isTrue();
 
@@ -139,6 +212,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
 
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete())
@@ -170,6 +244,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(bootstrapCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete()).isFalse();
@@ -202,6 +277,7 @@ class SystemStreamRegistrarTest {
             // First pass (leader-gain) schedules retry #1; then fire 7 more passes to walk the curve
             // past the clamp point (16s → 32s clamps to MAX=30s).
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
             for (int i = 0; i < 7; i++) {
                 scheduler.fireNext();
             }
@@ -209,7 +285,8 @@ class SystemStreamRegistrarTest {
             var nanos = scheduler.delays().stream().map(TimeSpan::nanos).toList();
 
             assertThat(nanos).as("backoff doubles from INITIAL then saturates at MAX")
-                             .containsExactly(SystemStreamRegistrar.INITIAL_BACKOFF.nanos(),
+                             .containsExactly(0L,
+                                              SystemStreamRegistrar.INITIAL_BACKOFF.nanos(),
                                               TimeSpan.timeSpan(1L).seconds().nanos(),
                                               TimeSpan.timeSpan(2L).seconds().nanos(),
                                               TimeSpan.timeSpan(4L).seconds().nanos(),

@@ -1,0 +1,7 @@
+### Changed (2026-09-20 — hierarchical cluster runtime)
+- **Explicit core voter authority and durable recovery** separate consensus eligibility from discovery and worker roles, preserve ordered application, and require an agreed handoff before retiring old voters. [verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaVoterRecoveryTest.java]
+- **Community authority and source placement** connect guarded governor acquisition, shared capacity reservations, provider-observed placement, workload evacuation and acknowledged retirement. [mechanism: CommunityPlacementReconciler and HierarchyStateWriter]
+- **Scoped worker metadata and producer-aware metrics** preserve source freshness and prevent partial metadata cuts from enabling worker invocation. [verified: aether/node/src/test/java/org/pragmatica/aether/worker/metadata/WorkerMetadataChannelTest.java]
+
+- Worker deployment, HTTP-route and scheduled-task writes use the core-forwarding delegate from assembly; staged cores enter workload placement only after voter installation. [verified: aether/node/src/test/java/org/pragmatica/aether/node/WorkerRuntimeCommitWiringTest.java]
+- System-stream registration leaves the consensus notification thread before waiting for a commit. Default consensus journals live outside encrypted artifact storage. [verified: aether/node/src/test/java/org/pragmatica/aether/node/SystemStreamRegistrarTest.java] [verified: aether/node/src/test/java/org/pragmatica/aether/node/AetherNodeDhtMarkerPostFormationBootTest.java]

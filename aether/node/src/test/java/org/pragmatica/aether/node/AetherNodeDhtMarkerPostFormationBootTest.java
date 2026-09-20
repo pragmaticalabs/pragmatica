@@ -149,7 +149,11 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                                 tempDir.resolve("snapshots").toString(),
                                                 1000, "60s", 5, "", true);
 
-        node = AetherNode.aetherNode(minimalConfig(environment, encryption, artifactsConfig), () -> {})
+        var config = minimalConfig(environment, encryption, artifactsConfig);
+        assertThat(AetherNode.defaultConsensusDirectory(config).toAbsolutePath().normalize()
+            .startsWith(Path.of(artifactsConfig.diskPath()).toAbsolutePath().normalize()))
+            .as("consensus WAL must not create apparent plaintext blocks in encrypted artifact storage").isFalse();
+        node = AetherNode.aetherNode(config, () -> {})
                           .onFailure(cause -> fail("construction must not touch the DHT any more (#858), even with "
                                                   + "a keyring configured - " + cause.message()))
                           .unwrap();

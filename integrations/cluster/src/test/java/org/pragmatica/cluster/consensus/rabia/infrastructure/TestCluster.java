@@ -138,6 +138,11 @@ public class TestCluster {
                 case Synchronous.SyncResponse<?> syncResponse ->
                         engine.processSyncResponse((Synchronous.SyncResponse<C>) syncResponse);
                 case Asynchronous.SyncRequest syncRequest -> engine.handleSyncRequest(syncRequest);
+                case Asynchronous.SyncRejected rejected -> engine.handleSyncRejected(rejected);
+                case Asynchronous.RoundRequest request -> engine.handleRoundRequest(request);
+                case Asynchronous.ReconfigurationRequest request -> engine.reconfigurationRequest(request);
+                case Asynchronous.ConfigurationTransfer<?> transfer -> engine.configurationTransfer((Asynchronous.ConfigurationTransfer) transfer);
+                case Asynchronous.ConfigurationInstalled installed -> engine.configurationInstalled(installed);
                 case Asynchronous.NewBatch<?> newBatch -> engine.handleNewBatch(newBatch);
             }
         };

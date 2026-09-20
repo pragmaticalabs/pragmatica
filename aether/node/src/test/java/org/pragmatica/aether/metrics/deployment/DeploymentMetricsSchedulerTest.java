@@ -317,6 +317,11 @@ class DeploymentMetricsSchedulerTest {
         public void onDeploymentMetricsPong(org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPong pong) {}
 
         @Override
+        public org.pragmatica.lang.Unit onNodeDeparture(org.pragmatica.consensus.NodeId node) {
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        @Override
         public void onMembershipDecision(MembershipDecision decision) {}
 
         @Override

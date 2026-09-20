@@ -11,7 +11,11 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 
 @SuppressWarnings("JBCT-UTIL-02")
 public sealed interface EphemeralKeys {
-    Set<Class<? extends AetherKey>> EPHEMERAL_KEY_TYPES = Set.of(NodeArtifactKey.class,
+    Set<Class<? extends AetherKey>> EPHEMERAL_KEY_TYPES = Set.of(CapacityLedgerKey.class,
+                                                                 CapacityReservationKey.class,
+                                                                 CommunityPlacementOperationKey.class,
+                                                                 NodePlacementKey.class,
+                                                                 NodeArtifactKey.class,
                                                                  NodeRoutesKey.class,
                                                                  JoinDeadlineKey.class,
                                                                  DrainDeadlineKey.class,
@@ -29,7 +33,11 @@ public sealed interface EphemeralKeys {
                                                                  ProvisioningSlotKey.class,
                                                                  ClusterPhaseKey.class);
 
-    Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
+    Set<String> EPHEMERAL_SECTIONS = Set.of("capacity-ledger",
+                                            "capacity-reservation",
+                                            "community-placement-operation",
+                                            "node-placement",
+                                            "node-artifact",
                                             "node-routes",
                                             "join-deadline",
                                             "drain-deadline",

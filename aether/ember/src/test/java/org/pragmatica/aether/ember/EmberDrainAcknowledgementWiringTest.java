@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import org.pragmatica.cluster.metrics.MetricObservation;
+
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -105,7 +107,16 @@ class EmberDrainAcknowledgementWiringTest {
         assertThat(fsm.memberStates()).containsEntry(acknowledged, "Departing")
                                       .containsEntry(unacknowledged, "Departing");
 
-        leader.metricsCollector().onClusterSyncPong(drainingPong(acknowledged));
+        // The real synchronous pong callback may wait behind a consensus/KV application. Observe
+        // readiness while ingress is running, before the independent stale sweep can expire it.
+        var ingress = org.pragmatica.lang.Promise.lift(() -> {
+            leader.metricsCollector().onClusterSyncPong(drainingPong(acknowledged));
+            return org.pragmatica.lang.Unit.unit();
+        });
+        awaitCondition("arming: readiness recorded while the actual pong ingress executes",
+                       drainedAtMs + 2_000,
+                       () -> leader.metricsCollector().reportedStates().get(acknowledged) == NodeReportedState.DRAINING,
+                       () -> leader.metricsCollector().reportedStates().toString());
         assertThat(leader.metricsCollector().reportedStates())
             .describedAs("arming: the leader's own readiness view recorded the acknowledgement")
             .containsEntry(acknowledged, NodeReportedState.DRAINING);
@@ -124,6 +135,7 @@ class EmberDrainAcknowledgementWiringTest {
                        () -> "Dead".equals(fsm.memberStates().get(acknowledged))
                              && "Member".equals(fsm.memberStates().get(unacknowledged)),
                        () -> fsm.memberStates().toString());
+        assertThat(ingress.await(STOP_BOUND).isSuccess()).as("actual pong callback completed").isTrue();
         assertThat(fsm.countedMembers()).doesNotContain(acknowledged)
                                         .contains(unacknowledged);
         assertThat(cluster.allNodes()).allSatisfy(peer -> assertThat(fsm.memberStates().get(peer.self()))
@@ -171,8 +183,7 @@ class EmberDrainAcknowledgementWiringTest {
     }
 
     private static ClusterSyncPong drainingPong(NodeId sender) {
-        return new ClusterSyncPong(sender, Map.of(), 0L, 0L, 0L, NodeReportedState.DRAINING.name(),
-                                   List.of(), List.of(), List.of(), Option.none(), 1L);
+        return new ClusterSyncPong(sender, new MetricObservation(1L, System.nanoTime(), System.currentTimeMillis(), Map.of()), 0L, 0L, 0L, NodeReportedState.DRAINING.name(), List.of(), List.of(), List.of(), Option.none());
     }
 
     /// The first candidate base whose whole block (QUIC UDP + TCP cluster ports, management and app-HTTP

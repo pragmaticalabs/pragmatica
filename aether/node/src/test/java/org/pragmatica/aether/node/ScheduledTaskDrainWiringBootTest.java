@@ -156,6 +156,7 @@ class ScheduledTaskDrainWiringBootTest {
         assertThat(count(TIMERS_CANCELLED)).as("control: the scheduler has NOT seen a drain before the ping")
                   .isZero();
 
+        commitDrainAuthority();
         delegateRouter.route(drainPing());
 
         await().atMost(LINE_BOUND)
@@ -184,17 +185,18 @@ class ScheduledTaskDrainWiringBootTest {
             .onFailure(cause -> fail("start() must succeed: " + cause.message()));
     }
 
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void commitDrainAuthority() {
+        var leader = node.self();
+        var store = node.kvStore();
+        KVCommand command = new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(leader, 1));
+        store.process(store.createBatch(List.of(command)));
+    }
+
     /// The leader's heartbeat naming this node in `drainNodes` — the operator-drain wire form.
     private ClusterSyncPing drainPing() {
-        return new ClusterSyncPing(NodeId.nodeId("drain-wiring-leader").unwrap(),
-                                   Map.of(),
-                                   1L,
-                                   0L,
-                                   0L,
-                                   Set.of(),
-                                   Set.of(node.self()),
-                                   Map.of(),
-                                   Set.of());
+        return new ClusterSyncPing(node.self(), Map.of(), 1L, 0L, 0L, Set.of(), Set.of(node.self()), Map.of(), Set.of(), true, true);
     }
 
     private void apply(KVCommand<AetherKey> command) {

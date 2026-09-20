@@ -349,7 +349,7 @@ class RabiaSyncAdoptionQuorumTest {
         engines.add(engine);
         engine.clusterState(ClusterStateNotification.active());
 
-        assertThat(awaitCondition(() -> network.getMessages()
+        assertThat(awaitCondition(() -> (clusterSize == 1 && engine.isActive()) || network.getMessages()
                                                .stream()
                                                .anyMatch(SyncRequest.class::isInstance)))
             .as("engine must have started its sync round before responses are delivered")
@@ -360,6 +360,10 @@ class RabiaSyncAdoptionQuorumTest {
 
     private static RabiaPersistence<TestCommand> persistedAt(Phase phase, byte[] snapshot) {
         record fixed(Phase phase, byte[] snapshot) implements RabiaPersistence<TestCommand> {
+            @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> append(RabiaProtocolMessage message) {
+                return org.pragmatica.lang.Result.success(org.pragmatica.lang.Unit.unit());
+            }
+
             @Override
             public Result<Unit> save(StateMachine<TestCommand> stateMachine,
                                      Phase lastCommittedPhase,

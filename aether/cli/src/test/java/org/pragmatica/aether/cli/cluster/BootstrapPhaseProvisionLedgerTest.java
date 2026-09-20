@@ -429,7 +429,7 @@ class BootstrapPhaseProvisionLedgerTest {
                                                             Map.of(SOURCE.value(), source),
                                                             Map.of(),
                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                            OperationsConfig.defaultOperationsConfig());
+                                                            OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static BootstrapContext contextFor(SourceProfile source) {

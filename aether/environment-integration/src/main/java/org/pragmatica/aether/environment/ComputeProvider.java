@@ -161,12 +161,22 @@ public interface ComputeProvider {
 
     private Promise<InstanceInfo> routeByStatus(InstanceInfo created, InstanceInfo observed, ReadinessPolicy policy) {
         return switch (observed.status()) {
-            case InstanceStatus.Running ignored -> Promise.success(created.withStatus(InstanceStatus.RUNNING));
+            case InstanceStatus.Running ignored -> Promise.success(observedRunning(created, observed));
             case InstanceStatus.Provisioning ignored -> retryPoll(created, policy);
             // #1049 — a status the provider could not state is not a crash; keep polling until the timeout.
             case InstanceStatus.Unknown ignored -> retryPoll(created, policy);
             default -> ComputeProviderLog.bootCrashed(created.id(), observed.status()).promise();
         };
+    }
+
+    private InstanceInfo observedRunning(InstanceInfo created, InstanceInfo observed) {
+        return new InstanceInfo(observed.id(),
+                                InstanceStatus.RUNNING,
+                                observed.addresses(),
+                                created.type(),
+                                observed.tags(),
+                                observed.nodeId().orElse(created.nodeId()),
+                                observed.observedZone().orElse(created.observedZone()));
     }
 
     private Promise<InstanceInfo> retryPoll(InstanceInfo created, ReadinessPolicy policy) {

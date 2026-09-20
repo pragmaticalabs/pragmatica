@@ -76,6 +76,8 @@ class ClusterDeploymentStateCommunityFsmTest {
         var router = MessageRouter.mutable();
         kvStore = new InMemoryKvStore(router);
         cluster = new RecordingClusterNode(SELF, kvStore);
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
         Function<NodeId, Option<String>> noSource = nodeId -> Option.none();
 
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
@@ -109,8 +111,19 @@ class ClusterDeploymentStateCommunityFsmTest {
     }
 
     private void seedAnnouncement(String communityId, int memberCount) {
+        var members = java.util.stream.IntStream.range(0, memberCount)
+            .mapToObj(index -> index == 0 ? GOVERNOR : new NodeId(communityId + "-" + index)).toList();
+        members.forEach(node -> kvStore.put(new AetherKey.ActivationDirectiveKey(node), AetherValue.ActivationDirectiveValue.worker(communityId, "")));
         kvStore.put(GovernorAnnouncementKey.forCommunity(communityId),
-                    GovernorAnnouncementValue.governorAnnouncementValue(GOVERNOR, memberCount));
+                    GovernorAnnouncementValue.governorAnnouncementValue(GOVERNOR, members, ""));
+    }
+
+    @Test
+    void persistedCountWithoutMemberEvidence_cannotActivateCommunity() {
+        seedCommunity("empty", CommunityState.FORMING);
+        kvStore.put(GovernorAnnouncementKey.forCommunity("empty"), GovernorAnnouncementValue.governorAnnouncementValue(GOVERNOR, VIABLE));
+        reconcile();
+        assertThat(communityPutsFor("empty")).isEmpty();
     }
 
     private void reconcile() {
@@ -188,6 +201,7 @@ class ClusterDeploymentStateCommunityFsmTest {
         }
 
         private void seedAnnouncementWithMembers(String communityId, int memberCount, List<NodeId> members) {
+            members.forEach(node -> kvStore.put(new AetherKey.ActivationDirectiveKey(node), AetherValue.ActivationDirectiveValue.worker(communityId, "")));
             kvStore.put(GovernorAnnouncementKey.forCommunity(communityId),
                         new GovernorAnnouncementValue(GOVERNOR,
                                                       memberCount,
@@ -221,7 +235,7 @@ class ClusterDeploymentStateCommunityFsmTest {
         /// The governor is then the one identity available to check, and a silent governor means a
         /// silent community.
         @Test
-        void reconcile_governorAbsentAndNoMemberList_demotesDespiteHealthySelfReport() {
+        void reconcile_governorAbsent_demotesBelowViabilityFloor() {
             seedCommunity("orders-w-0", CommunityState.ACTIVE);
             seedAnnouncement("orders-w-0", VIABLE);
             absent(GOVERNOR);
@@ -236,7 +250,7 @@ class ClusterDeploymentStateCommunityFsmTest {
         }
 
         @Test
-        void reconcile_governorPresentAndNoMemberList_staysActive() {
+        void reconcile_unrelatedAbsence_preservesFreshCommunity() {
             seedCommunity("orders-w-0", CommunityState.ACTIVE);
             seedAnnouncement("orders-w-0", VIABLE);
             absent(new NodeId("some-unrelated-node"));
@@ -472,8 +486,13 @@ class ClusterDeploymentStateCommunityFsmTest {
         // into the shared KV store, so a subsequent community-state read observes it.
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
-            committed.commit(batch);
-            return Promise.success(Collections.emptyList());
+            for (var command : batch) {
+                if (command instanceof KVCommand.LeaderTransaction<?, ?> transaction) {
+                    transaction.mutations().forEach(mutation -> mutation.replacement().onPresent(value ->
+                        commands.add(new KVCommand.Put<>((AetherKey) mutation.key(), value))));
+                }
+            }
+            return Promise.success(committed.process(committed.createBatch(batch)));
         }
     }
 
@@ -483,7 +502,15 @@ class ClusterDeploymentStateCommunityFsmTest {
         }
 
         void put(AetherKey key, AetherValue value) {
-            process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            if (value instanceof org.pragmatica.cluster.state.kvstore.LeaderAuthorized) {
+                var leader = getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                    org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+                process(createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                    java.util.UUID.randomUUID().toString(), leader, List.of(),
+                    List.of(new KVCommand.Mutation<>(key, get(key), Option.some(value)))))));
+            } else {
+                process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            }
         }
 
         void commit(List<KVCommand<AetherKey>> batch) {

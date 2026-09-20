@@ -99,6 +99,8 @@ class ClusterDeploymentStateWorkerRemovalTest {
         var router = MessageRouter.mutable();
         kvStore = new InMemoryKvStore(router);
         cluster = new RecordingClusterNode(SELF, kvStore);
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
         Function<NodeId, Option<String>> memberSourceSupplier = nodeId -> Option.some(SOURCE);
 
         // coreMax=1 with SELF already the sole core-counted/ready member forces any joining node
@@ -254,49 +256,18 @@ class ClusterDeploymentStateWorkerRemovalTest {
         /// recomputes from SWIM and commits through consensus (the same record `WorkerRoutes`
         /// projects for `/api/workers`) — independent of both local join history and pong bookkeeping.
         @Test
-        void leaderActivation_restoredWorkerAbsentFromCommunityMembership_isRemoved() {
-            var deadWorker = new NodeId("node-worker-dead");
-            var artifactKey = NodeArtifactKey.nodeArtifactKey(deadWorker, ARTIFACT);
-            var routesKey = NodeRoutesKey.nodeRoutesKey(deadWorker, ARTIFACT);
-            var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, deadWorker);
-            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(deadWorker);
-
+        void leaderActivation_assignedWorkerWithoutFreshCommunityEvidence_isNotDeclaredDead() {
+            var worker = new NodeId("node-worker-unreachable");
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(worker);
             kvStore.put(directiveKey, ActivationDirectiveValue.worker(COMMUNITY_ID, ""));
-            kvStore.put(artifactKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
-            kvStore.put(routesKey, NodeRoutesValue.empty());
-            kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
-            // Converged community membership that does not include deadWorker. communityLiveness is
-            // left at its default `unwired()` (never absent for anyone) — the exact cold-leader,
-            // no-pong-history condition the pong-based source used to misread as "keep".
             announceCommunityMembership(List.of(SELF));
-            // Wired to a non-empty view that does NOT contain deadWorker (not the untested
-            // ClusterDeploymentContext default), so this assertion pins the dual-signal AND against a
-            // working supplier and cannot pass merely because localAliveMembersSupplier was never wired.
             activeState().ctx().setLocalAliveMembersSupplier(() -> Set.of(SELF));
+            activeState().ctx().setCommunityLiveness(_ -> true);
 
             activeState().rebuildStateFromKVStore();
 
-            assertThat(activeState().workerNodes())
-                    .as("#731 round 2: a restored worker absent from the announced community roster must not "
-                        + "survive activation, even with no pong history for it at all")
-                    .doesNotContain(deadWorker);
-            assertThat(kvStore.get(directiveKey))
-                    .as("#731: the dead restored worker's ActivationDirectiveKey must be removed so it cannot "
-                        + "resurrect the pool slot on the next activation")
-                    .isEqualTo(Option.empty());
-            assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
-            assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
-            assertThat(kvStore.get(sliceKey)).isEqualTo(Option.empty());
-
-            // Removal must be durable, not just an in-memory edit that a later activation's
-            // ActivationDirectiveKey-driven restore would undo: drive a second rebuild (a stand-in
-            // for a subsequent leader activation) and confirm the worker does not resurrect.
-            activeState().rebuildStateFromKVStore();
-
-            assertThat(activeState().workerNodes())
-                    .as("#731: a removed worker's ActivationDirectiveKey is gone, so a later activation's "
-                        + "restore-from-KVStore must not bring it back")
-                    .doesNotContain(deadWorker);
+            assertThat(activeState().workerNodes()).contains(worker);
+            assertThat(kvStore.get(directiveKey).isPresent()).isTrue();
         }
 
         /// #731 round 4 (review re-check): the pre-fix default (`Set::of`, empty) failed UNSAFE — an
@@ -366,7 +337,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
         }
 
         @Test
-        void leaderActivation_coldLeaderNoAnnouncementYet_removesOnlyOnceMembershipConvergesAtDeferredRecheck() {
+        void leaderActivation_coldLeaderNoAnnouncementYet_preservesAssignedWorkerAfterDeferredRecheck() {
             var deadWorker = new NodeId("node-worker-dead-cold");
             var artifactKey = NodeArtifactKey.nodeArtifactKey(deadWorker, ARTIFACT);
             var routesKey = NodeRoutesKey.nodeRoutesKey(deadWorker, ARTIFACT);
@@ -388,25 +359,14 @@ class ClusterDeploymentStateWorkerRemovalTest {
                         + "anything — it cannot tell a dead worker from one SWIM just hasn't reported yet")
                     .contains(deadWorker);
 
-            // Membership converges: a governor is elected and announces a roster that does not
-            // include deadWorker. `deferredTopologyRecheck` (the 2s-scheduled retry from onEntry) is
-            // invoked directly here in place of waiting out the real delay.
+            // A governor roster and direct-core liveness are positive observations, not an
+            // authoritative deletion decision. Missing assigned workers remain unavailable.
             announceCommunityMembership(List.of(SELF));
-            // #731 round 4: localAliveMembersSupplier now fails safe (removes nothing) when never
-            // wired, so this "removes" assertion needs a real, non-empty view not containing
-            // deadWorker — production wires this before Active is reachable (AetherNode); this test
-            // stands in for that wiring the same way FIX 3's removal test above does.
             activeState().ctx().setLocalAliveMembersSupplier(() -> Set.of(SELF));
             activeState().deferredTopologyRecheckForTest();
 
-            assertThat(activeState().workerNodes())
-                    .as("#731 round 2: once membership has converged, the deferred recheck must catch the dead "
-                        + "restored worker the cold immediate sweep could not")
-                    .doesNotContain(deadWorker);
-            assertThat(kvStore.get(directiveKey)).isEqualTo(Option.empty());
-            assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
-            assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
-            assertThat(kvStore.get(sliceKey)).isEqualTo(Option.empty());
+            assertThat(activeState().workerNodes()).contains(deadWorker);
+            assertThat(kvStore.get(directiveKey)).isNotEqualTo(Option.empty());
         }
 
         @Test
@@ -536,6 +496,10 @@ class ClusterDeploymentStateWorkerRemovalTest {
         /// on core — a permanent 2-ACTIVE steady state where the base at least churned.
         @Test
         void reconcile_liveWorkerHoldsTheOnlyInstance_placesNoSecondCoreInstance() {
+            // The operator's worker placement must be explicit: CORE_ONLY now correctly migrates
+            // a misplaced worker instance instead of considering total count sufficient.
+            kvStore.put(SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+                SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1, 1, "WORKERS_ONLY"));
             cluster.commands.clear();
 
             activeState().reconcile();
@@ -717,8 +681,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
             batches.add(List.copyOf(batch));
-            committed.commit(batch);
-            return Promise.success(Collections.emptyList());
+            return Promise.success(committed.process(committed.createBatch(batch)));
         }
     }
 

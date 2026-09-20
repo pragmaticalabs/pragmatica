@@ -66,6 +66,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
+                case MembershipEvent.GovernorHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
+                case MembershipEvent.WorkerAdmissionHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.transitionTo(ctx.memberState());
                 case SwimSuspect e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
@@ -95,6 +97,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
+                case MembershipEvent.GovernorHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
+                case MembershipEvent.WorkerAdmissionHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.ignore();
                 case SwimSuspect e -> doubtToSuspect(ctx, e.incarnation(), tx);
@@ -126,6 +130,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> recoverToMember(ctx, e.incarnation(), tx);
+                case MembershipEvent.GovernorHealthy e -> recoverToMember(ctx, e.incarnation(), tx);
+                case MembershipEvent.WorkerAdmissionHealthy e -> recoverToMember(ctx, e.incarnation(), tx);
                 // Death-ward boundary rule (Wave 7, ratified): transport may report DEATH, never
                 // LIFE. A transport connection must not revive a SWIM-suspected member — recovery
                 // goes ONLY through SwimHealthy (SWIM probe-ack authority) or UpHysteresisMet
@@ -172,6 +178,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case DrainUnacknowledged _ -> tx.transitionTo(ctx.memberState());
                 case SwimDeparted e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
                 case SwimHealthy e -> recoverFromDepartingIfNewer(ctx, e.incarnation(), tx);
+                case MembershipEvent.GovernorHealthy e -> recoverFromDepartingIfNewer(ctx, e.incarnation(), tx);
+                case MembershipEvent.WorkerAdmissionHealthy e -> recoverFromDepartingIfNewer(ctx, e.incarnation(), tx);
                 case PeerConnected _, UpHysteresisMet _, SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _, DownHysteresisMet _, SwimUnknown _, DrainRequested _, JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
@@ -191,6 +199,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> rejoinIfNewer(ctx, this, e.incarnation(), tx);
+                case MembershipEvent.GovernorHealthy e -> rejoinIfNewer(ctx, this, e.incarnation(), tx);
+                case MembershipEvent.WorkerAdmissionHealthy e -> rejoinIfNewer(ctx, this, e.incarnation(), tx);
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.ignore();
                 case SwimSuspect _ -> tx.ignore();

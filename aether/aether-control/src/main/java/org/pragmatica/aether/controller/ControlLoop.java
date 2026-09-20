@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.fsm.ControlLoopContext;
@@ -56,6 +57,8 @@ public interface ControlLoop {
     @MessageReceiver
     void onMembershipDecision(MembershipDecision decision);
 
+    org.pragmatica.lang.Unit onWorkerDeparture(org.pragmatica.consensus.NodeId node);
+
     @MessageReceiver
     void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
 
@@ -88,6 +91,11 @@ public interface ControlLoop {
     ControllerConfig configuration();
     void updateConfiguration(ControllerConfig config);
     void stop();
+
+    default Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
+        return Unit.unit();
+    }
+
     void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
     Map<String, CommunityMetricsSnapshot> communitySnapshots();
     /// Bounded snapshot of the latest per-artifact scaling decision (#425). Leader-only observability
@@ -170,6 +178,13 @@ public interface ControlLoop {
             var current = fsm.current();
 
             return ! (current instanceof ControlLoopState.Dormant || current instanceof ControlLoopState.Stopped);
+        }
+
+        @Override
+        public org.pragmatica.lang.Unit onWorkerDeparture(org.pragmatica.consensus.NodeId node) {
+            ctx.removeNodeMetrics(node);
+
+            return org.pragmatica.lang.Unit.unit();
         }
 
         @Override
@@ -259,6 +274,11 @@ public interface ControlLoop {
         @Override
         public void stop() {
             fsm.dispatch(new ClusterFsmEvent.Shutdown());
+        }
+
+        @Override
+        public Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
+            return ctx.setMetricsProducerEligibility(isEligible);
         }
 
         @Override

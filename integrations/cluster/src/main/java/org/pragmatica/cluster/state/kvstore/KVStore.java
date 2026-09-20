@@ -29,17 +29,22 @@ import org.pragmatica.serialization.Serializer;
 
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
+    /// Serializes writers and notification delivery without blocking read-only store captures.
     private final Object mutationLock = new Object();
+    private final java.util.ArrayDeque<PendingNotification> notifications = new java.util.ArrayDeque<>();
 
-    private record Notification(org.pragmatica.messaging.Message message, boolean replay) {}
+    private record PendingNotification(org.pragmatica.messaging.Message message, boolean replay) {}
 
-    private final java.util.ArrayDeque<Notification> notifications = new java.util.ArrayDeque<>();
     private boolean dispatching;
+    private boolean collectingReplay;
+    private int pendingNotifications;
+    private boolean recovering;
+    private long committedRevision;
     private final Map<K, V> storage = new ConcurrentHashMap<>();
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final MessageRouter router;
-    /// The view that was last QUEUED for subscribers via [#replayNotifications()]. Used to
+    /// The view that was last DELIVERED to subscribers via [#replayNotifications()]. Used to
     /// compute the DIFF-replay on a mid-life snapshot install (cluster-topology-overhaul §5.8,
     /// AMENDED 2026-06-11): only keys that are new/changed/vanished relative to this view emit a
     /// notification. Empty until the first replay (cold boot fires one put per restored key).
@@ -57,11 +62,46 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         this.deserializer = deserializer;
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    /// Capture this value and the corresponding view under the same store monitor.
+    public synchronized long committedRevision() {
+        return committedRevision;
+    }
+
+    /// True until all notifications for the committed view have reached synchronous subscribers.
+    /// Read this with committedRevision and snapshot under the same store monitor when capturing
+    /// a projection maintained by subscribers. Never acquire the mutation guard from that reader.
+    public synchronized boolean hasPendingNotifications() {
+        return pendingNotifications != 0;
+    }
+
     @Override
-    public <R> List<R> process(Batch<KVCommand<K>> batch) {
+    public <R> List<R> processCommitted(Batch<KVCommand<K>> batch, long nextSlot) {
+        return mutate(() -> {
+            List<R> results = processCommands(batch);
+
+            committedRevision = nextSlot;
+
+            return results;
+        });
+    }
+
+    @Override
+    public Result<Unit> recoverCommitted(Batch<KVCommand<K>> batch, long nextSlot) {
+        return mutate(() -> recoverSilently(batch).onSuccess(_ -> committedRevision = nextSlot));
+    }
+
+    @Override
+    public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
+        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> committedRevision = nextSlot));
+    }
+
+    private <T> T mutate(java.util.function.Supplier<T> mutation) {
         synchronized (mutationLock) {
-            List<R> result = applyBatch(batch);
+            T result;
+
+            synchronized (this) {
+                result = mutation.get();
+            }
 
             drainNotifications();
 
@@ -69,31 +109,16 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         }
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private synchronized <R> List<R> applyBatch(Batch<KVCommand<K>> batch) {
-        return batch.commands()
-                    .stream()
-                    .map(command -> (R) processCommand(command))
-                    .toList();
+    private <T extends org.pragmatica.messaging.Message> void publish(T message) {
+        if (!recovering) {
+            notifications.addLast(new PendingNotification(message, collectingReplay));
+            pendingNotifications++;
+        }
     }
 
-    private Unit enqueue(org.pragmatica.messaging.Message message) {
-        notifications.addLast(new Notification(message, false));
-
-        return Unit.unit();
-    }
-
-    private Unit enqueueReplay(org.pragmatica.messaging.Message message) {
-        notifications.addLast(new Notification(message, true));
-
-        return Unit.unit();
-    }
-
-    /// The mutation guard orders callbacks, but readers never acquire it. Reentrant mutations
-    /// append after the current notification batch instead of overtaking its remaining events.
-    private Unit drainNotifications() {
+    private void drainNotifications() {
         if (dispatching) {
-            return Unit.unit();
+            return;
         }
 
         dispatching = true;
@@ -104,11 +129,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         } finally {
             dispatching = false;
         }
-
-        return Unit.unit();
     }
 
-    private Unit dispatchNotification(Notification notification) {
+    private void dispatchNotification(PendingNotification notification) {
         var previous = replaying.get();
 
         replaying.set(notification.replay());
@@ -116,9 +139,37 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             router.route(notification.message());
         } finally {
             replaying.set(previous);
+            synchronized (this) {
+                pendingNotifications--;
+            }
         }
+    }
 
-        return Unit.unit();
+    @Override
+    public Result<Unit> recover(Batch<KVCommand<K>> batch) {
+        return mutate(() -> recoverSilently(batch));
+    }
+
+    private Result<Unit> recoverSilently(Batch<KVCommand<K>> batch) {
+        recovering = true;
+        var recovered = Result.lift(Causes::fromThrowable, () -> processCommands(batch)).mapToUnit();
+
+        recovering = false;
+
+        return recovered;
+    }
+
+    @Override
+    public <R> List<R> process(Batch<KVCommand<K>> batch) {
+        return mutate(() -> processCommands(batch));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private <R> List<R> processCommands(Batch<KVCommand<K>> batch) {
+        return batch.commands()
+                    .stream()
+                    .map(command -> (R) processCommand(command))
+                    .toList();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -138,7 +189,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private Option<V> handleGet(Get<K> get) {
         var value = Option.option(storage.get(get.key()));
 
-        enqueue(new ValueGet<>(get, value));
+        publish(new ValueGet<>(get, value));
 
         return value;
     }
@@ -204,13 +255,13 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void notifyMutation(KVCommand.Mutation<K, V> mutation) {
         mutation.replacement()
                 .fold(() -> {
-                          enqueue(new ValueRemove<>(new Remove<>(mutation.key()),
+                          publish(new ValueRemove<>(new Remove<>(mutation.key()),
                                                     mutation.expected()));
 
                           return org.pragmatica.lang.Unit.unit();
                       },
                       value -> {
-                          enqueue(new ValuePut<>(new Put<>(mutation.key(),
+                          publish(new ValuePut<>(new Put<>(mutation.key(),
                                                            value),
                                                  mutation.expected()));
 
@@ -225,7 +276,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
         var oldValue = Option.option(storage.put(put.key(), put.value()));
 
-        enqueue(new ValuePut<>(put, oldValue));
+        publish(new ValuePut<>(put, oldValue));
 
         return oldValue;
     }
@@ -331,7 +382,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
         var oldValue = Option.option(storage.remove(remove.key()));
 
-        enqueue(new ValueRemove<>(remove, oldValue));
+        publish(new ValueRemove<>(remove, oldValue));
 
         return oldValue;
     }
@@ -399,13 +450,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     @Override
     public Result<Unit> restoreSnapshot(byte[] snapshot) {
-        synchronized (mutationLock) {
-            return installSnapshot(snapshot);
-        }
+        return mutate(() -> restoreSilently(snapshot));
     }
 
     @SuppressWarnings("unchecked")
-    private synchronized Result<Unit> installSnapshot(byte[] snapshot) {
+    private Result<Unit> restoreSilently(byte[] snapshot) {
         return Result.lift(Causes::fromThrowable,
                            () -> deserializer.decode(snapshot))
                      .map(map -> (Map<K, V>) map)
@@ -434,20 +483,18 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// already-ACTIVE lagging node fires only the delta. MUTATION-FREE: it reads `storage` and
     /// routes notifications, never touching `storage` itself (the H4 `LeaderKey` fence in
     /// [#handlePut] is never exercised — replay does not go through the apply path). The
-    /// last-replayed view is advanced when the notification batch is captured so the next install
+    /// last-replayed view is advanced to the current storage afterwards so the next install
     /// diffs correctly.
     @Override
     public Unit replayNotifications() {
-        synchronized (mutationLock) {
-            captureReplay();
-
-            return drainNotifications();
-        }
+        return mutate(this::queueReplay);
     }
 
-    private synchronized Unit captureReplay() {
+    private Unit queueReplay() {
+        collectingReplay = true;
         replayRemovedKeys();
         replayPutKeys();
+        collectingReplay = false;
         lastReplayedView.clear();
         lastReplayedView.putAll(storage);
 
@@ -467,7 +514,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void replayRemovedKeys() {
         lastReplayedView.forEach((key, value) -> {
             if (!storage.containsKey(key)) {
-                enqueueReplay(new ValueRemove<>(new Remove<>(key), Option.some(value)));
+                publish(new ValueRemove<>(new Remove<>(key), Option.some(value)));
             }
         });
     }
@@ -478,22 +525,19 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void replayPutKeys() {
         storage.forEach((key, value) -> {
             if (!value.equals(lastReplayedView.get(key))) {
-                enqueueReplay(new ValuePut<>(new Put<>(key, value),
-                                             Option.option(lastReplayedView.get(key))));
+                publish(new ValuePut<>(new Put<>(key, value),
+                                       Option.option(lastReplayedView.get(key))));
             }
         });
     }
 
     @Override
     public Unit reset() {
-        synchronized (mutationLock) {
-            clearState();
-
-            return drainNotifications();
-        }
+        return mutate(this::resetStorage);
     }
 
-    private synchronized Unit clearState() {
+    private Unit resetStorage() {
+        committedRevision = 0;
         notifyRemoveAll();
         storage.clear();
         lastReplayedView.clear();
@@ -502,7 +546,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private void notifyRemoveAll() {
-        storage.forEach((key, value) -> enqueue(new ValueRemove<>(new Remove<>(key), Option.some(value))));
+        storage.forEach((key, value) -> publish(new ValueRemove<>(new Remove<>(key), Option.some(value))));
     }
 
     public synchronized Map<K, V> snapshot() {

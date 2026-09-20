@@ -241,6 +241,9 @@ class QuicClusterNetworkConnectingStalenessTest {
     /// dispatched a dial" (`reconcileDialPeer` calls `topologyManager.get` only after every gate,
     /// including the CONNECTING-staleness escape hatch, allows the attempt).
     private static final class CountingTopology implements TopologyObserver {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
         private final NodeInfo selfInfo;
         private final List<NodeInfo> peers;
         private final Set<NodeId> coreNodes;

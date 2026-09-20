@@ -48,13 +48,11 @@ import org.pragmatica.lang.Unit;
 ///
 /// ## LOAD-BEARING: this must NOT move into `RabiaPersistence`
 ///
-/// The obvious simplification for a later reader is to fold this into [RabiaPersistence], which
-/// already persists consensus state. **Do not.** `AetherNode.resolvePersistence` falls back to
-/// `RabiaPersistence.inMemory()` whenever no `BackupConfig` path is set, and a marker living there
-/// dies with the process. Such a node would re-assert newness on EVERY restart — that is precisely
-/// the amnesiac-returning-node case #667 exists to refuse, so the fix would reopen the hole it was
-/// written to close, and would do so silently. The marker needs a durable medium of its own,
-/// independent of whether consensus persistence is configured.
+/// Production voting history is now stored in a local durable WAL. The participation marker
+/// remains independent evidence for detecting a deleted consensus directory and for first-creation
+/// adoption policy; it must not be inferred from an empty WAL directory. Losing all vote history
+/// requires replacement with a fresh identity and a certified electorate handoff. A marker alone
+/// does not reconstruct the immutable proposal or ballots that a wiped identity already emitted.
 ///
 /// ## LIMITATION — what this does and does not survive (owner ruling, session 20)
 ///
@@ -74,9 +72,6 @@ import org.pragmatica.lang.Unit;
 ///   no node-local mechanism can. Peer attestation does not rescue it either — a sole responder that
 ///   was partitioned while the joiner voted attests "new" wrongly.
 ///
-/// `[unverified: rc4 baseline comparison]` rc4 today has #667's hole open for EVERY node, wiped or
-/// not. The #1171 + #1212 pair closes it for everything but the delete-and-recreate case, so the
-/// pair is a strict improvement over rc4 carrying a named limit.
 public interface ParticipationMarker {
     /// This node's participation history. Resolved ONCE, at engine start, BEFORE the first
     /// `SyncRequest` reaches the wire — a marker read after first participation cannot be trusted at

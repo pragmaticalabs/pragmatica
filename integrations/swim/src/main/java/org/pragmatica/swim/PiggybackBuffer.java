@@ -20,7 +20,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.function.Predicate;
 
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMember.MemberState;
@@ -122,6 +124,13 @@ public final class PiggybackBuffer {
                                           .state() == MemberState.FAULTY);
 
         return before - buffer.size();
+    }
+
+    /// Forget out-of-scope gossip without disseminating a synthetic death.
+    public synchronized org.pragmatica.lang.Unit retainMembers(Predicate<NodeId> eligibility) {
+        buffer.removeIf(tracked -> !eligibility.test(tracked.update().nodeId()));
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     private void trimToSize() {

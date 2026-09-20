@@ -285,7 +285,8 @@ class RabiaEngineApplyContainmentTest {
 
         @Override
         public List<NodeId> topology() {
-            return List.of();
+            return java.util.stream.IntStream.rangeClosed(1, clusterSize)
+                       .mapToObj(index -> nodeId("node-" + index).unwrap()).toList();
         }
     }
 

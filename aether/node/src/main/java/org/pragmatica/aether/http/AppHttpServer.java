@@ -121,6 +121,8 @@ public interface AppHttpServer {
     @Contract
     void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved);
 
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
+
     @MessageReceiver
     @Contract
     void onNodeDecommissioned(MembershipDecision.NodeDecommissioned nodeDecommissioned);
@@ -1529,6 +1531,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     public void onHttpForwardResponse(HttpForwardResponse response) {
         httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
+    }
+
+    @Override
+    @Contract
+    public org.pragmatica.lang.Unit onNodeDeparture(NodeId node) {
+        httpForwarder.onPresent(forwarder -> forwarder.onNodeDeparture(node));
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     @Override
