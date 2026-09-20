@@ -22,6 +22,7 @@ import static org.pragmatica.aether.stream.replication.FailoverRecovery.Recovery
 import static org.pragmatica.aether.stream.replication.FailoverRecovery.failoverRecovery;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse.catchupResponse;
+import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler.NO_DURABILITY_BARRIER;
 
 class FailoverRecoveryTest {
 
@@ -47,7 +48,7 @@ class FailoverRecoveryTest {
         recoveredEvents = new ArrayList<>();
         eventCounter.set(0);
 
-        recovery = failoverRecovery(registry, this::handleRecoveredEvent, this::handleCatchupRequest);
+        recovery = failoverRecovery(registry, this::handleRecoveredEvent, this::handleCatchupRequest, NO_DURABILITY_BARRIER);
     }
 
     private Promise<ReplicationMessage.CatchupResponse> handleCatchupRequest(NodeId target,
