@@ -1233,7 +1233,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Long> writableAppend(String streamName, int partition, byte[] payload, long timestamp, int minAcks) {
-        return ensureWritableConsistency(streamName).flatMap(_ -> publishLocalAtFloor(streamName, partition, payload, timestamp, minAcks));
+        return ensureWritableConsistency(streamName).flatMap(_ -> publishLocalAtFloor(streamName,
+                                                                                      partition,
+                                                                                      payload,
+                                                                                      timestamp,
+                                                                                      minAcks));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
