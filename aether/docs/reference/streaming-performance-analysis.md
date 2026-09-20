@@ -30,7 +30,7 @@ Line numbers are deliberately omitted — they rot; symbols do not.
 | `readSlice` returning a `MemorySegment` | `OffHeapRingBuffer.readSlice` → `readSliceAtOffset`. **Not a zero-copy read:** it returns `MemorySegment.ofArray(readDataBytes(...))`, a heap segment over a fresh `byte[]` copy. `PartitionedStreamAccess.readSlice` is its only caller and has no production caller. See §4.3. |
 | Append listener (push path for co-located consumers) | `OffHeapRingBuffer.addAppendListener` / `notifyAppendListeners`, fired inside `append` |
 | Per-partition crash-durable WAL (owner) | `StreamPartitionManager.durablyLog` → `PartitionWal.append` (group-commit `force(false)`) |
-| Replica WAL append + ack barrier | `StreamPartitionManager.appendRecovered` → `walReplicated` → `chainWalWrite`; barrier `syncReplicated`, awaited by `ReplicationReceiveHandler` before acking |
+| Replica WAL frame write + ack barrier | `StreamPartitionManager.appendRecovered` → `logReplicated` (the frame is written inside the partition's ordered append section, with no fsync); barrier `syncReplicated` → one `PartitionWal.commit` group commit covering every frame written so far, awaited by `ReplicationReceiveHandler` once per batch before acking (#1244) |
 | Cross-node publish forwarding over QUIC | `stream/forward/`: `StreamForwardMessage`, `StreamForwardClient`, `StreamForwardHandler` |
 | `min-sync-replicas` write-ack floor | `DefaultStreamPublisher.publishLocalEventual`, `PartitionedStreamAccess.publishLocal`, `StreamWriteRouter.publishLocal`, `StreamForwardHandler` → `awaitReplication(..., minSyncReplicas - 1)`. **Exception:** the `StreamWriteRouter.forwardToOwner` fallback (owner unknown or self, or no forward client, with no local ring) calls `publishLocal(...).async()` without the await (§5.1; #1230). |
 | Owner → replica push | `DefaultReplicationManager.replicateEvent`. The node wires the **non-batching** manager (`ReplicationManager.replicationManager(...)` in `AetherNode`), so each event is sent by `replicateImmediately`. `ReplicationBatcher` (`DEFAULT_MAX_EVENTS = 100`, `DEFAULT_MAX_DELAY = 1 ms`, **code constants**) exists but `batchingReplicationManager` has no production caller. |
@@ -163,16 +163,16 @@ After the WAL gate, `publishLocal` calls `ReplicationManager.replicateEvent`. Th
 
 ### 5.2 Replica side
 
-`ReplicationReceiveHandler` applies a batch via `appendRecovered`, which enqueues each record's WAL append through `walReplicated` → `chainWalWrite`, then awaits `syncReplicated` and only then acks the highest applied offset. A failed sync withholds the ack.
+`ReplicationReceiveHandler` applies a batch via `appendRecovered`, which writes each record's WAL frame inside the partition's ordered append section — on the receiving thread, with no fsync — then awaits `syncReplicated` once for the batch and only then acks the highest applied offset. A failed sync withholds the ack.
 
-`chainWalWrite` chains appends per `(stream, partition)` in `lastReplicatedWalWrite`: each record's `PartitionWal.append` starts only after its predecessor's append has resolved, because unchained appends would race the file order that recovery depends on. A failed append poisons the chain: every later `syncReplicated` fails and that replica stops acking until it is repaired or restarted `[mechanism: previous.flatMap(_ -> wal.append(...)) in chainWalWrite]`.
+`syncReplicated` is the durability barrier (#1244). `lastReplicatedWalWrite` records, per `(stream, partition)`, the latest frame write (its WAL instance and write sequence), and the barrier issues one `PartitionWal.commit` for it: a `force(false)` that covers every frame written before it, so a batch of N records costs one fsync, not N `[mechanism: logReplicated → PartitionWal.write inside the section; ReplicatedWrite.commit → PartitionWal.commit(writeSeq); pinned in one JVM by ReplicaWalGroupCommitTest]`. File order is offset order because the replica's frame write shares the owner's section `[mechanism: appendReplicatedInSection; pinned under 16 concurrent appenders by StreamPartitionManagerOrderedAppendTest.appendRecovered_walFileOrderEqualsOffsetOrder_underConcurrentAppends]`. A failed frame write or fsync fail-stops the WAL: the recorded write holds the failure, the barrier fails, and every later write on that WAL instance is refused, so the replica stops acking until the node restarts and reopen recovers the valid prefix `[mechanism: PartitionWal fail-stop; StreamPartitionManager.ReplicatedWrite]`. Releasing a partition (role loss, destroy, idle reap) closes its WAL and only then forgets its entry, so a barrier racing the release meets the closed channel and fails rather than resolving without an fsync `[mechanism: releaseEntry / completeRelease order; StreamPartitionManagerWalTest.syncReplicated_racingTheRelease_neverResolvesBeforeTheClosingFsync]`.
 
 ### 5.3 WAL mechanics that bound throughput
 
 - **Group commit.** `PartitionWal.append` writes under a lock, then `groupCommit` issues one `force(false)` covering every write completed so far, so concurrent appenders to the same WAL can share an fsync. It resolves an append only after a force that happened after its own write.
 - **One WAL per partition.** Each `(stream, partition)` has its own file, so fsyncs are never shared across partitions (**analytical**).
 - **Owner, single publisher per partition.** `durablyLog` blocks its caller until the fsync, and `DefaultStreamPublisher.publishGroupInOrder` starts each event of a batch only after the previous one resolves. A batch to one partition therefore pays one fsync (plus, for `min-sync-replicas ≥ 2`, one replication round trip including the replica's fsync) **per event, serially**. Upper bound: events/s per partition per publisher ≤ 1 / (owner fsync latency + [replication RTT + replica fsync latency]) (**analytical**). Tracked as #1245.
-- **Replica.** Because `chainWalWrite` starts each append after the previous one resolves, group commit never sees more than one pending record per partition: about one fsync per replicated record per partition. Upper bound: durable replicated events/s per partition ≤ 1 / replica fsync latency (**analytical**). Tracked as #1244.
+- **Replica.** Frames are written without an fsync and the barrier commits them together, so a replicated batch to one partition pays one fsync per `syncReplicated` — one per received batch and one per backfill run — whatever its record count (#1244). Concurrent batches to the same partition can share a force, because `commit` resolves on any force that happened after the record's own write. Upper bound: durable replicated batches/s per partition ≤ 1 / replica fsync latency, with records/s scaling with batch size (**analytical**). The owner sends one event per message (§5.1), so on the live replication path a batch is one record and the bound stays one record per fsync per partition until owner-side batching is wired; backfill batches are where the group commit pays today (**analytical**).
 - **Blocking.** The owner's `.await()` holds a thread for the fsync duration; how many publishes can batch into one fsync depends on how many threads are blocked concurrently on the same partition (**analytical**).
 
 None of the latencies in these bounds has been measured for this document.
@@ -182,13 +182,14 @@ None of the latencies in these bounds has been measured for this document.
 The following open tickets change the behaviour described in the sections they cite. **None is merged at `ccba0dba5`.** Until they merge, the text above is what ships; after they merge, this section must be rewritten from the merged code, not from the tickets.
 
 - **#1235** — reads and push notifications expose events before they are WAL-durable or replicated (§3.1, §4.1).
-- **#1244** — replica WAL appends are chained one record at a time, defeating group commit (§5.2, §5.3).
 - **#1245** — `publishBatch` serialises every event through its own fsync and replication round trip (§5.3).
 - **#1236 / #1237** (PR #1257, open) — the outcomes a durable publish reports (§5.1).
 - **#1230** — replica nodes accept application writes (ring-presence routing), and the REST fallback skips the min-sync await (§2, §5.1).
 - **#1238** — push-path delivery defects (§4.1).
 - **#1262** — STRONG streams are written as EVENTUAL through `StreamAccess` and the management API (§3.3).
 - **#1261** — sealed-segment codec metadata and raw-bytes fallbacks (§6.3). Latent.
+
+**Merged since:** #1244 (PR #1277) — replica WAL group commit; §1, §5.2, §5.3 and §11 were rewritten from the merged code.
 
 ---
 
@@ -268,7 +269,7 @@ Each item needs a benchmark harness, which does not exist:
 
 1. Owner-local publish latency, split into ring append, WAL fsync, and (for `min-sync-replicas ≥ 2`) replication wait.
 2. EVENTUAL publish throughput per partition, single publisher and concurrent publishers (group-commit effectiveness).
-3. Replica durable throughput per partition under `chainWalWrite` (before and after #1244).
+3. Replica durable throughput per partition under the group-commit barrier (#1244): fsyncs per received batch and per backfill run, and how far concurrent single-record batches share one force.
 4. Remote publish (QUIC forward) round-trip latency.
 5. Push-path delivery latency (append → listener → callback), and the cost of the three delivery copies plus the re-encode.
 6. Replication message rate and owner CPU per event with the unbatched manager, and the effect of wiring `ReplicationBatcher`.
