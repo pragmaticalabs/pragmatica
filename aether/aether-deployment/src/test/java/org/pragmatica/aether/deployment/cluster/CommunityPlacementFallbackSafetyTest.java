@@ -227,4 +227,62 @@ class CommunityPlacementFallbackSafetyTest {
         assertThat(effects).containsExactly("create");
     }
 
+    private AetherKey.CommunityPlacementAvailabilityKey preferredAvailabilityKey() {
+        return new AetherKey.CommunityPlacementAvailabilityKey("stable", "pool", Option.some("new"));
+    }
+
+    @Test
+    void changedAvailabilityBeforeReservationCommitRejectsStaleSelection() {
+        createRefused();
+        var interrupted = current();
+        var key = preferredAvailabilityKey();
+        var refusal = store.getTyped(key, AetherValue.CommunityPlacementAvailabilityValue.class).unwrap();
+        var authority = store.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
+        beforeCommit = () -> seed(new KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), authority, List.of(),
+            List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(refusal), Option.none()))));
+        createOutcome = Promise.unitPromise();
+        controller(10, 60_000).reconcile().await().unwrap();
+        assertThat(store.get(key).isEmpty()).isTrue();
+        assertThat(current().operationId()).isEqualTo(interrupted.operationId());
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(providerOperations).hasSize(1);
+    }
+
+    @Test
+    void changedBindingCanRetryPreferredOnlyAfterPreviousAllocationReleased() {
+        createRefused();
+        var refused = providerOperations.getFirst();
+        binding = "new-provider-account";
+        createOutcome = Promise.unitPromise();
+        for (int pass = 0; pass < 4 && providerOperations.size() < 2; pass++) {
+            controller(10, 60_000).reconcile().await().unwrap();
+        }
+        assertThat(providerOperations).hasSize(2);
+        var retried = providerOperations.getLast();
+        assertThat(retried.targetSource()).isEqualTo("pool");
+        assertThat(retried.sourceBinding()).isEqualTo(binding);
+        assertThat(retried.targetNode()).isNotEqualTo(refused.targetNode());
+        assertThat(store.get(preferredAvailabilityKey()).isEmpty()).isTrue();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+    }
+
+    @Test
+    void changedBindingDoesNotReprobePreferredWithUnresolvedOldAllocation() {
+        createRefused();
+        var refused = providerOperations.getFirst();
+        var key = new AetherKey.CapacityReservationKey(refused.targetNode());
+        var authority = store.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
+        var unresolved = new AetherValue.CapacityReservationValue("pool", "binding", "worker", AetherValue.CapacityReservationPhase.DISPATCHED);
+        seed(new KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), authority, List.of(),
+            List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(unresolved)))));
+        binding = "new-provider-account";
+        createOutcome = Promise.unitPromise();
+        for (int pass = 0; pass < 4; pass++) {
+            controller(10, 60_000).reconcile().await().unwrap();
+        }
+        assertThat(providerOperations.stream().filter(operation -> operation.targetSource().equals("pool")).count()).isEqualTo(1);
+        assertThat(store.getTyped(key, AetherValue.CapacityReservationValue.class).unwrap()).isEqualTo(unresolved);
+        assertThat(store.get(preferredAvailabilityKey()).isPresent()).isTrue();
+    }
+
 }

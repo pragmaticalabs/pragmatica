@@ -160,6 +160,7 @@ class ClusterTopologyManagerZoneRotationTest {
         };
         clusterStore.seedToml(MULTI_ZONE_TOML.replace("provider = \"hetzner\"", "provider = \"hetzner\"\ncredentials = \"test-account\"")
             .replace("count = 3", "count = 3\ninstance_type = \"small\"\nimage = \"test-image\""));
+        kv.process(kv.createBatch(List.of(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, clusterStore.current().unwrap()))));
         var registry = SourceComputeRegistry.sourceComputeRegistry(clusterStore::current,
             config -> org.pragmatica.lang.Result.success(org.pragmatica.aether.environment.EnvironmentIntegration.withCompute(provider)));
         var delegate = NodeLifecycleManager.nodeLifecycleManager(registry,
@@ -177,6 +178,7 @@ class ClusterTopologyManagerZoneRotationTest {
         var target = nodeId("real-fallback-target").unwrap();
         var outcome = manager.provisionReplacement(target, Option.some(DEAD_PEER), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
         assertThat(attempts.stream().map(org.pragmatica.aether.environment.ProvisionRequest::zone).toList())
+            .as("actual provisioning result: %s", outcome)
             .containsExactlyElementsOf(ambiguous ? List.of("fsn1") : List.of("fsn1", "nbg1"));
         var reservation = typed.getTyped(new AetherKey.CapacityReservationKey(target),
             org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue.class).unwrap();
@@ -185,7 +187,7 @@ class ClusterTopologyManagerZoneRotationTest {
             ? org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase.DISPATCHED
             : org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase.OBSERVED);
         assertThat(outcome.isSuccess()).isEqualTo(!ambiguous);
-        outcome.onSuccess(instance -> assertThat(instance.observedZone()).isEqualTo(Option.some("nbg1")));
+        outcome.onSuccess(disposition -> assertThat(disposition).isInstanceOf(ProvisionDisposition.Dispatched.class));
         manager.deactivate();
     }
 

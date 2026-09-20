@@ -61,14 +61,15 @@ class HierarchicalMovementTakeoverTest {
         assertThat(cluster.getNode(original.id()).isPresent()).isTrue();
 
         var originalProcess = cluster.getNode(original.id()).unwrap();
-        originalProcess.setInboundFaultFilter((_, message) -> !(message instanceof org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing));
+        originalProcess.setInboundFaultFilter((_, message) -> !(message instanceof org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing)
+            && !(message instanceof org.pragmatica.aether.worker.governor.CommunityPlacementMessage.DrainRequested));
         changeDestination("west");
         await().atMost(BUDGET.duration()).until(() -> operation().filter(value -> value.targetSource().equals("west")
             && value.phase() == AetherValue.PlacementOperationPhase.DRAIN_REQUESTED).isPresent());
         var interrupted = operation().unwrap();
         var failedLeader = leader().self();
         LifecycleAwait.settled("kill movement leader during drain", cluster, cluster.killNode(failedLeader.id(), false));
-        await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().filter(id -> !id.equals(failedLeader)).isPresent());
+        await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().filter(id -> !id.equals(failedLeader.id())).isPresent());
         await().atMost(BUDGET.duration()).until(() -> operation().filter(value -> value.operationId().equals(interrupted.operationId())
             && value.issuer().leader().equals(leader().self())).isPresent());
         assertThat(cluster.getNode(original.id()).isPresent()).isTrue();
