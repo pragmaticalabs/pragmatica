@@ -1733,8 +1733,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// then means exactly what it meant before the WAL existed.
     public Promise<Unit> syncReplicated(String streamName, int partition) {
         return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition))).map(write -> commitAndExpose(streamName,
-                                                                                                                       partition,
-                                                                                                                       write))
+                                                                                                                      partition,
+                                                                                                                      write))
                      .or(Promise::unitPromise);
     }
 
@@ -1742,7 +1742,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// handler: the caller's success implies the advance already happened.
     private Promise<Unit> commitAndExpose(String streamName, int partition, ReplicatedWrite write) {
         return write.commit()
-                    .withSuccess(_ -> replicaDurable(streamName, partition, write.offset()));
+                    .withSuccess(_ -> replicaDurable(streamName,
+                                                     partition,
+                                                     write.offset()));
     }
 
     /// A replicated WAL frame write: the WAL it went to, the record's offset — the position the barrier
