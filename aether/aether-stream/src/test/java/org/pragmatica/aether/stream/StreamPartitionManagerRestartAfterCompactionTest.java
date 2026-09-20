@@ -24,6 +24,7 @@ import org.pragmatica.storage.SnapshotManager;
 
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -143,6 +144,42 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                                                   .map(StreamError.WalRecoveryGap.class::cast)
                                                   .toList()).singleElement()
                                                             .satisfies(gap -> assertGap(gap, 3L, 4L)));
+    }
+
+    /// #1278 shape, pinned as it stands (ENABLED tripwire, not a fix): the snapshot covered every seal, so the tick
+    /// legitimately compacted the WAL to the watermark; then retention reclaimed EVERY ref of the partition and the
+    /// next snapshot holds none. The restart rebuilds the index from that snapshot — nothing anchors it, base `-1`
+    /// — and the WAL starts at 196. Before this PR that restart renumbered 196..199 to 0..3 silently (#1278's
+    /// symptom). Now it REFUSES with [StreamError.WalRecoveryGap]: the ruled behaviour until #1278 persists a
+    /// reclaimed-through floor that seeds recovery at the reclaimed point. When that lands this test goes red —
+    /// replace the refusal assertion with recovery at the original offsets (head 199, tail 196).
+    @Test
+    void restartAfterRetentionReclaimedEveryRef_refusesInsteadOfRenumbering_until1278() {
+        var index = new SegmentIndex();
+        var sealedThrough = publishSealAndTruncate(index, DurableSealedOffsetSource.same(index::lastSealedOffset));
+
+        assertThat(sealedThrough).as("pre-crash sealed watermark").isGreaterThanOrEqualTo(SEALED_AT_LEAST);
+
+        // Retention reclaimed every ref: the snapshot a restart reads has no `streams/orders/0/*` entries at all.
+        var rebuilt = new SegmentIndex();
+
+        rebuilt.rebuildFromRefs(Map.of("streams/other/0/0-9", blockId(9)));
+        assertThat(rebuilt.lastSealedOffset(STREAM, PARTITION)).as("#1278: nothing anchors the rebuild").isEqualTo(-1L);
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), rebuilt::lastSealedOffset);
+        var create = createStream(recovered);
+
+        recovered.close();
+
+        assertThat(create.isFailure()).as("#1278 shape: all refs reclaimed, WAL compacted to %d — recovery must refuse, "
+                                          + "not renumber; a persisted reclaimed-through floor (#1278) is what makes it "
+                                          + "recover instead, and this assertion flips then",
+                                          sealedThrough)
+                                      .isTrue();
+        create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalRecoveryGap.class::isInstance)
+                                                  .map(StreamError.WalRecoveryGap.class::cast)
+                                                  .toList()).singleElement()
+                                                            .satisfies(gap -> assertGap(gap, 0L, sealedThrough + 1)));
     }
 
     /// Control for the tripwire: the snapshot DID cover the seals (durable == live), the tick compacted the WAL
