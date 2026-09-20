@@ -108,6 +108,24 @@ class StreamResourceValidatorTest {
                   });
         }
 
+        /// #1282: a blueprint `External` source naming a runtime-provisioned stream kind is refused at the
+        /// deploy gate with its own rule, pointing at the offending section — the typed parser error, not a
+        /// message-text guess (the message says "stream name", which would otherwise classify it wrong).
+        @Test
+        void externalSourceWithReservedKindProducesSourceReservedKindFailure() {
+            var toml = "[streams.inbox]\nsource = \"entity:orders:1.0.0\"\nrole = \"consumer\"\n";
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> {
+                      var failures = ((StreamValidationFailures) cause).failures();
+                      assertThat(failures).extracting(StreamValidationFailure::rule)
+                                          .containsExactly(StreamResourceValidator.RULE_SOURCE_RESERVED_KIND);
+                      assertThat(failures).extracting(StreamValidationFailure::field)
+                                          .containsExactly("[streams.inbox]");
+                  });
+        }
+
         @Test
         void producerLatestProducesProducerExactFailure() {
             var toml = """
