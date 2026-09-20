@@ -5631,6 +5631,9 @@ public interface AetherNode extends ManageableNode {
     /// started only once formation resolves. A SWIM failure that lands after formation is moot
     /// for the outcome — in production `failNode` has already halted the JVM, in a single-JVM host
     /// it has already stopped this node.
+    // JBCT-RET-07: both statements register observers on promises the caller owns; each returns its
+    // receiver, and `outcome` is the value — nothing is dropped.
+    @SuppressWarnings("JBCT-RET-07")
     static Promise<Unit> formationUnlessSwimFails(Promise<Unit> formation, Promise<Unit> swimStart) {
         var outcome = Promise.<Unit> promise();
 
