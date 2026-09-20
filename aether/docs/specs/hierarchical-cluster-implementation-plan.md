@@ -241,7 +241,24 @@ revalidation of affected paths. A command run with skipped tests is compile evid
 | Foundation `52daae511`, `/private/tmp/pragmatica-hierarchy-primitives` | `env -u HCLOUD_TOKEN mvn -T1 -pl integrations/cluster -am install -Dtest='KVStore*Test,CanonicalSliceCodecTest' -Dsurefire.failIfNoSpecifiedTests=false` | 84 cases in the `KVStore*Test` classes plus two in `CanonicalSliceCodecTest`, zero failures/errors. Classes: `KVStoreAuthorizedMutationTest`, `KVStoreCanonicalSnapshotTest`, `KVStoreEpochFenceTest`, `KVStoreInstallOverlayTest`, `KVStoreLeaderFenceTest`, `KVStoreLeaderTransactionTest`, `KVStoreNoopTest`, `KVStoreNotificationIsolationTest`, `KVStoreOwnerFenceTest`, `KVStorePutFenceTest`, `KVStoreRemoveFenceTest`, `KVStoreReplaySignalTest`, `KVStoreWatermarkFenceTest` (including their nested cases). |
 | Foundation production source `52daae511`; reproducible script added at `c80358cda`, same worktree | `python3 tools/check-hierarchy-foundation-mutations.py` | Six assertion-red mutations: read guards, leader authority, equal-epoch deletion, snapshot canonical selection, notification reentrancy and coherent snapshot reads. Exact per-mutation selectors and commands are recorded by the script in `target/hierarchy-mutations/results.json`. |
 | Foundation `52daae511`, same worktree, exact production bytes restored after mutations | `env -u HCLOUD_TOKEN mvn -T1 -pl integrations/cluster install -Dtest='KVStore*Test'` | All 84 KV cases passed after source restoration. |
-| Foundation PR head `c80358cda`, GitHub PR merge checkout | **Hierarchy review acceptance / foundation-mutations** workflow | [CI run 35537456683](https://github.com/pragmaticalabs/pragmatica/actions/runs/35537456683) passed. Uploaded `foundation-mutation-evidence` contains commands, tested source SHA, mutation logs and restored-implementation JUnit reports. |
+| Foundation PR head `c80358cda`; tested merge `b6382c3670bf0c9eb439d88892fbb19beb644720`, `/home/runner/work/pragmatica/pragmatica` | `python3 tools/check-hierarchy-foundation-mutations.py`; exact per-mutation Maven commands below | [CI run 35537456683](https://github.com/pragmaticalabs/pragmatica/actions/runs/35537456683) passed. `foundation-mutation-evidence/target/hierarchy-mutations/results.json` records the tested merge SHA and all six assertion-red cases; restored-implementation JUnit reports accompany it. |
+
+
+The six commands below ran on that exact CI merge checkout, each after applying its named
+mutation. Exit status 1 and one assertion failure killed each mutation; these are deliberate
+negative controls, not passing unmodified-production test results. The script restores source
+between mutations. The final restored-source check was
+`mvn test -B -pl integrations/cluster -Dtest='KVStore*Test'`; its uploaded JUnit reports contain
+84 cases with zero failures, errors or skips.
+
+| Mutation | Exact Maven invocation / test selector |
+|---|---|
+| `read-set` | `mvn -T1 -pl integrations/cluster test -Dtest=KVStoreLeaderTransactionTest` |
+| `owner-remove` | `mvn -T1 -pl integrations/cluster test -Dtest=KVStoreOwnerFenceTest` |
+| `canonical-snapshot` | `mvn -T1 -pl integrations/cluster test -Dtest=KVStoreCanonicalSnapshotTest` |
+| `reentrant-dispatch` | `mvn -T1 -pl integrations/cluster test '-Dtest=KVStoreNotificationIsolationTest#reentrantNotificationSeesStoreAfterAllNestedApplies'` |
+| `atomic-reader` | `mvn -T1 -pl integrations/cluster test '-Dtest=KVStoreNotificationIsolationTest#snapshotCannotObserveHalfAppliedBatch'` |
+| `leader-authority` | `mvn -T1 -pl integrations/cluster test -Dtest=KVStoreAuthorizedMutationTest` |
 
 Runtime review corrections are being validated on the current rc4-integrated branch. Its
 **Hierarchy review acceptance / runtime-acceptance** workflow records both the tested merge SHA
