@@ -176,6 +176,9 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
                                                  null);
 
         substrate.ensureLog("orders", 1, 2, 2).unwrap();
