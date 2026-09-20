@@ -7,7 +7,6 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Order;
@@ -136,8 +135,8 @@ class DurableTopicDeliveryForgeTest {
     ///
     /// The number of warm-up events is NOT fixed. A gate publish can time out after its event landed
     /// (#1236), and the gate then publishes again under a new message id (#1237); one run in eight left
-    /// two warm-up events. No verdict depends on it: [PreAttachBacklog]'s tripwire asserts zero
-    /// deliveries and its real arm at least one.
+    /// two warm-up events. No verdict depends on it: [PreAttachBacklog] asserts at least one
+    /// delivery, never an exact count.
     private static final String WARMUP_ID = "__warmup__";
 
     /// The fixture acks orders carrying this prefix late (`DurableTopicSlice.durableTopicSlice.SLOW_ACK_PREFIX`).
@@ -235,23 +234,17 @@ class DurableTopicDeliveryForgeTest {
     /// readiness gate, before the group attaches, and nothing else appends to order-events until the
     /// [Delivery] arms run — so this class must run FIRST, and nothing in it may publish an order.
     ///
-    /// On `release-1.0.0-rc4` the warm-up is never delivered, so the real arm is disabled and a
-    /// tripwire asserting the stranding runs in its place. With PR #1285 merged into rc4 the real arm
-    /// delivered the warm-up in 0.6 s. The stranding is also the mechanism #751 left unexplained: the
-    /// suite's old setUp drain gate waited on exactly this event and timed out on every run.
+    /// Before PR #1285 (#1238(c): subscribe installed a listener and never read the backlog) the
+    /// warm-up was never delivered — undelivered after 20 s in 6/6 rc4 runs, and delivered in 0.6 s
+    /// once #1285 merged. The stranding is also the mechanism #751 left unexplained: the suite's old
+    /// setUp drain gate waited on exactly this event and timed out on every run.
     @Nested
     @Order(1)
     class PreAttachBacklog {
-        /// Far longer than delivery takes when the backlog IS read (0.6 s measured), so a warm-up still
-        /// undelivered after it is stranded rather than late.
-        private static final Duration STRANDING_WINDOW = Duration.ofSeconds(20);
-
-        /// Meaningful only when the warm-up was appended before the group attached. The tripwire below
-        /// found it undelivered on every rc4 run, which is that precondition observed: an event
-        /// published after attach would have been delivered by the listener.
+        /// Meaningful only when the warm-up was appended before the group attached. The pre-#1285
+        /// tripwire that stood here found it undelivered on every rc4 run, which is that precondition
+        /// observed: an event published after attach would have been delivered by the listener.
         @Test
-        @Disabled("blocked on PR #1285 (#1238c: no backlog read on subscribe) — enable it and delete"
-                  + " TRIPWIRE_warmupPublishedBeforeAttach_isStranded_until1285Lands when #1285 lands")
         void eventPublishedBeforeTheGroupAttached_isDeliveredWithoutAFollowUpAppend() {
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
@@ -261,20 +254,6 @@ class DurableTopicDeliveryForgeTest {
                                         + " attached; a subscribe that reads the backlog delivers it"
                                         + " without any further publish")
                            .isGreaterThanOrEqualTo(1));
-        }
-
-        /// Asserts the CURRENT, wrong behaviour so the fix cannot land unnoticed: this goes red the
-        /// moment a subscribe reads the backlog.
-        @Test
-        void TRIPWIRE_warmupPublishedBeforeAttach_isStranded_until1285Lands() {
-            sleep(STRANDING_WINDOW);
-
-            assertThat(deliveriesOf(WARMUP_ID))
-                    .describedAs("TRIPWIRE: the pre-attach warm-up was DELIVERED, so #1238(c) is fixed —"
-                                 + " delete me and enable"
-                                 + " eventPublishedBeforeTheGroupAttached_isDeliveredWithoutAFollowUpAppend;"
-                                 + " #1285 has landed")
-                    .isZero();
         }
     }
 
@@ -339,16 +318,14 @@ class DurableTopicDeliveryForgeTest {
     /// previous form of this arm could not fail, and when it ran before the delivery arm it asserted
     /// that a one-element list was sorted.
     ///
-    /// On `release-1.0.0-rc4` every append starts its own delivery pass from a cursor the unacked
-    /// delivery has not yet advanced (#1238(a)/(b)): ten late-acked events came back 10, 9, 8, … 1
-    /// times. With PR #1285 merged into rc4 each came back once, in order. Runs after [Delivery] so the
-    /// redelivery storm the tripwire provokes cannot reach that arm's window.
+    /// Before PR #1285 (#1238(a)/(b)) every append started its own delivery pass from a cursor the
+    /// unacked delivery had not yet advanced: ten late-acked events came back 10, 9, 8, … 1 times.
+    /// With #1285 each comes back once, in order. Runs after [Delivery] so a redelivery storm, should
+    /// one recur, cannot reach that arm's window.
     @Nested
     @Order(4)
     class SerialDispatch {
         @Test
-        @Disabled("blocked on PR #1285 (#1238a/b: overlapping delivery passes per group) — enable it and"
-                  + " delete TRIPWIRE_lateAckedEvents_areRedelivered_until1285Lands when #1285 lands")
         void eventsArriveInPublishedOrder_evenWhilePreviousDeliveriesAreUnacked() {
             var prefix = SLOW_ACK_PREFIX + "ord-";
             var ids = publishOrders(prefix, SLOW_ORDER_COUNT);
@@ -361,27 +338,6 @@ class DurableTopicDeliveryForgeTest {
                                                               + " offset order on every node that"
                                                               + " delivered")
                                                  .allSatisfy(sequences -> assertThat(sequences).isSorted());
-        }
-
-        /// Asserts the CURRENT, wrong behaviour: once every event has arrived and the counts have
-        /// settled, at least one was delivered more than once. Goes red when delivery becomes serial.
-        @Test
-        void TRIPWIRE_lateAckedEvents_areRedelivered_until1285Lands() {
-            var ids = publishOrders(SLOW_ACK_PREFIX + "tw-", SLOW_ORDER_COUNT);
-
-            await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(deliveryCounts(ids).values()).allMatch(count -> count >= 1));
-
-            sleep(SETTLE);
-
-            assertThat(deliveryCounts(ids).values())
-                    .describedAs("TRIPWIRE: no late-acked event was delivered twice, so #1238(a)/(b) is"
-                                 + " fixed — delete me and enable"
-                                 + " eventsArriveInPublishedOrder_evenWhilePreviousDeliveriesAreUnacked;"
-                                 + " #1285 has landed")
-                    .anyMatch(count -> count > 1);
         }
     }
 
