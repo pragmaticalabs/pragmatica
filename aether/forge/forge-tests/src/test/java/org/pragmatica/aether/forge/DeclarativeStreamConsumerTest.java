@@ -24,8 +24,6 @@ import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -312,16 +310,17 @@ class DeclarativeStreamConsumerTest {
         /// and the consumer's reader to DECODE it. Delivery proves both halves at once.
         @Test
         void declaredConsumer_receivesApplicationTypedEvents_endToEnd() {
-            var baseline = settledCount(DeclarativeStreamConsumerTest.this::totalOrdersReceived);
+            var prefix = "round-trip-";
+            var expected = java.util.stream.IntStream.range(0, ORDER_COUNT).mapToObj(index -> prefix + index).toList();
 
-            publishOrderBatch(ORDER_COUNT);
+            publishOrderBatch(prefix, ORDER_COUNT);
 
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(totalOrdersReceived() - baseline)
+                   .untilAsserted(() -> assertThat(receivedOrderIds(prefix))
                            .describedAs("every app-typed event must round-trip through the slice codec; "
                                         + "per-node assignments: %s", assignmentReport())
-                           .isEqualTo(ORDER_COUNT));
+                           .containsExactlyInAnyOrderElementsOf(expected));
         }
 
         /// The record's fields must survive encode/decode intact — delivery of a corrupted or
@@ -406,22 +405,27 @@ class DeclarativeStreamConsumerTest {
     }
 
     private void publishOrderBatch(int count) {
+        publishOrderBatch("order-", count);
+    }
+
+    private void publishOrderBatch(String prefix, int count) {
         for (var i = 0; i < count; i++) {
-            var body = "{\"orderId\":\"order-" + i + "\",\"customer\":\"customer-" + i + "\",\"amount\":" + (100 + i) + "}";
+            var body = "{\"orderId\":\"" + prefix + i + "\",\"customer\":\"customer-" + i + "\",\"amount\":" + (100 + i) + "}";
             var response = httpPost(appPort(), "/api/stream-consumer/publish-order", body);
 
             assertThat(response).describedAs("app-typed publish must succeed").contains("published");
         }
     }
 
-    /// Sum of app-typed deliveries across every node. Only the partition owner's queue is non-empty;
-    /// summing keeps the assertion independent of WHICH node owns it.
-    private int totalOrdersReceived() {
-        return cluster.getAvailableAppHttpPorts()
-                      .stream()
-                      .map(port -> httpPost(port, "/api/stream-consumer/received-orders", "{}"))
-                      .mapToInt(body -> firstInt(COUNT_FIELD, body))
-                      .sum();
+    /// Match this test's exact identifiers across all nodes, retaining duplicates. A preceding
+    /// test's delayed probe cannot change this result, and duplication cannot hide a missing id.
+    private List<String> receivedOrderIds(String prefix) {
+        var pattern = Pattern.compile("\"orderId\"\\s*:\\s*\"(" + Pattern.quote(prefix) + "\\d+)\"");
+
+        return cluster.getAvailableAppHttpPorts().stream()
+            .map(port -> httpPost(port, "/api/stream-consumer/received-orders", "{}"))
+            .flatMap(body -> pattern.matcher(body).results())
+            .map(match -> match.group(1)).toList();
     }
 
     /// The one node that actually received app-typed events, so field assertions read real deliveries.
@@ -432,25 +436,6 @@ class DeclarativeStreamConsumerTest {
                       .filter(body -> firstInt(COUNT_FIELD, body) > 0)
                       .findFirst()
                       .orElse("{\"count\":0,\"orders\":[]}");
-    }
-
-    /// The delivered count once it has stopped moving — two consecutive samples equal.
-    ///
-    /// A baseline captured while the PREVIOUS test's delivery is still in flight makes this test's
-    /// exact-count assertion off by one, which reads exactly like a duplicate-delivery bug. That is
-    /// what "expected 30 but was 31" was: test isolation, not delivery.
-    private int settledCount(IntSupplier counter) {
-        var lastSample = new AtomicInteger(-1);
-
-        await().atMost(DELIVERY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> isRepeatSample(lastSample, counter.getAsInt()));
-
-        return lastSample.get();
-    }
-
-    private static boolean isRepeatSample(AtomicInteger lastSample, int current) {
-        return lastSample.getAndSet(current) == current;
     }
 
     /// Every node's own view of who consumes and who owns each partition, plus its attached count —
