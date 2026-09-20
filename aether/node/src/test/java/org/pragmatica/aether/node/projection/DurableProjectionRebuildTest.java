@@ -317,6 +317,53 @@ class DurableProjectionRebuildTest {
                   .isEqualTo(Option.some(3L));
     }
 
+    /// Ruling (know 504ee397f): a pre-restart consumer's put under the old rewind epoch is refused AND that
+    /// consumer is detached by `restartRewound` in the SAME apply — asserted on the runtime's delivery
+    /// state right after the rewind's apply, not on the refused put alone. The rewind record's KV
+    /// notification runs the manager's reconcile inside the apply (`onCheckpointPut` → `reconcile` →
+    /// `restartRewound` → `abandon`), so when `rebuild()` resolves the subscription that ran under
+    /// `RewindEpoch.NONE` is gone: the only subscription for the group either already runs under the
+    /// minted epoch or is still fetching its cursor. Nothing else observable distinguishes the zombie from
+    /// its successor — the consumer key is the same — so the epoch on the live snapshot IS the assertion.
+    /// Its late put at the old epoch is then refused by the applier and leaves the committed epoch alone.
+    @Test
+    void rewind_detachesTheZombieInTheSameApply_andRefusesItsLateCheckpoint() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+        var before = subscriptionsForGroup();
+
+        assertThat(before).as("control: one live consumer, never rewound, cursor fetched").hasSize(1);
+        assertThat(before.getFirst().rewindEpoch()).isEqualTo(RewindEpoch.NONE);
+        assertThat(before.getFirst().awaitingCursorFetch()).isFalse();
+        projection.rebuild().await().onFailure(cause -> fail("rebuild refused: " + cause.message()));
+        var token = replayStatus().currentRewind().unwrap();
+        var epoch = NodeReplayCursor.epochOf(token);
+        var after = subscriptionsForGroup();
+
+        assertThat(after).as("exactly one subscription for the group right after the rewind's apply: %s", after).hasSize(1);
+        assertThat(after.getFirst().awaitingCursorFetch() || after.getFirst().rewindEpoch().equals(epoch))
+                  .as("the NONE-epoch consumer is detached in the rewind's own apply; what remains is its successor (fetching, or running under %s): %s",
+                      epoch,
+                      after.getFirst())
+                  .isTrue();
+        assertThat(after.getFirst().rewindEpoch().equals(RewindEpoch.NONE) && !after.getFirst().awaitingCursorFetch())
+                  .as("a consumer still running under NONE after the apply is the zombie: %s", after.getFirst())
+                  .isFalse();
+        applyNow(checkpoint(6L, RewindEpoch.NONE));
+        assertThat(committedEpoch()).as("the zombie's late checkpoint at the old epoch is refused by the applier")
+                  .isEqualTo(Option.some(epoch));
+        awaitLive(20_000);
+        assertThat(model()).isEqualTo(Option.some(123456L));
+    }
+
+    private List<StreamConsumerRuntime.SubscriptionSnapshot> subscriptionsForGroup() {
+        return runtime.subscriptions()
+                      .stream()
+                      .filter(snapshot -> snapshot.streamName().equals(TOPIC_STREAM) && snapshot.partition() == PARTITION && snapshot.consumerGroup().equals(GROUP))
+                      .toList();
+    }
+
     /// rev1369 probe B: a FRESH store after a committed rewind (node restart, or the assignee moved). A
     /// process-local mint restarts at 1/1 — equal to the committed 1/1 — so the put is accepted at an equal
     /// epoch, the running consumer is never restarted (`restartRewound` needs strictly newer) and its next

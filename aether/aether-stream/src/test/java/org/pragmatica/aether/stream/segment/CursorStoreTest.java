@@ -505,6 +505,11 @@ class CursorStoreTest {
 
         /// The 8-byte unfenced block (pull API) is a legitimate cursor for the unfenced `fetch` (#1271's
         /// rule, kept) and invisible to a fenced one — it belongs to no tenure, so it reads as absent there.
+        /// MEANING CHANGE, stated: before the #1335 merge this class pinned the opposite — an 8-byte block
+        /// was REFUSED (read as absent, resume from earliest once; rev1369 MEDIUM-2, mutation M11). #1271's
+        /// pull API writes 8-byte blocks legitimately, so refusing them would make every unfenced consumer
+        /// resume from earliest after each restart — a behaviour regression, not a one-time redelivery.
+        /// Ruling know 504ee397f (Reading A).
         @Test
         void unfencedEightByteBlock_isReadByTheUnfencedFetch_andInvisibleToAFencedOne() {
             var refName = CursorStore.buildRefName(GROUP, STREAM, PARTITION);
