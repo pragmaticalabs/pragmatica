@@ -10,9 +10,17 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers.FrameworkStreamPublisherError;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,9 +45,7 @@ class FrameworkStreamPublisherTest {
 
         @Test
         void systemStreamPublisher_systemAddress_succeeds() {
-            StreamPublisher<String> transport = event -> Promise.unitPromise();
-
-            var result = FrameworkStreamPublishers.systemStreamPublisher(systemAddress(), transport);
+            var result = FrameworkStreamPublishers.systemStreamPublisher(systemAddress(), transport(_ -> {}));
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(result.unwrap()).isInstanceOf(FrameworkStreamPublisher.class);
@@ -47,9 +53,7 @@ class FrameworkStreamPublisherTest {
 
         @Test
         void systemStreamPublisher_appAddress_refused() {
-            StreamPublisher<String> transport = event -> Promise.unitPromise();
-
-            var result = FrameworkStreamPublishers.systemStreamPublisher(appAddress(), transport);
+            var result = FrameworkStreamPublishers.systemStreamPublisher(appAddress(), transport(_ -> {}));
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isEqualTo(FrameworkStreamPublisherError.General.NOT_SYSTEM_NAMESPACE));
@@ -62,11 +66,7 @@ class FrameworkStreamPublisherTest {
         @Test
         void publish_delegatesToTransport() {
             var captured = new AtomicReference<String>();
-            StreamPublisher<String> transport = event -> {
-                captured.set(event);
-                return Promise.unitPromise();
-            };
-            var publisher = FrameworkStreamPublishers.systemStreamPublisher(systemAddress(), transport).unwrap();
+            var publisher = FrameworkStreamPublishers.systemStreamPublisher(systemAddress(), transport(captured::set)).unwrap();
 
             var result = publisher.publish("evt-1").await();
 
@@ -74,20 +74,60 @@ class FrameworkStreamPublisherTest {
             assertThat(captured.get()).isEqualTo("evt-1");
         }
 
+        /// #1342: the batch is delegated AS a batch and the transport's per-event outcomes come back unchanged —
+        /// the inherited default had re-published each event and folded the results into one `Unit`, so a
+        /// refused event was acknowledged as success.
         @Test
-        void publishBatch_delegatesEachEvent() {
-            var count = new java.util.concurrent.atomic.AtomicInteger();
-            StreamPublisher<String> transport = event -> {
-                count.incrementAndGet();
-                return Promise.unitPromise();
-            };
-            var publisher = FrameworkStreamPublishers.systemStreamPublisher(systemAddress(), transport).unwrap();
+        void publishBatch_delegatesTheBatchToTransport_andCarriesEveryPerEventOutcome() {
+            var batches = new ArrayList<List<String>>();
+            var publisher = FrameworkStreamPublishers.systemStreamPublisher(systemAddress(), transport(batches::add, REFUSED_B)).unwrap();
 
-            var result = publisher.publishBatch(java.util.List.of("a", "b", "c")).await();
+            var outcomes = publisher.publishBatch(List.of("a", "b", "c")).await().unwrap();
 
-            assertThat(result.isSuccess()).isTrue();
-            assertThat(count.get()).isEqualTo(3);
+            assertThat(batches).containsExactly(List.of("a", "b", "c"));
+            assertThat(outcomes).containsExactly(new PublishOutcome.Published(0L),
+                                                 new PublishOutcome.OutcomeUnknown(REFUSED_B),
+                                                 new PublishOutcome.Published(2L));
         }
+    }
+
+    private static final Cause REFUSED_B = Causes.cause("transport refused b");
+
+    private static StreamPublisher<String> transport(Consumer<String> onPublish) {
+        return transport(_ -> {}, onPublish, Option.none());
+    }
+
+    private static StreamPublisher<String> transport(Consumer<List<String>> onBatch, Cause refusedB) {
+        return transport(onBatch, _ -> {}, Option.some(refusedB));
+    }
+
+    /// A transport that refuses the event `"b"` with `refusedB` when given one; otherwise every event is
+    /// published at its batch index.
+    private static StreamPublisher<String> transport(Consumer<List<String>> onBatch, Consumer<String> onPublish, Option<Cause> refusedB) {
+        return new StreamPublisher<>() {
+            @Override
+            public Promise<Unit> publish(String event) {
+                onPublish.accept(event);
+
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public Promise<List<PublishOutcome>> publishBatch(List<String> events) {
+                onBatch.accept(events);
+
+                return Promise.success(IntStream.range(0, events.size())
+                                                .mapToObj(index -> outcome(index, events.get(index)))
+                                                .toList());
+            }
+
+            private PublishOutcome outcome(int index, String event) {
+                return event.equals("b")
+                       ? refusedB.<PublishOutcome> map(PublishOutcome.OutcomeUnknown::new)
+                                 .or(() -> new PublishOutcome.Published(index))
+                       : new PublishOutcome.Published(index);
+            }
+        };
     }
 
     @Nested

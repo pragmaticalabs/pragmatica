@@ -6,12 +6,15 @@ package org.pragmatica.aether.stream.topic;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -152,10 +155,22 @@ class DlqStreamSinkTest {
     }
 
     private static StreamPublisher<DlqEnvelope> capturing(List<DlqEnvelope> sink) {
-        return entry -> {
-            sink.add(entry);
+        return new StreamPublisher<>() {
+            @Override
+            public Promise<Unit> publish(DlqEnvelope entry) {
+                sink.add(entry);
 
-            return Promise.unitPromise();
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public Promise<List<PublishOutcome>> publishBatch(List<DlqEnvelope> entries) {
+                sink.addAll(entries);
+
+                return Promise.success(IntStream.range(0, entries.size())
+                                                .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                .toList());
+            }
         };
     }
 }

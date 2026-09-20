@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
@@ -143,7 +145,23 @@ public final class StreamApiRoutes implements RouteSource {
 
     public record PublishResponse(String address, long offset) {}
 
-    public record PublishBatchResponse(String address, int published, List<Long> offsets) {}
+    /// #1342: a batch is not atomic, so the response carries one outcome per request item, in request order,
+    /// and the counts are derived from them. `published` items are durably in the log at `offset`; an
+    /// `OUTCOME_UNKNOWN` item was refused or timed out AFTER it may have been appended (#1236) — retrying it can
+    /// duplicate; a `NOT_ATTEMPTED` item was rejected before any write and is safe to retry. The former
+    /// `Result.allOf` fold reported one failure and discarded the offsets that DID land.
+    public record PublishBatchResponse(String address,
+                                       int published,
+                                       int notPublished,
+                                       List<PublishItemOutcome> outcomes) {}
+
+    public record PublishItemOutcome(int index, PublishItemStatus status, Option<Long> offset, Option<String> cause) {}
+
+    public enum PublishItemStatus {
+        PUBLISHED,
+        OUTCOME_UNKNOWN,
+        NOT_ATTEMPTED
+    }
 
     public record GroupCreateRequest(String groupId, String initialPosition) {}
 
@@ -625,28 +643,63 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                                            offset)));
     }
 
-    private Promise<PublishBatchResponse> publishBatch(String namespace,
-                                                       String stream,
-                                                       String version,
-                                                       String publishBatchLiteral,
-                                                       PublishRequest[] requests) {
+    Promise<PublishBatchResponse> publishBatch(String namespace,
+                                               String stream,
+                                               String version,
+                                               String publishBatchLiteral,
+                                               PublishRequest[] requests) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
                               .async()
                               .flatMap(addr -> publishMany(addr, requests));
     }
 
+    /// Every item is written concurrently and reports its own outcome (#1342); a failed item never hides the
+    /// offsets of the items that landed. The item promises never fail, so `allOf` yields one outcome per item.
     private Promise<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
-        var perEvent = Arrays.stream(requests).map(req -> publishOne(addr, req)).toList();
+        var perItem = Arrays.stream(requests).map(req -> publishOneOutcome(addr, req)).toList();
 
-        return Promise.allOf(perEvent).flatMap(results -> collectOffsets(addr, results));
+        return Promise.allOf(perItem).map(outcomes -> batchResponse(addr, outcomes));
     }
 
-    private Promise<PublishBatchResponse> collectOffsets(ResourceAddress addr, List<Result<Long>> results) {
-        return Result.allOf(results)
-                     .map(offsets -> new PublishBatchResponse(addr.asString(),
-                                                              offsets.size(),
-                                                              offsets))
-                     .async();
+    private static PublishBatchResponse batchResponse(ResourceAddress addr, List<Result<PublishOutcome>> outcomes) {
+        var items = new ArrayList<PublishItemOutcome>(outcomes.size());
+
+        for (var index = 0; index < outcomes.size(); index++) {
+            items.add(itemOutcome(index,
+                                  outcomes.get(index).fold(PublishOutcome.OutcomeUnknown::new, outcome -> outcome)));
+        }
+
+        var published = (int) items.stream().filter(item -> item.status() == PublishItemStatus.PUBLISHED).count();
+
+        return new PublishBatchResponse(addr.asString(), published, items.size() - published, items);
+    }
+
+    private static PublishItemOutcome itemOutcome(int index, PublishOutcome outcome) {
+        return switch (outcome) {
+            case PublishOutcome.Published(var offset) -> new PublishItemOutcome(index,
+                                                                                PublishItemStatus.PUBLISHED,
+                                                                                Option.some(offset),
+                                                                                Option.none());
+            case PublishOutcome.OutcomeUnknown(var cause) -> new PublishItemOutcome(index,
+                                                                                    PublishItemStatus.OUTCOME_UNKNOWN,
+                                                                                    Option.none(),
+                                                                                    Option.some(cause.message()));
+            case PublishOutcome.NotAttempted(var cause) -> new PublishItemOutcome(index,
+                                                                                  PublishItemStatus.NOT_ATTEMPTED,
+                                                                                  Option.none(),
+                                                                                  Option.some(cause.message()));
+        };
+    }
+
+    /// The batch form of [#publishOne]: an item rejected by the admission checks (stream unavailable, partition
+    /// out of range) never reached the write and is [PublishOutcome.NotAttempted]; an item the router refused
+    /// is [PublishOutcome.OutcomeUnknown], because the refusal may follow the append (#1236).
+    private Promise<PublishOutcome> publishOneOutcome(ResourceAddress addr, PublishRequest request) {
+        var streamName = StreamManager.engineKey(addr);
+        var partition = Option.option(request.partition()).or(DEFAULT_PUBLISH_PARTITION);
+
+        return admit(streamName, partition).fold(cause -> Promise.success(new PublishOutcome.NotAttempted(cause)),
+                                                 _ -> write(streamName, partition, request).fold(result -> Promise.success(PublishOutcome.attempted(result))));
     }
 
     /// Owner-routed publish to an explicit `partition` (#524: default 0 — unchanged from the earlier
@@ -660,15 +713,23 @@ public final class StreamApiRoutes implements RouteSource {
     /// materializes a stream under a different key than the one STREAM_CREATE minted.
     private Promise<Long> publishOne(ResourceAddress addr, PublishRequest request) {
         var streamName = StreamManager.engineKey(addr);
-        var payload = decodePayload(request.data());
         var partition = Option.option(request.partition()).or(DEFAULT_PUBLISH_PARTITION);
 
-        return ensureStreamExists(streamName).async()
-                                 .flatMap(_ -> validatePartition(streamName, partition).async())
-                                 .flatMap(_ -> streamWriteRouter().publish(streamName,
-                                                                           partition,
-                                                                           payload,
-                                                                           System.currentTimeMillis()));
+        return admit(streamName, partition).async()
+                    .flatMap(_ -> write(streamName, partition, request));
+    }
+
+    /// The pre-write admission checks, separated from the write so the batch form can tell "rejected before
+    /// writing" from "refused after possibly writing" (#1342).
+    private Result<Unit> admit(String streamName, int partition) {
+        return ensureStreamExists(streamName).flatMap(_ -> validatePartition(streamName, partition));
+    }
+
+    private Promise<Long> write(String streamName, int partition, PublishRequest request) {
+        return streamWriteRouter().publish(streamName,
+                                           partition,
+                                           decodePayload(request.data()),
+                                           System.currentTimeMillis());
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the

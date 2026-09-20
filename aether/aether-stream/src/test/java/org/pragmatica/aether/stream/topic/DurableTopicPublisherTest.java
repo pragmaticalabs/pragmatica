@@ -5,11 +5,13 @@
 package org.pragmatica.aether.stream.topic;
 
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -89,10 +91,12 @@ class DurableTopicPublisherTest {
             }
 
             @Override
-            public Promise<Unit> publishBatch(List<TopicEventEnvelope> events) {
+            public Promise<List<PublishOutcome>> publishBatch(List<TopicEventEnvelope> events) {
                 sink.addAll(events);
 
-                return Promise.unitPromise();
+                return Promise.success(IntStream.range(0, events.size())
+                                                .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                .toList());
             }
         };
     }

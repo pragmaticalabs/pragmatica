@@ -5580,12 +5580,26 @@ storage) — the request is rejected with `409 Conflict`, naming the stream and 
 cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
 ProblemResponses HttpStatusAware dispatch]`
 
-**Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
-concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
-it) may already be durably written before the batch call fails. The response on failure names only
-the first invalid item — it does not report which of the other items committed. `[mechanism:
-publishMany fires every item concurrently via Promise.allOf with no short-circuit, then
-Result.allOf surfaces only the first Result failure]`
+**Batch publish is not atomic, and the response says per item what happened (#1342).** `publish-batch`
+validates and writes each item independently and concurrently, and answers `200` with one outcome per
+item, in request order, for every batch that ran — partial included:
+
+```json
+{"address": "acme:orders:1.0.0", "published": 1, "notPublished": 1,
+ "outcomes": [{"index": 0, "status": "PUBLISHED", "offset": 41},
+              {"index": 1, "status": "NOT_ATTEMPTED", "cause": "Partition 4 is out of range; this stream has partitions [0, 4)"}]}
+```
+
+- `PUBLISHED`: durably in the log at `offset`.
+- `NOT_ATTEMPTED`: rejected before any write (stream unavailable, partition out of range) — not in the log,
+  safe to retry.
+- `OUTCOME_UNKNOWN`: the write was refused or timed out AFTER it may have been appended (#1236) — it may be
+  in the log; retrying it can duplicate.
+
+Check `notPublished`, not the HTTP status: a partial batch is still `200`. Before #1342 the response on a
+partial batch was the first failure alone, and the offsets of the items that had landed were discarded.
+`[mechanism: publishMany fires every item concurrently via Promise.allOf with no short-circuit; each item's
+Result becomes its own PublishItemOutcome]`
 
 ### Delete Stream Version
 
