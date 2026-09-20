@@ -452,9 +452,11 @@ class CursorStoreTest {
 
             assertThat(store.fetchCursor(GROUP, STREAM, PARTITION).await())
                     .isEqualTo(org.pragmatica.lang.Result.success(Option.some(Cursor.unrewound(7L))));
-            assertThat(storage.resolveRef(refName).flatMap(id -> storage.get(id).await().option().flatMap(o -> o)))
-                    .as("the rewritten ref points at a 24-byte block")
-                    .isEqualTo(Option.some(CursorStore.encodeOffset(7L)));
+            var rewritten = storage.resolveRef(refName)
+                                   .flatMap(id -> storage.get(id).await().option().flatMap(block -> block))
+                                   .or(new byte[0]);
+
+            assertThat(rewritten).as("the rewritten ref points at a 24-byte block").isEqualTo(CursorStore.encodeOffset(7L));
         }
 
         private static StorageInstance diskStorage(String name, Path dir, MetadataStore metadataStore) {
