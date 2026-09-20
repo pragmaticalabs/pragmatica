@@ -1,0 +1,1 @@
+- docs(specs): cluster-supervision-spec prerequisites reconciled to the 2026-09-20 sequencing — #1230–#1239 closed, #1250 delivered by #1379, the hierarchical-cluster batch (#1386 → #1379 → #1390, rc5) added as the prerequisite for P2+, and the dashboard surface moved to rc6 (Part of #1251). [spec: aether/docs/specs/cluster-supervision-spec.md §Prerequisites]
