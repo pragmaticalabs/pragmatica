@@ -399,6 +399,21 @@ class HonestPublishOutcomeTest {
             public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
                 return ReplicationError.General.REPLICATION_TIMEOUT.promise();
             }
+
+            /// Consistent with the timed-out barrier above: no peer has acknowledged anything (#1235).
+            @Override
+            public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return -1L;
+            }
+
+            @Override
+            public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+                return -1L;
+            }
+
+            @Contract
+            @Override
+            public void observeAcks(AckObserver observer) {}
         };
     }
 

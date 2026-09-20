@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -161,6 +162,32 @@ class StreamEntityLogSubstrateTest {
         assertThat(capturedMinAcks.get()).isEqualTo(2);
     }
 
+    /// #1235: the fold replays up to `headOffset` — the APPENDED head — and reads a short batch below it as
+    /// a truncated log, so the substrate's read must reach records that are not yet consumer-visible. The
+    /// fake reports the barrier met (so the append returns) while acknowledging nothing in `replicatedThrough`
+    /// (so the record stays invisible to a stream consumer).
+    @Test
+    void read_servesAnAppendedRecord_beforeItIsConsumerVisible() {
+        var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024,
+                                                                              EvictionListener.NOOP,
+                                                                              capturingReplicationManager(new AtomicInteger(),
+                                                                                                          -1L));
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("orders", 1, 2, 2).unwrap();
+        substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
+
+        assertThat(substrate.headOffset("orders", 0)).isEqualTo(0L);
+        assertThat(substrate.read("orders", 0, 0L, 10).await().map(List::size).or(-1)).isEqualTo(1);
+    }
+
     /// #1233: an entity keyspace log is durable state even at replicationFactor = 1 with no WAL (Forge,
     /// embedded, or the non-durable opt-in). A record the frozen partition ring cannot store must FAIL the
     /// append, never be acked as a committed write. Driven through the real `ensureLog`/`append` path so
@@ -191,6 +218,10 @@ class StreamEntityLogSubstrateTest {
     }
 
     private static ReplicationManager capturingReplicationManager(AtomicInteger capturedMinAcks) {
+        return capturingReplicationManager(capturedMinAcks, Long.MAX_VALUE);
+    }
+
+    private static ReplicationManager capturingReplicationManager(AtomicInteger capturedMinAcks, long acknowledgedThrough) {
         var registry = ReplicaRegistry.replicaRegistry();
 
         return new ReplicationManager() {
@@ -216,6 +247,19 @@ class StreamEntityLogSubstrateTest {
 
                 return Promise.success(Unit.unit());
             }
+
+            @Override
+            public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return acknowledgedThrough;
+            }
+
+            @Override
+            public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+                return acknowledgedThrough;
+            }
+
+            @Override
+            public void observeAcks(AckObserver observer) {}
         };
     }
 }

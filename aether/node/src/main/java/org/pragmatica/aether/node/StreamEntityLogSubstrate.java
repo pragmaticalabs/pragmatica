@@ -338,8 +338,10 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// position, so a skipped or repeated record would silently fold every later record at the wrong
     /// offset. A mismatch is refused, never repaired.
     ///
-    /// Both tiers hold APPENDED records, as the #1274 ruling requires of entity folds: the ring read is
-    /// unbounded by any visibility watermark, and a sealed record was appended before it was evicted.
+    /// Both tiers hold APPENDED records, as the #1274 ruling requires of entity folds: the ring read uses
+    /// [StreamPartitionManager#readAppended], bounded by the APPENDED head rather than the stream-consumer
+    /// visible position (#1235), and a sealed record was appended before it was evicted. Entity-log
+    /// visibility is the fold's own contract, not a stream consumer's.
     ///
     /// A node reads only the segments IT sealed — the index is node-local — so a node that never held the
     /// partition still refuses exactly as before: [#earliestRetainedOffset] stays at its ring. A PROMOTED
@@ -372,7 +374,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                            int partition,
                                            long fromOffset,
                                            int maxRecords) {
-        return partitionManager.readLocal(stream, partition, fromOffset, maxRecords)
+        return partitionManager.readAppended(stream, partition, fromOffset, maxRecords)
                                .fold(cause -> evictedDuringRead(keyspace,
                                                                 stream,
                                                                 partition,
