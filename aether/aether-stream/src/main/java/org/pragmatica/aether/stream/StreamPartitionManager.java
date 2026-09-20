@@ -1398,8 +1398,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(streams.get(streamName)).flatMap(entry -> entry.walFor(partition));
     }
 
+    /// The publish path's replication barrier. Visibility is refreshed inline when it resolves (rev1309 F1):
+    /// an await can resolve from the registry SNAPSHOT — two concurrent acks each overlay only their own
+    /// ack in the pre-update observer call, both registry rows then land, and the await resolves before
+    /// either post-update observer call — so without this the continuation could miss its own acked write.
+    /// A ring released in the meantime has no reader left to expose the event to.
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
-        return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
+        return replicationManager.awaitReplication(streamName, partition, offset, minAcks)
+                                 .onSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
+                                                                                                                                streamName,
+                                                                                                                                partition)));
     }
 
     /// Pre-append replica-floor check (#1236). Publish paths call this BEFORE {@link #publishLocal}, so a

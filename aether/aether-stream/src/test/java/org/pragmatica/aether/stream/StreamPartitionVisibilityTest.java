@@ -115,6 +115,35 @@ class StreamPartitionVisibilityTest {
             assertThat(seenByContinuation.await().or(List.of())).containsExactly("e0");
         }
 
+        /// rev1309 F1: two peers, minSync = 3 (minAcks = 2), two CONCURRENT acks. The interleaving: both
+        /// pre-update observer calls run first, each overlaying only its own ack (1 < 2, no advance); both
+        /// registry updates land; the publisher's await then resolves from the registry SNAPSHOT before
+        /// either post-update observer call runs. The state is forced directly (two registry rows written,
+        /// no observer call), which is exactly what that interleaving leaves behind; the await must still
+        /// hand its continuation a visible event. `[unverified: not reproduced by racing real threads]`
+        @Test
+        void twoConcurrentAcks_awaitResolvedFromSnapshot_continuationSeesTheEvent() {
+            var peer2 = NodeId.randomNodeId();
+            ReplicaRegistry registry = replicaRegistry();
+
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            registry.registerReplica(STREAM, PARTITION, peer2);
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replicationManager(SELF, registry));
+            createStream(manager, 3, 3);
+            var offset = publish(manager, "e0");
+
+            registry.updateWatermark(STREAM, PARTITION, PEER, offset);
+            registry.updateWatermark(STREAM, PARTITION, peer2, offset);
+
+            var seen = manager.awaitReplication(STREAM, PARTITION, offset, 2)
+                              .map(_ -> readAll(manager))
+                              .await();
+
+            assertThat(seen.isSuccess()).as("the await resolved from the registry snapshot").isTrue();
+            assertThat(seen.or(List.of())).as("publish acknowledged => continuation reads its own write").containsExactly("e0");
+        }
+
         /// A peer that acknowledges only the first of two events makes exactly that prefix visible.
         @Test
         void ack_exposesOnlyTheAcknowledgedPrefix() {
