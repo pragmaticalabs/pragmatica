@@ -16,6 +16,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.cluster.PublishedBlueprint;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -217,7 +218,7 @@ public final class SliceRoutes implements RouteSource {
                            .blueprintService()
                            .publish(body)
                            .withSuccess(this::onBlueprintActivated)
-                           .map(expanded -> blueprintResponse("applied", expanded))
+                           .map(published -> blueprintResponse("applied", published))
                            .onFailure(cause -> log.warn("Blueprint publish failed: {}",
                                                         cause.message()));
     }
@@ -252,7 +253,7 @@ public final class SliceRoutes implements RouteSource {
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
                                                     .publishFromArtifact(coords, true))
-                     .map(expanded -> blueprintResponse("published", expanded))
+                     .map(published -> blueprintResponse("published", published))
                      .onSuccess(r -> log.info("Blueprint {} published (register-only — not activated)",
                                               r.blueprint()))
                      .onFailure(cause -> log.warn("Blueprint artifact publish failed: {}",
@@ -272,9 +273,9 @@ public final class SliceRoutes implements RouteSource {
     /// that produced the divergence, and the serving node observing the same `AppBlueprintKey`
     /// notification as its peers is what makes enforcement node-independent rather than merely
     /// node-independent-elsewhere.
-    private void onBlueprintActivated(ExpandedBlueprint expanded) {
-        auditAndEmitBlueprintDeployed(expanded.id().asString(),
-                                      expanded.loadOrder().size());
+    private void onBlueprintActivated(PublishedBlueprint published) {
+        auditAndEmitBlueprintDeployed(published.blueprint().id().asString(),
+                                      published.blueprint().loadOrder().size());
     }
 
     private record InstanceCounts(int target, int active, int failed) {}
@@ -298,28 +299,42 @@ public final class SliceRoutes implements RouteSource {
         return new InstanceCounts(target, active, failed);
     }
 
-    private BlueprintResponse blueprintResponse(String status, ExpandedBlueprint expanded) {
-        var counts = instanceCounts(expanded);
-        var id = expanded.id().asString();
+    private BlueprintResponse blueprintResponse(String status, PublishedBlueprint published) {
+        var counts = instanceCounts(published.blueprint());
+        var id = published.blueprint().id().asString();
 
         return new BlueprintResponse(status,
                                      id,
                                      counts.target(),
                                      counts.active(),
                                      counts.failed(),
-                                     blueprintStatusUrl(id));
+                                     blueprintStatusUrl(id),
+                                     rejectedStreamBindings(published));
     }
 
-    private BlueprintResponse deployBlueprintResponse(ExpandedBlueprint expanded) {
-        var counts = instanceCounts(expanded);
-        var id = expanded.id().asString();
+    private BlueprintResponse deployBlueprintResponse(PublishedBlueprint published) {
+        var counts = instanceCounts(published.blueprint());
+        var id = published.blueprint().id().asString();
 
         return new BlueprintResponse(deployStatus(counts),
                                      id,
                                      counts.target(),
                                      counts.active(),
                                      counts.failed(),
-                                     blueprintStatusUrl(id));
+                                     blueprintStatusUrl(id),
+                                     rejectedStreamBindings(published));
+    }
+
+    /// #1336: every `[streams.*]` declaration the publish did not bind, by field and rule, so the
+    /// operator learns at deploy time which alias will fail and why — not from a later
+    /// `UnboundStreamAlias` on the slice.
+    private static List<RejectedStreamBinding> rejectedStreamBindings(PublishedBlueprint published) {
+        return published.rejectedStreamBindings()
+                        .stream()
+                        .map(failure -> new RejectedStreamBinding(failure.field(),
+                                                                  failure.rule(),
+                                                                  failure.message()))
+                        .toList();
     }
 
     private static String deployStatus(InstanceCounts counts) {
