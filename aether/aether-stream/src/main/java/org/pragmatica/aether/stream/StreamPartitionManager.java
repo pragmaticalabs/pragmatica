@@ -1282,7 +1282,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                 payload,
                                                                                 timestamp,
                                                                                 ownerEpoch,
-                                                                                admitOwnerWrite(streamName, partition, minAcks)))
+                                                                                admitOwnerWrite(streamName,
+                                                                                                partition,
+                                                                                                minAcks)))
                                  .flatMap(this::awaitDurable)
                                  .fold(cause -> handleDrop(cause, streamName, partition),
                                        Result::success);
