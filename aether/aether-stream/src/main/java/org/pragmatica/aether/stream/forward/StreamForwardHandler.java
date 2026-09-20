@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.forward;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
@@ -21,6 +22,8 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
 import org.slf4j.Logger;
@@ -121,14 +124,14 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onPublishForward(PublishForward request) {
-        partitionManager.publishForwarded(request.streamName(),
-                                          request.partition(),
-                                          request.payload(),
-                                          request.timestamp())
-                        .async()
-                        .flatMap(offset -> awaitMinSync(request, offset))
-                        .onSuccess(offset -> sendSuccessResponse(request, offset))
-                        .onFailure(cause -> sendPublishFailure(request, cause));
+        ensureReplicaFloor(request).flatMap(_ -> partitionManager.publishForwarded(request.streamName(),
+                                                                                   request.partition(),
+                                                                                   request.payload(),
+                                                                                   request.timestamp()))
+                          .async()
+                          .flatMap(offset -> awaitMinSync(request, offset))
+                          .onSuccess(offset -> sendSuccessResponse(request, offset))
+                          .onFailure(cause -> sendPublishFailure(request, cause));
     }
 
     /// The min-sync barrier belongs HERE, on the owner, because this is where the ack for a forwarded
@@ -140,6 +143,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// the node owning partitions 0 and 2 lost BOTH partitions whole — 41 acked events gone, with the
     /// designated replica still `SYNCING` and never having acked a single one. Gating here fixes both
     /// writer paths at once and makes a forwarded ack mean exactly what a local ack means.
+    ///
+    /// #1236: this barrier runs AFTER the append, so a failure here is an unknown outcome
+    /// ([PublishOutcomeUnknown]), never a clean failure — the clean refusal is [#ensureReplicaFloor].
     private Promise<Long> awaitMinSync(PublishForward request, long offset) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(request.streamName());
 
@@ -148,8 +154,20 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                    request.partition(),
                                                    offset,
                                                    minSyncReplicas - 1)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
                                  .map(_ -> offset)
                : Promise.success(offset);
+    }
+
+    /// #1236: the replica floor is checked BEFORE the owner appends, so a forwarded publish refused with
+    /// `NOT_ENOUGH_REPLICAS` is genuinely not in the log. One window stays open by construction: a
+    /// stream this owner has not yet materialized reports `min-sync` 0 here, [StreamPartitionManager#publishForwarded]
+    /// then materializes and appends, and a floor that cannot be met surfaces from [#awaitMinSync] as an
+    /// unknown outcome — which is what it is, since the event was appended.
+    private Result<Unit> ensureReplicaFloor(PublishForward request) {
+        return partitionManager.ensureReplicaFloor(request.streamName(),
+                                                   request.partition(),
+                                                   partitionManager.minSyncReplicasFor(request.streamName()) - 1);
     }
 
     @Contract
@@ -217,14 +235,30 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// Owner-side forwarded-publish failure dispatch (write-forward race fix): a cause the owner deems
     /// transient — its committed config not yet visible ({@link StreamError.StreamConfigNotYetVisible}) or a
     /// capacity-deferred partition ({@link ResourceCapacityExhausted}) — is sent as a RETRYABLE response so
-    /// the forwarder backs off and retries a bounded number of times; every other cause is permanent.
+    /// the forwarder backs off and retries a bounded number of times. A [PublishOutcomeUnknown] (#1236) —
+    /// the barrier failed AFTER this owner appended — is sent as outcome-unknown, so the sender does not
+    /// report a clean failure for an event that may be in the log. Every other cause is permanent.
     @Contract
     private void sendPublishFailure(PublishForward request, Cause cause) {
         if (isRetryable(cause)) {
             sendRetryableResponse(request, cause.message());
+        } else if (cause instanceof PublishOutcomeUnknown) {
+            sendOutcomeUnknownResponse(request, cause.message());
         } else {
             sendFailureResponse(request, cause.message());
         }
+    }
+
+    @Contract
+    private void sendOutcomeUnknownResponse(PublishForward request, String errorMessage) {
+        var response = PublishForwardResponse.outcomeUnknownResponse(selfNodeId, request.correlationId(), errorMessage);
+
+        transport.send(request.sender(), response);
+        log.warn("Forwarded publish outcome unknown for {}[{}] correlationId={}: {}",
+                 request.streamName(),
+                 request.partition(),
+                 request.correlationId(),
+                 errorMessage);
     }
 
     private static boolean isRetryable(Cause cause) {

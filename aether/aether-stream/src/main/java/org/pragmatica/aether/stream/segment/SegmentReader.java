@@ -8,7 +8,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Stream;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Option;
@@ -65,9 +64,13 @@ public final class SegmentReader {
                                                         List<SegmentIndex.SegmentRef> refs,
                                                         long fromOffset,
                                                         int maxEvents) {
-        return readNextSegment(streamName, partition, refs, 0, fromOffset, maxEvents, List.of());
+        return readNextSegment(streamName, partition, refs, 0, fromOffset, maxEvents, new ArrayList<>());
     }
 
+    /// #1265: `accumulated` is ONE mutable list threaded through the whole read and flattened once at
+    /// the end, instead of an immutable concatenation per segment (n·(k+1) reference copies for n events
+    /// across k segments). It is confined to this read: segments are fetched strictly one after another,
+    /// each step running only once the previous one completed, and the list escapes only as the final copy.
     private Promise<List<RawEvent>> readNextSegment(String streamName,
                                                     int partition,
                                                     List<SegmentIndex.SegmentRef> refs,
@@ -76,7 +79,7 @@ public final class SegmentReader {
                                                     int remaining,
                                                     List<RawEvent> accumulated) {
         if (refIndex >= refs.size() || remaining <= 0) {
-            return Promise.success(accumulated);
+            return Promise.success(List.copyOf(accumulated));
         }
 
         var ref = refs.get(refIndex);
@@ -87,15 +90,15 @@ public final class SegmentReader {
                       .flatMap(storage::get)
                       .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
                       .map(bytes -> decryptAndDecompress(bytes, ref))
-                      .map(bytes -> deserializeAndFilter(bytes, fromOffset, remaining))
-                      .flatMap(events -> continueWithImmutableAccumulation(streamName,
-                                                                           partition,
-                                                                           refs,
-                                                                           refIndex,
-                                                                           fromOffset,
-                                                                           remaining,
-                                                                           accumulated,
-                                                                           events));
+                      .flatMap(bytes -> deserializeAndFilter(refName, bytes, fromOffset, remaining).async())
+                      .flatMap(events -> continueWithAccumulation(streamName,
+                                                                  partition,
+                                                                  refs,
+                                                                  refIndex,
+                                                                  fromOffset,
+                                                                  remaining,
+                                                                  accumulated,
+                                                                  events));
     }
 
     private byte[] decryptAndDecompress(byte[] data, SegmentIndex.SegmentRef ref) {
@@ -166,43 +169,101 @@ public final class SegmentReader {
         return Compression.NONE;
     }
 
-    private Promise<List<RawEvent>> continueWithImmutableAccumulation(String streamName,
-                                                                      int partition,
-                                                                      List<SegmentIndex.SegmentRef> refs,
-                                                                      int refIndex,
-                                                                      long fromOffset,
-                                                                      int remaining,
-                                                                      List<RawEvent> accumulated,
-                                                                      List<RawEvent> events) {
-        var combined = List.copyOf(Stream.concat(accumulated.stream(), events.stream()).toList());
-        var newRemaining = remaining - events.size();
+    private Promise<List<RawEvent>> continueWithAccumulation(String streamName,
+                                                             int partition,
+                                                             List<SegmentIndex.SegmentRef> refs,
+                                                             int refIndex,
+                                                             long fromOffset,
+                                                             int remaining,
+                                                             List<RawEvent> accumulated,
+                                                             List<RawEvent> events) {
+        accumulated.addAll(events);
 
-        return readNextSegment(streamName, partition, refs, refIndex + 1, fromOffset, newRemaining, combined);
+        return readNextSegment(streamName,
+                               partition,
+                               refs,
+                               refIndex + 1,
+                               fromOffset,
+                               remaining - events.size(),
+                               accumulated);
     }
 
     private static String buildRefName(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         return "streams/" + streamName + "/" + partition + "/" + ref.startOffset() + "-" + ref.endOffset();
     }
 
-    static List<RawEvent> deserializeAndFilter(byte[] serialized, long fromOffset, int maxEvents) {
+    /// Decode `[offset:8][timestamp:8][len:4][data:len]` records, keeping at most `maxEvents` whose offset
+    /// is at or past `fromOffset`.
+    ///
+    /// #1265: the header is parsed first and a record below `fromOffset` is skipped by moving the buffer
+    /// position — no payload is allocated or copied for it. Before, every skipped payload was allocated
+    /// and copied, so a sequential consumer reading a segment m events at a time allocated the segment
+    /// about S/(2m) times over.
+    ///
+    /// A `len` that is negative or exceeds the remaining bytes FAILS the decode with
+    /// [SegmentError.CorruptRecord], before any allocation. Stopping and keeping the records already decoded
+    /// would be a truncated success: the read would carry on into the next segment and the offsets between
+    /// the corrupt record and that segment would vanish without anything failing. For the same reason,
+    /// bytes left over when fewer than `maxEvents` were kept — too few for a record header, since a
+    /// well-formed segment ends on a record boundary — fail it as a truncated header.
+    static Result<List<RawEvent>> deserializeAndFilter(String segment,
+                                                       byte[] serialized,
+                                                       long fromOffset,
+                                                       int maxEvents) {
         var buffer = ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN);
         var result = new ArrayList<RawEvent>();
 
         while (buffer.remaining() >= PER_EVENT_HEADER && result.size() < maxEvents) {
-            var event = readSingleEvent(buffer);
+            var position = buffer.position();
+            var offset = buffer.getLong();
+            var timestamp = buffer.getLong();
+            var len = buffer.getInt();
 
-            if (event.offset() >= fromOffset) {
-                result.add(event);
+            if (len < 0 || len > buffer.remaining()) {
+                return corruptRecord(segment, position, offset, len, buffer.remaining());
             }
+
+            if (offset < fromOffset) {
+                buffer.position(buffer.position() + len);
+                continue;
+            }
+
+            result.add(readPayload(buffer, offset, timestamp, len));
         }
 
-        return List.copyOf(result);
+        return result.size() < maxEvents && buffer.hasRemaining()
+               ? truncatedHeader(segment, buffer.position(), buffer.remaining())
+               : Result.success(List.copyOf(result));
     }
 
-    private static RawEvent readSingleEvent(ByteBuffer buffer) {
-        var offset = buffer.getLong();
-        var timestamp = buffer.getLong();
-        var len = buffer.getInt();
+    private static Result<List<RawEvent>> truncatedHeader(String segment, int position, int remaining) {
+        log.error("Segment {} ends in a truncated record header at byte position {}: {} of {} header bytes present;"
+                 + " failing the read",
+                  segment,
+                  position,
+                  remaining,
+                  PER_EVENT_HEADER);
+
+        return SegmentError.CorruptRecord.TRUNCATED_HEADER.apply(segment, position, remaining).result();
+    }
+
+    private static Result<List<RawEvent>> corruptRecord(String segment,
+                                                        int position,
+                                                        long offset,
+                                                        int len,
+                                                        int remaining) {
+        log.error("Segment {} has a corrupt record at byte position {} (offset field {}): declared payload length {}"
+                 + " with {} bytes remaining; failing the read",
+                  segment,
+                  position,
+                  offset,
+                  len,
+                  remaining);
+
+        return SegmentError.CorruptRecord.FACTORY.apply(segment, position, len).result();
+    }
+
+    private static RawEvent readPayload(ByteBuffer buffer, long offset, long timestamp, int len) {
         var data = new byte[len];
 
         buffer.get(data);

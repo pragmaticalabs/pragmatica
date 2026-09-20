@@ -15,6 +15,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -113,9 +114,15 @@ final class EntityFold {
     /// An instance is mutated in place only by the append path and by catch-up, and both only ever move it
     /// FORWARD. It is never seeded in place — see [PartitionFold] for why that distinction carries the
     /// durability guarantee.
+    ///
+    /// `keyApplied` holds, per key, the newest offset applied to it that the watermark does not yet cover
+    /// — the per-key half of the stale-apply guard; see [#applyInKeyOrder]. An entry is dropped once the
+    /// watermark covers it — at once by [#forgetCovered], or by the next [#checkpointCandidate] for an
+    /// offset that parked — so the map tracks keys written above the watermark, not every key ever written.
     private static final class FoldedPartition {
         private final Map<String, byte[]> state = new ConcurrentHashMap<>();
         private final Map<String, Map<String, PendingTimer>> timers = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, Long> keyApplied = new ConcurrentHashMap<>();
         private final ConcurrentSkipListSet<Long> appliedAhead = new ConcurrentSkipListSet<>();
         private final AtomicLong appliedThrough = new AtomicLong(-1L);
     }
@@ -200,10 +207,12 @@ final class EntityFold {
     ///
     /// The published fold is read ONCE, so the record and the watermark step land on the SAME instance and
     /// the watermark can never claim an offset whose record went to a different one. An offset the
-    /// instance already covers is skipped outright: a rebuild that published while this append was in
-    /// flight has already replayed it FROM THE LOG, along with everything after it, so re-applying would
-    /// regress a key the replay has since advanced. This is the apply-or-account rule [#applyCaughtUp]
-    /// states, on the other side of the same race.
+    /// instance already covers is skipped: a rebuild that published while this append was in flight has
+    /// already replayed it FROM THE LOG, along with everything after it, so re-applying would regress a
+    /// key the replay has since advanced. This is the apply-or-account rule [#applyCaughtUp] states, on
+    /// the other side of the same race. The skip is decided inside [#applyInKeyOrder], under the key's own
+    /// guard, so the check and the write are atomic (#1241); a skipped offset is covered already, so
+    /// accounting it again is a no-op.
     ///
     /// The apply can fail only on a timer record whose payload this build cannot parse, which on THIS
     /// path means bytes this same process encoded moments ago — a build defect, not data it met. The
@@ -222,12 +231,82 @@ final class EntityFold {
     void apply(int partition, long offset, EntityLogRecord record) {
         var data = publishedFold(partition);
 
-        if (offset <= data.appliedThrough.get()) {
-            return;
+        applyInKeyOrder(data, record, offset).onSuccess(_ -> advanceApplied(data, offset))
+                       .onSuccess(_ -> forgetCovered(data,
+                                                     record.key(),
+                                                     offset))
+                       .onFailure(cause -> logUnapplicable(offset, record, cause));
+    }
+
+    /// The append path's write: apply `record` unless the watermark covers `offset` or the key already
+    /// holds a NEWER offset from this path, with the check and the write made atomic per key by running
+    /// both inside `keyApplied.compute` for that key (#1241).
+    ///
+    /// The race it guards: an append-path `apply(N)` that stalls between being called and writing, while
+    /// `N+1` for the same key is applied, would write `N`'s state over `N+1`'s; the watermark does not move
+    /// for it, so nothing ever re-applies `N+1`, and the next checkpoint persists the regression. With the
+    /// apply a step of the append's chain the entity's per-key serialization already orders one key's
+    /// appends, so this is defence in depth rather than the fix itself.
+    ///
+    /// Skipping a superseded record loses nothing, because the append path applies ONE key's offsets in
+    /// order and only this path writes `keyApplied`. So a key holding an offset newer than `N` got it after
+    /// `N`'s apply had already run, and the late arrival is a duplicate. The offset is still ACCOUNTED by
+    /// the caller. That argument needs `N`'s apply to have SUCCEEDED, which the append path cannot promise
+    /// — so catch-up, the path that must replay a failed record (#701), does not go through this guard;
+    /// see [#applyCaughtUp].
+    ///
+    /// Catch-up writes no per-key entry, so the watermark is what refuses a stale apply of an offset
+    /// catch-up has already applied, and what lets [#forgetCovered] drop an entry once the watermark
+    /// covers it.
+    private static Result<Unit> applyInKeyOrder(FoldedPartition data, EntityLogRecord record, long offset) {
+        var outcome = new AtomicReference<>(Result.unitResult());
+
+        data.keyApplied.compute(record.key(),
+                                (_, applied) -> applyUnlessSuperseded(data, record, offset, applied, outcome));
+
+        return outcome.get();
+    }
+
+    /// The `compute` remapping for [#applyInKeyOrder]. Returns the offset the key now holds, or the
+    /// previous value unchanged — `null` when there was none, which leaves the key absent, per the
+    /// `ConcurrentHashMap#compute` contract. A failed apply leaves the entry as it was.
+    @NullReturn
+    private static Long applyUnlessSuperseded(FoldedPartition data,
+                                              EntityLogRecord record,
+                                              long offset,
+                                              Long applied,
+                                              AtomicReference<Result<Unit>> outcome) {
+        if (isSuperseded(data, offset, Option.option(applied))) {
+            return applied;
         }
 
-        applyToState(data, record).onSuccess(_ -> advanceApplied(data, offset))
-                    .onFailure(cause -> logUnapplicable(offset, record, cause));
+        outcome.set(applyToState(data, record));
+
+        return outcome.get()
+                      .isSuccess()
+               ? Long.valueOf(offset)
+               : applied;
+    }
+
+    private static boolean isSuperseded(FoldedPartition data, long offset, Option<Long> applied) {
+        return offset <= data.appliedThrough.get() || applied.filter(newest -> newest >= offset)
+                                                             .isPresent();
+    }
+
+    /// Drop the key's entry once the watermark covers it — see [#applyInKeyOrder] for why that is safe. A
+    /// conditional remove, so an entry a newer apply has since replaced is left alone. An offset that
+    /// PARKED is not covered yet and keeps its entry; [#checkpointCandidate] sweeps those.
+    private static Unit forgetCovered(FoldedPartition data, String key, long offset) {
+        if (offset <= data.appliedThrough.get()) {
+            data.keyApplied.remove(key, offset);
+        }
+
+        return unit();
+    }
+
+    /// Package-private test hook: how many keys hold a per-key offset above the watermark.
+    int trackedKeyOffsets(int partition) {
+        return publishedFold(partition).keyApplied.size();
     }
 
     @Contract
@@ -384,11 +463,17 @@ final class EntityFold {
     /// contents are read after, so the snapshot is at or AHEAD of the offset it is filed under. Recovery
     /// handles that direction, because replaying a record already present in the snapshot is idempotent for
     /// every op.
+    ///
+    /// It also sweeps the per-key offsets the settled watermark now covers — the entries of offsets that
+    /// PARKED when applied, which [#forgetCovered] could not drop at the time. Periodic like the re-drain,
+    /// so such an entry outlives its coverage by at most one checkpoint interval.
     Option<CheckpointCandidate> checkpointCandidate(int partition) {
         var data = publishedFold(partition);
 
         drain(data);
         var through = data.appliedThrough.get();
+
+        data.keyApplied.values().removeIf(applied -> applied <= through);
 
         return through < 0L
                ? Option.none()
@@ -517,6 +602,15 @@ final class EntityFold {
     /// watermark advances monotonically via max. Timer records are subject to the SAME skip — re-applying
     /// a schedule the append path already applied would be harmless, but re-applying one the owner has
     /// since cancelled would resurrect a consumed timer.
+    ///
+    /// The write deliberately does NOT go through the append path's per-key guard, [#applyInKeyOrder].
+    /// That guard skips an offset once the key holds a newer one, which is sound only if the older apply
+    /// succeeded. When it failed (#701) — an unapplicable record at `N`, then a successful append of `N+1`
+    /// for the same key — the guard would account `N` as superseded, and the watermark and checkpoint
+    /// would step over a committed record nothing applied. Here that record is replayed and its failure
+    /// refuses the gate. Catch-up needs no per-key check of its own: it applies in log order from the
+    /// watermark and accounts each offset as it goes, and that watermark is what the append-path guard
+    /// re-checks, so a late append-path apply cannot land over what catch-up wrote.
     private static Result<Unit> applyCaughtUp(FoldedPartition data, EntityLogRecord record, long offset) {
         return offset > data.appliedThrough.get() && !data.appliedAhead.remove(offset)
                ? applyToState(data, record).onSuccess(_ -> account(data, offset))

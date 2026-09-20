@@ -2,13 +2,19 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.stream.segment;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
+
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -22,24 +28,18 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.file.Path;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.LockSupport;
-import java.util.function.BooleanSupplier;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.lang.Unit.unit;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 class SegmentSealerTest {
-
     private static final String STREAM = "test-stream";
     private static final int PARTITION = 0;
     private static final long AWAIT_MS = 10_000;
@@ -57,25 +57,23 @@ class SegmentSealerTest {
 
     private Promise<Unit> captureSegment(SealedSegment segment) {
         captured.add(segment);
+
         return Promise.success(unit());
     }
 
     @Nested
     class OnEviction {
-
         @Test
         void onEviction_createsSegmentWithCorrectOffsets() {
-            var events = List.of(
-                RawEvent.rawEvent(10L, "a".getBytes(), 1000L),
-                RawEvent.rawEvent(11L, "b".getBytes(), 2000L),
-                RawEvent.rawEvent(12L, "c".getBytes(), 3000L)
-            );
+            var events = List.of(RawEvent.rawEvent(10L, "a".getBytes(), 1000L),
+                                 RawEvent.rawEvent(11L, "b".getBytes(), 2000L),
+                                 RawEvent.rawEvent(12L, "c".getBytes(), 3000L));
 
             sealer.onEviction(STREAM, PARTITION, events);
             awaitCondition(() -> !captured.isEmpty());
-
             assertThat(captured).hasSize(1);
             var segment = captured.getFirst();
+
             assertThat(segment.streamName()).isEqualTo(STREAM);
             assertThat(segment.partition()).isEqualTo(PARTITION);
             assertThat(segment.startOffset()).isEqualTo(10L);
@@ -89,14 +87,10 @@ class SegmentSealerTest {
         void onEviction_serializedEventsContainAllData() {
             var data1 = "hello".getBytes();
             var data2 = "world".getBytes();
-            var events = List.of(
-                RawEvent.rawEvent(0L, data1, 100L),
-                RawEvent.rawEvent(1L, data2, 200L)
-            );
+            var events = List.of(RawEvent.rawEvent(0L, data1, 100L), RawEvent.rawEvent(1L, data2, 200L));
 
             sealer.onEviction(STREAM, PARTITION, events);
             awaitCondition(() -> !captured.isEmpty());
-
             var serialized = captured.getFirst().serializedEvents();
             var buffer = ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN);
 
@@ -110,7 +104,6 @@ class SegmentSealerTest {
 
             sealer.onEviction(STREAM, PARTITION, events);
             awaitCondition(() -> !captured.isEmpty());
-
             assertThat(captured).hasSize(1);
             assertThat(captured.getFirst().startOffset()).isEqualTo(5L);
         }
@@ -118,7 +111,6 @@ class SegmentSealerTest {
         @Test
         void onEviction_emptyEvents_noSealCall() {
             sealer.onEviction(STREAM, PARTITION, List.of());
-
             assertThat(captured).isEmpty();
         }
 
@@ -128,8 +120,8 @@ class SegmentSealerTest {
 
             sealer.onEviction(STREAM, PARTITION, events);
             awaitCondition(() -> !captured.isEmpty());
-
             var segment = captured.getFirst();
+
             assertThat(segment.startOffset()).isEqualTo(42L);
             assertThat(segment.endOffset()).isEqualTo(42L);
             assertThat(segment.minTimestamp()).isEqualTo(9999L);
@@ -151,14 +143,19 @@ class SegmentSealerTest {
         void append_slowSinkUnderCap_neverRefused_andRingReclaimsImmediately() {
             var slowSink = new ManualSink();
 
-            try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM, PARTITION, RING_EVENTS, 4096, segmentSealer(slowSink))) {
+            try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM,
+                                                                PARTITION,
+                                                                RING_EVENTS,
+                                                                4096,
+                                                                segmentSealer(slowSink))) {
                 for (int i = 0; i < APPENDS; i++) {
-                    ring.append(("e-" + i).getBytes(), 1000L + i)
+                    ring.append(("e-" + i).getBytes(),
+                                1000L + i)
                         .onFailure(cause -> fail("append refused under the pending-seal cap: " + cause.message()));
                 }
 
                 assertThat(ring.eventCount()).isEqualTo((long) RING_EVENTS);
-                assertThat(ring.tailOffset()).isEqualTo((long) (APPENDS - RING_EVENTS));
+                assertThat(ring.tailOffset()).isEqualTo((long)(APPENDS - RING_EVENTS));
             }
         }
     }
@@ -167,23 +164,25 @@ class SegmentSealerTest {
     /// previous one succeeded — so the sealed range never gains a later segment past an earlier pending one.
     @Nested
     class OrderedSealing {
-
         @Test
         void onEviction_secondSegmentNotSentUntilFirstSealed_sealsCompleteInOffsetOrder() {
             var sink = new ManualSink();
             var orderedSealer = segmentSealer(sink);
 
-            orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
-            orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(1L, "b".getBytes(), 2L)));
-            orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(2L, "c".getBytes(), 3L)));
+            orderedSealer.onEviction(STREAM,
+                                     PARTITION,
+                                     List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
+            orderedSealer.onEviction(STREAM,
+                                     PARTITION,
+                                     List.of(RawEvent.rawEvent(1L, "b".getBytes(), 2L)));
+            orderedSealer.onEviction(STREAM,
+                                     PARTITION,
+                                     List.of(RawEvent.rawEvent(2L, "c".getBytes(), 3L)));
             awaitCondition(() -> sink.calls() == 1);
-
             assertThat(sink.startOffsets()).containsExactly(0L);
-
             sink.succeed(0);
             awaitCondition(() -> sink.calls() == 2);
             assertThat(sink.startOffsets()).containsExactly(0L, 1L);
-
             sink.succeed(1);
             awaitCondition(() -> sink.calls() == 3);
             assertThat(sink.startOffsets()).containsExactly(0L, 1L, 2L);
@@ -201,14 +200,15 @@ class SegmentSealerTest {
             var attempts = new AtomicInteger();
             var retryingSealer = segmentSealer(segment -> failFirstAttempts(attempts, segment));
 
-            retryingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(7L, "x".getBytes(), 1L)))
+            retryingSealer.onEviction(STREAM,
+                                      PARTITION,
+                                      List.of(RawEvent.rawEvent(7L,
+                                                                "x".getBytes(),
+                                                                1L)))
                           .onFailure(cause -> fail(cause.message()));
-
             assertThat(retryingSealer.holdsUnsealed(STREAM, PARTITION, 7L)).isTrue();
-
             awaitCondition(() -> !captured.isEmpty());
             awaitCondition(() -> retryingSealer.pendingBytes() == 0);
-
             assertThat(captured.getFirst().startOffset()).isEqualTo(7L);
             assertThat(retryingSealer.sealFailureCount()).isEqualTo(FAILURES);
             assertThat(attempts.get()).isEqualTo(FAILURES + 1);
@@ -244,20 +244,19 @@ class SegmentSealerTest {
                     ring.append(("e-" + i).getBytes(), 1000L + i).onFailure(cause -> fail(cause.message()));
                 }
 
-                ring.append("e-7".getBytes(), 1007L)
+                ring.append("e-7".getBytes(),
+                            1007L)
                     .onSuccess(offset -> fail("expected SEALING_BEHIND, appended at " + offset))
                     .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.SEALING_BEHIND));
-
                 assertThat(cappedSealer.refusalCount()).isEqualTo(1L);
                 assertThat(ring.tailOffset()).isEqualTo(3L);
                 assertThat(ring.eventCount()).isEqualTo((long) RING_EVENTS);
                 assertThat(ring.read(3, RING_EVENTS).unwrap()).hasSize(RING_EVENTS);
-
                 awaitCondition(() -> sink.calls() == 1);
                 sink.succeed(0);
                 awaitCondition(() -> cappedSealer.pendingBytes() < CAP_BYTES);
-
-                ring.append("e-7".getBytes(), 1007L)
+                ring.append("e-7".getBytes(),
+                            1007L)
                     .onFailure(cause -> fail("still refused after a pending seal landed: " + cause.message()))
                     .onSuccess(offset -> assertThat(offset).isEqualTo(7L));
             }
@@ -270,27 +269,25 @@ class SegmentSealerTest {
     /// offset is in neither the sealer nor the index, and a read of it is misreported.
     @Nested
     class ReleaseAfterIndex {
-
         @Test
         void seal_retainedCopyReleasedOnlyAfterIndexUpdate() {
-            var gate = Promise.<Unit>promise();
+            var gate = Promise.<Unit> promise();
             var index = new SegmentIndex();
             var heldAtIndexUpdate = new AtomicBoolean(false);
             var sealerRef = new AtomicReference<SegmentSealer>();
             var orderedSealer = segmentSealer(segment -> gate.map(_ -> indexWhileObserving(index,
-                                                                                            segment,
-                                                                                            sealerRef,
-                                                                                            heldAtIndexUpdate)));
+                                                                                           segment,
+                                                                                           sealerRef,
+                                                                                           heldAtIndexUpdate)));
 
             sealerRef.set(orderedSealer);
-            orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(3L, "a".getBytes(), 1L)));
-
+            orderedSealer.onEviction(STREAM,
+                                     PARTITION,
+                                     List.of(RawEvent.rawEvent(3L, "a".getBytes(), 1L)));
             assertThat(orderedSealer.holdsUnsealed(STREAM, PARTITION, 3L)).isTrue();
             assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(-1L);
-
             gate.succeed(unit());
             awaitCondition(() -> !orderedSealer.holdsUnsealed(STREAM, PARTITION, 3L));
-
             assertThat(heldAtIndexUpdate.get()).as("sealer still held the copy when the index was updated").isTrue();
             assertThat(index.findSegment(STREAM, PARTITION, 3L).isPresent()).isTrue();
             assertThat(orderedSealer.pendingBytes()).isZero();
@@ -300,7 +297,10 @@ class SegmentSealerTest {
                                                 SealedSegment segment,
                                                 AtomicReference<SegmentSealer> sealer,
                                                 AtomicBoolean heldAtIndexUpdate) {
-            heldAtIndexUpdate.set(sealer.get().holdsUnsealed(segment.streamName(), segment.partition(), segment.startOffset()));
+            heldAtIndexUpdate.set(sealer.get()
+                                        .holdsUnsealed(segment.streamName(),
+                                                       segment.partition(),
+                                                       segment.startOffset()));
             index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
 
             return unit();
@@ -318,28 +318,32 @@ class SegmentSealerTest {
             var sink = new ManualSink();
             var deletingSealer = segmentSealer(sink);
 
-            deletingSealer.onEviction(DOOMED, PARTITION, List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
-            deletingSealer.onEviction(DOOMED, PARTITION, List.of(RawEvent.rawEvent(1L, "b".getBytes(), 2L)));
-            deletingSealer.onEviction(DOOMED, 1, List.of(RawEvent.rawEvent(0L, "c".getBytes(), 3L)));
-            deletingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(0L, "d".getBytes(), 4L)));
+            deletingSealer.onEviction(DOOMED,
+                                      PARTITION,
+                                      List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
+            deletingSealer.onEviction(DOOMED,
+                                      PARTITION,
+                                      List.of(RawEvent.rawEvent(1L, "b".getBytes(), 2L)));
+            deletingSealer.onEviction(DOOMED,
+                                      1,
+                                      List.of(RawEvent.rawEvent(0L, "c".getBytes(), 3L)));
+            deletingSealer.onEviction(STREAM,
+                                      PARTITION,
+                                      List.of(RawEvent.rawEvent(0L, "d".getBytes(), 4L)));
             awaitCondition(() -> sink.calls() == 3);
-
             var oneSegment = deletingSealer.pendingBytes() / 4;
 
             deletingSealer.onStreamDeleted(DOOMED);
-
             assertThat(deletingSealer.pendingBytes()).isEqualTo(oneSegment);
             assertThat(deletingSealer.holdsUnsealed(DOOMED, PARTITION, 1L)).isFalse();
             assertThat(deletingSealer.holdsUnsealed(STREAM, PARTITION, 0L)).isTrue();
-
-            sink.succeed(0);
-            sink.succeed(1);
-
+            // By stream, never by call index: the three partitions drain on their own tasks, so the order in
+            // which their seals reach the sink is not fixed (CI caught index-based completion failing here).
+            sink.succeedFor(DOOMED);
             assertThat(deletingSealer.pendingBytes()).as("a cancelled seal that lands releases nothing twice")
-                                                     .isEqualTo(oneSegment);
+                      .isEqualTo(oneSegment);
             assertThat(sink.calls()).as("the doomed partition's queued segment is never sent").isEqualTo(3);
-
-            sink.succeed(2);
+            sink.succeedFor(STREAM);
             awaitCondition(() -> deletingSealer.pendingBytes() == 0);
         }
 
@@ -348,15 +352,15 @@ class SegmentSealerTest {
             var attempts = new AtomicInteger();
             var failingSealer = segmentSealer(_ -> failAndCount(attempts));
 
-            failingSealer.onEviction(DOOMED, PARTITION, List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
+            failingSealer.onEviction(DOOMED,
+                                     PARTITION,
+                                     List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
             awaitCondition(() -> failingSealer.sealFailureCount() >= 2);
-
             failingSealer.onStreamDeleted(DOOMED);
             var attemptsAtDeletion = attempts.get();
             var failuresAtDeletion = failingSealer.sealFailureCount();
 
             LockSupport.parkNanos(RETRY_WINDOW_NANOS);
-
             // Both failures were counted before deletion and the next retry is ~200 ms out, so nothing is in
             // flight: the retry must stop at the cancelled check, neither calling the sink nor failing again
             // (a counted failure) on the heap copy the deletion dropped.
@@ -373,17 +377,22 @@ class SegmentSealerTest {
             var managedSealer = segmentSealer(neverSeals);
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, managedSealer);
 
-            manager.createStream(StreamConfig.streamConfig(DOOMED, 1, RetentionPolicy.retentionPolicy(4, 4096, 600_000), "earliest"))
+            manager.createStream(StreamConfig.streamConfig(DOOMED,
+                                                           1,
+                                                           RetentionPolicy.retentionPolicy(4, 4096, 600_000),
+                                                           "earliest"))
                    .onFailure(cause -> fail(cause.message()));
             for (int i = 0; i < 10; i++) {
-                manager.publishLocal(DOOMED, 0, ("e-" + i).getBytes(), 1000L + i).onFailure(cause -> fail(cause.message()));
+                manager.publishLocal(DOOMED,
+                                     0,
+                                     ("e-" + i).getBytes(),
+                                     1000L + i)
+                       .onFailure(cause -> fail(cause.message()));
             }
 
             assertThat(managedSealer.pendingBytes()).isPositive();
-
             manager.destroyStream(DOOMED).onFailure(cause -> fail(cause.message()));
             manager.close();
-
             assertThat(managedSealer.pendingBytes()).isZero();
         }
 
@@ -411,12 +420,16 @@ class SegmentSealerTest {
             var wal = walWith(walDir, 0, 1, 2, 3, 4, 7, 8, 9);
 
             spillingSealer.walAttached(STREAM, PARTITION, wal);
-            spillingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(5L, "a".getBytes(), 1L),
-                                                                  RawEvent.rawEvent(6L, "b".getBytes(), 2L)))
+            spillingSealer.onEviction(STREAM,
+                                      PARTITION,
+                                      List.of(RawEvent.rawEvent(5L,
+                                                                "a".getBytes(),
+                                                                1L),
+                                              RawEvent.rawEvent(6L,
+                                                                "b".getBytes(),
+                                                                2L)))
                           .onFailure(cause -> fail("a partition with a WAL must never refuse: " + cause.message()));
-
             awaitCondition(() -> spillingSealer.sealFailureCount() >= 1);
-
             assertThat(sink.calls()).as("no segment may reach the sink").isZero();
             assertThat(spillingSealer.spillCount()).isEqualTo(1L);
             assertThat(spillingSealer.pendingBytes()).isZero();
@@ -441,17 +454,18 @@ class SegmentSealerTest {
             var wal = walWith(walDir, 0, 1, 2);
 
             sealer.walAttached(STREAM, PARTITION, wal);
-            sealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(3L, "late".getBytes(), 3L)))
+            sealer.onEviction(STREAM,
+                              PARTITION,
+                              List.of(RawEvent.rawEvent(3L,
+                                                        "late".getBytes(),
+                                                        3L)))
                   .onFailure(cause -> fail("a partition with a WAL must never refuse: " + cause.message()));
-
             assertThat(wal.durableOffset()).isEqualTo(2L);
             assertThat(sealer.spillCount()).as("nothing durable to spill").isZero();
             assertThat(sealer.pendingBytes()).as("the not-yet-durable copy is kept past the cap").isPositive();
-
             awaitCondition(() -> sink.calls() == 1);
             sink.succeed(0);
             awaitCondition(() -> sealer.pendingBytes() == 0);
-
             assertThat(sink.startOffsets()).containsExactly(3L);
             assertThat(sealer.sealFailureCount()).isZero();
             wal.close();
@@ -472,28 +486,28 @@ class SegmentSealerTest {
     /// the partition's queue, advancing as each seal lands.
     @Nested
     class LowestUnsealed {
-
         @Test
         void lowestUnsealed_noneWhenEmpty_thenLowestPending_thenAdvancesAsSealsLand() {
             var sink = new ManualSink();
             var trackingSealer = segmentSealer(sink);
 
             assertThat(trackingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.none());
-
-            trackingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(10L, "a".getBytes(), 1L),
-                                                                  RawEvent.rawEvent(11L, "b".getBytes(), 2L)));
-            trackingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(12L, "c".getBytes(), 3L)));
+            trackingSealer.onEviction(STREAM,
+                                      PARTITION,
+                                      List.of(RawEvent.rawEvent(10L, "a".getBytes(), 1L),
+                                              RawEvent.rawEvent(11L, "b".getBytes(), 2L)));
+            trackingSealer.onEviction(STREAM,
+                                      PARTITION,
+                                      List.of(RawEvent.rawEvent(12L, "c".getBytes(), 3L)));
             awaitCondition(() -> sink.calls() == 1);
-
             assertThat(trackingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(10L));
             assertThat(trackingSealer.lowestUnsealed(STREAM, 1)).isEqualTo(Option.none());
-
             sink.succeed(0);
             awaitCondition(() -> sink.calls() == 2);
             assertThat(trackingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(12L));
-
             sink.succeed(1);
-            awaitCondition(() -> trackingSealer.lowestUnsealed(STREAM, PARTITION).isEmpty());
+            awaitCondition(() -> trackingSealer.lowestUnsealed(STREAM, PARTITION)
+                                               .isEmpty());
         }
     }
 
@@ -504,7 +518,7 @@ class SegmentSealerTest {
 
         @Override
         public Promise<Unit> seal(SealedSegment segment) {
-            var outcome = Promise.<Unit>promise();
+            var outcome = Promise.<Unit> promise();
 
             segments.add(segment);
             outcomes.add(outcome);
@@ -516,12 +530,23 @@ class SegmentSealerTest {
             outcomes.get(call).succeed(unit());
         }
 
+        /// Complete every seal of `streamName`, whatever order the partitions reached the sink in.
+        void succeedFor(String streamName) {
+            for (int call = 0; call < segments.size(); call++) {
+                if (segments.get(call).streamName().equals(streamName)) {
+                    succeed(call);
+                }
+            }
+        }
+
         int calls() {
             return segments.size();
         }
 
         List<Long> startOffsets() {
-            return segments.stream().map(SealedSegment::startOffset).toList();
+            return segments.stream()
+                           .map(SealedSegment::startOffset)
+                           .toList();
         }
     }
 
@@ -539,8 +564,10 @@ class SegmentSealerTest {
         assertThat(buffer.getLong()).isEqualTo(expectedOffset);
         assertThat(buffer.getLong()).isEqualTo(expectedTimestamp);
         var len = buffer.getInt();
+
         assertThat(len).isEqualTo(expectedData.length);
         var data = new byte[len];
+
         buffer.get(data);
         assertThat(data).isEqualTo(expectedData);
     }

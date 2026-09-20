@@ -119,7 +119,7 @@ class StorageFactoryDhtMarkerRetryTest {
     }
 
     private StorageFactory.StorageSetup setupWith(DHTClient client) {
-        return StorageFactory.createAll(Map.of(INSTANCE, vaultConfig()), NODE_ID, Option.some(client), Option.none())
+        return StorageFactory.createAll(Map.of(INSTANCE, vaultConfig()), NODE_ID, Option.some(client), Option.none(), HermeticStorage.synthesisDefaultsIn(tempDir))
                              .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
                              .unwrap()
                              .get(INSTANCE);
@@ -326,7 +326,7 @@ class StorageFactoryDhtMarkerRetryTest {
     /// same shape as every Ember boot.
     @Test
     void dhtAdmission_isAlreadyResolved_whenNoInstanceCarriesADhtTier() {
-        var setups = StorageFactory.createAll(Map.of(INSTANCE, vaultConfig()), NODE_ID, Option.none(), Option.none())
+        var setups = StorageFactory.createAll(Map.of(INSTANCE, vaultConfig()), NODE_ID, Option.none(), Option.none(), HermeticStorage.synthesisDefaultsIn(tempDir))
                                    .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
                                    .unwrap();
 
