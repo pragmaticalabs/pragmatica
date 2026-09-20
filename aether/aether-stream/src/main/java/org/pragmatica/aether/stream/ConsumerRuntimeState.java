@@ -11,6 +11,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -77,6 +78,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// not derived from a measured commit-latency distribution.]
     private static final TimeSpan PERIODIC_COMMIT_BOUND = timeSpan(5).seconds();
     private static final Promise<CommitOutcome> NO_PREDECESSOR = Promise.success(CommitOutcome.persisted());
+    private static final Consumer<CheckpointIssuePoint> NO_CHECKPOINT_ISSUE_PROBE = _ -> {};
 
     private final StreamPartitionManager partitionManager;
     private final DeadLetterHandler dlHandler;
@@ -103,6 +105,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// entirely: `closed` only stops NEW poll cycles ([#pollCycle]), it never drains a commit already
     /// issued.
     private final Set<TrackedCommit> inFlightCommits = ConcurrentHashMap.newKeySet();
+    /// Test-only seam (#1355), run by [#issueCheckpoint] at each [CheckpointIssuePoint]. Volatile because the
+    /// issuing thread is a delivery continuation or the shared scheduler, which already exist when a test
+    /// installs it; one volatile read per checkpoint is nothing.
+    private volatile Consumer<CheckpointIssuePoint> checkpointIssueProbe = NO_CHECKPOINT_ISSUE_PROBE;
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager, DeadLetterHandler dlHandler) {
         this(partitionManager, dlHandler, none(), none());
@@ -596,8 +602,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         state.clearCheckpointPending();
+        checkpointIssueProbe.accept(CheckpointIssuePoint.BEFORE_STORE_CALL);
         state.periodicCommit(observedCommit(key, state, NO_PREDECESSOR).timeout(PERIODIC_COMMIT_BOUND)
                                            .onResult(result -> afterCheckpoint(key, state, result)));
+    }
+
+    /// Test-only seam (#1355): install a probe that [#issueCheckpoint] runs at each [CheckpointIssuePoint] —
+    /// the points at which a detach flush must already find the slot holding this commit. A probe that parks
+    /// the issuing thread there while the test detaches the consumer makes the race deterministic instead
+    /// of scheduler-dependent. Production never touches it.
+    @Contract
+    void checkpointIssueProbe(Consumer<CheckpointIssuePoint> probe) {
+        checkpointIssueProbe = probe;
+    }
+
+    /// Where [#issueCheckpoint] runs the test-only [#checkpointIssueProbe] (#1355).
+    enum CheckpointIssuePoint {
+        /// After the cancellation check, before the store call.
+        BEFORE_STORE_CALL
     }
 
     /// Retries on a failed commit AND on a [CommitOutcome.LocalOnly] one: a commit whose cluster
