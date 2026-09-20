@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -37,10 +38,16 @@ import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpRequest;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.deployment.cluster.PublishedBlueprint;
+import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -191,11 +198,142 @@ class BlueprintDeployStatusTest {
         assertThat(response.statusUrl()).as("a deployed response must still carry the status endpoint").isEqualTo(STATUS_URL);
     }
 
+    /// #1336 — a `[streams.*]` declaration the publish did not bind reaches the caller ON THE RESPONSE,
+    /// by field and rule, not only as a node log line. The service is stubbed: this pins the route's
+    /// half of the contract (`BlueprintService` → `BlueprintResponse.rejectedStreamBindings`); the
+    /// derivation half is `BlueprintPublishOwnershipTest.StreamBindings`.
+    @Test
+    void deployRoute_namesEveryRejectedStreamBinding_byFieldAndRule() {
+        var rejected = List.of(StreamValidationFailure.streamValidationFailure("[streams.audit-events]",
+                                                                               "version-and-source-mutually-exclusive",
+                                                                               "Stream resource 'audit-events' must not set both 'source' and 'version'"));
+
+        var response = deployWith(Map.of(), rejected);
+
+        assertThat(response.rejectedStreamBindings()).hasSize(1);
+        assertThat(response.rejectedStreamBindings().getFirst().field()).isEqualTo("[streams.audit-events]");
+        assertThat(response.rejectedStreamBindings().getFirst().rule()).isEqualTo("version-and-source-mutually-exclusive");
+        assertThat(response.rejectedStreamBindings().getFirst().message()).contains("audit-events");
+        assertThat(response.status()).as("a rejected binding does not change the deploy status — the slice using "
+                                         + "that alias fails at load, which the status surface then reports")
+                                     .isEqualTo("pending");
+    }
+
+    @Test
+    void deployRoute_reportsNoRejectedStreamBindings_whenEveryDeclarationBound() {
+        assertThat(deployWith(Map.of()).rejectedStreamBindings()).isEmpty();
+    }
+
+    /// rev1363 MEDIUM-3: the body publish (`POST /api/v1/blueprints`, `aether blueprint apply`, Forge) is
+    /// #1336's primary path, and its rejection wiring (`blueprintResponse`) was unpinned — the deploy route's
+    /// test reaches `deployBlueprintResponse` only. Driven through the REAL `ManagementRouter.handle`, so the
+    /// assertion is on the JSON the client reads, not on the record.
+    @Test
+    void bodyRoute_namesEveryRejectedStreamBinding_inTheJsonBody() {
+        var body = routeBody(ManagementRoute.BLUEPRINT_PUBLISH_BODY.prefix(), "id = \"org.example:orders-app:1.0.0\"\n", REJECTED);
+
+        assertThat(body).contains("\"status\":\"applied\"")
+                        .contains("\"rejectedStreamBindings\"")
+                        .contains("\"field\":\"[streams.audit-events]\"")
+                        .contains("\"rule\":\"version-and-source-mutually-exclusive\"");
+    }
+
+    /// The register-only route goes through the same `blueprintResponse`.
+    @Test
+    void registerOnlyRoute_namesEveryRejectedStreamBinding_inTheJsonBody() {
+        var body = routeBody(ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT.prefix(), "{\"artifact\":\"" + COORDS + "\"}", REJECTED);
+
+        assertThat(body).contains("\"status\":\"published\"")
+                        .contains("\"field\":\"[streams.audit-events]\"")
+                        .contains("\"rule\":\"version-and-source-mutually-exclusive\"");
+    }
+
+    /// rev1363 NIT-1, pinned so the doc's "omitted when empty" stays true: the codec drops an empty list.
+    @Test
+    void bodyRoute_omitsRejectedStreamBindings_whenEveryDeclarationBound() {
+        var body = routeBody(ManagementRoute.BLUEPRINT_PUBLISH_BODY.prefix(), "id = \"org.example:orders-app:1.0.0\"\n", List.of());
+
+        assertThat(body).contains("\"status\":\"applied\"").doesNotContain("rejectedStreamBindings");
+    }
+
+    private static final List<StreamValidationFailure> REJECTED = List.of(StreamValidationFailure.streamValidationFailure("[streams.audit-events]",
+                                                                                                                          "version-and-source-mutually-exclusive",
+                                                                                                                          "Stream resource 'audit-events' must not set both 'source' and 'version'"));
+
+    private static String routeBody(String path, String requestBody, List<StreamValidationFailure> rejected) {
+        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> nodeOver(Map.of(), rejected)));
+        var recorder = new RecordingResponseWriter();
+
+        assertThat(router.handle(postRequest(path, requestBody), recorder)).as("the router must own " + path).isTrue();
+        assertThat(recorder.status.get()).isEqualTo(HttpStatus.OK);
+
+        return recorder.body();
+    }
+
+    private static HttpRequest postRequest(String path, String body) {
+        return new HttpRequest() {
+            @Override
+            public String requestId() {
+                return "req_1336";
+            }
+
+            @Override
+            public HttpMethod method() {
+                return HttpMethod.POST;
+            }
+
+            @Override
+            public String path() {
+                return path;
+            }
+
+            @Override
+            public Headers headers() {
+                return Headers.empty();
+            }
+
+            @Override
+            public QueryParams queryParams() {
+                return QueryParams.empty();
+            }
+
+            @Override
+            public byte[] body() {
+                return body.getBytes(StandardCharsets.UTF_8);
+            }
+        };
+    }
+
+    private static final class RecordingResponseWriter implements ResponseWriter {
+        private final AtomicReference<HttpStatus> status = new AtomicReference<>();
+        private final AtomicReference<byte[]> body = new AtomicReference<>(new byte[0]);
+
+        @Override
+        public void write(HttpStatus status, byte[] body, ContentType contentType) {
+            this.status.set(status);
+            this.body.set(body);
+        }
+
+        @Override
+        public ResponseWriter header(String name, String value) {
+            return this;
+        }
+
+        String body() {
+            return new String(body.get(), StandardCharsets.UTF_8);
+        }
+    }
+
     // --- helpers ---
     private static BlueprintResponse deployWith(Map<Artifact, Map<NodeId, SliceState>> deployed) {
+        return deployWith(deployed, List.of());
+    }
+
+    private static BlueprintResponse deployWith(Map<Artifact, Map<NodeId, SliceState>> deployed,
+                                                List<StreamValidationFailure> rejected) {
         var holder = new AtomicReference<BlueprintResponse>();
 
-        deployRoute(deployed).handler()
+        deployRoute(deployed, rejected).handler()
                    .handle(new StubRequestContext())
                    .await()
                    .onSuccess(value -> holder.set((BlueprintResponse) value))
@@ -207,8 +345,9 @@ class BlueprintDeployStatusTest {
     /// #759 — `.toList()` + a ternary replaces `.findFirst().orElseThrow()`: a missing route is
     /// still a hard test-setup failure (via `fail`, not a `throw` statement), so JBCT-EX-02 no
     /// longer fires without weakening the diagnostic.
-    private static Route<?> deployRoute(Map<Artifact, Map<NodeId, SliceState>> deployed) {
-        var routes = SliceRoutes.sliceRoutes(() -> nodeOver(deployed))
+    private static Route<?> deployRoute(Map<Artifact, Map<NodeId, SliceState>> deployed,
+                                        List<StreamValidationFailure> rejected) {
+        var routes = SliceRoutes.sliceRoutes(() -> nodeOver(deployed, rejected))
                                 .routes()
                                 .filter(candidate -> candidate.name()
                                                               .equals(ManagementRoute.BLUEPRINT_DEPLOY.name()))
@@ -217,8 +356,9 @@ class BlueprintDeployStatusTest {
         return routes.isEmpty() ? fail("BLUEPRINT_DEPLOY route not registered") : routes.getFirst();
     }
 
-    private static ManageableNode nodeOver(Map<Artifact, Map<NodeId, SliceState>> deployed) {
-        return new DeployManageableNode(fixedBlueprintService(), deploymentMapOver(deployed), noopAppHttpServer());
+    private static ManageableNode nodeOver(Map<Artifact, Map<NodeId, SliceState>> deployed,
+                                           List<StreamValidationFailure> rejected) {
+        return new DeployManageableNode(fixedBlueprintService(rejected), deploymentMapOver(deployed), noopAppHttpServer());
     }
 
     /// The sealed `DeploymentMap` interface refuses `Proxy.newProxyInstance` (the JDK rejects dynamic
@@ -249,21 +389,21 @@ class BlueprintDeployStatusTest {
         return new NoopAppHttpServer();
     }
 
-    private static BlueprintService fixedBlueprintService() {
+    private static BlueprintService fixedBlueprintService(List<StreamValidationFailure> rejected) {
         return new BlueprintService() {
             @Override
-            public Promise<ExpandedBlueprint> publish(String dsl) {
-                return unsupported("publish");
+            public Promise<PublishedBlueprint> publish(String dsl) {
+                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected));
             }
 
             @Override
-            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
-                return Promise.success(EXPANDED);
+            public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords) {
+                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected));
             }
 
             @Override
-            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
-                return unsupported("publishFromArtifact(registerOnly)");
+            public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
+                return Promise.success(PublishedBlueprint.publishedBlueprint(EXPANDED, rejected));
             }
 
             @Override

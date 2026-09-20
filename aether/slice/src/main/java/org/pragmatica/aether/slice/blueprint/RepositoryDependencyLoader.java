@@ -10,7 +10,6 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.dependency.ArtifactDependency;
 import org.pragmatica.aether.slice.dependency.ArtifactMapper;
@@ -50,10 +49,9 @@ public interface RepositoryDependencyLoader {
     }
 
     private static Result<Set<Artifact>> loadDependencies(SliceManifest.SliceManifestInfo manifest, URL jarUrl) {
-        var classLoader = new SliceClassLoader(new URL[]{jarUrl}, RepositoryDependencyLoader.class.getClassLoader());
-
-        return DependencyFile.load(manifest.sliceClassName(),
-                                   classLoader)
+        return DependencyFile.loadFromJar(manifest.sliceClassName(),
+                                          jarUrl,
+                                          RepositoryDependencyLoader.class.getClassLoader())
                              .flatMap(RepositoryDependencyLoader::convertToArtifacts);
     }
 

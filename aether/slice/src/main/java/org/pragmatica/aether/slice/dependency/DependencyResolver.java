@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -18,7 +17,6 @@ import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.DefaultSliceBridge;
-import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingContext;
@@ -276,9 +274,9 @@ public interface DependencyResolver {
             return artifactMismatch(artifact, manifest.artifact()).promise();
         }
 
-        return DependencyFile.load(manifest.sliceClassName(),
-                                   createTempLoader(location.url(),
-                                                    sharedLibraryLoader))
+        return DependencyFile.loadFromJar(manifest.sliceClassName(),
+                                          location.url(),
+                                          sharedLibraryLoader)
                              .async()
                              .flatMap(depFile -> processSharedAndLoadSliceWithContext(manifest,
                                                                                       location,
@@ -515,9 +513,9 @@ public interface DependencyResolver {
             return artifactMismatch(artifact, manifest.artifact()).promise();
         }
 
-        return DependencyFile.load(manifest.sliceClassName(),
-                                   createTempLoader(location.url(),
-                                                    sharedLibraryLoader))
+        return DependencyFile.loadFromJar(manifest.sliceClassName(),
+                                          location.url(),
+                                          sharedLibraryLoader)
                              .async()
                              .flatMap(depFile -> processSharedAndLoadSlice(manifest,
                                                                            location,
@@ -527,10 +525,6 @@ public interface DependencyResolver {
                                                                            sharedLibraryLoader,
                                                                            invokerFacade,
                                                                            resolutionPath));
-    }
-
-    private static SliceClassLoader createTempLoader(URL jarUrl, SharedLibraryClassLoader parent) {
-        return new SliceClassLoader(new URL[]{jarUrl}, parent);
     }
 
     private static Promise<Slice> processSharedAndLoadSlice(SliceManifestInfo manifest,
