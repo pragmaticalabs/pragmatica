@@ -90,6 +90,28 @@ If no thresholds are configured, these defaults apply:
 
 Default thresholds are in-memory only until explicitly set via API.
 
+### Durable-entity checkpoint lag (#1302)
+
+`entity.checkpoint.lag.max` is a node's largest per-(keyspace, partition) checkpoint lag, in log records:
+the log head offset minus the COMMITTED checkpoint in consensus KV, over the partitions that node OWNS. It rises
+when a checkpointer stalls, and a recovery of that partition would have to replay that many records. The
+per-partition values, which say *which* partition, are on `GET /api/v1/entity/checkpoints` (`checkpointLag`).
+
+| Metric | Warning | Critical | Config keys (`[alerts]`) |
+|--------|---------|----------|--------------------------|
+| `entity.checkpoint.lag.max` | 5,000 | 10,000 | `entity_checkpoint_lag_warning`, `entity_checkpoint_lag_critical` |
+
+**Why these numbers.** An entity partition's ring holds 10,000 records. Within it, recovery replays from
+the ring; past it, recovery must read sealed storage and slows (#1240). CRITICAL sits at the ring capacity —
+recovery has left the ring — and WARNING at half of it, the headroom to act before that happens. At the 30s
+checkpoint interval, a healthy partition taking more than ~166 writes/s also reaches WARNING between ticks:
+that is the same recovery-cost signal, and the config keys exist for workloads where it is expected.
+
+The configured value is installed only when the cluster holds no threshold for the metric, so
+`aether thresholds set entity.checkpoint.lag.max <warning> <critical>` overrides it. Removing that operator
+threshold leaves the metric unthresholded until the node restarts and re-seeds the configured default.
+Both config values must be positive with critical ≥ warning; anything else refuses at boot.
+
 ## Alert Management
 
 ### Viewing Alerts

@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.forward;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
@@ -21,6 +22,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
 import org.slf4j.Logger;
@@ -117,6 +119,13 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.ownerServe = ownerServe;
     }
 
+    /// #1236: the replica floor (`min-sync - 1` peers) is checked BEFORE the owner appends, so a forwarded
+    /// publish refused with `NOT_ENOUGH_REPLICAS` is genuinely not in the log — and AFTER the #1230 owner
+    /// admission, so a forward that lands on a non-owner is answered retryable ([StreamError.NotOwnerAppend])
+    /// rather than with a floor verdict this node does not own. A stream this owner has not yet materialized
+    /// reports `min-sync` 0 here; [StreamPartitionManager#publishForwarded] then materializes it from the
+    /// committed config and checks THAT config's floor before appending (#1290 review M1), so the refusal
+    /// is clean on that path too.
     @Contract
     @Override
     @SuppressWarnings("JBCT-RET-01")
@@ -124,7 +133,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         partitionManager.publishForwarded(request.streamName(),
                                           request.partition(),
                                           request.payload(),
-                                          request.timestamp())
+                                          request.timestamp(),
+                                          partitionManager.minSyncReplicasFor(request.streamName()) - 1)
                         .async()
                         .flatMap(offset -> awaitMinSync(request, offset))
                         .onSuccess(offset -> sendSuccessResponse(request, offset))
@@ -139,6 +149,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// the node owning partitions 0 and 2 lost BOTH partitions whole — 41 acked events gone, with the
     /// designated replica still `SYNCING` and never having acked a single one. Gating here fixes both
     /// writer paths at once and makes a forwarded ack mean exactly what a local ack means.
+    ///
+    /// #1236: this barrier runs AFTER the append, so a failure here is an unknown outcome
+    /// ([PublishOutcomeUnknown]), never a clean failure — the clean refusal is the pre-append floor in [#onPublishForward].
     private Promise<Long> awaitMinSync(PublishForward request, long offset) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(request.streamName());
 
@@ -147,6 +160,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                    request.partition(),
                                                    offset,
                                                    minSyncReplicas - 1)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
                                  .map(_ -> offset)
                : Promise.success(offset);
     }
@@ -218,14 +232,30 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// capacity-deferred partition ({@link ResourceCapacityExhausted}), or a committed owner that is not yet
     /// this node ({@link StreamError.NotOwnerAppend}, #1230: the HRW-routed target during a reshuffle, before
     /// the leader commits the ownership change) — is sent as a RETRYABLE response so the forwarder backs off
-    /// and retries a bounded number of times; every other cause is permanent.
+    /// and retries a bounded number of times. A [PublishOutcomeUnknown] (#1236) — the barrier failed AFTER
+    /// this owner appended — is sent as outcome-unknown, so the sender does not report a clean failure for
+    /// an event that may be in the log. Every other cause is permanent.
     @Contract
     private void sendPublishFailure(PublishForward request, Cause cause) {
         if (isRetryable(cause)) {
             sendRetryableResponse(request, cause.message());
+        } else if (cause instanceof PublishOutcomeUnknown) {
+            sendOutcomeUnknownResponse(request, cause.message());
         } else {
             sendFailureResponse(request, cause.message());
         }
+    }
+
+    @Contract
+    private void sendOutcomeUnknownResponse(PublishForward request, String errorMessage) {
+        var response = PublishForwardResponse.outcomeUnknownResponse(selfNodeId, request.correlationId(), errorMessage);
+
+        transport.send(request.sender(), response);
+        log.warn("Forwarded publish outcome unknown for {}[{}] correlationId={}: {}",
+                 request.streamName(),
+                 request.partition(),
+                 request.correlationId(),
+                 errorMessage);
     }
 
     private static boolean isRetryable(Cause cause) {

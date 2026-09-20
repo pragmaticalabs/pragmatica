@@ -3726,9 +3726,12 @@ public interface AetherNode extends ManageableNode {
         // read the identical committed StreamPartitionOwnershipValue.ownerEpoch the fence high-water derives
         // from — otherwise the recovery seam's Epoch.ZERO (0:0) is rejected by an advanced high-water (1:N).
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
+        // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
+        // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
-                                                                                                                                                     streamSegmentIndex)),
+                                                                                                                                                     streamSegmentIndex),
+                                                                                                               streamMaxMemoryBytes),
                                                                                    streamReplicationManager,
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
@@ -4099,8 +4102,8 @@ public interface AetherNode extends ManageableNode {
         // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
         // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
         // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
-        // cheap when nothing new has sealed. Driven off the durable sealed bound (not the void
-        // eviction->seal listener) to avoid any truncated-before-durable window.
+        // cheap when nothing new has sealed. Driven off the durable, CONTIGUOUS sealed bound (#1234: it
+        // never passes a segment that failed to seal) to avoid any truncated-before-durable window.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed,
                                                                       WAL_TRUNCATE_INTERVAL));
         // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for
@@ -4369,7 +4372,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                     StreamPartitionOwnershipValue.class),
                                                                                                                                                                             entityArcOwner),
                                                                                             clusterCommandApplier);
-        var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver();
+        // #1302/#1330: every checkpoint tick reports this node's largest checkpoint lag — over partitions it
+        // OWNS, measured from the committed checkpoint in KV — into the node metrics map, where the alert
+        // threshold path (DashboardMetricsPublisher -> AlertManager.checkThreshold) evaluates it.
+        var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver(EntityCheckpointLagMetric.sinkFor(metricsCollector),
+                                                                                   EntityCheckpointLagMetric.committedCheckpoints(kvStore));
         var entityTimerDriver = EntityTimerDriver.entityTimerDriver();
         // #345 I3: entity state lives on a fenced, fsync-durable, replicated stream partition, and its
         // checkpoints are blocks in stream storage pointed at from consensus KV. The catch-up source is

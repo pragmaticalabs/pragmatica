@@ -52,26 +52,34 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// ## Group-commit fsync
 /// `append` resolves its `Promise` ONLY after the record's bytes are `force(false)`-durable, while
-/// still batching concurrent appends into a single fsync:
-///   - a serialized write section (`writeLock`) assigns a monotonic write-seq, writes the framed
-///     bytes at the current end position, and publishes `writtenSeq = seq` AFTER the write
-///     completes — so any reader of `writtenSeq` sees a seq whose bytes are in the channel;
+/// still batching concurrent appends into a single fsync. It is `write` then `commit`:
+///   - `write` runs in the CALLER's thread, before `append` returns (#1232): a serialized write
+///     section (`writeLock`) refuses an offset that does not exceed the last written one
+///     ([WalError.OffsetRegression]), assigns a monotonic write-seq, writes the framed bytes at the
+///     current end position, and publishes `writtenSeq = seq` AFTER the write completes — so any
+///     reader of `writtenSeq` sees a seq whose bytes are in the channel. File order is therefore CALL
+///     order, and a caller that assigns offsets inside its own ordered section (the partition's append
+///     section) gets a file in offset order — which recovery relies on;
 ///   - `groupCommit(mySeq)` returns immediately if `syncedSeq >= mySeq`; otherwise, under
 ///     `syncLock`, it snapshots `target = writtenSeq`, issues ONE `force(false)` (covering every
 ///     completed write up to `target`, possibly many appenders' bytes), and publishes
 ///     `syncedSeq = target`.
 /// An append resolves only after `syncedSeq >= mySeq`, i.e. after a fsync that happened-after a
 /// write covering its own bytes — so no append acks before it is durable, yet a burst of N
-/// concurrent appends typically costs far fewer than N fsyncs. `append` runs on the async executor
-/// (`Promise.promise`), so a pipelined publisher that fires without awaiting maximizes batching.
+/// concurrent appends typically costs far fewer than N fsyncs. Only `commit` runs on the async executor
+/// (`Promise.promise`), so a pipelined publisher that fires without awaiting maximizes batching, and a
+/// caller holding an ordered section can `write` inside it and wait for the fsync outside it.
 ///
-/// ## Fail-stop on fsync failure (#634-7)
+/// ## Fail-stop on fsync or frame-write failure (#634-7, #1232)
 /// A FAILED group-commit `force` fail-stops the WAL: the covered appends resolve failure, and every
 /// later append AND truncate is refused with [WalError.FailStopped] without writing or forcing
 /// anything. The OS may drop the dirty pages while clearing the error, so a RETRIED force can
 /// report success for bytes that never reached disk (the fsyncgate lesson); acking on such a
 /// success could leave a silent mid-file hole, and recovery's contiguous scan would then discard
-/// every ACKED record after it. Truncate is included because compaction re-reads the file through
+/// every ACKED record after it. A FAILED frame write fail-stops it the same way (#1232): the caller
+/// has already been assigned that record's offset, so any later frame that did land would leave a
+/// hole at it, and recovery refuses a hole rather than renumbering past it — fail-stopping keeps the
+/// file a contiguous prefix, which the restart then recovers. Truncate is included because compaction re-reads the file through
 /// the same suspect page cache and republishes `syncedSeq`, which would un-freeze the fail-stop for
 /// an in-flight append. A failed post-compaction channel reopen fail-stops the same way (the
 /// alternative is a zombie with a closed channel). The state is operator-visible as
@@ -130,6 +138,7 @@ public final class PartitionWal implements AutoCloseable {
     private volatile long syncedSeq;  // published under syncLock AFTER force(false)
     private volatile long writePosition;  // end of valid data; guarded by writeLock
     private volatile long lastOffset;  // last appended offset (-1 when none)
+    private volatile long syncedOffset;  // last offset covered by a successful force (#1234); guarded by syncLock
     private volatile long truncatedUpto = -1;  // in-memory discard watermark
     private volatile long lastCompactedUpto = -1;  // last physical compaction point
     private volatile long fsyncCount;  // group commits completed; guarded by syncLock
@@ -143,6 +152,7 @@ public final class PartitionWal implements AutoCloseable {
         this.channel = channel;
         this.writePosition = writePosition;
         this.lastOffset = lastOffset;
+        this.syncedOffset = lastOffset;
     }
 
     /// Open-or-create the WAL for `file`, positioned for further appends AFTER its last VALID
@@ -151,13 +161,31 @@ public final class PartitionWal implements AutoCloseable {
         return FileOps.createDirectories(file.toAbsolutePath().getParent()).flatMap(_ -> recover(file));
     }
 
-    /// Append a record and GROUP-COMMIT fsync. The returned `Promise` resolves ONLY after this
-    /// record's bytes are `force(false)`-durable; concurrent appends may share one fsync. Refused
-    /// once a fsync has failed (see the fail-stop section of the class doc).
+    /// Append a record and GROUP-COMMIT fsync: [#write] in the caller's thread, then [#commit]. The
+    /// returned `Promise` resolves ONLY after this record's bytes are `force(false)`-durable; concurrent
+    /// appends may share one fsync. Refused once a fsync has failed (see the fail-stop section of the
+    /// class doc), and for an offset that does not exceed the last written one.
     public Promise<Unit> append(long offset, byte[] payload, long timestampMillis) {
+        return write(offset, payload, timestampMillis).async()
+                    .flatMap(this::commit);
+    }
+
+    /// Write the record's frame NOW, in the caller's thread, and return its write sequence for
+    /// [#commit]. The frame is in the channel (not yet durable) when this returns, so file order is call
+    /// order. Refused unwritten when closed, fail-stopped, or when `offset` does not exceed the last
+    /// written offset ([WalError.OffsetRegression]) — recovery places records by stored offset and
+    /// refuses a duplicate, so the writer never produces one.
+    public Result<Long> write(long offset, byte[] payload, long timestampMillis) {
         return closed
-               ? WalError.General.WAL_CLOSED.promise()
-               : syncFailure.fold(() -> promise(() -> appendDurably(offset, payload, timestampMillis)), Cause::promise);
+               ? WalError.General.WAL_CLOSED.result()
+               : syncFailure.fold(() -> writeRecord(offset, payload, timestampMillis), Cause::result);
+    }
+
+    /// GROUP-COMMIT the write with sequence `writeSeq` (from [#write]): resolves once a `force(false)`
+    /// covering it has completed, sharing that fsync with every write queued before it. Runs on the
+    /// async executor, so a caller can release its own ordered section before the fsync.
+    public Promise<Unit> commit(long writeSeq) {
+        return promise(() -> groupCommit(writeSeq));
     }
 
     /// Replay records in file order, skipping `offset <= afterOffset` (and any discarded by a lazy
@@ -216,6 +244,13 @@ public final class PartitionWal implements AutoCloseable {
         return lastOffset;
     }
 
+    /// Highest offset known to be on disk: covered by a successful `force`, or present when the file was
+    /// opened. A record above it may still be only in the page cache, so nothing that relies on the WAL as the
+    /// durable copy of a record may do so above this offset (#1234). `-1` when nothing is durable.
+    public long durableOffset() {
+        return syncedOffset;
+    }
+
     /// Point-in-time observability view (#634-3): live bytes on disk (the write position — a lazy
     /// truncate does not shrink it until compaction), the truncation watermark, the last physical
     /// compaction point, and the group-commit fsync counters. Reads of independently-published
@@ -243,8 +278,8 @@ public final class PartitionWal implements AutoCloseable {
     /// @param fsyncCount       group commits completed since open
     /// @param fsyncTotalNanos  total wall time spent inside `force` since open
     /// @param fsyncMaxNanos    slowest single `force` since open
-    /// @param failStopped      the WAL refused further appends after a failed fsync (or a failed
-    ///                         post-compaction reopen); publishes on this partition fail until the
+    /// @param failStopped      the WAL refused further appends after a failed fsync, a failed frame
+    ///                         write or a failed post-compaction reopen; publishes on this partition fail until the
     ///                         node restarts (#634-7 operator surface)
     public record WalStats(long sizeBytes,
                            long lastOffset,
@@ -256,18 +291,24 @@ public final class PartitionWal implements AutoCloseable {
                            boolean failStopped) {}
 
     // === append path ===
-    private Result<Unit> appendDurably(long offset, byte[] payload, long timestampMillis) {
-        return writeRecord(offset, payload, timestampMillis).flatMap(this::groupCommit);
-    }
-
     private Result<Long> writeRecord(long offset, byte[] payload, long timestampMillis) {
         synchronized (writeLock) {
-            var seq = nextSeq + 1;
-            var position = writePosition;
-            var frame = ByteBuffer.wrap(frameBytes(offset, payload, timestampMillis));
-
-            return writeFrameAt(frame, position).map(_ -> publishWrite(seq, offset, position + frame.capacity()));
+            return offset > lastOffset
+                   ? writeNext(offset, payload, timestampMillis)
+                   : new WalError.OffsetRegression(offset, lastOffset).result();
         }
+    }
+
+    /// Runs under `writeLock`.
+    private Result<Long> writeNext(long offset, byte[] payload, long timestampMillis) {
+        var seq = nextSeq + 1;
+        var position = writePosition;
+        var frame = ByteBuffer.wrap(frameBytes(offset, payload, timestampMillis));
+
+        return writeFrameAt(frame, position).onFailure(this::failStopOnWriteFailure)
+                           .map(_ -> publishWrite(seq,
+                                                  offset,
+                                                  position + frame.capacity()));
     }
 
     private Result<Unit> writeFrameAt(ByteBuffer frame, long position) {
@@ -281,6 +322,14 @@ public final class PartitionWal implements AutoCloseable {
         return written == expected
                ? unitResult()
                : new WalError.AppendFailed("short write: %d of %d bytes".formatted(written, expected)).result();
+    }
+
+    /// Runs under `writeLock`, and takes `syncLock` — the only guard of `syncFailure` — in the same
+    /// writeLock-then-syncLock order `compact` uses.
+    private void failStopOnWriteFailure(Cause cause) {
+        synchronized (syncLock) {
+            failStop(cause);
+        }
     }
 
     private long publishWrite(long seq, long offset, long newPosition) {
@@ -310,19 +359,24 @@ public final class PartitionWal implements AutoCloseable {
         }
     }
 
+    /// `covered` is read before `force`: every record whose write completed before that read is in the
+    /// channel, so the force makes it durable, whatever `writtenSeq` said.
     private Result<Unit> forceAndPublish() {
         var target = writtenSeq;
+        var covered = lastOffset;
         var startedAt = System.nanoTime();
 
         return Result.lift(APPEND_FAILED,
                            () -> channel.force(false))
                      .onSuccess(_ -> publishSync(target,
+                                                 covered,
                                                  System.nanoTime() - startedAt))
                      .onFailure(this::failStop);
     }
 
     /// Runs under `syncLock` (the only writer of `syncFailure`). Loud once at the moment of
-    /// failure; every later append (and truncate) is refused with the stored cause.
+    /// failure (a failed fsync, frame write or post-compaction reopen); every later append (and
+    /// truncate) is refused with the stored cause.
     private void failStop(Cause cause) {
         syncFailure = Option.some(new WalError.FailStopped(cause.message()));
         log.error("PartitionWal fail-stopped for {} — appends refused; "
@@ -334,8 +388,9 @@ public final class PartitionWal implements AutoCloseable {
     /// Runs under `syncLock` (the only writer of these fields). The timing wraps ONLY the
     /// `force` call — one nanoTime pair per GROUP COMMIT, not per append, so a burst of N
     /// pipelined appends still pays for one measurement (#634-3).
-    private void publishSync(long target, long elapsedNanos) {
+    private void publishSync(long target, long covered, long elapsedNanos) {
         syncedSeq = target;
+        syncedOffset = Math.max(syncedOffset, covered);
         fsyncCount = fsyncCount + 1;
         fsyncTotalNanos = fsyncTotalNanos + elapsedNanos;
         fsyncMaxNanos = Math.max(fsyncMaxNanos, elapsedNanos);
@@ -591,8 +646,19 @@ public final class PartitionWal implements AutoCloseable {
             }
         }
 
-        /// Permanent per-instance state after a failed group-commit fsync or a failed
-        /// post-compaction reopen (see the fail-stop section of the class doc). Clears on reopen:
+        /// An append whose offset does not exceed the last written offset (#1232). File order must be
+        /// offset order — recovery places records by stored offset and refuses a duplicate — so the
+        /// frame is refused before it is written.
+        record OffsetRegression(long offset, long lastOffset) implements WalError {
+            @Override
+            public String message() {
+                return "WAL append refused: offset %d does not follow last written offset %d".formatted(offset,
+                                                                                                        lastOffset);
+            }
+        }
+
+        /// Permanent per-instance state after a failed group-commit fsync, a failed frame write, or a
+        /// failed post-compaction reopen (see the fail-stop section of the class doc). Clears on reopen:
         /// recovery re-scans the file and trims the unacked tail.
         record FailStopped(String detail) implements WalError {
             @Override

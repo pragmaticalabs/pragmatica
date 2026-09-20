@@ -10,6 +10,9 @@ import org.pragmatica.lang.Unit;
 import static org.pragmatica.lang.Unit.unit;
 
 
+/// Stores a sealed segment. Contract (#1234): the returned promise succeeds only once the segment is
+/// durably stored AND readable — [StorageSegmentSink] updates the index before it resolves — because
+/// [SegmentSealer] drops its retained copy in a continuation of that promise.
 @FunctionalInterface
 public interface SegmentSink {
     Promise<Unit> seal(SealedSegment segment);

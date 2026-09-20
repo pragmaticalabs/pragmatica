@@ -309,6 +309,33 @@ class StreamForwardHandlerTest {
                 .isTrue();
             assertThat(response.offset()).isGreaterThanOrEqualTo(0L);
         }
+
+        /// #1290 review M1: on the lazy-materialization path the handler read `min-sync` 0 (the stream did
+        /// not exist here yet), so the floor it passes is always -1. The manager must take the floor from
+        /// the committed config it materializes from: a `min-sync = 2` config with no peer is refused
+        /// CLEANLY (nothing appended), not appended-then-reported-unknown. RED when that floor is dropped:
+        /// the append lands and the post-append barrier reports outcome-unknown.
+        @Test
+        void onPublishForward_materializedFromCommittedConfig_checksThatConfigsFloorBeforeAppending() {
+            barrierManager = streamPartitionManager(Long.MAX_VALUE,
+                                                    EvictionListener.NOOP,
+                                                    replicationManager(GOVERNOR, replicaRegistry()));
+            barrierManager.committedConfigSource(_ -> Option.some(configWithMinSync(2)));
+            var handler = streamForwardHandler(GOVERNOR,
+                                               barrierManager,
+                                               (target, message) -> sentMessages.add(new SentMessage(target, message)));
+
+            handler.onPublishForward(publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP));
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isFalse();
+            assertThat(response.outcomeUnknown()).as("a pre-append floor refusal is a clean failure: " + response.errorMessage())
+                                                 .isFalse();
+            assertThat(barrierManager.partitionBuffer(STREAM, PARTITION).map(buffer -> buffer.headOffset()).or(-1L))
+                .as("the stream is materialized and nothing was appended")
+                .isEqualTo(-1L);
+        }
     }
 
     record SentMessage(NodeId target, StreamForwardMessage message) {}
