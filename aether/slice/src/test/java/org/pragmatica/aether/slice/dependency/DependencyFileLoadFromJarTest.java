@@ -10,24 +10,13 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
 import org.pragmatica.aether.slice.SliceClassLoader;
 
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
-import org.apache.logging.log4j.core.layout.PatternLayout;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -52,19 +41,6 @@ class DependencyFileLoadFromJarTest {
     @TempDir
     Path tempDir;
 
-    private final List<String> warnings = new ArrayList<>();
-    private Runnable detachCapture;
-
-    @BeforeEach
-    void captureWarnings() {
-        detachCapture = capturingWarnings(warnings);
-    }
-
-    @AfterEach
-    void detach() {
-        detachCapture.run();
-    }
-
     @Test
     void loadFromJar_readsTheDependencyFileFromTheSliceJar() throws IOException {
         var jar = writeJar(tempDir.resolve("slice.jar"), DEPENDENCIES_ENTRY, DEPENDENCIES);
@@ -85,38 +61,35 @@ class DependencyFileLoadFromJarTest {
                                    ClassLoader.getPlatformClassLoader())
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> assertThat(file.isEmpty()).isTrue());
-        assertThat(warnings).as("an absent dependency file is the normal dependency-free slice, not a warning")
-                  .isEmpty();
     }
 
-    /// #1357 review: a dependency file that is PRESENT but cannot be parsed is still EMPTY (the contract every
-    /// caller relies on), but no longer silently — the WARN names the jar and the cause.
+    /// #1372: a dependency file that is PRESENT but cannot be parsed refuses the load through the jar path
+    /// too, naming the jar (the throwaway loader knows its jar) and the parse error.
     @Test
-    void loadFromJar_malformedDependencyFile_isEmpty_andWarnsNamingTheJarAndTheCause() throws IOException {
+    void loadFromJar_malformedDependencyFile_refusesTheLoad_namingTheJarAndTheCause() throws IOException {
         var jar = writeJar(tempDir.resolve("malformed.jar"), DEPENDENCIES_ENTRY, "[bogus-section]\n");
 
         DependencyFile.loadFromJar(SLICE_CLASS,
                                    jar,
                                    ClassLoader.getPlatformClassLoader())
-                      .onFailureRun(Assertions::fail)
-                      .onSuccess(file -> assertThat(file.isEmpty()).isTrue());
-        assertThat(warnings).hasSize(1);
-        assertThat(warnings.getFirst()).contains(DEPENDENCIES_ENTRY)
-                  .contains(jar.toString())
-                  .contains("Unknown section");
+                      .onSuccess(file -> Assertions.fail("must refuse; got " + file))
+                      .onFailure(cause -> assertThat(cause.message()).contains(DEPENDENCIES_ENTRY)
+                                                    .contains(jar.toString())
+                                                    .contains("Unknown section"));
     }
 
     /// The read itself failing (an I/O error after the resource was found) is the other unreadable shape.
     @Test
-    void load_dependencyFileWhoseReadFails_isEmpty_andWarns() throws IOException {
+    void loadClosing_dependencyFileWhoseReadFails_refusesTheLoad_andStillClosesTheLoader() throws IOException {
         var jar = writeJar(tempDir.resolve("slice.jar"), DEPENDENCIES_ENTRY, DEPENDENCIES);
+        var loader = new FailingReadLoader(jar);
 
-        DependencyFile.loadClosing(SLICE_CLASS,
-                                   new FailingReadLoader(jar))
-                      .onFailureRun(Assertions::fail)
-                      .onSuccess(file -> assertThat(file.isEmpty()).isTrue());
-        assertThat(warnings).hasSize(1);
-        assertThat(warnings.getFirst()).contains(DEPENDENCIES_ENTRY).contains(jar.toString()).contains("disk gone");
+        DependencyFile.loadClosing(SLICE_CLASS, loader)
+                      .onSuccess(file -> Assertions.fail("must refuse; got " + file))
+                      .onFailure(cause -> assertThat(cause.message()).contains(DEPENDENCIES_ENTRY)
+                                                    .contains(jar.toString())
+                                                    .contains("disk gone"));
+        assertThat(loader.closed.get()).as("a refused load still closes the loader").isTrue();
     }
 
     @Test
@@ -167,8 +140,16 @@ class DependencyFileLoadFromJarTest {
 
     /// Finds the resource, then fails the read: `StreamOps.readBytes` maps the IOException to `ReadFailed`.
     private static final class FailingReadLoader extends SliceClassLoader {
+        final AtomicBoolean closed = new AtomicBoolean();
+
         FailingReadLoader(URL jar) {
             super(new URL[]{jar}, ClassLoader.getPlatformClassLoader());
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed.set(true);
+            super.close();
         }
 
         @Override
@@ -180,36 +161,6 @@ class DependencyFileLoadFromJarTest {
                 }
             };
         }
-    }
-
-    /// Capture WARN lines of DependencyFile's logger; the returned runnable detaches the appender. The filter
-    /// on the logger NAME keeps other loggers' WARNs out (same fixture as TopologyParserManifestReadFailureTest).
-    private static Runnable capturingWarnings(List<String> sink) {
-        var context = (LoggerContext) LogManager.getContext(false);
-        var config = context.getConfiguration();
-        var loggerConfig = config.getLoggerConfig(DependencyFile.class.getName());
-        var appender = new AbstractAppender("dependency-file-warn-capture",
-                                            null,
-                                            PatternLayout.createDefaultLayout(),
-                                            true,
-                                            Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && DependencyFile.class.getName().equals(event.getLoggerName())) {
-                    sink.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
-
-        appender.start();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        context.updateLoggers();
-
-        return () -> {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        };
     }
 
     private static final class FailingCloseLoader extends SliceClassLoader {
