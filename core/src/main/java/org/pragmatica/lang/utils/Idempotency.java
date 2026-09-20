@@ -26,11 +26,13 @@ import java.util.function.Supplier;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.lang.Unit.unit;
 
 
 /// A utility for ensuring operations are executed at most once per key within a configurable TTL window.
@@ -275,7 +277,7 @@ public interface Idempotency {
     /// Package-private rather than private so the #714 self-cancel contract can be tested
     /// deterministically. The alternative — forcing a real GC and waiting for the weak reference to
     /// clear — is exactly the kind of timing-dependent test that pins nothing.
-    static void cleanupExpiredEntries(WeakReference<ConcurrentHashMap<String, CachedEntry<?>>> entriesRef,
+    static Unit cleanupExpiredEntries(WeakReference<ConcurrentHashMap<String, CachedEntry<?>>> entriesRef,
                                       TimeSource timeSource,
                                       Logger log,
                                       AtomicReference<ScheduledFuture<?>> cleanupTaskRef) {
@@ -292,7 +294,7 @@ public interface Idempotency {
                     task.cancel(false);
                 }
 
-                return;
+                return unit();
             }
 
             var sizeBefore = map.size();
@@ -308,6 +310,8 @@ public interface Idempotency {
         } catch (Exception e) {
             log.warn("Cleanup task failed", e);
         }
+
+        return unit();
     }
 
     record CachedEntry<T>(Promise<T> promise, long expiresAtNanos) {
