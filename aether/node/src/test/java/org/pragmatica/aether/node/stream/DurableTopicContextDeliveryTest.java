@@ -298,11 +298,18 @@ class DurableTopicContextDeliveryTest {
                                  new TypeToken<ContextualEvent>() {});
     }
 
+    /// rev1335d M1: the injected outcome is decided BEFORE the attempt is counted. Counted first, the test
+    /// thread's `awaitAttempts(1)` + `contextualFailuresToInject.set(2)` could land between the two statements
+    /// of the WARM-UP's own delivery, so the warm-up absorbed both failures and its two retries were the
+    /// three unexplained attempts of the CI red at `13cab2ceb` ("Expected size: 3 but was: 1"). Test defect,
+    /// product unchanged.
     private Promise<Unit> recordContextual(ContextualEvent contextual) {
-        contextualAttempts.incrementAndGet();
-        contextualSeen.add(ContextualEvent.contextualEvent((AppEvent) contextual.event(), contextual.context()));
+        var injectedFailure = contextualFailuresToInject.getAndUpdate(remaining -> Math.max(0, remaining - 1)) > 0;
 
-        return contextualFailuresToInject.getAndUpdate(remaining -> Math.max(0, remaining - 1)) > 0
+        contextualSeen.add(ContextualEvent.contextualEvent((AppEvent) contextual.event(), contextual.context()));
+        contextualAttempts.incrementAndGet();
+
+        return injectedFailure
                ? Causes.cause("injected failure").<Unit> promise()
                : Promise.unitPromise();
     }

@@ -347,6 +347,38 @@ class ClusterCursorStoreTest {
             assertThat(sent).isEmpty();
         }
 
+        /// rev1335d M2: the `rabiaTerm` half of the token equality. A record for THIS node at a higher term but
+        /// the same counter — the record was absent and re-minted by a later leader — does not admit a token
+        /// minted under the earlier term. Unreachable through today's writer (it never removes a record);
+        /// pinned so a tolerant comparison cannot creep in.
+        @Test
+        void commit_isFenced_whenTheRecordCarriesTheSameCounterUnderALaterTerm() {
+            var node = storeFor(SELF, false, new ArrayList<>());
+
+            assign(SELF, Epoch.epoch(2L, 1L));
+
+            assertThat(node.commit(GROUP, STREAM, PARTITION, 150L, EPOCH).await()
+                           .map(outcome -> outcome instanceof CommitOutcome.Fenced)).isEqualTo(Result.success(true));
+        }
+
+        /// rev1335d NIT-1: the counter half, one step apart on the SAME node. Reachable only through the writer's
+        /// same-epoch residual (a lagging leader mirror re-minting PEER and SELF at one epoch): A@(1,1) → B@(1,2)
+        /// → A@(1,2). The (1,1) tenure is fenced even though it is one counter behind.
+        @Test
+        void commit_isFenced_whenTheRecordIsOneCounterAhead_forTheSameNode() {
+            var node = storeFor(SELF, false, new ArrayList<>());
+
+            assign(SELF, EPOCH);
+            assign(PEER, NEXT_EPOCH);
+            assign(SELF, NEXT_EPOCH);
+            assertThat(kv.getTyped(ASSIGNMENT_KEY, ConsumerAssignmentValue.class).map(ConsumerAssignmentValue::token))
+                    .describedAs("precondition: the equal-epoch rewrite landed (the epoch fence accepts EQUAL)")
+                    .isEqualTo(Option.some(AssignmentToken.assignmentToken(SELF, NEXT_EPOCH)));
+
+            assertThat(node.commit(GROUP, STREAM, PARTITION, 150L, EPOCH).await()
+                           .map(outcome -> outcome instanceof CommitOutcome.Fenced)).isEqualTo(Result.success(true));
+        }
+
         /// The assignment record itself is gone: the applier admits nobody, and a record that names nobody
         /// does not name this node — Fenced, not the retryable verdict a lagging mirror gets (#1335 B1). The
         /// record is `EpochBearing`, so deleting it takes the committed value as witness; a witnessless
@@ -378,6 +410,8 @@ class ClusterCursorStoreTest {
         private KVStore<AetherKey, AetherValue> core;
         private KVStore<AetherKey, AetherValue> mirror;
         private final AtomicBoolean mirrorLags = new AtomicBoolean(false);
+        /// The decisions the core took while the mirror lagged, in order — replayed by [#mirrorCatchesUp].
+        private final List<KVCommand<AetherKey>> withheld = new ArrayList<>();
 
         @BeforeEach
         void setUp() {
@@ -396,17 +430,27 @@ class ClusterCursorStoreTest {
 
         private Promise<Unit> applyOnCoreThenMirror(List<KVCommand<AetherKey>> commands) {
             core.process(core.createBatch(commands));
-            if (!mirrorLags.get()) {
+            if (mirrorLags.get()) {
+                withheld.addAll(commands);
+            } else {
                 mirror.process(mirror.createBatch(commands));
             }
 
             return Promise.unitPromise();
         }
 
-        /// A decision taken on the core while the mirror lagged reaches the mirror now.
-        private void mirrorCatchesUp(List<KVCommand<AetherKey>> decision) {
+        /// Every decision the core took while the mirror lagged reaches the mirror now, in log order — the
+        /// commands as they were actually sent (rev1335d NIT-4), not a hand-built stand-in.
+        private void mirrorCatchesUp() {
             mirrorLags.set(false);
-            mirror.process(mirror.createBatch(decision));
+            mirror.process(mirror.createBatch(List.copyOf(withheld)));
+            withheld.clear();
+        }
+
+        /// A decision taken on the core by SOMEONE ELSE (the leader's reassignment) while the mirror lagged.
+        private void coreDecidesWhileMirrorLags(KVCommand<AetherKey> decision) {
+            core.process(core.createBatch(List.of(decision)));
+            withheld.add(decision);
         }
 
         private void assignEverywhere(NodeId assignee, Epoch epoch) {
@@ -443,7 +487,7 @@ class ClusterCursorStoreTest {
                     .describedAs("a checkpoint the applier admitted is retryable, never the terminal Fenced; got %s", lagging)
                     .isEqualTo(Result.success(true));
 
-            mirrorCatchesUp(List.of(new KVCommand.Put<AetherKey, AetherValue>(CHECKPOINT_KEY, checkpoint(20L, SELF_TOKEN))));
+            mirrorCatchesUp();
             assertThat(worker.commit(GROUP, STREAM, PARTITION, 20L, EPOCH).await())
                     .describedAs("the retry persists once the mirror shows the decision")
                     .isEqualTo(Result.success(CommitOutcome.persisted()));
@@ -459,8 +503,7 @@ class ClusterCursorStoreTest {
             assignEverywhere(SELF, EPOCH);
             worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
             mirrorLags.set(true);
-            var reassignment = List.<KVCommand<AetherKey>>of(assignment(PEER, NEXT_EPOCH));
-            core.process(core.createBatch(reassignment));
+            coreDecidesWhileMirrorLags(assignment(PEER, NEXT_EPOCH));
 
             var lagging = worker.commit(GROUP, STREAM, PARTITION, 20L, EPOCH).await();
 
@@ -470,7 +513,7 @@ class ClusterCursorStoreTest {
                     .describedAs("the mirror still names this node, so the loser cannot yet tell refused from not-yet-visible")
                     .isEqualTo(Result.success(true));
 
-            mirrorCatchesUp(reassignment);
+            mirrorCatchesUp();
             assertThat(worker.commit(GROUP, STREAM, PARTITION, 20L, EPOCH).await()
                              .map(outcome -> outcome instanceof CommitOutcome.Fenced))
                     .describedAs("the retry is refused again, and now the mirror shows why")
