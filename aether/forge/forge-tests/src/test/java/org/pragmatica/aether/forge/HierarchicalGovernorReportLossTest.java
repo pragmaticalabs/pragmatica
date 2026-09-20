@@ -62,10 +62,12 @@ class HierarchicalGovernorReportLossTest {
         assertThat(leader().membershipFsm().coreCountedMembers()).doesNotContainAnyElementsOf(workers).hasSize(3);
         var previous = announcement(community).unwrap();
         var dropped = new java.util.concurrent.atomic.AtomicInteger();
+        var staleReport = new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.worker.health.CommunityHealthMessage.Report>();
         var cores = cluster.allNodes().stream().filter(node -> !workers.contains(node.self())).toList();
         cores.forEach(node -> node.setInboundFaultFilter((sender, message) -> {
             if (sender.equals(previous.governorId())
-                && message instanceof org.pragmatica.aether.worker.health.CommunityHealthMessage.Report) {
+                && message instanceof org.pragmatica.aether.worker.health.CommunityHealthMessage.Report report) {
+                staleReport.compareAndSet(null, report);
                 dropped.incrementAndGet();
                 return false;
             }
@@ -85,6 +87,24 @@ class HierarchicalGovernorReportLossTest {
         assertThat(oldGovernor.connectedPeerIds()).anyMatch(peer -> workers.contains(peer) && !peer.equals(previous.governorId()));
         assertThat(leader().membershipFsm().coreCountedMembers()).doesNotContainAnyElementsOf(workers).hasSize(3);
         cores.forEach(node -> node.setInboundFaultFilter((_, _) -> true));
+        var accepted = announcement(community).unwrap();
+        assertThat(staleReport.get()).as("actual report captured before authority replacement").isNotNull();
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        var target = leader();
+        target.setInboundFaultFilter((sender, message) -> {
+            if (sender.equals(previous.governorId()) && message.equals(staleReport.get())) delivered.incrementAndGet();
+            return true;
+        });
+        assertThat(HierarchyAuthorityAcceptanceTest.runtime(oldGovernor).network()
+            .sendOutcome(target.self(), staleReport.get()).await(BUDGET).unwrap().isSent()).isTrue();
+        await().atMost(BUDGET.duration()).until(() -> delivered.get() > 0);
+        await().during(2, TimeUnit.SECONDS).atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
+            var current = announcement(community).unwrap();
+            assertThat(current.governorId()).isEqualTo(accepted.governorId());
+            assertThat(current.communityTerm()).isEqualTo(accepted.communityTerm());
+            assertThat(leader().membershipFsm().coreCountedMembers()).doesNotContainAnyElementsOf(workers);
+        });
+        target.setInboundFaultFilter((_, _) -> true);
     }
 
     private String diagnostics(String community, List<NodeId> workers) {
