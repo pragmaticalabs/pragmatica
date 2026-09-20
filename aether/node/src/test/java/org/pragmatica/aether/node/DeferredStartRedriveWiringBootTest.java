@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -27,9 +28,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState;
 import org.pragmatica.aether.resource.ResourceProvider;
@@ -72,6 +75,10 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// — with the wiring deleted the leader's own re-issued LOAD still starts the slice, but through the plain
 /// gate, and that line never appears.
 class DeferredStartRedriveWiringBootTest {
+    /// #1276: node storage lives here, never under the machine-global `/data/aether/...` default.
+    @TempDir
+    Path tempDir;
+
     private static final String LOGGER_NAME = NodeDeploymentState.Active.class.getName();
     private static final Artifact V1 = Artifact.artifact("org.example:redrive-wiring:1.0.0").unwrap();
     private static final Version V2 = Version.version("2.0.0").unwrap();
@@ -155,7 +162,7 @@ class DeferredStartRedriveWiringBootTest {
     }
 
     private void bootAndDeferALoad() {
-        node = AetherNode.aetherNode(minimalConfig(), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(tempDir), () -> {})
                           .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                           .unwrap();
         node.start()
@@ -190,7 +197,7 @@ class DeferredStartRedriveWiringBootTest {
 
     /// The #858 single-node boot fixture: `self` in `coreNodes`, mutual self-signed QUIC TLS, management
     /// and app HTTP off.
-    private static AetherNodeConfig minimalConfig() {
+    private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("deferred-start-redrive-boot-" + UUID.randomUUID()).unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -207,6 +214,8 @@ class DeferredStartRedriveWiringBootTest {
                                 .certificateProvider(Option.none())
                                 .configProvider(Option.none())
                                 .environment(Option.none())
+                                .managementHttpProtocol(HttpProtocol.H1)
+                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
     }
 
