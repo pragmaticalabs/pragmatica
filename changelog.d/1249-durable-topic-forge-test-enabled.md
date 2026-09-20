@@ -14,5 +14,15 @@
   The class is `@Tag("Heavy")`, so `ci.yml`'s forge-tests job never runs it; only the `run-heavy`
   label or a `heavy-forge` dispatch does.
   [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/DurableTopicDeliveryForgeTest.java]
+- The fixture is pinned to every node (`instances = minAvailable = maxInstances = 5`) and setUp waits
+  for all five ACTIVE on distinct nodes before any arm publishes. Left autoscalable, the slice was
+  descaled 5 → 4 → 3 mid-run and no consumer was attached anywhere for 5.5 minutes (#1389), and a
+  late `forceActivatingToActive` moved the consumer inside an arm's window.
+- The pre-attach arm asserts on one id, never a count: the order-events warm-up whose publish
+  returned a definite success while `attachedSubscriptions` read 0 on every node. A warm-up whose
+  outcome came back unknown (5 s replication timeout, #1236) is excluded and retried under a fresh id;
+  a retry delivered by the listener after the attach used to satisfy the old `>= 1`. A run in which
+  the consumer attached before the first definite success skips the arm with that reading in the
+  message, since nothing in that run can speak about the backlog read.
 - Publish outcomes (#1236) and pre-durability visibility (#1235) have no arm. This harness cannot
   drive either without losing quorum or failing over the owner. [unverified: no arm reaches them]

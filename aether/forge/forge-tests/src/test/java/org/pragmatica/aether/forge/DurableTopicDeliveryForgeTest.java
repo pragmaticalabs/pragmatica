@@ -6,6 +6,7 @@
 package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.Nested;
@@ -27,6 +28,7 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -63,7 +65,8 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// never retries, so an observed retry cannot be ephemeral dispatch.
 ///
 /// **Non-vacuity of the delivery count.** `order-events` declares `partitions = 1` and the blueprint
-/// deploys the slice to EVERY node. Exactly one node owns that partition, so a correctly gated
+/// pins the slice to EVERY node (`instances = minAvailable = maxInstances = 5`, and [#setUp] waits for
+/// all five ACTIVE). Exactly one node owns that partition, so a correctly gated
 /// consumer records each event once CLUSTER-WIDE, while an ungated one records it once per node and
 /// each id is counted once per node. Asserting exactly one delivery PER ID is simultaneously a
 /// delivery proof and a duplication proof. The subscriber methods are deliberately ABSENT from the
@@ -130,14 +133,31 @@ class DurableTopicDeliveryForgeTest {
     private static final String BLUEPRINT_ID = "forge.test:durable-topic:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
-    /// The id both readiness gates publish under. No arm counts it: every arm counts only the ids it
-    /// published itself, which is what removes baseline carryover rather than draining around it.
-    ///
-    /// The number of warm-up events is NOT fixed. A gate publish can time out after its event landed
-    /// (#1236), and the gate then publishes again under a new message id (#1237); one run in eight left
-    /// two warm-up events. No verdict depends on it: [PreAttachBacklog] asserts at least one
-    /// delivery, never an exact count.
+    /// The poison readiness gate publishes under this id, and the order-events gate's ids carry it as a
+    /// prefix. No arm counts it: every arm counts only the ids it published itself, which is what removes
+    /// baseline carryover rather than draining around it.
     private static final String WARMUP_ID = "__warmup__";
+
+    /// Probe knob, read once in [#setUp]: `-DdurableTopic.forceUnknownFirstWarmup=true` makes the gate
+    /// treat its FIRST order-events publish as outcome-unknown whatever the slice answered, so the
+    /// retried-warm-up shape (#1236/#1237: a 5 s replication timeout after the event landed, seen in 2 of
+    /// 5 runs) can be forced for a mutation probe. Never set in CI.
+    private static final String FORCE_UNKNOWN_FIRST_WARMUP = "durableTopic.forceUnknownFirstWarmup";
+
+    /// The one order-events warm-up whose publish returned a DEFINITE success while `attachedSubscriptions`
+    /// read 0 on every node — the event [PreAttachBacklog] asserts on, by id, never by count. Empty when
+    /// no gate attempt met both conditions (see [#publishPreAttachWarmup]).
+    private Option<String> preAttachOrderId = Option.none();
+
+    /// Order-events gate publishes whose outcome came back unknown or failed. Excluded from every
+    /// verdict: such an event may or may not be in the log, and a retry of it that lands after the
+    /// consumer attached is delivered by the listener, which is exactly what [PreAttachBacklog] must not
+    /// mistake for a backlog read.
+    private final List<String> excludedWarmupIds = new ArrayList<>();
+
+    /// `attachedSubscriptions` summed over every node when the first definite success returned, for
+    /// the message of a run that could not establish the pre-attach shape.
+    private int attachedWhenWarmupSucceeded = -1;
 
     /// The fixture acks orders carrying this prefix late (`DurableTopicSlice.durableTopicSlice.SLOW_ACK_PREFIX`).
     private static final String SLOW_ACK_PREFIX = "slow-";
@@ -154,6 +174,7 @@ class DurableTopicDeliveryForgeTest {
     private static final Pattern FAILING_PAYLOADS = Pattern.compile("\"failingPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
     private static final Pattern HEALTHY_PAYLOADS = Pattern.compile("\"healthyPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
     private static final Pattern INSTANCE_ID = Pattern.compile("\"instanceId\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern ATTACHED_SUBSCRIPTIONS = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
     private static final Pattern QUOTED = Pattern.compile("\"([^\"]*)\"");
 
     private EmberCluster cluster;
@@ -187,13 +208,27 @@ class DurableTopicDeliveryForgeTest {
                .failFast(this::failIfSliceFailed)
                .until(this::appHttpReady);
 
-        // A publish can land before the backing stream's owner has materialized its ring, so gate on a
-        // real publish resolving before any assertion runs. Both gates publish under WARMUP_ID, which no
-        // arm counts.
+        // The order-events warm-up goes FIRST, as soon as one port answers: [PreAttachBacklog] needs an
+        // event whose publish succeeded before the group's consumer attached, and the consumer attaches
+        // on the next reconcile tick after the first instance is ACTIVE. Waiting for all five instances
+        // first would put every warm-up after the attach. A publish can also land before the backing
+        // stream's owner has materialized its ring, so the gate retries until one resolves.
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
-               .until(this::publishReady);
+               .until(this::publishPreAttachWarmup);
+
+        // Every instance ACTIVE, on five distinct nodes, before any arm publishes. The blueprint pins
+        // instances = minAvailable = maxInstances, so the autoscaler can neither descale the slice off
+        // nodes mid-arm (one run went 5 -> 4 -> 3 and had NO consumer attached anywhere for 5.5 min,
+        // #1389) nor scale it up; and an instance that is still ACTIVATING and flips to ACTIVE ~85 s
+        // after deploy (`NodeDeploymentState.forceActivatingToActive`) changes the consumer's
+        // candidate set and moves it, which is the documented reconcile-window duplicate. Both were
+        // seen inside arm windows before this gate existed.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::allInstancesActiveOnDistinctNodes);
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -202,14 +237,13 @@ class DurableTopicDeliveryForgeTest {
 
         // Arms count only their own ids, so a warm-up can no longer be MISCOUNTED. It can still
         // INTERFERE: a poison warm-up mid-retry when an arm publishes shares that group's partition, and
-        // #1238(a) re-delivers a retrying event on every append. So the poison topic must be quiescent
-        // before the first arm runs — either the warm-up exhausted its budget, or it is stranded
-        // pre-attach (#1238(c)) and the first arm's append releases it into a serial loop.
+        // before #1285 every append re-delivered a retrying event. So the poison topic must be
+        // quiescent before the first arm runs — the warm-up exhausted its budget.
         //
         // The order-events warm-up is deliberately NOT drained here. The previous version waited for it
-        // and died in setUp on every run, taking all five arms with it: an event appended before its
-        // group's push listener registers is never read until the next append (#1238(c)). That is now
-        // an arm of its own, [PreAttachBacklog], instead of a precondition of every arm.
+        // and died in setUp on every run, taking all five arms with it: before #1285 an event appended
+        // before its group's push listener registered was never read until the next append (#1238(c)).
+        // That is now an arm of its own, [PreAttachBacklog], instead of a precondition of every arm.
         var lastPoisonSample = new AtomicInteger(-1);
 
         await().atMost(WAIT_TIMEOUT)
@@ -238,22 +272,35 @@ class DurableTopicDeliveryForgeTest {
     /// warm-up was never delivered — undelivered after 20 s in 6/6 rc4 runs, and delivered in 0.6 s
     /// once #1285 merged. The stranding is also the mechanism #751 left unexplained: the suite's old
     /// setUp drain gate waited on exactly this event and timed out on every run.
+    ///
+    /// The arm asserts on ONE id, [#preAttachOrderId], never on a count of warm-ups. A gate publish
+    /// whose outcome came back unknown (5 s replication timeout, #1236) is retried under a fresh id
+    /// (#1237); had the arm counted every warm-up, a retry delivered by the listener after the attach
+    /// would satisfy it while the backlog read it claims to prove was missing (rev1341 F2). The
+    /// pre-attach precondition is OBSERVED per run, not assumed: the id qualifies only if
+    /// `attachedSubscriptions` read 0 on every node AFTER its publish returned success — an append that
+    /// completed before any node put the group into its active set completed before any listener was
+    /// installed. `attachedSubscriptions` counts durable-topic groups too (they join
+    /// `StreamConsumerManager.active` like registry consumers), which is what makes the read speak
+    /// about this group.
     @Nested
     @Order(1)
     class PreAttachBacklog {
-        /// Meaningful only when the warm-up was appended before the group attached. The pre-#1285
-        /// tripwire that stood here found it undelivered on every rc4 run, which is that precondition
-        /// observed: an event published after attach would have been delivered by the listener.
         @Test
         void eventPublishedBeforeTheGroupAttached_isDeliveredWithoutAFollowUpAppend() {
-            await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(deliveriesOf(WARMUP_ID))
-                           .describedAs("the readiness gate's order was appended before the group"
-                                        + " attached; a subscribe that reads the backlog delivers it"
-                                        + " without any further publish")
-                           .isGreaterThanOrEqualTo(1));
+            var id = preAttachOrderId.or(() -> Assumptions.abort(
+                    "pre-attach shape not established this run: the first order-events publish that"
+                    + " returned success did so with attachedSubscriptions=" + attachedWhenWarmupSucceeded
+                    + " across the nodes (the consumer was already attached; excluded unknown-outcome"
+                    + " ids: " + excludedWarmupIds + "). Nothing this run can say about the backlog read"
+                    + " at subscribe — see the class doc for why this is a named skip, not a red"));
+
+            awaitSettled("%s was published with a definite success before any consumer attached, so a"
+                         .formatted(id)
+                         + " subscribe that reads the backlog delivers it, once, without any further"
+                         + " publish (excluded unknown-outcome warm-ups: " + excludedWarmupIds + ")",
+                         () -> deliveriesOf(id),
+                         1L);
         }
     }
 
@@ -582,7 +629,9 @@ class DurableTopicDeliveryForgeTest {
             [[slices]]
             artifact = "%s"
             instances = %d
-            """.formatted(BLUEPRINT_ID, DURABLE_TOPIC_SLICE, INSTANCES);
+            minAvailable = %d
+            maxInstances = %d
+            """.formatted(BLUEPRINT_ID, DURABLE_TOPIC_SLICE, INSTANCES, INSTANCES, INSTANCES);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
@@ -603,18 +652,73 @@ class DurableTopicDeliveryForgeTest {
         return !body.contains("\"error\"") && body.contains("count");
     }
 
-    private boolean publishReady() {
+    /// One gate attempt: publishes a fresh `__warmup__-N` order and classifies the outcome. Definite
+    /// success ends the gate; the id becomes [#preAttachOrderId] only if no node had the group attached
+    /// once the publish had returned. Anything else — an error body, the 5 s replication timeout, an
+    /// HTTP failure — puts the id on [#excludedWarmupIds] and the gate tries again under the next id.
+    /// The first attempt is classified unknown unconditionally when [#FORCE_UNKNOWN_FIRST_WARMUP] is set.
+    private boolean publishPreAttachWarmup() {
         var ports = cluster.getAvailableAppHttpPorts();
 
         if (ports.isEmpty()) {
             return false;
         }
 
+        var attempt = excludedWarmupIds.size();
+        var id = WARMUP_ID + "-" + attempt;
         var response = httpPost(ports.getFirst(),
                                 "/api/durable-topic/publish-order",
-                                "{\"orderId\":\"" + WARMUP_ID + "\",\"sequence\":0}");
+                                "{\"orderId\":\"" + id + "\",\"sequence\":0}");
+        var forcedUnknown = attempt == 0 && Boolean.getBoolean(FORCE_UNKNOWN_FIRST_WARMUP);
+        var definiteSuccess = !forcedUnknown && !response.contains("\"error\"") && response.contains("published");
 
-        return !response.contains("\"error\"") && response.contains("published");
+        if (!definiteSuccess) {
+            excludedWarmupIds.add(id);
+
+            return false;
+        }
+
+        attachedWhenWarmupSucceeded = attachedSubscriptionsClusterWide();
+        if (attachedWhenWarmupSucceeded == 0) {
+            preAttachOrderId = Option.some(id);
+        }
+
+        return true;
+    }
+
+    /// `attachedSubscriptions` from `GET /api/v1/streams/declarative-consumers` on every node's
+    /// management port, summed. The field is `StreamConsumerManager.activeSubscriptionCount()`, the size
+    /// of the set a group joins BEFORE its subscribe (and so before its push listener) runs — a 0 read
+    /// after a publish returned is a sound "appended before attach", never an optimistic one. A node
+    /// that does not answer counts as attached, so an unreadable node can only withhold the pre-attach
+    /// claim, never grant it.
+    private int attachedSubscriptionsClusterWide() {
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .mapToInt(node -> attachedSubscriptions(httpGet(node.mgmtPort(), "/api/v1/streams/declarative-consumers")))
+                      .sum();
+    }
+
+    private static int attachedSubscriptions(String body) {
+        var matcher = ATTACHED_SUBSCRIPTIONS.matcher(body);
+
+        return matcher.find()
+               ? Integer.parseInt(matcher.group(1))
+               : 1;
+    }
+
+    /// Every one of the [#INSTANCES] instances ACTIVE, each on a different node.
+    private boolean allInstancesActiveOnDistinctNodes() {
+        var activeNodes = cluster.slicesStatus()
+                                 .stream()
+                                 .filter(slice -> slice.artifact().equals(DURABLE_TOPIC_SLICE))
+                                 .flatMap(slice -> slice.instances().stream())
+                                 .filter(instance -> "ACTIVE".equals(instance.state()))
+                                 .map(EmberCluster.SliceInstanceStatus::nodeId)
+                                 .collect(Collectors.toSet());
+
+        return activeNodes.size() == INSTANCES;
     }
 
     /// The `poison-events` half of the readiness gate. Its warm-up event WILL be dead-lettered by the
@@ -703,6 +807,19 @@ class DurableTopicDeliveryForgeTest {
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(15))
+                                 .build();
+
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
+    }
+
+    private String httpGet(int port, String path) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .GET()
+                                 .timeout(Duration.ofSeconds(10))
                                  .build();
 
         return http.sendString(request)
