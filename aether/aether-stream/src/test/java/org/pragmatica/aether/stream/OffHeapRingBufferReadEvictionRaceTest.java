@@ -46,8 +46,9 @@ class OffHeapRingBufferReadEvictionRaceTest {
 
     /// One reader's tally. `torn`: a returned event whose payload belongs to another offset. `expired`:
     /// reads refused `CursorExpired` — the typed outcome of losing the race, asserted > 0 so a green run
-    /// proves the race was entered rather than absent.
-    private record Tally(long reads, long torn, long expired, String firstTorn) {}
+    /// proves the race was entered rather than absent. `aligned`: reads that returned the requested
+    /// record, asserted > 0 so a re-check that refuses everything cannot pass either.
+    private record Tally(long reads, long torn, long expired, long aligned, String firstTorn) {}
 
     @Test
     void read_neverReturnsAnotherOffsetsRecord_whileAppendsEvictTheTail() throws InterruptedException {
@@ -57,6 +58,8 @@ class OffHeapRingBufferReadEvictionRaceTest {
             System.out.println("#1340 read: " + tally);
             assertThat(tally.reads()).as("the reader must have run").isGreaterThan(1_000);
             assertThat(tally.expired()).as("the race must have been entered (reads refused CursorExpired)")
+                      .isGreaterThan(0);
+            assertThat(tally.aligned()).as("reads that returned the requested offset's record (a re-check that refuses everything must not pass)")
                       .isGreaterThan(0);
             assertThat(tally.torn()).as("reads whose payload belongs to another offset; first: " + tally.firstTorn())
                       .isZero();
@@ -71,6 +74,8 @@ class OffHeapRingBufferReadEvictionRaceTest {
             System.out.println("#1340 readSlice: " + tally);
             assertThat(tally.reads()).as("the reader must have run").isGreaterThan(1_000);
             assertThat(tally.expired()).as("the race must have been entered (reads refused CursorExpired)")
+                      .isGreaterThan(0);
+            assertThat(tally.aligned()).as("reads that returned the requested offset's record (a re-check that refuses everything must not pass)")
                       .isGreaterThan(0);
             assertThat(tally.torn()).as("slices whose payload belongs to another offset; first: " + tally.firstTorn())
                       .isZero();
@@ -87,6 +92,7 @@ class OffHeapRingBufferReadEvictionRaceTest {
         var reads = 0L;
         var torn = 0L;
         var expired = 0L;
+        var aligned = 0L;
         var firstTorn = "";
 
         while (!done.get()) {
@@ -106,13 +112,15 @@ class OffHeapRingBufferReadEvictionRaceTest {
                 }
             } else if (outcome.expired()) {
                 expired++;
+            } else if (outcome == Outcome.ALIGNED) {
+                aligned++;
             }
         }
 
         writer.join();
         assertThat(writerFailure.get()).as("the writer must have appended every offset it stamped").isNull();
 
-        return new Tally(reads, torn, expired, firstTorn);
+        return new Tally(reads, torn, expired, aligned, firstTorn);
     }
 
     private static void appendStamped(OffHeapRingBuffer buffer, AtomicBoolean done, AtomicReference<String> failure) {
