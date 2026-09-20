@@ -19,6 +19,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.NOT_ENOUGH_REPLICAS;
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.REPLICATION_TIMEOUT;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
@@ -30,6 +33,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 final class DefaultReplicationManager implements ReplicationManager {
+    private static final Logger log = LoggerFactory.getLogger(DefaultReplicationManager.class);
     private static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
 
     private final NodeId governorId;
@@ -85,7 +89,14 @@ final class DefaultReplicationManager implements ReplicationManager {
                                byte[] payload,
                                long timestamp,
                                Epoch ownerEpoch) {
-        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp, ownerEpoch))
+        // FER: `replicateEvent` is fire-and-forget (void); the only refusal is BATCHER_CLOSED after close(),
+        // when this manager is shutting down and no replica may be sent to — logged, then dropped.
+        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp, ownerEpoch)
+                                .onFailure(cause -> log.warn("Event {}[{}]@{} not replicated: {}",
+                                                             streamName,
+                                                             partition,
+                                                             offset,
+                                                             cause.message())))
                .onEmpty(() -> replicateImmediately(streamName, partition, offset, payload, timestamp, ownerEpoch));
     }
 
