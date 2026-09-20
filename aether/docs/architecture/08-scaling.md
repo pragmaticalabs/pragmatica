@@ -265,3 +265,4 @@ The scaling story has two distinct dimensions, each with its **own** validation 
 - [05-worker-pools.md](05-worker-pools.md) - Two-layer topology, governors, and the community mechanism this section names
 - [14-consistency-and-partitions.md](14-consistency-and-partitions.md) - The partition contract the core's fault-tolerance math rests on
 - [../reference/known-limitations.md](../reference/known-limitations.md) - Single source for the scaling numbers and their validation status
+- [../specs/cluster-supervision-spec.md](../specs/cluster-supervision-spec.md) - **Planned, 1.0.0-rc5 (#1251), not implemented:** one supervision path for bounded recovery runbooks, the reactive tier above (kept continuously active) and calendar-aware predictive preparation; it would make TTM (Layer 2) a proposal-only forecast provider
