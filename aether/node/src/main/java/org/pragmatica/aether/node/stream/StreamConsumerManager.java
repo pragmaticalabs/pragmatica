@@ -721,7 +721,8 @@ public interface StreamConsumerManager {
                          .flatMap(envelope -> invoker.invokeLocalWithContext(declaration.artifact(),
                                                                              declaration.methodName(),
                                                                              envelope.payload(),
-                                                                             contextOf(key, offset, envelope)));
+                                                                             contextOf(key, offset, envelope))
+                                                     .timeout(handlerTimeout));
         }
 
         private static MessageContext contextOf(SubscriptionKey key, long offset, TopicEventEnvelope envelope) {
