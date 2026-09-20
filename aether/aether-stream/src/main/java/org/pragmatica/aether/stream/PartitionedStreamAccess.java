@@ -37,6 +37,7 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
+import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"})
@@ -829,28 +830,41 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                                long fromOffset,
                                                                int maxEvents) {
         return reader.read(streamName, partition, fromOffset, maxEvents)
-                     .map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
+                     .flatMap(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents).async());
     }
 
-    private List<StreamEvent<T>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
-                                                         int partition,
-                                                         long fromOffset,
-                                                         int maxEvents) {
+    private Result<List<StreamEvent<T>>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
+                                                                 int partition,
+                                                                 long fromOffset,
+                                                                 int maxEvents) {
         var remaining = maxEvents - sealedEvents.size();
         var sealed = toStreamEvents(sealedEvents, partition);
 
         if (remaining <= 0) {
-            return sealed;
+            return success(sealed);
         }
 
         var bufferStart = sealedEvents.isEmpty()
                           ? fromOffset
                           : sealedEvents.getLast().offset() + 1;
-        var bufferEvents = partitionManager.readLocal(streamName, partition, bufferStart, remaining)
-                                           .map(rawEvents -> toStreamEvents(rawEvents, partition))
-                                           .or(List.of());
 
-        return List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList());
+        return partitionManager.readLocal(streamName, partition, bufferStart, remaining)
+                               .map(rawEvents -> toStreamEvents(rawEvents, partition))
+                               .fold(this::bufferReadFallback, Result::success)
+                               .map(bufferEvents -> List.copyOf(Stream.concat(sealed.stream(),
+                                                                              bufferEvents.stream())
+                                                                      .toList()));
+    }
+
+    /// FER (degrade forward) for the ring tail after a segment fallback: any buffer failure except a
+    /// corrupted ring returns the sealed events alone — a short read the consumer continues from its next
+    /// offset, which is what this path always did. A corrupted ring is the exception (#1247 review M2): its
+    /// events cannot be trusted and "no buffer events" would silently truncate the read, so
+    /// [StreamError.RingIndexCorrupted] reaches the caller.
+    private Result<List<StreamEvent<T>>> bufferReadFallback(Cause cause) {
+        return cause instanceof StreamError.RingIndexCorrupted
+               ? cause.result()
+               : success(List.of());
     }
 
     private List<StreamEvent<T>> toStreamEvents(List<OffHeapRingBuffer.RawEvent> rawEvents, int partition) {

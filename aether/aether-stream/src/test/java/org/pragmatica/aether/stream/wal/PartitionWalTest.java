@@ -6,6 +6,7 @@
 package org.pragmatica.aether.stream.wal;
 
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
@@ -29,8 +30,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -274,20 +277,30 @@ class PartitionWalTest {
         }
     }
 
+    /// #1232: file order is offset order. `append` writes its frame in the CALLER's thread before it
+    /// returns (only the group-commit fsync is asynchronous), so a caller that assigns offsets inside an
+    /// ordered section gets a file in offset order — and an out-of-order offset is refused unwritten.
     @Nested
-    class Concurrency {
+    class Ordering {
 
-        @Test
-        void concurrentAppends_allDurableAndReplayable() throws InterruptedException {
+        /// Replaces the former `concurrentAppends_allDurableAndReplayable`, whose order-insensitive
+        /// `containsAll` accepted a reordered file as correct — it encoded the #1232 defect. Offsets are
+        /// taken and appended inside one section (as the partition manager does); the fsync is awaited
+        /// outside it. The file must hold exactly 0..N-1 in that order.
+        @RepeatedTest(20)
+        void concurrentAppends_fromOrderedSection_replayInOffsetOrder() throws InterruptedException {
             var wal = open("concurrent.wal");
             var threads = 4;
             var perThread = 25;
+            var section = new ReentrantLock();
+            var nextOffset = new long[]{0};
             var promises = new CopyOnWriteArrayList<Promise<Unit>>();
             var pool = Executors.newFixedThreadPool(threads);
             var start = new CountDownLatch(1);
             var done = new CountDownLatch(threads);
 
-            IntStream.range(0, threads).forEach(t -> pool.submit(() -> fireBatch(wal, t * perThread, perThread, promises, start, done)));
+            IntStream.range(0, threads)
+                     .forEach(_ -> pool.submit(() -> fireOrdered(wal, section, nextOffset, perThread, promises, start, done)));
             start.countDown();
             done.await(30, TimeUnit.SECONDS);
             promises.forEach(p -> p.await().onFailure(c -> fail(c.message())));
@@ -295,9 +308,107 @@ class PartitionWalTest {
             wal.close();
 
             var records = replayAll(open("concurrent.wal"), -1L);
-            assertThat(offsetsOf(records)).hasSize(threads * perThread)
-                                          .containsAll(IntStream.range(0, threads * perThread).mapToObj(Long::valueOf).toList());
+
+            assertThat(offsetsOf(records)).containsExactlyElementsOf(LongStream.range(0, threads * perThread).boxed().toList());
             records.forEach(r -> assertThat(new String(r.payload(), UTF_8)).isEqualTo("v" + r.offset()));
+        }
+
+        /// Un-awaited appends from one thread land in call order: the frame is written before `append`
+        /// returns, never on a pooled task that a later call can overtake.
+        @RepeatedTest(20)
+        void unawaitedAppends_landInCallOrder() {
+            var wal = open("pipelined.wal");
+            var count = 500;
+            var promises = LongStream.range(0, count)
+                                     .mapToObj(offset -> wal.append(offset, ("v" + offset).getBytes(UTF_8), 1L))
+                                     .toList();
+
+            promises.forEach(p -> p.await().onFailure(c -> fail(c.message())));
+
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactlyElementsOf(LongStream.range(0, count).boxed().toList());
+            wal.close();
+        }
+
+        @Test
+        void append_writesFrameBeforeReturning() {
+            var wal = open("sync-write.wal");
+
+            wal.append(0L, payload(0), 1L);
+
+            assertThat(wal.lastOffset()).as("frame written in the caller's thread, before the fsync resolves")
+                                        .isEqualTo(0L);
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L);
+            wal.close();
+        }
+
+        /// The write-side inverse of recovery's duplicate refusal: a non-increasing offset is refused
+        /// with [PartitionWal.WalError.OffsetRegression] and nothing is written.
+        @Test
+        void append_refusesNonIncreasingOffset_withoutWriting() {
+            var wal = open("regression.wal");
+
+            appendSync(wal, 5L, payload(5), 1L);
+            var sizeBefore = wal.stats().sizeBytes();
+
+            assertRefusedAsRegression(wal.append(5L, payload(5), 1L), 5L);
+            assertRefusedAsRegression(wal.append(4L, payload(4), 1L), 4L);
+
+            assertThat(wal.stats().sizeBytes()).isEqualTo(sizeBefore);
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(5L);
+            appendSync(wal, 6L, payload(6), 1L);
+            wal.close();
+        }
+
+        private static void assertRefusedAsRegression(Promise<Unit> append, long offset) {
+            append.await()
+                  .onSuccess(_ -> fail("offset %d does not follow 5 and must be refused".formatted(offset)))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(new PartitionWal.WalError.OffsetRegression(offset, 5L)));
+        }
+    }
+
+    /// #1232 (ruling know 801a8b54e): a failed FRAME WRITE fail-stops the WAL exactly like a failed
+    /// fsync. Otherwise a later frame that did land would leave a hole at the failed record's offset —
+    /// the ring already assigned it — and recovery refuses a hole loudly rather than renumbering.
+    @Nested
+    class WriteFailure {
+
+        @Test
+        void failedFrameWrite_failStopsTheWal_soNoLaterFrameLeavesAGap() {
+            var wal = open("write-failure.wal");
+
+            appendSync(wal, 0L, payload(0), 1L);
+            var wrapper = injectForceFailingChannel(wal);
+
+            wrapper.failWrites = true;
+            wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("the frame write was injected to fail"));
+            restoreChannel(wal, wrapper);
+
+            wal.append(2L, payload(2), 1L)
+               .await()
+               .onSuccess(_ -> fail("a frame after a failed write would leave a hole at offset 1"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(PartitionWal.WalError.FailStopped.class));
+            assertThat(wal.stats().failStopped()).isTrue();
+            assertThat(wrapper.forceCalls).as("a failed write never reaches the fsync").hasValue(0);
+            wal.close();
+
+            var reopened = open("write-failure.wal");
+
+            assertThat(offsetsOf(replayAll(reopened, -1L))).as("reopen recovers the contiguous prefix").containsExactly(0L);
+            appendSync(reopened, 1L, payload(1), 1L);
+            reopened.close();
+        }
+
+        /// A refused offset is NOT an I/O failure: nothing was written, so the WAL stays open.
+        @Test
+        void offsetRegression_doesNotFailStop() {
+            var wal = open("regression-no-failstop.wal");
+
+            appendSync(wal, 3L, payload(3), 1L);
+            wal.append(3L, payload(3), 1L).await().onSuccess(_ -> fail("duplicate offset must be refused"));
+
+            assertThat(wal.stats().failStopped()).isFalse();
+            appendSync(wal, 4L, payload(4), 1L);
+            wal.close();
         }
     }
 
@@ -583,15 +694,27 @@ class PartitionWalTest {
         wal.append(offset, payload, ts).await().onFailure(c -> fail(c.message()));
     }
 
-    private static void fireBatch(PartitionWal wal,
-                                  int base,
-                                  int count,
-                                  List<Promise<Unit>> sink,
-                                  CountDownLatch start,
-                                  CountDownLatch done) {
+    private static void fireOrdered(PartitionWal wal,
+                                    ReentrantLock section,
+                                    long[] nextOffset,
+                                    int count,
+                                    List<Promise<Unit>> sink,
+                                    CountDownLatch start,
+                                    CountDownLatch done) {
         await(start);
-        IntStream.range(0, count).forEach(i -> sink.add(wal.append(base + i, ("v" + (base + i)).getBytes(UTF_8), 1L)));
+        IntStream.range(0, count).forEach(_ -> sink.add(appendInSection(wal, section, nextOffset)));
         done.countDown();
+    }
+
+    private static Promise<Unit> appendInSection(PartitionWal wal, ReentrantLock section, long[] nextOffset) {
+        section.lock();
+        try {
+            var offset = nextOffset[0]++;
+
+            return wal.append(offset, ("v" + offset).getBytes(UTF_8), 1L);
+        } finally {
+            section.unlock();
+        }
     }
 
     private static void await(CountDownLatch latch) {
@@ -690,6 +813,7 @@ class PartitionWalTest {
         final AtomicInteger forceCalls = new AtomicInteger();
         final CountDownLatch forceEntered = new CountDownLatch(1);
         final CountDownLatch forceProceed;
+        volatile boolean failWrites;
 
         ForceFailingChannel(FileChannel delegate, boolean gated) {
             this.delegate = delegate;
@@ -731,6 +855,9 @@ class PartitionWalTest {
 
         @Override
         public int write(ByteBuffer src, long position) throws IOException {
+            if (failWrites) {
+                throw new IOException("injected write failure");
+            }
             return delegate.write(src, position);
         }
 
