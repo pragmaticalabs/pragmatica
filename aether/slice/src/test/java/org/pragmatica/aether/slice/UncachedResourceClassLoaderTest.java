@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
+package org.pragmatica.aether.slice;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.artifact.Version;
+
+import java.io.IOException;
+import java.net.JarURLConnection;
+import java.net.URI;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.jar.JarOutputStream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/// s25-inv1277: `URLClassLoader.getResourceAsStream` registers the JVM-shared cached `JarFile` of the
+/// jar in the loader's closeables, so closing a slice loader after a manifest read closed a jar every
+/// other reader in the process shares — and a `JarURLConnection.connect` racing that close re-cached
+/// the closed instance for good (`zip file closed` on every later blueprint apply of that artifact).
+///
+/// The pin is deterministic: hold the shared instance J1 through a caching `JarURLConnection`, read
+/// the entry through the loader, close the loader, then ask J1 for the entry. Unfixed, J1 is closed.
+class UncachedResourceClassLoaderTest {
+    private static final String ENTRY = "META-INF/slice/EchoService.manifest";
+    private static final ClassLoader PLATFORM = ClassLoader.getPlatformClassLoader();
+
+    @TempDir
+    Path tempDir;
+
+    @Test
+    void sliceClassLoader_closedAfterAResourceRead_leavesTheSharedJarUsable() throws IOException {
+        var jar = sliceJar("slice.jar");
+
+        assertSharedJarSurvivesLoaderClose(jar, new SliceClassLoader(new URL[]{jar}, PLATFORM));
+    }
+
+    @Test
+    void sharedLibraryClassLoader_closedAfterAResourceRead_leavesTheSharedJarUsable() throws IOException {
+        var jar = sliceJar("shared.jar");
+        var loader = new SharedLibraryClassLoader(PLATFORM);
+
+        loader.addArtifact("org.example", "shared", Version.version("1.0.0").unwrap(), jar);
+
+        assertSharedJarSurvivesLoaderClose(jar, loader);
+    }
+
+    @Test
+    void frameworkClassLoader_closedAfterAResourceRead_leavesTheSharedJarUsable() throws IOException {
+        var jar = sliceJar("framework.jar");
+
+        assertSharedJarSurvivesLoaderClose(jar, new FrameworkClassLoader(new URL[]{jar}));
+    }
+
+    private static void assertSharedJarSurvivesLoaderClose(URL jar, URLClassLoader loader) throws IOException {
+        var shared = sharedJarFile(jar);
+
+        // Control, inside the same run: a caching connection through the loader's own resource URL
+        // answers with the SAME instance, so J1 is what an unfixed loader registers and closes.
+        assertThat(((JarURLConnection) loader.getResource(ENTRY).openConnection()).getJarFile())
+                .describedAs("the shared cache is in play for the loader's resource URL")
+                .isSameAs(shared);
+
+        try (loader) {
+            try (var in = loader.getResourceAsStream(ENTRY)) {
+                assertThat(in).isNotNull();
+                assertThat(new String(in.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("slice.name=echo\n");
+            }
+        }
+
+        // Unfixed: IllegalStateException: zip file closed — the loader's close() closed J1.
+        assertThat(shared.getEntry(ENTRY)).describedAs("closing the loader must not close the JVM-shared jar")
+                                          .isNotNull();
+
+        try (var in = new URI("jar:" + jar + "!/" + ENTRY).toURL().openStream()) {
+            assertThat(new String(in.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("slice.name=echo\n");
+        } catch (java.net.URISyntaxException e) {
+            throw new IOException(e);
+        }
+    }
+
+    /// J1: the instance every caching `jar:` opener of this jar in the JVM shares.
+    private static JarFile sharedJarFile(URL jar) throws IOException {
+        try {
+            var connection = (JarURLConnection) new URI("jar:" + jar + "!/" + ENTRY).toURL().openConnection();
+
+            connection.setUseCaches(true);
+
+            return connection.getJarFile();
+        } catch (java.net.URISyntaxException e) {
+            throw new IOException(e);
+        }
+    }
+
+    private URL sliceJar(String name) throws IOException {
+        var path = tempDir.resolve(name);
+
+        try (var out = new JarOutputStream(Files.newOutputStream(path))) {
+            out.putNextEntry(new JarEntry(ENTRY));
+            out.write("slice.name=echo\n".getBytes(StandardCharsets.UTF_8));
+            out.closeEntry();
+        }
+
+        return path.toUri().toURL();
+    }
+}
