@@ -8,7 +8,7 @@
 |---|---|
 | Status | Implementation specification; design only, not implemented |
 | Date | 2026-09-18 (decisions owner-confirmed 2026-09-19) |
-| Release target | 1.0.0-rc5 — owner ruling 2026-09-19; work starts once the prerequisites below are met |
+| Release target | 1.0.0-rc5 — owner ruling 2026-09-19; work starts once the prerequisites below are met. Dashboard surface: rc6 (owner ruling 2026-09-20) |
 | Tracking | #1251 (epic); prerequisites listed in "Prerequisites" below |
 | Source baseline | Authored against `0143cdf79`; every §3 integration path and §14 link re-checked present at `release-1.0.0-rc4` `ccba0dba5`. Implementation must still reconcile against its target branch |
 | Primary ownership | `aether-control`, with metrics, deployment, environment, configuration, persistence, and management adapters |
@@ -35,10 +35,12 @@ closed — the spec's own rule (§3) is that a gap is implemented in its owning 
 
 | Needed by | Prerequisite |
 |---|---|
-| §11.1 incident channel on `system:cluster-events` | #1230 — that stream is currently appended on non-owner nodes (multi-writer) |
-| §11.1 durable outbox; any stream-backed event | the stream correctness set #1231–#1239 (append ordering, WAL recovery, drop-as-success, seal-before-reclaim, read visibility, publish outcomes, consumer delivery) |
-| §6.1 conditional admission and reservation sets (P2) | #1250 — the KV applier already fences by epoch/version/monotonic value, but a rejected write is not visible to its submitter and no atomic multi-key command exists |
+| §11.1 incident channel on `system:cluster-events` | #1230 — CLOSED 2026-09-20 (one owner-routed write operation, #1305) |
+| §11.1 durable outbox; any stream-backed event | the stream correctness set #1231–#1239 — all CLOSED by the rc4 stream sweep (sessions 22–25, 2026-09-14…20) |
+| §6.1 conditional admission and reservation sets (P2) | #1250 — delivered by #1379 (leader-guarded puts and multi-key transactions; a rejected witness changes no keys; `LeaderAuthorized`/`OwnerFenced`), milestone rc5; #1250 closes with #1379 once `LeaderPut` returns a submitter-visible refusal and the read-set guard is pinned (review `s25-rev1379`) |
+| §2.1 execution model (community authority, worker communities, capability report), §7.4 adoption, §8 arbitration over sources | **the hierarchical-cluster batch, milestone rc5: #1386 (contract) → #1379 (primitives) → #1390 (runtime)**, reviewed by axis before merge. P2 and later do not start before #1390 is merged; P0–P1 (typed domain model, ingestion) may proceed on the contract in #1386 |
 | §7.4 replacement adoption, SUP-R03/R04, INV-02 | #1038 — auto-heal deletes an unhealthy node's VM even when auto-heal is disabled |
+| §11.2 management contract (dashboard panels), P7, the dashboard leg of SUP-T27 | **rc6** — owner ruling 2026-09-20: the dashboard stays as is until the last pre-GA candidate (too many moving targets to maintain now); API, CLI and docs ship with their phases, the panels are recorded as dormant slots on #494 |
 | §2.1 10K+ nodes / multi-region, §13.3 scale acceptance | #365, #366, #367 — 10K worker nodes is the architecture's own shape (~100 nodes per community × ~100 communities, [scaling architecture](../architecture/08-scaling.md)); BOTH factors are design targets pending validation — the single-community cap (#365/#366) and how many communities one core coordinates (#367). Live scale claims wait on those runs; §13.3's synthetic topology does not |
 
 Related: #435 (setpoint controller + TTM forecast) is the narrower predecessor of §9.4 and §12's
