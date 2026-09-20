@@ -1048,6 +1048,10 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> killNodeInternal(String nodeIdStr, AetherNode node, boolean graceful) {
+        if (!nodes.remove(nodeIdStr, node)) {
+            return Promise.unitPromise();
+        }
+
         var timeout = graceful
                       ? NODE_TIMEOUT
                       : TimeSpan.timeSpan(1).seconds();
@@ -1057,15 +1061,14 @@ public final class EmberCluster {
                  ? "Stopping"
                  : "Force-killing",
                  nodeIdStr);
-        nodes.remove(nodeIdStr);
         nodeInfos.remove(nodeIdStr);
         instanceTags.remove(nodeIdStr);
         var slotOpt = Option.option(slotsByNodeId.remove(nodeIdStr));
 
         return node.stop()
+                   .onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
                    .timeout(timeout)
                    .recover(_ -> Unit.unit())
-                   .onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
                    .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
     }
 
@@ -1396,13 +1399,9 @@ public final class EmberCluster {
     }
 
     private void handleSelfDrain(String nodeIdStr) {
-        var node = nodes.remove(nodeIdStr);
-
-        if (node == null) {
-            return;
-        }
-
-        node.stop().await(timeSpan(10).seconds()).onFailure(cause -> {});
+        Option.option(nodes.get(nodeIdStr)).onPresent(node -> killNodeInternal(nodeIdStr, node, true).onFailure(cause -> log.warn("Self-drain cleanup failed for {}: {}",
+                                                                                                                                  nodeIdStr,
+                                                                                                                                  cause.message())));
     }
 
     public List<NodeMetrics> nodeMetrics() {

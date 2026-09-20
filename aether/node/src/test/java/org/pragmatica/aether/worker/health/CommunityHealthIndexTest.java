@@ -37,6 +37,34 @@ class CommunityHealthIndexTest {
             List.of(new MemberHealth(worker, 2, true, true, org.pragmatica.lang.io.TimeSpan.timeSpan(age).nanos())));
     }
 
+    @Test void governorReadinessProjection_preservesDirectDrainAndExpiresAtOriginalObservationAge() {
+        var request = index.request("community").unwrap();
+        clock.addAndGet(10);
+        assertThat(index.accept(governor, report(request, 20))).isTrue();
+        assertThat(projected(Map.of()).get(worker)).isEqualTo(org.pragmatica.aether.metrics.NodeReportedState.READY);
+        assertThat(projected(Map.of(worker, org.pragmatica.aether.metrics.NodeReportedState.DRAINING)).get(worker))
+            .isEqualTo(org.pragmatica.aether.metrics.NodeReportedState.DRAINING);
+        assertThat(projected(Map.of(worker, org.pragmatica.aether.metrics.NodeReportedState.SYNCING)).get(worker))
+            .isEqualTo(org.pragmatica.aether.metrics.NodeReportedState.SYNCING);
+        clock.addAndGet(70);
+        assertThat(projected(Map.of())).doesNotContainKey(worker);
+    }
+
+    @Test void governorReadinessProjection_dropsRevokedTermWithoutWaitingForCacheExpiry() {
+        var request = index.request("community").unwrap();
+        assertThat(index.accept(governor, report(request, 0))).isTrue();
+        assertThat(projected(Map.of())).containsKey(worker);
+        authority.set(announcement(governor, 4));
+        assertThat(projected(Map.of())).doesNotContainKey(worker);
+    }
+
+    private Map<NodeId, org.pragmatica.aether.metrics.NodeReportedState> projected(
+        Map<NodeId, org.pragmatica.aether.metrics.NodeReportedState> direct) {
+        var community = index.readyMembers().stream().collect(java.util.stream.Collectors.toMap(
+            node -> node, _ -> org.pragmatica.aether.metrics.NodeReportedState.READY));
+        return org.pragmatica.aether.metrics.ReadinessProjection.merge(community, direct);
+    }
+
     @Test void matchingFreshChallenge_exposesReadyAndExpiresWithoutDeclaringDeath() {
         var request = index.request("community").unwrap();
         clock.addAndGet(10);

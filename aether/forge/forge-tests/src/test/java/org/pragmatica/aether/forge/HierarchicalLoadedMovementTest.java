@@ -62,9 +62,12 @@ class HierarchicalLoadedMovementTest {
         assertEcho();
         changeDestination("west");
         var samples = new java.util.concurrent.atomic.AtomicInteger();
-        await().pollInterval(250, TimeUnit.MILLISECONDS).atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> {
-            samples.incrementAndGet();
+        await().alias("community movement convergence").pollInterval(250, TimeUnit.MILLISECONDS).atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> {
+            var sample = samples.incrementAndGet();
             assertThat(activeWorkers(artifact)).as("sampled make-before-break during %s", operation()).isNotEmpty();
+            if (sample % 120 == 0) {
+                System.out.println("Movement progress: west=" + membersInSource("west") + ", operation=" + operation());
+            }
             return membersInSource("west").size() == 3
                 && originals.stream().allMatch(node -> cluster.getNode(node.id()).isEmpty())
                 && operation().filter(value -> value.phase() == AetherValue.PlacementOperationPhase.COMPLETE).isPresent();
@@ -149,7 +152,7 @@ class HierarchicalLoadedMovementTest {
     private void changeDestination(String destination) {
         var node = leader();
         var before = node.kvStore().getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class).unwrap();
-        var value = new AetherValue.ClusterConfigValue(policy(destination), "movement", "1.0.0",
+        var value = new AetherValue.ClusterConfigValue(policy(destination), "loaded-movement", "1.0.0",
             List.of(new AetherValue.TopologyEntry("default", "core", 5), new AetherValue.TopologyEntry("east", "worker", 0),
                 new AetherValue.TopologyEntry("west", "worker", 0)), 5, 5, "forge", before.configVersion() + 1, System.currentTimeMillis());
         var id = UUID.randomUUID().toString();
@@ -165,7 +168,7 @@ class HierarchicalLoadedMovementTest {
         return """
             config_version = "1.0.0"
             [cluster]
-            name = "movement"
+            name = "loaded-movement"
             version = "1.0.0"
             [source.default]
             type = "forge"

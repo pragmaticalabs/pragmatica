@@ -177,6 +177,106 @@ class LeaderReconcilerTest {
         assertThat(membershipFsm.coreCountedMembers()).containsExactlyInAnyOrder(SELF, PEER_A);
     }
 
+    @Test
+    void targetIncreaseBeforeSamplerCatchesUp_preservesVerifiedFormationAndProvisioningGates() {
+        configuredCoreCount.set(3);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        assertThat(sampler.peakMembershipCount()).isEqualTo(1);
+        assertThat(membershipFsm.coreCountedMembers()).hasSize(3);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        assertThat(reconciler.isReachedFullMembership()).isTrue();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+        configuredCoreCount.set(5);
+        reconciler.onConfigChange();
+        fireDebouncedReconcile();
+        assertThat(ctm.provisionReplacementCalls()).as("deficit still requires existing grace/debounce").isEmpty();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(sampler.peakMembershipCount()).isEqualTo(1);
+        assertThat(listener.events().getLast().provisionCount()).isEqualTo(2);
+        assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+    }
+
+    @Test
+    void targetRaisedBeforeFirstPass_usesVerifiedInstalledElectorateAsFormationEvidence() {
+        configuredCoreCount.set(3);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B));
+        reconciler.activate();
+        configuredCoreCount.set(5); // No reconcile or sampler pass ever observed the old target.
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        assertThat(sampler.peakMembershipCount()).isEqualTo(1);
+        assertThat(reconciler.isReachedFullMembership()).isTrue();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+    }
+
+    @Test
+    void partiallyObservedInstalledElectorate_doesNotProveFormation() {
+        configuredCoreCount.set(5);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(reconciler.isReachedFullMembership()).isFalse();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+    }
+
+    @Test
+    void desiredSevenUsesInstalledThreeQuorumAndProvisionsFourAfterDelay() {
+        configuredCoreCount.set(7);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        assertThat(reconciler.isArmedForProvisioning()).isTrue();
+        assertThat(reconciler.currentProvisioningSnapshot().quorumSafe()).isTrue();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementCalls()).hasSize(4);
+    }
+
+    @Test
+    void nonvotingCoreCandidatesCannotSupplyInstalledMajority() {
+        configuredCoreCount.set(7);
+        seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A,
+            new NodeId("absent-voter-1"), new NodeId("absent-voter-2"), new NodeId("absent-voter-3")));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(reconciler.isArmedForProvisioning()).isFalse();
+        assertThat(reconciler.currentProvisioningSnapshot().quorumSafe()).isFalse();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+    }
+
+    @Test
+    void wiredEmptyInstalledElectorateFailsClosedDespiteHealthyCoreCapacity() {
+        configuredCoreCount.set(3);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(Set::of);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        configuredCoreCount.set(5);
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(reconciler.isArmedForProvisioning()).isFalse();
+        assertThat(reconciler.currentProvisioningSnapshot().quorumSafe()).isFalse();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+    }
+
     /// Feed N healthy peers into the presence sampler health snapshot, then sample so the stable member
     /// set (which always includes `SELF`) absorbs them. Drive the FSM in lockstep: each peer is
     /// promoted to MEMBER (a single SWIM HealthyObserved edge, up-hysteresis = 1) so the

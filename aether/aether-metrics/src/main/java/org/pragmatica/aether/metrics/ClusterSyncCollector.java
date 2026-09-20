@@ -84,6 +84,11 @@ public interface ClusterSyncCollector {
     /// on the metrics pong. This is the real, node-authoritative work-state that replaced the
     /// synthetic per-node lifecycle enum. Sourced from the wired `ClusterSyncPongSignalFan`
     /// readiness view. Default empty for test doubles that wire no fan.
+    /// Supplemental fresh governor evidence, read on demand without extending source freshness.
+    default org.pragmatica.lang.Unit setCommunityReadinessSupplier(Supplier<Map<NodeId, NodeReportedState>> supplier) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     default Map<NodeId, NodeReportedState> reportedStates() {
         return Map.of();
     }
@@ -327,6 +332,9 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// to carry SYNCING|READY|DRAINING. Default `Option.none()` falls back to
     /// `NodeReportedState.SYNCING` until `setNodeReportedStateSupplier(...)` is wired.
     private final AtomicReference<Option<Supplier<NodeReportedState>>> nodeReportedStateSupplier = new AtomicReference<>(Option.none());
+
+    /// Fresh governor readiness evaluated on every read, without caching or renewing evidence age.
+    private final AtomicReference<Supplier<Map<NodeId, NodeReportedState>>> communityReadiness = new AtomicReference<>(Map::of);
 
     /// Membership v2 (§7.5.3) — per-incarnation discriminator supplier. `buildPong()`
     /// stamps the value onto `ClusterSyncPong.incarnation`. Default `0L` (pre-migration)
@@ -702,13 +710,20 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     }
 
     @Override
+    public org.pragmatica.lang.Unit setCommunityReadinessSupplier(Supplier<Map<NodeId, NodeReportedState>> supplier) {
+        communityReadiness.set(supplier);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    @Override
     public Map<NodeId, NodeReportedState> reportedStates() {
-        return isLeader()
-               ? pongSignalFan.get()
-                              .readinessSnapshot()
-               : readinessCache.get()
-                               .map(FollowerReadinessCache::freshView)
-                               .or(Map.of());
+        var direct = isLeader()
+                     ? pongSignalFan.get().readinessSnapshot()
+                     : readinessCache.get().map(FollowerReadinessCache::freshView).or(Map.of());
+
+        return ReadinessProjection.merge(communityReadiness.get().get(),
+                                         direct);
     }
 
     @Override

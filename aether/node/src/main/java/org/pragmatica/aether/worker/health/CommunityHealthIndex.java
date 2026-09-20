@@ -217,6 +217,17 @@ public final class CommunityHealthIndex {
                      .isPresent();
     }
 
+    /// Current positive readiness only; absence is unknown, never an inferred failure or READY.
+    public synchronized java.util.Set<NodeId> readyMembers() {
+        return observations.values()
+                           .stream()
+                           .flatMap(observation -> observation.members()
+                                                              .keySet()
+                                                              .stream())
+                           .filter(this::isReady)
+                           .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
     public synchronized boolean isReady(NodeId node) {
         return health(node).filter(value -> value.alive() && value.ready())
                      .isPresent();

@@ -3786,10 +3786,14 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(communityHealthRuntime::poll,
                                                                       config.timeouts().cluster().pingInterval(),
                                                                       config.timeouts().cluster().pingInterval()));
-        cdmReadyNodesRef.set(() -> communityHealthRuntime.readyNodes(nodesReporting(pongSignalFan,
-                                                                                    nodeReportedStateHolder,
-                                                                                    config.self(),
-                                                                                    NodeReportedState.READY)));
+        metricsCollector.setCommunityReadinessSupplier(() -> communityHealth.readyMembers()
+                                                                            .stream()
+                                                                            .collect(java.util.stream.Collectors.toUnmodifiableMap(node -> node,
+                                                                                                                                   _ -> NodeReportedState.READY)));
+        cdmReadyNodesRef.set(() -> nodesReporting(metricsCollector.reportedStates(),
+                                                  nodeReportedStateHolder,
+                                                  config.self(),
+                                                  NodeReportedState.READY));
         var governorRecovery = org.pragmatica.aether.worker.health.GovernorRecovery.governorRecovery(communityDirectory,
                                                                                                      communityHealth,
                                                                                                      candidateHealth,
@@ -3922,6 +3926,7 @@ public interface AetherNode extends ManageableNode {
         // not re-dispatch replacements the prior leader already provisioned (the over-provisioning bug).
         metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
         leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
+        leaderReconciler.setInstalledVotersSupplier(() -> installedVoterIds(clusterNode));
         // Drain-victim slice-owner exclusion (Approach 3): wire the authoritative KV-Store-backed
         // active-slice-ownership predicate so the reconciler never drains a node currently serving /
         // hosting slices as scale-down or over-provision surplus. KV-derived (leader-agnostic,
@@ -5524,9 +5529,16 @@ public interface AetherNode extends ManageableNode {
                                               NodeReportedStateHolder selfHolder,
                                               NodeId self,
                                               NodeReportedState target) {
+        return nodesReporting(fan.readinessSnapshot(), selfHolder, self, target);
+    }
+
+    private static Set<NodeId> nodesReporting(Map<NodeId, NodeReportedState> states,
+                                              NodeReportedStateHolder selfHolder,
+                                              NodeId self,
+                                              NodeReportedState target) {
         var matching = new HashSet<NodeId>();
 
-        fan.readinessSnapshot().forEach((nodeId, state) -> addIfMatching(matching, nodeId, state, target));
+        states.forEach((nodeId, state) -> addIfMatching(matching, nodeId, state, target));
         if (selfHolder.current() == target) {
             matching.add(self);
         }
