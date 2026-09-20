@@ -5,16 +5,22 @@
 
 package org.pragmatica.aether.stream.replication;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
+import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -23,13 +29,16 @@ import org.pragmatica.storage.StorageInstance;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.replication.GovernorFailoverHandler.governorFailoverHandler;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
+import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler.NO_DURABILITY_BARRIER;
 import static org.pragmatica.aether.stream.replication.WatermarkTracker.watermarkTracker;
 import static org.pragmatica.aether.stream.segment.SegmentReader.segmentReader;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
@@ -63,7 +72,7 @@ class GovernorFailoverHandlerTest {
         reader = segmentReader(storage, index);
         recoveredEvents = new ArrayList<>();
         eventCounter = new AtomicLong(0);
-        handler = governorFailoverHandler(registry, this::handleRecoveredEvent);
+        handler = governorFailoverHandler(registry, this::handleRecoveredEvent, NO_DURABILITY_BARRIER);
     }
 
     private Result<Long> handleRecoveredEvent(String streamName, int partition, byte[] payload, long timestamp) {
@@ -222,6 +231,61 @@ class GovernorFailoverHandlerTest {
             assertThat(recoveredEvents).hasSize(7);
             assertThat(recoveredEvents.get(0).payload()).isEqualTo("d".getBytes());
             assertThat(recoveredEvents.getLast().payload()).isEqualTo("j".getBytes());
+        }
+    }
+
+    /// #1244 × #1235 (CTO ruling 2026-09-20, replacing the 2026-09-19 waiver): a replay run commits its
+    /// replayed frames through the replica WAL barrier ONCE, after the last one — exactly one fsync per
+    /// run on a REAL WAL — and its records are visible on this replica when the run completes, with no live
+    /// batch after it. Before, the run wrote WAL frames it never committed, so on a WAL-backed replica its
+    /// records stayed invisible until an unrelated batch's barrier happened to cover them.
+    @Nested
+    class WalBackedReplica {
+        @TempDir
+        Path walDir;
+
+        private StreamPartitionManager replica;
+
+        @BeforeEach
+        void openReplica() {
+            replica = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+            replica.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> Assertions.fail(cause.message()));
+            sealSegment(0L, 2L, List.of(
+                RawEvent.rawEvent(0L, "a".getBytes(), 100L),
+                RawEvent.rawEvent(1L, "b".getBytes(), 200L),
+                RawEvent.rawEvent(2L, "c".getBytes(), 300L)
+            ));
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            registry.updateWatermark(STREAM, PARTITION, REPLICA_A, -1L);
+        }
+
+        @AfterEach
+        void closeReplica() {
+            replica.close();
+        }
+
+        @Test
+        void handleFailover_completedRun_isFsyncedOnce_andItsRecordsAreVisible_withoutALaterLiveBatch() {
+            var walBacked = governorFailoverHandler(registry, replica::appendRecovered, replica::syncReplicated);
+            var before = fsyncCount();
+
+            awaitSuccess(walBacked.handleFailover(STREAM, PARTITION, localWatermarks, index, reader));
+
+            assertThat(replica.readLocal(STREAM, PARTITION, 0, 100).unwrap()).as("every replayed record is visible on this replica after the run, with no live batch")
+                                                                              .hasSize(3);
+            assertThat(fsyncCount() - before).as("one commit per replay run — never one per record, never none")
+                                             .isEqualTo(1);
+        }
+
+        private long fsyncCount() {
+            return replica.walSnapshot()
+                          .streams()
+                          .stream()
+                          .flatMap(view -> view.partitions().stream())
+                          .filter(view -> view.partition() == PARTITION)
+                          .flatMap(view -> view.wal().stream())
+                          .mapToLong(PartitionWal.WalStats::fsyncCount)
+                          .sum();
         }
     }
 
