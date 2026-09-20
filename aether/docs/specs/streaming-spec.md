@@ -1035,6 +1035,8 @@ public Result<Long> append(byte[] serializedEvent, long timestamp) {
 }
 ```
 
+*Implementation note (#1248, verified at `ccba0dba5`):* the `asSlice` above only addresses the write target; the payload is **copied** into off-heap memory. The shipped `OffHeapRingBuffer.append` writes through `writeDataBytes` / `copyIntoData` across a segmented data region, then writes the WAL frame in the same ordered section (`StreamPartitionManager.logAndReplicate`) and awaits the fsync outside it (`awaitDurable`); no listener fires at append (#1235). See `reference/streaming-performance-analysis.md` §3.1.
+
 ### 6.5 Read Operation
 
 ```java
@@ -1154,15 +1156,17 @@ public long usedBytes() {
 
 The governor aggregates per-partition memory usage into its `WorkerGroupHealthReport` for CDM visibility.
 
-### 6.9 Co-Located Zero-Copy Optimization
+### 6.9 Co-Located Direct Delivery — NOT IMPLEMENTED
 
-When producer and consumer are in the same JVM (same node, same classloader), the runtime bypasses serialization:
+> **Status (#1248, verified at `ccba0dba5`): nothing in this section exists.** There is no `DirectConsumer` type, no direct-delivery list in `StreamPartitionManager`, and no path on which a consumer receives the producer's object reference. A co-located consumer is notified by an append listener and then receives **copies**: three `byte[]` copies per event (`OffHeapRingBuffer.readDataBytes`, the `RawEvent` constructor's `clone()`, and the `RawEvent.data()` accessor's `clone()`), followed by a decode, a re-encode and a second decode on the way into the target slice (`StreamConsumerManager.deliver` → `SliceInvoker.invokeLocal` → `invokeViaBridge`). Storage is off-heap; delivery copies to heap. See `reference/streaming-performance-analysis.md` §4.3. The requirements below are retained as the original design, not as a description of the code.
+
+When producer and consumer are in the same JVM (same node, same classloader), the design proposed that the runtime bypass serialization:
 
 - REQ-RB-01: The producer passes the Java object directly to the consumer's handler.
 - REQ-RB-02: The object is still serialized into the ring buffer for durability and replay, but the consumer receives the original object reference.
 - REQ-RB-03: This optimization is transparent -- the `StreamPublisher` implementation detects co-located consumers and maintains a list of direct delivery targets alongside the ring buffer append.
 
-**Implementation:** The `StreamPartitionManager` on the governor maintains a `Map<String, List<DirectConsumer>>` keyed by consumer group. When a produce arrives from a local slice, the manager:
+**Proposed implementation (never built):** The `StreamPartitionManager` on the governor would maintain a `Map<String, List<DirectConsumer>>` keyed by consumer group. When a produce arrives from a local slice, the manager would:
 1. Serializes and appends to ring buffer (for replay and remote consumers).
 2. Delivers the original Java object to each local `DirectConsumer`.
 
@@ -1785,7 +1789,7 @@ aether-stream (runtime implementation)
 - Integration tests with Forge
 
 **Sprint 5 (1 week): Polish**
-- Co-located zero-copy optimization
+- Co-located direct delivery (§6.9) — not implemented at `ccba0dba5`
 - Cross-governor produce routing
 - Dead-letter stream support
 - Documentation

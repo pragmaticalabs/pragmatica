@@ -2436,9 +2436,23 @@ public class AetherCli implements Runnable {
                     return errorCode;
                 }
 
-                return OutputFormatter.printAction(response,
-                                                   blueprintParent.parent.outputOptions(),
-                                                   "Published blueprint: " + coordinates);
+                var exit = OutputFormatter.printAction(response,
+                                                       blueprintParent.parent.outputOptions(),
+                                                       "Published blueprint: " + coordinates);
+
+                printRejectedStreamBindings(response, blueprintParent.parent.outputOptions());
+
+                return exit;
+            }
+
+            /// #1336: the TABLE success line alone hides the `[streams.X]` declarations the cluster did not
+            /// bind; JSON/VALUE/CSV already carry the whole body.
+            private static void printRejectedStreamBindings(String response, OutputOptions options) {
+                if (options.isQuiet() || options.format() != OutputFormat.TABLE) {
+                    return;
+                }
+
+                RejectedStreamBindings.lines(response).forEach(System.out::println);
             }
         }
 

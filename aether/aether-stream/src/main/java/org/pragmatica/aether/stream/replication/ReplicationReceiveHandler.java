@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.function.BiConsumer;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -49,6 +50,12 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 /// through {@link RecoveredAppender#appendRecovered} (the A4 seam, backed by
 /// `StreamPartitionManager::appendRecovered`) which appends WITHOUT re-invoking the replication
 /// manager — this is what stops an infinite replicate→apply→replicate loop.
+///
+/// ## Sender validation (#1230)
+/// Before anything else, a batch whose sender cannot be the committed owner of the partition at the batch's
+/// epoch is refused: nothing applied, nothing acked (not even a stale-duplicate re-ack) — see
+/// `senderMayBeCommittedOwner`. The factories without a {@link CommittedStreamOwnerSource} validate
+/// nothing (the no-owner source), exactly as before.
 ///
 /// ## Ack
 /// After applying the verified portion of a batch up to highest offset `H`, `H` is acked back so
@@ -106,19 +113,22 @@ public final class ReplicationReceiveHandler {
     private final ReplicationTransport transport;
     private final BiConsumer<String, Integer> onGap;
     private final ReplicaDurability durability;
+    private final CommittedStreamOwnerSource committedOwners;
 
     private ReplicationReceiveHandler(NodeId self,
                                       RecoveredAppender appender,
                                       LocalHead localHead,
                                       ReplicationTransport transport,
                                       BiConsumer<String, Integer> onGap,
-                                      ReplicaDurability durability) {
+                                      ReplicaDurability durability,
+                                      CommittedStreamOwnerSource committedOwners) {
         this.self = self;
         this.appender = appender;
         this.localHead = localHead;
         this.transport = transport;
         this.onGap = onGap;
         this.durability = durability;
+        this.committedOwners = committedOwners;
     }
 
     /// Backward-compatible factory with no local-head verification: the incoming `fromOffset` is
@@ -132,7 +142,8 @@ public final class ReplicationReceiveHandler {
                                              NO_LOCAL_HEAD,
                                              transport,
                                              (_, _) -> {},
-                                             NO_DURABILITY_BARRIER);
+                                             NO_DURABILITY_BARRIER,
+                                             CommittedStreamOwnerSource.none());
     }
 
     /// Factory with an explicit `onGap` repair seam, fired `(streamName, partition)` whenever a batch
@@ -141,7 +152,13 @@ public final class ReplicationReceiveHandler {
                                                                       RecoveredAppender appender,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap) {
-        return new ReplicationReceiveHandler(self, appender, NO_LOCAL_HEAD, transport, onGap, NO_DURABILITY_BARRIER);
+        return new ReplicationReceiveHandler(self,
+                                             appender,
+                                             NO_LOCAL_HEAD,
+                                             transport,
+                                             onGap,
+                                             NO_DURABILITY_BARRIER,
+                                             CommittedStreamOwnerSource.none());
     }
 
     /// Verifying factory (S1 / #260): `localHead` reports the replica's next-expected offset so an
@@ -151,17 +168,41 @@ public final class ReplicationReceiveHandler {
                                                                       LocalHead localHead,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap) {
-        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, NO_DURABILITY_BARRIER);
+        return new ReplicationReceiveHandler(self,
+                                             appender,
+                                             localHead,
+                                             transport,
+                                             onGap,
+                                             NO_DURABILITY_BARRIER,
+                                             CommittedStreamOwnerSource.none());
     }
 
-    /// Verifying factory WITH the replica durability barrier (#634 item 1) — the production wiring.
+    /// Verifying factory WITH the replica durability barrier (#634 item 1). No sender validation.
     public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
                                                                       RecoveredAppender appender,
                                                                       LocalHead localHead,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap,
                                                                       ReplicaDurability durability) {
-        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, durability);
+        return new ReplicationReceiveHandler(self,
+                                             appender,
+                                             localHead,
+                                             transport,
+                                             onGap,
+                                             durability,
+                                             CommittedStreamOwnerSource.none());
+    }
+
+    /// Verifying factory WITH the replica durability barrier (#634 item 1) AND sender validation against
+    /// the committed partition owner (#1230) — the production wiring.
+    public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
+                                                                      RecoveredAppender appender,
+                                                                      LocalHead localHead,
+                                                                      ReplicationTransport transport,
+                                                                      BiConsumer<String, Integer> onGap,
+                                                                      ReplicaDurability durability,
+                                                                      CommittedStreamOwnerSource committedOwners) {
+        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, durability, committedOwners);
     }
 
     @Contract
@@ -173,6 +214,13 @@ public final class ReplicationReceiveHandler {
         var timestamps = message.timestamps();
         var fromOffset = message.fromOffset();
         var batchEnd = fromOffset + payloads.size() - 1;
+
+        if (!senderMayBeCommittedOwner(message)) {
+            refuseUnauthorizedSender(message);
+
+            return;
+        }
+
         var localNext = resolveLocalNext(streamName, partition, fromOffset);
 
         if (fromOffset > localNext) {
@@ -188,6 +236,49 @@ public final class ReplicationReceiveHandler {
         }
 
         applyContiguous(message, streamName, partition, fromOffset, payloads, timestamps, localNext);
+    }
+
+    /// #1230: a batch is landed and acked only when its sender can be the committed owner of the partition
+    /// at the batch's epoch. The owner for an epoch is known only when this replica's committed record is AT
+    /// that epoch; there the sender must equal the recorded owner. A batch OLDER than the record comes from a
+    /// deposed owner. A batch NEWER than the record means this replica's view lags a commit the sender has
+    /// already observed — the owner-handoff flow — so it is not judged here. No record (cold start) leaves
+    /// nothing to judge against. Production wires the RAW committed record, not the #568 liveness-filtered
+    /// view: an owner this node's SWIM view has marked DEPARTED, or has not yet seen, is still the fenced
+    /// writer until the leader commits a new owner. (The filter never drops a merely SUSPECT owner.)
+    private boolean senderMayBeCommittedOwner(ReplicationMessage.ReplicateEvents message) {
+        return committedOwners.committedOwner(message.streamName(),
+                                              message.partition())
+                              .map(committed -> senderMatches(committed, message))
+                              .or(true);
+    }
+
+    private static boolean senderMatches(CommittedStreamOwnerSource.CommittedOwner committed,
+                                         ReplicationMessage.ReplicateEvents message) {
+        var batchEpoch = message.ownerEpoch();
+        var committedEpoch = committed.ownerEpoch();
+
+        return batchEpoch.isStrictlyAfter(committedEpoch) || batchEpoch.equals(committedEpoch) && isCommittedSender(committed,
+                                                                                                                    message);
+    }
+
+    private static boolean isCommittedSender(CommittedStreamOwnerSource.CommittedOwner committed,
+                                             ReplicationMessage.ReplicateEvents message) {
+        return committed.owner()
+                        .equals(message.governorId());
+    }
+
+    /// A batch from a node that cannot be the committed owner: nothing is applied and nothing is acked —
+    /// not even the stale-duplicate re-ack, which would otherwise count this replica toward a non-owner's
+    /// min-sync barrier for an offset holding a DIFFERENT event here. No gap repair either: this node's
+    /// log is intact; the batch is simply not authoritative.
+    private void refuseUnauthorizedSender(ReplicationMessage.ReplicateEvents message) {
+        log.warn("ReplicationReceiveHandler: refusing batch for {}[{}] from {} at epoch {} — sender is not the committed owner "
+                + "(#1230), nothing applied or acked",
+                 message.streamName(),
+                 message.partition(),
+                 message.governorId(),
+                 message.ownerEpoch());
     }
 
     /// `fromOffset > localNext`: an earlier batch is missing. Applying now would diverge — reject the

@@ -439,7 +439,8 @@ public interface SliceStore {
         }
 
         private static Option<String> readSliceResourcesTomlFromJar(URL sliceJarUrl) {
-            var jarClassLoader = new URLClassLoader(new URL[]{sliceJarUrl}, ClassLoader.getPlatformClassLoader());
+            var jarClassLoader = new UncachedResourceClassLoader(new URL[]{sliceJarUrl},
+                                                                 ClassLoader.getPlatformClassLoader());
             var resourcesToml = readSliceResourcesTomlThrough(jarClassLoader);
 
             closeJarClassLoader(sliceJarUrl, jarClassLoader);

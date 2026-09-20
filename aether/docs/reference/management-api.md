@@ -757,6 +757,10 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint **
 }
 ```
 
+`rejectedStreamBindings` (#1336) appears only when the publish accepted the blueprint WITHOUT binding one
+or more `[streams.*]` declarations — it is **omitted when empty**, so read it as absent-or-list. Shape and
+rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy).
+
 > **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
 
 ### GET /api/v1/blueprints
@@ -939,9 +943,37 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
   "targetInstances": 5,
   "activeInstances": 0,
   "failedInstances": 0,
-  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0"
+  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0",
+  "rejectedStreamBindings": [
+    {
+      "field": "[streams.audit-events]",
+      "rule": "version-and-source-mutually-exclusive",
+      "message": "Stream resource 'audit-events' must not set both 'source' and 'version'"
+    }
+  ]
 }
 ```
+
+#1336 — **`rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
+blueprint WITHOUT binding**, each by its TOML `field` (the section the parser refused, `[streams.<alias>]`),
+the `rule` it failed and the diagnostic. **Omitted when every declaration bound** — the key is absent, not
+`[]`. The other declarations are bound as usual; a slice that uses a
+rejected alias fails to load naming that alias (`UnboundStreamAlias`), and this list is where the
+operator learns why, at the point where it is actionable. The same shape is returned by
+[`POST /api/v1/blueprints`](#post-apiv1blueprints) and `POST /api/v1/blueprints/publish`. Rules
+whose violation leaves nothing to bind refuse the publish outright with **`422`**; the error body is the
+usual problem document, whose `detail` is the text `Stream resource validation failed (N errors):` followed
+by one `[rule] field — message` line per failure (not the structured triples above): a `resources.toml` that does not parse
+(`resources-toml-parse`), a blueprint whose own namespace cannot be derived
+(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, and an
+`External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
+exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
+the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
+`partitions-over-ceiling`, `replication-invalid`, `source-address-invalid`, `namespace-invalid`,
+`stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
+names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
+derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
+declarations included.
 
 #759 — `status` is earned off the deployment map at response time, not assumed from a successful
 publish; deployment is asynchronous, so **`pending` is the normal, expected response for a
@@ -2288,13 +2320,15 @@ the view actionable (see recovery below).
       "violated": false,
       "violation": ""
     }
-  ]
+  ],
+  "walRecoveryHeadGapsAccepted": 0
 }
 ```
 
 | Field | Description |
 |-------|-------------|
 | `walTotalBytes` | Total live WAL bytes across every partition on this node — the same number the `streams` storage instance reports as `wal.totalBytes` (both derive from one snapshot) |
+| `walRecoveryHeadGapsAccepted` | WAL recoveries on this node, since process start, that accepted a gap BEFORE a WAL file's first record as reclaimed history (the partition's sealed segments were removed by retention after the WAL was compacted). Each one is also logged at WARN, naming the stream, partition and offset range. Expected after retention reclaimed a partition's every sealed segment; otherwise the records in that range are lost. A gap BETWEEN records, or a duplicate offset, is never accepted: it refuses the stream on the node with an ERROR |
 | `partitions[]` | One row per `(stream, partition)` this node holds anything for — materialized (ring/WAL) or held only as sealed segments — sorted by stream, then partition |
 | `stream` / `partition` | The partition coordinate (`entity:`-prefixed streams are durable-entity logs) |
 | `wal` | The partition's live WAL counters; `null` when it has no WAL (non-durable path, or a segment-only row) |
@@ -5095,6 +5129,18 @@ this node has never folded is ABSENT from `checkpointedThrough` rather than repo
 say about it" and "checkpointed through offset 0" are different claims. An empty `keyspaces` list means
 this node hosts no durable-entity keyspace — a true answer, not an error.
 
+**Checkpoint lag (#1302).** `checkpointLag` is, per partition this node folds, the log head offset minus the
+COMMITTED checkpoint in consensus KV — the pointer the retention floor and every recovery use: how far a
+recovery of that partition would have to replay. It is reported only for partitions this node OWNS, and is
+ABSENT (never 0) for the rest: a replica's fold is a read-side cache whose checkpoints the cluster refuses,
+and a released partition leaves the map. The baseline is never this node's own recorded save — a fenced
+save still resolves success, so a local record can claim coverage the cluster never committed — which is
+also why a takeover raises no spurious alert: the previous owner's committed checkpoint is the baseline
+from the first tick. The node's largest value is published as the metric `entity.checkpoint.lag.max` and evaluated
+by the threshold alert path, with a default threshold of WARNING 5,000 / CRITICAL 10,000 records
+(`[alerts] entity_checkpoint_lag_warning` / `entity_checkpoint_lag_critical`, overridable per cluster with
+`POST /api/v1/thresholds`). The alert names the node; this map names the partition.
+
 Assembled ON REQUEST from counters the checkpoint tick already maintains; no hot-path accounting is added.
 
 **Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The dashboard is
@@ -5116,7 +5162,8 @@ Revisit if a cluster-wide "keyspaces with stalled checkpointing" alert is wanted
       "partitionCount": 8,
       "writes": 214,
       "failures": 0,
-      "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}
+      "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502},
+      "checkpointLag": {"0": 59, "3": 12, "5": 0}
     }
   ]
 }
@@ -5284,8 +5331,8 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
       "sliceDeployedLocally": true,
       "eventTypePublishable": true,
       "assignedPartitions": [
-        {"partition": 0, "committedOffset": 42, "stalled": false, "lastCursorCommitFailure": ""},
-        {"partition": 2, "committedOffset": 17, "stalled": false, "lastCursorCommitFailure": ""}
+        {"partition": 0, "committedOffset": 42, "stalled": false, "lastCursorCommitFailure": "", "deadLetterInFlight": false, "retryInFlight": false, "awaitingCursorFetch": false},
+        {"partition": 2, "committedOffset": 17, "stalled": false, "lastCursorCommitFailure": "", "deadLetterInFlight": false, "retryInFlight": false, "awaitingCursorFetch": false}
       ],
       "partitionAssignments": [
         {"partition": 0, "consumerNode": "node-1", "ownerNode": "node-1"},
@@ -5316,7 +5363,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | `consumers[].eventType` | Declared event type |
 | `consumers[].sliceDeployedLocally` | Whether the declaring slice is loaded on THIS node |
 | `consumers[].eventTypePublishable` | Whether the slice's own codec registry knows the event type (#526). **Absent when this node cannot know** — the probe needs the slice's codec, which only a node hosting the slice has |
-| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled`, `lastCursorCommitFailure` (this partition's most recent cursor commit failure detail while attached; empty when its last commit succeeded, #654; prefixed `local commit:` when the node-local write itself failed or `checkpoint publish:` when the local write succeeded but the consensus checkpoint publish was the one recovered, #654 round 2) |
+| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled`, `lastCursorCommitFailure` (this partition's most recent cursor commit failure detail while attached; empty when its last commit succeeded, #654; prefixed `local commit:` when the node-local write itself failed or `checkpoint publish:` when the local write succeeded but the consensus checkpoint publish was the one recovered, #654 round 2), `deadLetterInFlight` and `retryInFlight` (#1266: the partition's delivery loop is HELD behind an outstanding dead-letter append or a scheduled retry of the head event; a frozen `committedOffset` with both `false` is a quiet partition, not a held one. A dead-letter append that has not settled is bounded at 30s, then retried with backoff; the hold clears when the append lands), and `awaitingCursorFetch` (the consumer has not STARTED: its cursor fetch keeps failing and is being retried with backoff, so it delivers nothing while looking like a quiet partition) |
 | `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
 | `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
 | `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies — including a #545 cross-artifact group collision, which names every colliding artifact, the stream, and the group on BOTH entries; empty when the consumer is healthy and reading locally |
@@ -5332,6 +5379,11 @@ POST /api/v1/streams
 **Auth:** OPERATOR_AND_ABOVE
 
 Creates a stream with the given name and optional partition count. Idempotent — returns success if stream already exists.
+
+A name carrying a reserved stream-kind prefix — `system:`, `topic:` or `entity:` — is refused with
+`400 Bad Request` (`ReservedStreamName`, naming the prefix) and nothing is created; see
+[Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). The enumerated system streams keep
+their `405` refusal ([`system:*` write gate](#system-write-gate-405)).
 
 **Request:**
 ```json
@@ -5555,6 +5607,20 @@ GET /api/v1/streams/tail/{namespace}/{stream}/{version}
 Reserved for the deferred SSE/WebSocket subscription (#212). Operators tail via polling
 `/api/v1/streams/events/...` in the interim.
 
+### Create Stream Version
+
+```
+POST /api/v1/streams/{namespace}/{stream}/{version}
+```
+
+**Auth:** OPERATOR_AND_ABOVE. Materializes the stream under the address's engine key and registers
+an `OPERATOR` catalog entry (`aether stream create`). Idempotent: an already-registered address
+reports `"exists"`. Optional body `{"partitions": <int>}`. An address whose engine key carries a
+reserved stream-kind prefix — a `topic` or `entity` namespace — is refused with `400 Bad Request`
+before anything is materialized or registered; see
+[Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). A `system`-namespace address
+reduces to its bare name (the flat operator-stream spelling) and is not reserved.
+
 ### Publish
 
 ```
@@ -5579,6 +5645,17 @@ materialize the stream locally (capacity exhausted, or `STRONG` consistency requ
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
 cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
 ProblemResponses HttpStatusAware dispatch]`
+
+The auto-create never fabricates a stream under a reserved stream-kind prefix: a publish to a `topic`
+or `entity` namespace address with no committed config is refused with `400 Bad Request`
+(`ReservedStreamName`) instead. A committed config under such a name belongs to the real resource and
+is adopted as usual. `[mechanism: ReservedStreamNames.requireUnreserved on the management-default
+branch only]`
+
+**A non-empty `publish-batch` ensures the stream once, before any item is written.** A stream-level
+failure (a reserved name `400`, or an unavailable stream `409`) fails the whole batch with its own
+status and writes nothing. An empty batch publishes nothing and creates no stream. `[mechanism:
+publishMany runs ensureStreamExists before the per-item fan-out, and only when there are items]`
 
 **Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
 concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
@@ -5666,6 +5743,44 @@ named stream.
 Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
 The compile-time SPI split already blocks application code from producing into system streams;
 this is the HTTP-path guard.
+
+### Reserved stream-name prefixes (400)
+
+A stream's kind is carried by its engine-name prefix, and runtime rules key off it:
+
+- `system:` — system streams, named from their `system`-namespace address;
+- `topic:` — durable topics and their DLQs (`DurableTopicNames`);
+- `entity:` — entity keyspace logs (`EntityPartitionArc`).
+
+Only internal provisioning creates streams under these prefixes. Every Management-API path that could
+mint a stream refuses such an engine name with **`400 Bad Request`** and a
+`ReservedStreamName` problem naming the stream and the prefix. Nothing is created or registered. The
+paths are:
+
+- `POST /api/v1/streams` (body name);
+- `POST /api/v1/streams/{namespace}/{stream}/{version}` (engine key);
+- the publish auto-create fallback, for both `publish` and `publish-batch`.
+
+On the two create routes the refusal runs **before** the existence check. An existing reserved name is
+refused, never answered with `"exists"`, so the API is not an oracle for which internally provisioned
+streams exist.
+
+Blueprints are covered as well. A `[streams.X]` section whose `source` names a `topic` or `entity`
+namespace address would otherwise make the slice's stream factories mint that stream. The blueprint
+validator rejects such a section under rule `source-reserved-kind`, so the stream is never minted, and
+since #1336 the deploy refuses the blueprint with `422` naming that rule and section — the same typed
+refusal as the routes above, instead of the earlier silent empty-bindings publish. A
+`system`-namespace source is unaffected, because its engine key is the bare name.
+
+Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config
+(partitions, replicas, min-sync, retention) that the resource later finds already in place. For
+`entity:`, the name can even exactly match a real keyspace log, because keyspace names may contain `:`.
+`[mechanism: the prefixes are declared once as StreamEngineKey.RESERVED_KIND_PREFIXES and pinned against
+their canonical owners; ReservedStreamNames.requireUnreserved runs before each Management-API mint, and
+the blueprint parser refuses a reserved External source]`
+
+Reads are unaffected. The `405` refusal of the enumerated system streams
+([`system:*` write gate](#system-write-gate-405)) still applies first.
 
 ### Stream metadata registries
 

@@ -1,0 +1,23 @@
+### Fixed (2026-09-19 — #1241: durable entity fold applied in an async onSuccess outside the per-key chain)
+- **A durable entity write was applied to the in-memory fold by an asynchronous `onSuccess` handler**, so
+  the key's serialization tail — and the key's next operation — could run before the fold held the
+  write, and a delayed apply of an older record could overwrite a newer record's state for the same key
+  with nothing ever re-applying the newer one.
+- The append path now applies the record as a synchronous step of the append's promise chain
+  (`withSuccess`), before the chain continues. The fold still takes a record that reached the log when
+  the write missed its replication barrier; that apply was already a synchronous step in `mapError`.
+  [mechanism: `withSuccess` is a dependent step that runs inline in the append promise's resolution, ahead
+  of every later step] — pinned by the unit test `PartitionFencedDurableEntityApplyTest`, which uses a stub
+  substrate; no live-path or multi-node run.
+- `EntityFold`'s append path now refuses to let an older offset overwrite a key that holds a newer one.
+  The check and the write happen together under a per-key `compute`, and the same guard also re-checks the
+  watermark; `apply` has no separate watermark check in front of it. A superseded record is still counted
+  towards the watermark. Per-key offsets are dropped once the watermark covers them, so the guard does
+  not keep an entry for every key. With the apply inside the append chain, the guard is defence in depth.
+  [mechanism: the check and the write run inside one `ConcurrentHashMap.compute` for the key] — pinned by
+  the unit tests `EntityFoldTest$StaleApply`.
+- Catch-up does NOT go through that per-key guard, so #701 still holds. If a record fails to apply and a
+  later write to the same key succeeds, catch-up replays the failed record and refuses the read gate. It
+  does not count the record as superseded and move the watermark past it.
+  [mechanism: catch-up applies in log order without the per-key skip] — pinned by the unit test
+  `EntityFoldTest$WatermarkHonesty.caughtUp_refusesLoudly_whenASameKeySuccessorFollowsAnUnapplicableRecord`.

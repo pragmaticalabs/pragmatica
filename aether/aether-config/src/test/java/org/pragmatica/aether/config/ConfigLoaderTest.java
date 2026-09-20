@@ -49,6 +49,41 @@ class ConfigLoaderTest {
                                        }));
     }
 
+    /// #1302: the checkpoint-lag alert thresholds are read from `[alerts]`, and each defaults on its own
+    /// when absent.
+    @Test
+    void loadFromString_alertsEntityCheckpointLag_readsBothKeys_andDefaultsEachWhenAbsent() {
+        var both = """
+            [cluster]
+            environment = "docker"
+
+            [alerts]
+            entity_checkpoint_lag_warning = 2000
+            entity_checkpoint_lag_critical = 4000
+            """;
+        var warningOnly = """
+            [cluster]
+            environment = "docker"
+
+            [alerts]
+            entity_checkpoint_lag_warning = 3000
+            """;
+
+        ConfigLoader.loadFromString(both)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts] must populate AetherConfig.alerts()"))
+                                       .onPresent(alerts -> assertThat(alerts.entityCheckpointLag())
+                                                                .isEqualTo(AlertConfig.EntityCheckpointLag.entityCheckpointLag(2000, 4000))));
+        ConfigLoader.loadFromString(warningOnly)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts] must populate AetherConfig.alerts()"))
+                                       .onPresent(alerts -> assertThat(alerts.entityCheckpointLag())
+                                                                .isEqualTo(AlertConfig.EntityCheckpointLag.entityCheckpointLag(3000,
+                                                                                                                             AlertConfig.EntityCheckpointLag.DEFAULT_CRITICAL))));
+    }
+
     /// An `[alerts]` section that sets only the margin must NOT switch webhooks on. This is what keeps
     /// plumbing the config from enabling delivery by side effect — the operator opts in per section.
     @Test

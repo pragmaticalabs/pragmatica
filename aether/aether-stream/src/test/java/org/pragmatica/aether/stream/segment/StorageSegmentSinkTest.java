@@ -8,7 +8,11 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.BlockMetadata;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageGarbageCollector;
@@ -20,6 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
+import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
 
@@ -209,6 +214,93 @@ class StorageSegmentSinkTest {
             assertThat(metadataStore.containsBlock(blockId)).as("lifecycle metadata must be gone").isFalse();
 
             assertThat(refCountAfterReseal).as("locator: a re-seal of one segment is still one reference").isEqualTo(1);
+        }
+    }
+
+    /// #1234: the seal promise resolves only once the segment is in the index. The sealer releases its
+    /// retained copy in a continuation of that promise, so an index update that merely raced the resolution
+    /// (an independent `onSuccess`) would reopen a window where an evicted offset is in neither place.
+    /// Storage completes here only when the test opens the gate, as a real disk or DHT write does.
+    @Nested
+    class IndexBeforeResolution {
+
+        @Test
+        void seal_resolvesOnlyAfterIndexUpdate_whenStorageCompletesLater() {
+            var gate = Promise.<Unit>promise();
+            var deferredSink = storageSegmentSink(new DeferredPutStorage(storage, gate), index);
+            var segment = sealedSegment(STREAM, PARTITION, 20, 29, 10, 1000L, 2000L, new byte[]{4, 5, 6});
+
+            var indexedWhenResolved = deferredSink.seal(segment)
+                                                  .map(_ -> index.findSegment(STREAM, PARTITION, 25).isPresent());
+
+            assertThat(indexedWhenResolved.isResolved()).isFalse();
+
+            gate.succeed(unit());
+
+            assertThat(indexedWhenResolved.await().unwrap()).isTrue();
+        }
+    }
+
+    /// Delegates to a real storage instance but holds every `putRef` until `gate` opens.
+    private record DeferredPutStorage(StorageInstance delegate, Promise<Unit> gate) implements StorageInstance {
+        @Override
+        public Promise<BlockId> putRef(String name, byte[] content) {
+            return gate.flatMap(_ -> delegate.putRef(name, content));
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content) {
+            return delegate.put(content);
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
+            return delegate.put(content, metadata);
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return delegate.get(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return delegate.exists(id);
+        }
+
+        @Override
+        public Promise<Unit> createRef(String name, BlockId id) {
+            return delegate.createRef(name, id);
+        }
+
+        @Override
+        public Option<BlockId> resolveRef(String name) {
+            return delegate.resolveRef(name);
+        }
+
+        @Override
+        public Promise<Unit> deleteRef(String name) {
+            return delegate.deleteRef(name);
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return delegate.delete(id);
+        }
+
+        @Override
+        public String name() {
+            return delegate.name();
+        }
+
+        @Override
+        public List<TierInfo> tierInfo() {
+            return delegate.tierInfo();
+        }
+
+        @Override
+        public void shutdown() {
+            delegate.shutdown();
         }
     }
 }

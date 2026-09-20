@@ -121,7 +121,14 @@ public final class RetentionRoutes implements RouteSource {
                      double fsyncMaxMicros,
                      boolean failStopped) {}
 
-    record RetentionResponse(long walTotalBytes, List<RetentionPartitionView> partitions) {}
+    /// @param walRecoveryHeadGapsAccepted node-wide count, since process start, of WAL recoveries that
+    ///                                    accepted a gap before the file's first record as reclaimed
+    ///                                    history (#1258) — expected after retention reclaimed a
+    ///                                    partition's every sealed segment; otherwise those records are
+    ///                                    lost, and the WARN naming the range says which
+    record RetentionResponse(long walTotalBytes,
+                             List<RetentionPartitionView> partitions,
+                             long walRecoveryHeadGapsAccepted) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -141,6 +148,13 @@ public final class RetentionRoutes implements RouteSource {
     static RetentionResponse assembleRetention(WalSnapshot snapshot,
                                                SegmentIndex segmentIndex,
                                                KVStore<AetherKey, AetherValue> kvStore) {
+        return assembleRetention(snapshot, segmentIndex, kvStore, StreamPartitionManager.walRecoveryHeadGapsAccepted());
+    }
+
+    static RetentionResponse assembleRetention(WalSnapshot snapshot,
+                                               SegmentIndex segmentIndex,
+                                               KVStore<AetherKey, AetherValue> kvStore,
+                                               long walRecoveryHeadGapsAccepted) {
         var rows = new HashMap<PartitionCoordinate, RetentionPartitionView>();
 
         snapshot.streams()
@@ -153,7 +167,7 @@ public final class RetentionRoutes implements RouteSource {
         segmentIndex.listPartitionKeys().forEach(key -> putSegmentOnlyRow(rows, key, segmentIndex, kvStore));
         var partitions = rows.values().stream().sorted(RetentionRoutes::byCoordinate).toList();
 
-        return new RetentionResponse(walTotalBytes(snapshot), partitions);
+        return new RetentionResponse(walTotalBytes(snapshot), partitions, walRecoveryHeadGapsAccepted);
     }
 
     /// Total live WAL bytes across every partition on this node — the number the storage capacity

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -46,6 +48,9 @@ class AetherNodeStorageShutdownTest {
     private static final String STORAGE_LOGGER = "org.pragmatica.storage.DefaultStorageInstance";
 
     private AetherNode node;
+
+    @TempDir
+    Path tempDir;
     private CapturingAppender appender;
     private LoggerConfig loggerConfig;
     private Level originalLevel;
@@ -88,7 +93,8 @@ class AetherNodeStorageShutdownTest {
     void stop_shutsDown_everyNodeOwnedStorageInstance() {
         node = AetherNode.aetherNode(AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
                                                                                         Option.none(),
-                                                                                        ConfigurationProvider.builder().build()),
+                                                                                        ConfigurationProvider.builder().build(),
+                                                                                        tempDir),
                                      () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
