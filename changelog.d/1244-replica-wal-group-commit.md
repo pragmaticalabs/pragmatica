@@ -13,8 +13,8 @@
   `PartitionBackfill` run commits what it applied, exactly once and never per record, **before** it
   marks the replica CAUGHT_UP and acks the owner. This holds even on a quiet partition that receives no
   later live batch. A failed commit fails the run, and the replica stays SYNCING. (The failover replay
-  paths are exempt by CTO waiver: `FailoverRecovery` has no production caller, and `GovernorFailoverHandler`
-  replays already-sealed segments and never acks.)
+  paths, `FailoverRecovery` and `GovernorFailoverHandler`, were first waived and then brought under the
+  same one-barrier-per-run rule on 2026-09-20 — see the #1235 × #1244 entry.)
   `[mechanism: the run awaits syncReplicated before promote; pinned against a real WAL's fsync counter by
   CatchUpWalDurabilityTest and PartitionBackfillDurabilityTest]`
 - A failed replica frame write or fsync still stops acks for that partition, because it fail-stops that
