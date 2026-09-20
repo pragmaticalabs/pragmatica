@@ -154,7 +154,13 @@ class OffHeapRingBufferReadEvictionRaceTest {
         return classify(buffer.read(from, BATCH), events -> checkBatch(from, events));
     }
 
+    /// An empty success (the writer has not reached `from` yet) is neither aligned nor torn: only a
+    /// non-empty batch counts as evidence that reads succeed.
     private static Outcome checkBatch(long from, List<OffHeapRingBuffer.RawEvent> events) {
+        if (events.isEmpty()) {
+            return Outcome.OTHER;
+        }
+
         for (int i = 0; i < events.size(); i++) {
             var event = events.get(i);
             var stamped = stampedOffset(event.data());
