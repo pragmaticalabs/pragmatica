@@ -855,6 +855,47 @@ class BlueprintPublishOwnershipTest {
                 max-event-size = "64KB"
                 """;
 
+        /// `consistency_mode` is the key the provisioning binder reads for `StreamConfig.consistencyMode`.
+        private static final String STRONG_MODULE_STREAMS = """
+                [streams.order-events]
+                partitions = 1
+                retention = "count"
+                retention-value = "100000"
+                max-event-size = "64KB"
+                consistency_mode = "strong"
+                """;
+
+        /// #1262: no write path can honour STRONG (no consensus publish path is wired), so a blueprint
+        /// declaring it must fail the deploy with the named cause — not publish empty bindings and fail
+        /// later at slice activation with a generic `UnboundStreamAlias`.
+        @Test
+        void publish_isRefused_whenASliceDeclaresAStrongStream() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, STRONG_MODULE_STREAMS),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, MODULE_STREAMS)));
+
+            publishBody(repository).onSuccess(_ -> Assertions.fail("a STRONG stream declaration must refuse the deploy"))
+                                   .onFailure(cause -> assertThat(cause.message()).contains("#1262")
+                                                                                  .contains("consistency_mode"));
+            assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+        }
+
+        @Test
+        void publishFromArtifact_isRefused_whenTheBlueprintDeclaresAStrongStream() {
+            var artifactPathStore = new TestKVStore();
+            var artifactPathCluster = new TestClusterNode(artifactPathStore);
+
+            BlueprintService.blueprintService(artifactPathCluster,
+                                              artifactPathStore,
+                                              streamAppRepository(),
+                                              artifactStore(streamAppBlueprintJar(STRONG_MODULE_STREAMS)))
+                            .publishFromArtifact(STREAM_APP_COORDS + ":blueprint")
+                            .await()
+                            .onSuccess(_ -> Assertions.fail("a STRONG stream declaration must refuse the deploy"))
+                            .onFailure(cause -> assertThat(cause.message()).contains("#1262")
+                                                                           .contains("consistency_mode"));
+            assertThat(artifactPathCluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+        }
+
         @Test
         void publish_storesBindingsForStreamsDeclaredOnlyInsideSliceJars() {
             publishBody(streamAppRepository()).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
@@ -1076,11 +1117,15 @@ class BlueprintPublishOwnershipTest {
         }
 
         private static byte[] streamAppBlueprintJar() {
+            return streamAppBlueprintJar(MODULE_STREAMS);
+        }
+
+        private static byte[] streamAppBlueprintJar(String resourcesToml) {
             var bytes = new ByteArrayOutputStream();
 
             try (var zip = new ZipOutputStream(bytes)) {
                 writeEntry(zip, "META-INF/blueprint.toml", STREAM_APP_DSL);
-                writeEntry(zip, "META-INF/resources.toml", MODULE_STREAMS);
+                writeEntry(zip, "META-INF/resources.toml", resourcesToml);
             } catch (IOException e) {
                 throw new IllegalStateException("Failed to build test blueprint jar", e);
             }

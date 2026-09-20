@@ -13,11 +13,11 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface StreamError extends Cause {
-    /// `General` implements {@link ResourceCapacityExhausted} so the ONE capacity-class constant —
-    /// `STREAM_MEMORY_EXCEEDED` — is classified TRANSIENT by the slice-loading / resource-provisioning
-    /// path (retry, then `DeploymentFailed` after MAX_RETRIES; spec §6 / decision #7). Every other
-    /// constant overrides the marker predicate to false, so only off-heap budget exhaustion is
-    /// retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
+    /// `General` implements {@link ResourceCapacityExhausted} so the capacity-class constants —
+    /// `STREAM_MEMORY_EXCEEDED`, and `SEALING_BEHIND` since #1234 — are classified TRANSIENT by the
+    /// slice-loading / resource-provisioning path (retry, then `DeploymentFailed` after MAX_RETRIES; spec
+    /// §6 / decision #7). Every other constant overrides the marker predicate to false, so only capacity
+    /// shortages are retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
     /// preserved — `cause == STREAM_MEMORY_EXCEEDED` checks elsewhere are unaffected (spec §8).
     enum General implements StreamError, ResourceCapacityExhausted {
         BUFFER_CLOSED("Ring buffer is closed"),
@@ -30,11 +30,14 @@ public sealed interface StreamError extends Cause {
         CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed"),
         STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded"),
         CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream"),
+        UNREADABLE_CONSISTENCY_MODE("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
+                                   + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG"),
         BUFFER_FULL("Ring buffer is full, STRONG consistency prevents eviction"),
         EVENT_DROPPED("Event dropped: larger than the ring's allocation, and the ring cannot grow"),
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
         STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
-        PARTITION_NOT_LOCAL("Stream partition is not owned by this node");
+        PARTITION_NOT_LOCAL("Stream partition is not owned by this node"),
+        SEALING_BEHIND("Pending-seal cap reached on a partition with no WAL: storage has not accepted enough sealed segments for the ring to hand over more; append refused until sealing catches up");
         private final String message;
         General(String message) {
             this.message = message;
@@ -43,11 +46,14 @@ public sealed interface StreamError extends Cause {
         public String message() {
             return message;
         }
-        /// Only `STREAM_MEMORY_EXCEEDED` is a transient capacity shortage (the pool may clear as other
-        /// streams are destroyed / right-sized); every other constant is a non-capacity error.
+        /// `STREAM_MEMORY_EXCEEDED` (the pool may clear as other streams are destroyed / right-sized) and
+        /// `SEALING_BEHIND` (a partition WITHOUT a WAL — the non-crash-durable mode, e.g. Ember or Forge with no
+        /// data dir — whose segment sealer's heap copies have reached their cap; it clears as pending seals land,
+        /// #1234) are transient capacity shortages; every other constant is a non-capacity error. With a WAL the
+        /// sealer spills to WAL-backed ranges instead and never raises it.
         @Override
         public boolean transientCapacity() {
-            return this == STREAM_MEMORY_EXCEEDED;
+            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND;
         }
     }
 
@@ -246,6 +252,22 @@ public sealed interface StreamError extends Cause {
                                                                                                                                                  partition,
                                                                                                                                                  presented,
                                                                                                                                                  current);
+        }
+    }
+
+    /// Owner-write admission refusal (#1230): an application append reached `publishLocal` on a node that is
+    /// not the COMMITTED owner of `(streamName, partition)` — the committed `StreamPartitionOwnershipValue`
+    /// names `committedOwner`. The epoch fence cannot catch this: a live non-owner stamps the same committed
+    /// epoch the owner does, so without this refusal a replica holding the partition ring became an
+    /// undeclared second writer assigning offsets the owner also assigns. Transient: during a reshuffle the
+    /// HRW-routed target refuses until the leader commits the ownership change, so the forwarder retries and
+    /// a local caller redirects to `committedOwner`.
+    record NotOwnerAppend(String streamName, int partition, NodeId committedOwner) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream append refused for %s[%d]: the committed owner is %s, not this node".formatted(streamName,
+                                                                                                          partition,
+                                                                                                          committedOwner);
         }
     }
 

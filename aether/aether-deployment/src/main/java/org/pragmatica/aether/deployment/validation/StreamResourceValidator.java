@@ -11,6 +11,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -22,10 +23,13 @@ import org.pragmatica.aether.slice.blueprint.StreamSourceError;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes.CompositeCause;
 
 
@@ -54,6 +58,13 @@ public sealed interface StreamResourceValidator {
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
     String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
+    /// The ONE gating rule (#1262): a STRONG declaration fails the deploy, where every other stream-validation
+    /// failure degrades to empty bindings. Its own id, so a runbook, a UI or a test keying on the rule can
+    /// tell the refusal from the non-gating class.
+    String RULE_UNSUPPORTED_CONSISTENCY = "unsupported-stream-consistency";
+    String STREAMS_SECTION_PREFIX = "streams.";
+    String STRONG = "strong";
+    List<String> CONSISTENCY_KEYS = List.of("consistency_mode", "consistency");
 
     /// Run the full validation pass for a deploy attempt.
     ///
@@ -72,6 +83,7 @@ public sealed interface StreamResourceValidator {
 
         if (failures.isEmpty()) {
             guardInertConfig(resources, resourcesConfig, failures);
+            resourcesConfig.onPresent(toml -> failures.addAll(consistencyFailures(toml)));
         }
 
         if (failures.isEmpty()) {
@@ -85,6 +97,66 @@ public sealed interface StreamResourceValidator {
         return StreamValidationFailures.streamValidationFailures(List.copyOf(failures),
                                                                  List.copyOf(warnings))
                                        .result();
+    }
+
+    /// #1262 deploy gate — the ONE stream-validation rejection that fails the deploy rather than degrading to
+    /// empty bindings: a stream declaring `STRONG` consistency. No write path can honour it (the consensus
+    /// publish path has no production caller), so deploying it would produce a stream every write refuses.
+    /// `BlueprintService` runs this on every `resources.toml` it deploys, on both the artifact and the body
+    /// publish path, before any command is applied — and regardless of `registerOnly`, so a STRONG blueprint
+    /// cannot even be registered. Reported under [#RULE_UNSUPPORTED_CONSISTENCY], not the non-gating
+    /// [#RULE_INERT_STREAM_CONFIG].
+    static Result<Unit> ensureHonourableConsistency(Option<String> resourcesConfig) {
+        var failures = resourcesConfig.map(StreamResourceValidator::consistencyFailures).or(List.of());
+
+        return failures.isEmpty()
+               ? Result.unitResult()
+               : StreamValidationFailures.streamValidationFailures(failures,
+                                                                   List.of())
+                                         .result();
+    }
+
+    /// A STRONG declaration under either key. `consistency_mode` is the key the provisioning config binder
+    /// reads into `StreamConfig.consistencyMode` (the record component in snake case) — the one that would
+    /// actually reach the write path. `consistency` is the key `StreamConfigParser` reads and nothing binds;
+    /// a STRONG under it is refused too, because it asserts a guarantee the stream would silently not have.
+    /// Read from the raw TOML so the check sees exactly the text the binder sees.
+    private static List<StreamValidationFailure> consistencyFailures(String toml) {
+        return TomlParser.parse(toml)
+                         .map(StreamResourceValidator::consistencyFailures)
+                         .or(List.of());
+    }
+
+    private static List<StreamValidationFailure> consistencyFailures(TomlDocument doc) {
+        return doc.sectionNames()
+                  .stream()
+                  .filter(StreamResourceValidator::isStreamDeclarationSection)
+                  .flatMap(section -> strongDeclarations(doc, section))
+                  .toList();
+    }
+
+    private static Stream<StreamValidationFailure> strongDeclarations(TomlDocument doc, String section) {
+        return CONSISTENCY_KEYS.stream().flatMap(key -> strongDeclaration(doc, section, key).stream());
+    }
+
+    private static Option<StreamValidationFailure> strongDeclaration(TomlDocument doc, String section, String key) {
+        return doc.getString(section, key)
+                  .filter(STRONG::equalsIgnoreCase)
+                  .map(_ -> unsupportedConsistency(section, key));
+    }
+
+    private static boolean isStreamDeclarationSection(String section) {
+        return section.startsWith(STREAMS_SECTION_PREFIX) && !section.substring(STREAMS_SECTION_PREFIX.length())
+                                                                     .contains(".");
+    }
+
+    private static StreamValidationFailure unsupportedConsistency(String section, String key) {
+        return StreamValidationFailure.streamValidationFailure("[" + section + "]",
+                                                               RULE_UNSUPPORTED_CONSISTENCY,
+                                                               key
+                                                              + " 'strong' cannot be honoured — the consensus publish path is not wired in "
+                                                              + "this release, so every write to the stream would be refused (#1262). Remove the "
+                                                              + "key or set it to 'eventual'.");
     }
 
     private static void guardBlueprintNamespace(Artifact blueprintArtifact, List<StreamValidationFailure> failures) {
@@ -142,7 +214,8 @@ public sealed interface StreamResourceValidator {
     /// — mirroring [org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator]'s `PF-25`
     /// (#575) treatment of `[operations.auto_heal] enabled`. Only non-default values are rejected: a
     /// key that happens to equal the hardcoded default does not assert anything false, even though it
-    /// is equally inert.
+    /// is equally inert. #1262 adds `consistency = strong`: `ConsensusPublishPath` has no production
+    /// caller, so the declared guarantee cannot be honoured on any write path.
     private static void guardInertConfig(Map<String, StreamResource> resources,
                                          Option<String> resourcesConfig,
                                          List<StreamValidationFailure> failures) {
