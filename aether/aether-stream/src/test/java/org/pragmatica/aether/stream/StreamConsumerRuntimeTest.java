@@ -388,6 +388,109 @@ class StreamConsumerRuntimeTest {
                 flakyRuntime.close();
             }
         }
+
+        /// rev1285d F1: when RETRY exhaustion dead-letters the head event from the retry path
+        /// ([ConsumerRuntimeState#handleRetryFailureAgain]), the retry hold must already be released when
+        /// the sink is asked to append. A sink that resolves inline — the in-memory one does — runs the
+        /// resume (`completeDeadLetter` -> `requestDrain`) INSIDE the append call; released after it, the
+        /// re-drive found the loop still held, read nothing, and the backlog already in the ring sat
+        /// undelivered until the next append while the snapshot read idle (the reviewer measured 3/24
+        /// stranded at head, 20/20 with the window widened by 50ms).
+        ///
+        /// The deterministic arm is the hold recorded AT APPEND TIME through the runtime's package-private
+        /// seam: it is true on every run of the wrong ordering and false on every run of the right one. The
+        /// delivery arm (offset 1 arrives after the dead-letter) is the user-visible property and is only a
+        /// tripwire on the wrong ordering, because the strand needs the scheduler hop to lose the race.
+        @Test
+        void retryExhaustion_releasesTheRetryHold_beforeTheDeadLetterAppend_soAnInlineCompletionResumesTheLoop() throws Exception {
+            createTestStream("orders");
+            var sink = new HoldRecordingDeadLetterSink();
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, sink);
+
+            sink.observe(() -> observedRuntime.isRetryInFlight("orders", 0, "group-dlq"));
+
+            try {
+                var delivered = new CopyOnWriteArrayList<Long>();
+                // maxRetries 2: the first failure schedules ONE retry, whose failure exhausts the budget
+                // on the retry path — the path under test, not handleRetry's in-pass exhaustion.
+                var config = ConsumerConfig.consumerConfig("group-dlq",
+                                                           1,
+                                                           ProcessingMode.ORDERED,
+                                                           ErrorStrategy.RETRY,
+                                                           1000L,
+                                                           2,
+                                                           "");
+
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          config,
+                                          (offset, payload, ts) -> {
+                                              if (offset == 0L) {
+                                              return StreamError.General.BUFFER_EMPTY.promise();
+                                          }
+
+                                              delivered.add(offset);
+
+                                              return Promise.unitPromise();
+                                          });
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                // In the ring BEFORE the dead-letter lands, so nothing appends after it to re-drive the loop.
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+                assertThat(sink.appended.await(10, TimeUnit.SECONDS)).describedAs("control: the head event reached the dead-letter sink")
+                          .isTrue();
+                assertThat(sink.retryHeldAtAppend.get()).describedAs("the retry hold is released BEFORE the append is issued, so an inline completion finds only the dead-letter hold")
+                          .isFalse();
+                awaitOffset(delivered, 1L, 2_000);
+                assertThat(delivered).describedAs("the backlog already in the ring is delivered after the dead-letter, with no further append")
+                                     .containsExactly(1L);
+                assertThat(observedRuntime.deadLetterHandler().read("orders", 10)).singleElement()
+                          .extracting(DeadLetterEntry::offset)
+                          .isEqualTo(0L);
+                assertThat(observedRuntime.cursorPosition("orders", 0, "group-dlq").or(-1L)).isEqualTo(2L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        private static void awaitOffset(List<Long> delivered, long offset, long timeoutMs) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMs;
+
+            while (!delivered.contains(offset) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+    }
+
+    /// The in-memory sink (inline resolution, the shape that exposes the rev1285d F1 window) plus a record
+    /// of the runtime's retry hold as it stood when `append` was called.
+    static final class HoldRecordingDeadLetterSink implements DeadLetterHandler {
+        final CountDownLatch appended = new CountDownLatch(1);
+        final AtomicBoolean retryHeldAtAppend = new AtomicBoolean(true);
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+        private volatile java.util.function.BooleanSupplier retryHeld = () -> true;
+
+        void observe(java.util.function.BooleanSupplier retryHeld) {
+            this.retryHeld = retryHeld;
+        }
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    String failingGroup,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            retryHeldAtAppend.set(retryHeld.getAsBoolean());
+            appended.countDown();
+
+            return delegate.append(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
+        }
     }
 
     /// Review rev1272 F1/F2 on #1285: ONE serial loop per (group, partition) means a single escape that
@@ -1444,6 +1547,65 @@ class StreamConsumerRuntimeTest {
                               StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
             reapAt(System.currentTimeMillis());
             assertThat(runtime.subscriptions()).hasSize(2);
+        }
+
+        /// rev1285d N1: a client consumer still retrying its cursor fetch has not started; its
+        /// `lastPollTime` is the construction time, so without the flag the reaper read it as idle after
+        /// 60s, unsubscribed it and thereby stopped the fetch retry. The second arm proves the exemption is
+        /// the FETCH, not the consumer: once started, the same consumer is reaped like any other.
+        @Test
+        void reapIdleConsumers_keepsClientConsumer_whileItsCursorFetchIsStillRetrying() throws Exception {
+            createTestStream("orders");
+            var failing = new AtomicBoolean(true);
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return failing.get()
+                           ? StreamError.General.BUFFER_EMPTY.promise()
+                           : Promise.success(none());
+                }
+            };
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("client-group"),
+                                          (offset, payload, ts) -> {
+                                              delivered.add(offset);
+
+                                              return Promise.unitPromise();
+                                          });
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                Thread.sleep(150);
+                assertThat(observedRuntime.subscriptions()).singleElement()
+                          .extracting(StreamConsumerRuntime.SubscriptionSnapshot::awaitingCursorFetch)
+                          .describedAs("control: the fetch is still being retried")
+                          .isEqualTo(true);
+                observedRuntime.reapIdleConsumers(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+                assertThat(observedRuntime.subscriptions()).describedAs("a consumer that has not started is retrying, not idle")
+                          .hasSize(1);
+
+                failing.set(false);
+
+                var deadline = System.currentTimeMillis() + 5_000;
+
+                while (delivered.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(delivered).describedAs("control: the store answered and the consumer started").containsExactly(0L);
+                observedRuntime.reapIdleConsumers(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+                assertThat(observedRuntime.subscriptions()).describedAs("once started it is a client consumer like any other and is reaped when idle")
+                          .isEmpty();
+            } finally {
+                observedRuntime.close();
+            }
         }
 
         private void reapAt(long now) {
