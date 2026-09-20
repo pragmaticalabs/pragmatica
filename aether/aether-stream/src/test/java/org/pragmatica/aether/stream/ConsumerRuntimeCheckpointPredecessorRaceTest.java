@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.stream;
 
 import java.util.concurrent.CountDownLatch;
@@ -28,9 +27,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamConsumerRuntime.streamConsumerRuntime;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #1355 — the detach flush chains behind the consumer's periodic commit through
 /// `ConsumerState.periodicCommit()` (#1239), so that slot must hold the commit being issued from the
@@ -46,15 +46,16 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// parked, so the interleaving is entered by construction rather than by luck.
 class ConsumerRuntimeCheckpointPredecessorRaceTest {
     private static final String GROUP = "group-1";
+
     private StreamPartitionManager manager;
 
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager();
         manager.createStream(StreamConfig.streamConfig("orders",
-                                                        4,
-                                                        RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000),
-                                                        "earliest"));
+                                                       4,
+                                                       RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000),
+                                                       "earliest"));
     }
 
     @AfterEach
@@ -82,21 +83,54 @@ class ConsumerRuntimeCheckpointPredecessorRaceTest {
             Thread.sleep(50);
             manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
             assertThat(parkedInWindow.await(5, TimeUnit.SECONDS)).as("the periodic commit's issuing thread parked before the store call")
-                                                                 .isTrue();
+                      .isTrue();
             assertThat(commits.get()).as("nothing has reached the store while the issue is parked").isZero();
-
             runtime.unsubscribe("orders", 0, GROUP);
             detached.countDown();
             awaitCount(commits::get, 1);
             Thread.sleep(200);
             assertThat(commits.get()).as("commit B (detach flush) must not be issued while commit A (periodic) is in flight")
-                                     .isEqualTo(1);
-
+                      .isEqualTo(1);
             heldA.succeed(CommitOutcome.persisted());
             awaitCount(commits::get, 2);
             assertThat(commits.get()).as("B is issued once A settles").isEqualTo(2);
         } finally {
             heldA.succeed(CommitOutcome.persisted());
+            runtime.close();
+        }
+    }
+
+    /// The issuing thread is parked AFTER the slot holds this commit and BEFORE its cancellation check. A
+    /// detach flush arriving there reads the fresh slot and waits on it; the check then sees the cancel and
+    /// bails without a store call, so the slot MUST settle right there — otherwise the flush waits out the
+    /// shutdown bound for a commit that was never made. The total pins the ordering too: a slot assigned only
+    /// after the check would let the flush read the settled predecessor and the checkpoint be issued beside
+    /// it, two commits where the fix makes exactly one. Pins the bail path of the #1355 fix.
+    @Test
+    void detachFlush_arrivingBeforeTheCancellationCheck_isIssuedAsSoonAsTheCheckpointBails() throws InterruptedException {
+        var commits = new AtomicInteger();
+        var runtime = (ConsumerRuntimeState) streamConsumerRuntime(manager,
+                                                                   DeadLetterHandler.deadLetterHandler(),
+                                                                   persistingAll(commits));
+        var parkedInWindow = new CountDownLatch(1);
+        var detached = new CountDownLatch(1);
+
+        runtime.checkpointIssueProbe(parkFirstIssueAt(CheckpointIssuePoint.SLOT_ASSIGNED, parkedInWindow, detached));
+        try {
+            runtime.subscribe("orders", 0, config(), (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            assertThat(parkedInWindow.await(5, TimeUnit.SECONDS)).as("the periodic commit's issuing thread parked after assigning the slot")
+                      .isTrue();
+            runtime.unsubscribe("orders", 0, GROUP);
+            Thread.sleep(100);
+            assertThat(commits.get()).as("the detach flush waits on the slot it read").isZero();
+            detached.countDown();
+            awaitCount(commits::get, 1);
+            Thread.sleep(200);
+            assertThat(commits.get()).as("only the detach flush is committed: the cancelled checkpoint bails without a store call and settles the slot, releasing the flush at once")
+                      .isEqualTo(1);
+        } finally {
             runtime.close();
         }
     }
@@ -119,6 +153,22 @@ class ConsumerRuntimeCheckpointPredecessorRaceTest {
         };
     }
 
+    private static ConsumerCursorStore persistingAll(AtomicInteger commits) {
+        return new ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                commits.incrementAndGet();
+
+                return Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                return Promise.success(Option.none());
+            }
+        };
+    }
+
     private static ConsumerConfig config() {
         return ConsumerConfig.consumerConfig(GROUP, 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
     }
@@ -127,8 +177,8 @@ class ConsumerRuntimeCheckpointPredecessorRaceTest {
     /// every other point) passes straight through. A park that times out is not hidden: the thread then
     /// proceeds and the test's count assertions redden.
     private static Consumer<CheckpointIssuePoint> parkFirstIssueAt(CheckpointIssuePoint point,
-                                                                                       CountDownLatch parked,
-                                                                                       CountDownLatch release) {
+                                                                   CountDownLatch parked,
+                                                                   CountDownLatch release) {
         var claimed = new AtomicBoolean(false);
 
         return reached -> {

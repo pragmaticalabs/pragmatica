@@ -78,6 +78,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// not derived from a measured commit-latency distribution.]
     private static final TimeSpan PERIODIC_COMMIT_BOUND = timeSpan(5).seconds();
     private static final Promise<CommitOutcome> NO_PREDECESSOR = Promise.success(CommitOutcome.persisted());
+
     private static final Consumer<CheckpointIssuePoint> NO_CHECKPOINT_ISSUE_PROBE = _ -> {};
 
     private final StreamPartitionManager partitionManager;
@@ -593,9 +594,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
     }
 
+    /// #1355: the slot a detach flush chains behind ([#flushCursorForKey]) is handed a fresh promise FIRST —
+    /// before the cancellation check and before the store call — so a flush reading it at any point during
+    /// this issue finds the commit it must wait for. Assigning it after [#observedCommit] returned left the
+    /// previous, settled commit in the slot while the store call had already been made, the [TrackedCommit]
+    /// registered, three handlers attached and the timeout armed; a flush arriving in that window was issued
+    /// at once, beside this commit. Assigning before the check also closes the narrower interleaving
+    /// check(not cancelled) → `cancel()` → flush reads the settled slot → this commit is issued anyway.
+    /// On the bail path nothing is issued, so the slot is settled at once — only its SETTLEMENT is read
+    /// (`predecessor.fold(_ -> …)`), never its value. The slot resolves inline from the chain
+    /// (`withResult`), ahead of the asynchronous [#afterCheckpoint] event, so it never lags the commit.
     @Contract
     private void issueCheckpoint(ConsumerKey key, ConsumerState state) {
+        Promise<CommitOutcome> periodic = Promise.promise();
+
+        state.periodicCommit(periodic);
+        checkpointIssueProbe.accept(CheckpointIssuePoint.SLOT_ASSIGNED);
         if (closed.get() || state.isCancelled()) {
+            periodic.succeed(CommitOutcome.persisted());
             state.finishCheckpoint();
 
             return;
@@ -603,8 +619,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         state.clearCheckpointPending();
         checkpointIssueProbe.accept(CheckpointIssuePoint.BEFORE_STORE_CALL);
-        state.periodicCommit(observedCommit(key, state, NO_PREDECESSOR).timeout(PERIODIC_COMMIT_BOUND)
-                                           .onResult(result -> afterCheckpoint(key, state, result)));
+        observedCommit(key, state, NO_PREDECESSOR).timeout(PERIODIC_COMMIT_BOUND)
+                      .withResult(periodic::resolve)
+                      .onResult(result -> afterCheckpoint(key, state, result));
     }
 
     /// Test-only seam (#1355): install a probe that [#issueCheckpoint] runs at each [CheckpointIssuePoint] —
@@ -618,6 +635,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     /// Where [#issueCheckpoint] runs the test-only [#checkpointIssueProbe] (#1355).
     enum CheckpointIssuePoint {
+        /// After the slot holds this commit, before the cancellation check.
+        SLOT_ASSIGNED,
         /// After the cancellation check, before the store call.
         BEFORE_STORE_CALL
     }
@@ -1261,7 +1280,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
         private volatile OffHeapRingBuffer pushBufferRef;
-        /// #1239: the latest periodic commit, so a detach flush can chain behind it.
+        /// #1239: the latest periodic commit, so a detach flush can chain behind it. #1355: assigned before
+        /// that commit's store call is made, and settled on every path that assigned it.
         private volatile Promise<CommitOutcome> periodicCommitRef = NO_PREDECESSOR;
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
