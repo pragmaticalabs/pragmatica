@@ -21,6 +21,19 @@ class WorkerMetadataIndexTest {
     private static final NodeId CORE = new NodeId("core");
 
     @Test
+    void consumerAssignmentTravelsWithItsStreamProjection() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var key = new AetherKey.ConsumerAssignmentKey("orders", 0, "billing");
+        var assignment = AetherValue.ConsumerAssignmentValue.consumerAssignmentValue(WORKER,
+            org.pragmatica.aether.slice.generation.Epoch.epoch(1, 1), 1, org.pragmatica.hlc.HlcTimestamp.ZERO);
+
+        index.put(key, assignment);
+        assertThat(index.snapshot("stream:orders")).containsEntry(key, assignment);
+        assertThat(index.snapshot("stream:unrelated")).doesNotContainKey(key);
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).doesNotContainKey(key);
+    }
+
+    @Test
     void rawProviderConfigurationNeverEntersWorkerProjection() {
         var index = WorkerMetadataIndex.workerMetadataIndex();
         var configuration = new AetherValue.ClusterConfigValue("credentials = 'secret'",

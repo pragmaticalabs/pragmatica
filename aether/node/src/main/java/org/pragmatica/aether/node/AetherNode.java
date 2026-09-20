@@ -4951,8 +4951,8 @@ public interface AetherNode extends ManageableNode {
                                                                              cursorKey -> kvStore.getTyped(cursorKey,
                                                                                                            AetherValue.StreamCursorCheckpointValue.class),
                                                                              committedConsumerAssignments,
-                                                                             commands -> clusterNode.apply(commands)
-                                                                                                    .mapToUnit(),
+                                                                             commands -> switchableCluster.apply(commands)
+                                                                                                          .mapToUnit(),
                                                                              () -> switchableCluster.current() instanceof ForwardingClusterNode);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
@@ -4992,8 +4992,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                           rabiaTermSupplier,
                                                                                                                                                           hlcClock,
                                                                                                                                                           committedConsumerAssignments),
-                                                                                                        commands -> clusterNode.apply(commands)
-                                                                                                                               .mapToUnit());
+                                                                                                        commands -> switchableCluster.apply(commands)
+                                                                                                                                     .mapToUnit());
         var streamConsumerManager = StreamConsumerManager.streamConsumerManager(streamConsumerRegistry,
                                                                                 streamConsumerRuntime,
                                                                                 sliceInvoker,

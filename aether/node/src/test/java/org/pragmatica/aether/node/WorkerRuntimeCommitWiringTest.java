@@ -74,11 +74,14 @@ class WorkerRuntimeCommitWiringTest {
                 return Promise.success(List.of());
             }
         });
+        var runtimeCursors = (Option<?>) field(component(node, "streamConsumerRuntime"), "cursorStore");
+        var clusterCursors = (org.pragmatica.aether.node.stream.ClusterCursorStore) runtimeCursors.unwrap();
         var command = new KVCommand.Noop<AetherKey>(AetherKey.ClusterConfigKey.CURRENT);
         assertThat(context.cluster().apply(List.of(command)).await().isSuccess()).isTrue();
         assertThat(publisherCluster.apply(List.of(command)).await().isSuccess()).isTrue();
         schedulerWriter.accept(command);
-        assertThat(committed).containsExactly(List.of(command), List.of(command), List.of(command));
+        assertThat(clusterCursors.commandWriter().apply(List.of(command)).await().isSuccess()).isTrue();
+        assertThat(committed).containsExactly(List.of(command), List.of(command), List.of(command), List.of(command));
     }
 
     @Test

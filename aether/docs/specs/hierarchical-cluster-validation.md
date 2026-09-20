@@ -3,7 +3,7 @@
 All local runs below used `/private/tmp/pragmatica-hierarchy-runtime-pr` and Java25.
 These are checkpoint results, not final-head CI approval. Build/install the matching ref with
 `env -u HCLOUD_TOKEN ./build.sh` before reproducing Forge; Forge consumes installed runtime jars.
-The latest integrated source is `20316f07bd732768e5cc9d7a999521e379bb4063`, incorporating rc4
+The earlier integrated checkpoint is `20316f07bd732768e5cc9d7a999521e379bb4063`, incorporating rc4
 `836832f5` and prerequisite heads `4601627c2` / `c6bcefb47`. Full build6 passed before this
 integration; the subsequent node reactor install passed. Later corrections and their gates are listed below.
 
@@ -106,3 +106,15 @@ env -u HCLOUD_TOKEN ./forge.sh 'HierarchicalDecisionReplayTest,HierarchicalMovem
 ```
 
 Both cases passed at `07f56f4af`: zero failures/errors, BUILD SUCCESS, approximately 171 seconds. Log: `/private/tmp/hierarchy-review-final-recovery-forge.log`. The focused consensus install/test command above passed 27 cases, including the state-machine merge containment contract. The final-head CI gate supersedes local checkpoint evidence for merge readiness.
+
+## Subsequent rc4 consumer-assignment integration
+
+The branch also integrates rc4 `8d04025e6` through foundation `6938f323a` and specifications `33063845c`. The foundation preserves both the hierarchy owner/leader guards and rc4's cross-key consumer-assignment guard; its merged KV suite passed all 92 cases. Runtime adaptation carries `ConsumerAssignmentKey` in stream metadata and sends worker cursor checkpoints through the switchable core-forwarding delegate. The assembly test exercises that actual writer binding. Rebuild and integrated runtime checks are required after this source integration; the PR checks/artifacts identify the tested final merge revision.
+
+The integrated full build passed, followed by 114 focused cases (zero failures/errors):
+
+```sh
+env -u HCLOUD_TOKEN mvn -T1 -pl aether/node -am test -Dtest='WorkerRuntimeCommitWiringTest,WorkerMetadataIndexTest,ClusterCursorStoreTest,ConsumerAssignmentWriterTest,StreamConsumerManagerTest,StreamConsumerRuntimeClusterCursorTest,WireAssignmentTripwireTest,SystemCodecPinningTest,RabiaReorderedDeliveryTest,CoreCandidateRetirementTest' -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+The post-integration live selector is `env -u HCLOUD_TOKEN ./forge.sh 'HierarchicalDecisionReplayTest,HierarchicalMovementTakeoverTest,DurableTopicDeliveryForgeTest'`. The runtime CI matrix also includes durable-topic delivery. Its results and tested revisions are recorded in the CI artifacts described above.

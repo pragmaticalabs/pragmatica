@@ -255,7 +255,7 @@ public final class WorkerMetadataIndex {
             case AetherKey.StreamRegistrationKey entry -> Set.of(artifact(entry.artifact()),
                                                                  "stream:" + entry.streamName());
             case AetherKey.StreamCursorCheckpointKey entry -> Set.of("stream:" + entry.streamName());
-            case AetherKey.StreamPartitionAssignmentKey entry -> Set.of("stream:" + entry.streamName());
+            case AetherKey.ConsumerAssignmentKey entry -> Set.of("stream:" + entry.streamName());
             case AetherKey.ConsumerGroupKey entry -> Set.of("stream:" + entry.streamName());
             case AetherKey.EntityKeyspaceRegistrationKey entry -> Set.of(node(entry.node()),
                                                                          "entity:" + entry.keyspace());
