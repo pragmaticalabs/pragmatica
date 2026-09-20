@@ -65,6 +65,12 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public final class StreamPartitionManager implements AutoCloseable {
+    /// A held-back tick may be the ordinary race between the truncation tick and the snapshot interval; the
+    /// second consecutive one is not (the interval has elapsed), so that is when the tick first WARNs.
+    private static final long HELD_BACK_GRACE_TICKS = 2;
+    /// After the first WARN, repeat every this many held-back ticks (5 min at the 30 s cadence).
+    private static final long HELD_BACK_WARN_EVERY = 10;
+    private static final int HELD_BACK_WARN_SAMPLE = 5;
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
 
@@ -163,6 +169,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// See [DurableSealedOffsetSource]. The production wiring derives it from the latest metadata snapshot on
     /// disk; the standalone/test factories treat their single source as durable.
     private final DurableSealedOffsetSource durableSealedOffset;
+    /// Durable bound each WAL-backed partition saw at the previous truncation tick — see [#noteHeldBack].
+    private final ConcurrentHashMap<String, Long> durableAtPreviousTick = new ConcurrentHashMap<>();
+    /// See [#walReclamationHeldBackTicks]. Written only by the truncation tick.
+    private volatile long walReclamationHeldBackTicks;
     private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
     /// Placement-role seam (#265 increment 1/2): consulted per `(stream, partition)` to GATE ring
     /// materialization on placement — a ring is built iff `roleFor` reports OWNER/REPLICA (increment 2).
@@ -1653,35 +1663,59 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// applies: it never passes a segment that failed to seal. Best-effort: a `truncate` failure on one
     /// partition is logged and never aborts the others; a `-1` bound (nothing durably sealed) is a no-op for
     /// that partition; the no-WAL path ([Option#none] `walBaseDir`) holds no [PartitionWal] and is untouched.
+    ///
+    /// Reclamation is thereby coupled to the metadata snapshot: while the snapshot cannot be written or read
+    /// (disk full, permissions, a torn newest file) the durable bound stops advancing and nothing is reclaimed —
+    /// the WAL grows, bounded by the disk. That is the safe direction, and it is made visible here rather than
+    /// only by the snapshot manager's own WARN: a partition is HELD BACK when its durable bound sits below the
+    /// live watermark AND did not move since the previous tick. One such tick is a legitimate race with the
+    /// snapshot interval; from the second consecutive tick on ([#HELD_BACK_GRACE_TICKS]) the tick WARNs, then
+    /// again every [#HELD_BACK_WARN_EVERY] ticks, naming the partitions and their WAL bytes on disk, and
+    /// [#walReclamationHeldBackTicks] counts the consecutive held-back ticks for the operator surface.
     @Contract
     public void truncateWalsToSealed() {
         var durable = durableSealedOffset.current();
+        var heldBack = new ArrayList<HeldBackPartition>();
 
-        streams.forEach((streamName, entry) -> truncateStreamWals(streamName, entry, durable));
+        streams.forEach((streamName, entry) -> truncateStreamWals(streamName, entry, durable, heldBack));
+        reportHeldBack(heldBack);
+    }
+
+    /// Consecutive truncation ticks in which at least one partition's durable sealed bound sat below its live
+    /// watermark without advancing since the previous tick (#1345): `0` while the metadata snapshot keeps up;
+    /// climbing means WAL reclamation is halted because the snapshot cannot be written or read.
+    public long walReclamationHeldBackTicks() {
+        return walReclamationHeldBackTicks;
     }
 
     @Contract
-    private void truncateStreamWals(String streamName, StreamEntry entry, LastSealedOffsetSource durable) {
+    private void truncateStreamWals(String streamName,
+                                    StreamEntry entry,
+                                    LastSealedOffsetSource durable,
+                                    List<HeldBackPartition> heldBack) {
         for (int partition = 0; partition < entry.declaredPartitions(); partition++) {
-            truncatePartitionToSealed(streamName, partition, entry.walFor(partition), durable);
+            truncatePartitionToSealed(streamName, partition, entry.walFor(partition), durable, heldBack);
         }
     }
 
     @Contract
-    private static void truncatePartitionToSealed(String streamName,
-                                                  int partition,
-                                                  Option<PartitionWal> wal,
-                                                  LastSealedOffsetSource durable) {
-        wal.onPresent(w -> truncateWalToSealed(streamName, partition, w, durable));
+    private void truncatePartitionToSealed(String streamName,
+                                           int partition,
+                                           Option<PartitionWal> wal,
+                                           LastSealedOffsetSource durable,
+                                           List<HeldBackPartition> heldBack) {
+        wal.onPresent(w -> truncateWalToSealed(streamName, partition, w, durable, heldBack));
     }
 
     @Contract
-    private static void truncateWalToSealed(String streamName,
-                                            int partition,
-                                            PartitionWal wal,
-                                            LastSealedOffsetSource durable) {
+    private void truncateWalToSealed(String streamName,
+                                     int partition,
+                                     PartitionWal wal,
+                                     LastSealedOffsetSource durable,
+                                     List<HeldBackPartition> heldBack) {
         var base = durable.lastSealedOffset(streamName, partition);
 
+        noteHeldBack(streamName, partition, wal, base, heldBack);
         if (base >= 0) {
             wal.truncate(base)
                .onFailure(cause -> log.warn("WAL truncate to sealed offset {} failed for {}/{}: {}",
@@ -1689,6 +1723,65 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             streamName,
                                             partition,
                                             cause.message()));
+        }
+    }
+
+    /// Held back: the live watermark is above the durable bound, and the durable bound is exactly what this
+    /// partition saw at the previous tick — the snapshot has not advanced across a whole tick.
+    @Contract
+    private void noteHeldBack(String streamName,
+                              int partition,
+                              PartitionWal wal,
+                              long durableBase,
+                              List<HeldBackPartition> heldBack) {
+        var live = lastSealedOffset.lastSealedOffset(streamName, partition);
+        var previous = durableAtPreviousTick.put(partitionKeyOf(streamName, partition), durableBase);
+
+        if (live > durableBase && previous != null && previous == durableBase) {
+            heldBack.add(HeldBackPartition.heldBackPartition(streamName,
+                                                             partition,
+                                                             durableBase,
+                                                             live,
+                                                             wal.stats().sizeBytes()));
+        }
+    }
+
+    @Contract
+    private void reportHeldBack(List<HeldBackPartition> heldBack) {
+        if (heldBack.isEmpty()) {
+            walReclamationHeldBackTicks = 0;
+
+            return;
+        }
+
+        var ticks = walReclamationHeldBackTicks + 1;
+
+        walReclamationHeldBackTicks = ticks;
+        if (ticks >= HELD_BACK_GRACE_TICKS && (ticks - HELD_BACK_GRACE_TICKS) % HELD_BACK_WARN_EVERY == 0) {
+            log.warn("WAL reclamation held back for {} consecutive tick(s) on {} partition(s), {} WAL bytes on disk: "
+                    + "the sealed watermark on disk (metadata snapshot) is not advancing while sealing continues — "
+                    + "check that the streams snapshot directory is writable and its LATEST readable. {}",
+                     ticks,
+                     heldBack.size(),
+                     heldBack.stream().mapToLong(HeldBackPartition::walBytes).sum(),
+                     heldBack.stream().limit(HELD_BACK_WARN_SAMPLE).map(HeldBackPartition::describe).toList());
+        }
+    }
+
+    /// @param durable  the on-disk sealed bound the tick used
+    /// @param live     the in-memory sealed watermark, above `durable`
+    /// @param walBytes live bytes of the partition WAL on disk (compaction would reclaim the sealed prefix)
+    private record HeldBackPartition(String streamName, int partition, long durable, long live, long walBytes) {
+        static HeldBackPartition heldBackPartition(String streamName,
+                                                   int partition,
+                                                   long durable,
+                                                   long live,
+                                                   long walBytes) {
+            return new HeldBackPartition(streamName, partition, durable, live, walBytes);
+        }
+
+        String describe() {
+            return streamName + "/" + partition + " durable=" + durable + " live=" + live + " walBytes=" + walBytes;
         }
     }
 

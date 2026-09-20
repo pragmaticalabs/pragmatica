@@ -83,8 +83,13 @@ public sealed interface StreamError extends Cause {
     /// cause is a WAL compacted past segment refs that never reached the metadata snapshot — a snapshot
     /// directory restored from before the compaction, or lost. `base` is the rebuilt watermark, `expected`
     /// the offset the ring would assign next, `found` the record's own offset. Recovery action: restore the
-    /// metadata snapshot that covers `[expected, found)`, or accept the loss explicitly by removing the
-    /// partition's WAL; the node never renumbers on its own.
+    /// metadata snapshot that covers `[expected, found)` — after a power loss the newest `snapshot-*.dat` may
+    /// be torn (hash mismatch, restored as nothing) while the previous one is still retained: re-point
+    /// `LATEST` at it — or accept the loss explicitly by removing the partition's WAL; the node never
+    /// renumbers on its own. Node-level shape while refused: the node stays up; the stream is not installed
+    /// on this node (`createStream` installs only after every selected partition recovered); the reconcile
+    /// loop retries the materialize every tick, logging this cause at ERROR here and
+    /// "materialize-on-reconcile failed" at WARN in the node; every publish routed here fails with this cause.
     record WalRecoveryGap(String streamName, int partition, long base, long expected, long found) implements StreamError {
         @Override
         public String message() {

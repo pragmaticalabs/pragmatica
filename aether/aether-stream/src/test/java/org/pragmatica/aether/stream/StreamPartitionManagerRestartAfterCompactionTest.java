@@ -5,6 +5,13 @@
 
 package org.pragmatica.aether.stream;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -24,7 +31,10 @@ import org.pragmatica.storage.SnapshotManager;
 
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -58,6 +68,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     private static final int SEALED_AT_LEAST = EVENTS - RING_EVENTS - 1;
     private static final long AWAIT_MS = 10_000;
     private static final long POLL_NANOS = 10_000_000;
+    private static final long SEAL_DRAIN_NANOS = 500_000_000;
 
     @TempDir
     Path walDir;
@@ -120,26 +131,38 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                                                             .satisfies(gap -> assertGap(gap, 0L, sealedThrough + 1)));
     }
 
-    /// The tripwire past the first record: a WAL whose records run 0,1,2 then 4,5 (a mid-log hole — nothing
+    /// The tripwire past the first record: a WAL whose records run 0,1,2 then 4..8 (a mid-log hole — nothing
     /// in the truncate path produces one, so it is a corruption signature). The ring would assign 4's record
-    /// offset 3; recovery must refuse naming exactly that.
+    /// offset 3; recovery must refuse naming exactly that, and it must refuse BEFORE appending anything: the
+    /// recovered manager carries a recording sealer and the 8 records overflow the 4-slot ring, so an
+    /// append-then-check ordering would evict, seal, and hand the sink segments carrying renumbered records
+    /// (rev1349 F2 — `[0-0, 1-1, 2-2, 3-3]` with 3-3 holding record 4's payload). Nothing may reach the sink.
     @Test
-    void restart_walWithMidLogHole_refusesLoudly() {
+    void restart_walWithMidLogHole_refusesLoudly_andSealsNothing() {
         var wal = PartitionWal.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
                               .onFailure(cause -> fail(cause.message()))
                               .unwrap();
 
-        LongStream.of(0, 1, 2, 4, 5).forEach(offset -> wal.append(offset, payload((int) offset), 1000L + offset)
-                                                          .await()
-                                                          .onFailure(cause -> fail(cause.message())));
+        LongStream.of(0, 1, 2, 4, 5, 6, 7, 8).forEach(offset -> wal.append(offset, payload((int) offset), 1000L + offset)
+                                                                   .await()
+                                                                   .onFailure(cause -> fail(cause.message())));
         wal.close();
 
-        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), new SegmentIndex()::lastSealedOffset);
+        var sealed = new CopyOnWriteArrayList<SealedSegment>();
+        var recovered = streamPartitionManager(Long.MAX_VALUE,
+                                               segmentSealer(segment -> recordSeal(sealed, segment)),
+                                               Option.some(walDir),
+                                               new SegmentIndex()::lastSealedOffset);
         var create = createStream(recovered);
 
+        // The sealer drains asynchronously; give an (incorrect) append-first ordering time to reach the sink.
+        LockSupport.parkNanos(SEAL_DRAIN_NANOS);
         recovered.close();
 
         assertThat(create.isFailure()).as("a mid-log hole was renumbered silently").isTrue();
+        assertThat(sealed).as("a refused recovery handed the sink segments %s",
+                              sealed.stream().map(segment -> segment.startOffset() + "-" + segment.endOffset()).toList())
+                          .isEmpty();
         create.onFailure(cause -> assertThat(cause.stream().filter(StreamError.WalRecoveryGap.class::isInstance)
                                                   .map(StreamError.WalRecoveryGap.class::cast)
                                                   .toList()).singleElement()
@@ -208,6 +231,49 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         tail.forEach(StreamPartitionManagerRestartAfterCompactionTest::assertOffsetMatchesPayload);
     }
 
+    /// rev1349 F3: reclamation is coupled to the snapshot, so a snapshot that stops advancing must be VISIBLE
+    /// from the tick. Live watermark 195, durable stuck at -1 (a snapshot that cannot be written or read): tick 1
+    /// only records the bound, tick 2 counts (grace, no WARN), tick 3 counts and WARNs naming the partition and
+    /// its WAL bytes; once the snapshot catches up (durable = live) the next tick resets the counter to 0.
+    @Test
+    void truncateWalsToSealed_snapshotNotAdvancing_countsHeldBackTicks_andWarnsAfterGrace() {
+        var index = new SegmentIndex();
+        var stuck = new AtomicBoolean(true);
+        var manager = streamPartitionManager(Long.MAX_VALUE,
+                                             segmentSealer(segment -> indexed(index, segment)),
+                                             Option.some(walDir),
+                                             index::lastSealedOffset,
+                                             () -> stuck.get() ? LastSealedOffsetSource.none() : index::lastSealedOffset);
+        var warnings = new CopyOnWriteArrayList<String>();
+        var capture = capturingWarnings(warnings);
+
+        try {
+            createStream(manager).onFailure(cause -> fail(cause.message()));
+            IntStream.range(0, EVENTS).forEach(i -> publish(manager, i));
+            awaitSealed(index);
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isGreaterThanOrEqualTo(SEALED_AT_LEAST);
+
+            manager.truncateWalsToSealed();
+            assertThat(manager.walReclamationHeldBackTicks()).as("tick 1 only records the bound").isZero();
+            manager.truncateWalsToSealed();
+            assertThat(manager.walReclamationHeldBackTicks()).as("tick 2: held back, inside the grace").isEqualTo(1L);
+            assertThat(warnings).as("no WARN inside the grace").isEmpty();
+            manager.truncateWalsToSealed();
+            assertThat(manager.walReclamationHeldBackTicks()).isEqualTo(2L);
+            assertThat(warnings).as("first WARN at the second consecutive held-back tick").hasSize(1);
+            assertThat(warnings.getFirst()).contains("WAL reclamation held back for 2 consecutive tick(s) on 1 partition(s)")
+                                           .contains(STREAM + "/" + PARTITION + " durable=-1 live=" + index.lastSealedOffset(STREAM, PARTITION))
+                                           .contains("walBytes=" + walSizeBytes(manager));
+
+            stuck.set(false);
+            manager.truncateWalsToSealed();
+            assertThat(manager.walReclamationHeldBackTicks()).as("snapshot caught up: counter resets").isZero();
+        } finally {
+            capture.run();
+            manager.close();
+        }
+    }
+
     /// The production source: the watermark of the latest metadata snapshot ON DISK, rebuilt the way boot
     /// rebuilds it. Before any snapshot it is `-1` whatever the store holds (nothing may be truncated); after a
     /// snapshot it is that snapshot's contiguous watermark, and a ref added since is NOT counted until the next.
@@ -255,6 +321,48 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         while (index.lastSealedOffset(STREAM, PARTITION) < SEALED_AT_LEAST && System.currentTimeMillis() < deadline) {
             LockSupport.parkNanos(POLL_NANOS);
         }
+    }
+
+    private static long walSizeBytes(StreamPartitionManager manager) {
+        return manager.walSnapshot()
+                      .streams()
+                      .getFirst()
+                      .partitions()
+                      .getFirst()
+                      .wal()
+                      .map(PartitionWal.WalStats::sizeBytes)
+                      .or(-1L);
+    }
+
+    /// Capture WARN lines of the manager's logger; the returned runnable detaches the appender.
+    private static Runnable capturingWarnings(List<String> sink) {
+        var context = (LoggerContext) LogManager.getContext(false);
+        var config = context.getConfiguration();
+        var loggerConfig = config.getLoggerConfig(StreamPartitionManager.class.getName());
+        var appender = new AbstractAppender("held-back-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
+            @Override
+            public void append(LogEvent event) {
+                if (event.getLevel() == Level.WARN) {
+                    sink.add(event.getMessage().getFormattedMessage());
+                }
+            }
+        };
+
+        appender.start();
+        loggerConfig.addAppender(appender, Level.WARN, null);
+        context.updateLoggers();
+
+        return () -> {
+            loggerConfig.removeAppender(appender.getName());
+            context.updateLoggers();
+            appender.stop();
+        };
+    }
+
+    private static Promise<Unit> recordSeal(List<SealedSegment> sealed, SealedSegment segment) {
+        sealed.add(segment);
+
+        return Promise.unitPromise();
     }
 
     private static Promise<Unit> indexed(SegmentIndex index, SealedSegment segment) {

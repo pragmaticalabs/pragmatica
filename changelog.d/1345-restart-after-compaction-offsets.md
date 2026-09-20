@@ -11,7 +11,11 @@
   `DurableSealedOffsetSource.fromLatestSnapshot(streams.snapshotManager())`: the latest metadata
   snapshot on disk, parsed the way boot parses it, read once per tick. No snapshot yet means nothing
   is truncated. Truncation therefore lags the snapshot cadence by at most 30 s; the WAL keeps that
-  much more.
+  much more. **Reclamation is thereby coupled to the snapshot:** while the streams snapshot cannot be
+  written or read, nothing is reclaimed and the WAL grows, bounded by the disk. The tick makes that
+  visible — from the second consecutive tick in which a partition's on-disk bound sits below its live
+  watermark without moving it WARNs (then every 10 ticks) with the partitions and their WAL bytes, and
+  `walReclamationHeldBackTicks()` counts the consecutive held-back ticks.
   [verified: `StreamPartitionManagerRestartAfterCompactionTest
   restartAfterCompaction_refsNotYetSnapshotted_recoversOriginalOffsets`; the wiring by
   `WalTruncationDurableBoundBootTest` on a booted node — the WAL does not shrink before the
@@ -23,7 +27,12 @@
   survivor sits above that (refs lost after a compaction, or a mid-log hole) fails the partition's
   recovery with `StreamError.WalRecoveryGap` naming the stream, partition, watermark, expected and
   found offsets, logged at ERROR. The node never renumbers on its own. Operator recovery: restore the
-  metadata snapshot covering the gap, or accept the loss explicitly by removing the partition WAL.
+  metadata snapshot covering the gap (after a power loss: re-point `LATEST` at the previous retained
+  `snapshot-*.dat`), or accept the loss explicitly by removing the partition WAL. While refused the node
+  stays up, the stream is absent on this node, the reconcile loop retries every tick (ERROR at the
+  refusal, WARN "materialize-on-reconcile failed"), and each publish fails with the typed cause. The
+  check is vacuous on an EMPTY compacted WAL `[unverified: unreachable via the ring today; #1278's
+  floor closes it]`.
   Note: a partition whose every ref was reclaimed by retention (#1278, open) now refuses at boot
   instead of silently renumbering; #1278's persisted reclaimed-through floor will satisfy this check.
   [verified: `StreamPartitionManagerRestartAfterCompactionTest
