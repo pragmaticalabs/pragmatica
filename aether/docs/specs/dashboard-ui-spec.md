@@ -507,8 +507,8 @@ Five metric cards in a horizontal strip. Each card contains:
 | Card | Value Source | Sparkline Data |
 |------|-------------|----------------|
 | Requests/sec | `aggregates.rps` | Last 60 RPS values |
-| Latency P50 | `metrics.comprehensive.latencyP50` | Last 60 P50 values |
-| Latency P99 | `metrics.comprehensive.latencyP99` | Last 60 P99 values |
+| Latency P50 | `metrics.comprehensive.intervalMeanLatencyP50` | Last 60 P50 values |
+| Latency P99 | `metrics.comprehensive.intervalMeanLatencyP99` | Last 60 P99 values |
 | Success Rate | `aggregates.successRate` (as %) | Last 60 success rate values |
 | Node Count | `cluster.nodeCount` | Last 60 node counts |
 

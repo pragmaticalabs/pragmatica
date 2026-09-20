@@ -1,5 +1,10 @@
 # Metrics Collection and Cluster Control Architecture
 
+> Historical design notes. The current normative contract is
+> [Metrics distribution and calculation](../specs/metrics-distribution-spec.md).
+> Its producer identity, core-only distribution, and calculation rules supersede the older
+> broadcast and LLM actuation assumptions below.
+
 This document defines the metrics collection strategy and cluster controller architecture for Aether.
 
 **See [vision-and-goals.md](../archive/vision-and-goals.md) for overall vision.**
