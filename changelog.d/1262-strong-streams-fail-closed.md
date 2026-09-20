@@ -7,9 +7,11 @@
   acknowledged a STRONG `publishBatch` as success with nothing written, while `StreamAccess.publish` and the
   management publish wrote it as EVENTUAL.
 - **Deploy.** A `[streams.X]` declaring `consistency_mode = "strong"` (or `consistency = "strong"`) now
-  fails the deploy on both publish paths (artifact and body) before any command is applied, with
-  `inert-stream-config-key` naming #1262 (`StreamResourceValidator.ensureHonourableConsistency`). Every
-  other stream-validation failure keeps its existing non-gating behaviour.
+  fails the deploy on both publish paths (artifact and body) before any command is applied — `registerOnly`
+  included, so such a blueprint is not even registered — under its own rule id, `unsupported-stream-consistency`,
+  naming #1262 (`StreamResourceValidator.ensureHonourableConsistency`). Every other stream-validation failure
+  keeps its existing non-gating behaviour under `inert-stream-config-key`, so the two classes are
+  distinguishable by rule id.
   [mechanism: unit-level only, pinned by `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/BlueprintPublishOwnershipTest.java` and `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/validation/StreamResourceValidatorTest.java` — no multi-node run]
 - **Writes.** A stream that is STRONG anyway (created by another route, or adopted into a committed config)
   is refused on every write with `CONSENSUS_PATH_UNAVAILABLE`, before routing and with the ring untouched.

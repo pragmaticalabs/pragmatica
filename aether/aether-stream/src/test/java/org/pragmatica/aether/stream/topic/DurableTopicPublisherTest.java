@@ -10,9 +10,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.TimeSpan;
@@ -58,6 +60,41 @@ class DurableTopicPublisherTest {
         assertThat(captured.get(0).publishedAtMs()).isBetween(before, after);
     }
 
+    /// #1237 acceptance: the first publish comes back outcome-unknown (the owner appended, the floor
+    /// was not confirmed — #1236), and the caller retries the SAME logical event with the SAME key. Both
+    /// envelopes must carry one message ID, so downstream message-ID dedup collapses them.
+    @Test
+    void publishWithKey_retryAfterOutcomeUnknown_reusesMessageId() {
+        var captured = new CopyOnWriteArrayList<TopicEventEnvelope>();
+        var publisher = new DurableTopicPublisher<String>(STRING_BYTES, failingFirstCall(captured));
+
+        publisher.publish("order-42", "order-42-placed")
+                 .await()
+                 .onSuccess(_ -> fail("the first call is stubbed to fail outcome-unknown"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(PublishOutcomeUnknown.class));
+        publisher.publish("order-42", "order-42-placed")
+                 .await()
+                 .onFailure(cause -> fail(cause.message()));
+
+        assertThat(captured).hasSize(2);
+        assertThat(captured.get(0).messageId()).isEqualTo("order-42-placed");
+        assertThat(captured.get(1).messageId()).isEqualTo(captured.get(0).messageId());
+    }
+
+    /// The key IS the dedup identity, so a blank one would collapse unrelated events; it is refused
+    /// before anything reaches the stream.
+    @Test
+    void publishWithKey_refusesBlankKey_withoutPublishing() {
+        var captured = new CopyOnWriteArrayList<TopicEventEnvelope>();
+        var publisher = new DurableTopicPublisher<String>(STRING_BYTES, capturing(captured));
+
+        publisher.publish("order-42", "  ")
+                 .await()
+                 .onSuccess(_ -> fail("a blank idempotency key must be refused"));
+
+        assertThat(captured).isEmpty();
+    }
+
     @Test
     void durablePublisher_activatesTopicAndDlqStreams_atProvisioning() throws Exception {
         var manager = StreamPartitionManager.streamPartitionManager();
@@ -79,6 +116,19 @@ class DurableTopicPublisherTest {
         } finally {
             manager.close();
         }
+    }
+
+    /// Captures every envelope; the FIRST call then fails as #1236 reports a post-append timeout.
+    private static StreamPublisher<TopicEventEnvelope> failingFirstCall(List<TopicEventEnvelope> sink) {
+        return event -> capturedThenFailFirst(sink, event);
+    }
+
+    private static Promise<Unit> capturedThenFailFirst(List<TopicEventEnvelope> sink, TopicEventEnvelope event) {
+        sink.add(event);
+
+        return sink.size() == 1
+               ? PublishOutcomeUnknown.FACTORY.apply(ReplicationError.General.REPLICATION_TIMEOUT).promise()
+               : Promise.unitPromise();
     }
 
     private static StreamPublisher<TopicEventEnvelope> capturing(List<TopicEventEnvelope> sink) {

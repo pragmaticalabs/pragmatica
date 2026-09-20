@@ -6,6 +6,8 @@ package org.pragmatica.aether.slice;
 
 import java.util.List;
 
+import org.pragmatica.aether.slice.topic.ContextualEvent;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -24,6 +26,16 @@ public interface SliceBridge {
 
     default Promise<Object> decode(byte[] bytes) {
         return BridgeError.DECODE_NOT_SUPPORTED.promise();
+    }
+
+    /// Invoke `methodName` with a durable-topic event and its delivery [MessageContext] (#1295). The
+    /// bridge decodes `eventBytes` and chooses the argument from the method's OWN declared parameter
+    /// type: a context-carrying subscriber (its generated adapter declares [ContextualEvent]) receives
+    /// `contextualEvent(event, context)`, any other method the bare event. The context is an in-process
+    /// value and never crosses the wire. Bridges that cannot inspect their methods (stubs, non-default
+    /// impls) refuse rather than hand a context-carrying adapter the bare event.
+    default Promise<byte[]> invokeWithContext(String methodName, byte[] eventBytes, MessageContext context) {
+        return BridgeError.CONTEXT_NOT_SUPPORTED.promise();
     }
 
     ClassLoader classLoader();
@@ -54,7 +66,8 @@ public interface SliceBridge {
 
     enum BridgeError implements Cause {
         ENCODE_NOT_SUPPORTED("Encode not supported by this bridge"),
-        DECODE_NOT_SUPPORTED("Decode not supported by this bridge");
+        DECODE_NOT_SUPPORTED("Decode not supported by this bridge"),
+        CONTEXT_NOT_SUPPORTED("Context-carrying invocation not supported by this bridge");
         private final String message;
         BridgeError(String message) {
             this.message = message;

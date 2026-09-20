@@ -28,6 +28,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
@@ -506,6 +507,107 @@ class PartitionedStreamAccessTest {
                                                      Option.some(forwardClient),
                                                      SELF,
                                                      (_, _) -> owner,
+                                                     StreamReadForwardMetrics.NOOP);
+        }
+    }
+
+    /// #1264: both read paths build their forward-read router ONCE, not per partition read. Caching the
+    /// router must not cache the ANSWER: the owner resolver runs at route time, so an ownership change
+    /// between two reads still reaches the new owner. The identity tests pin the work avoided; the
+    /// ownership-change tests pin that caching did not freeze ownership.
+    @Nested
+    class ReadRouterCachingTests {
+        private static final NodeId OWNER = new NodeId("owner-node");
+        private static final NodeId NEW_OWNER = new NodeId("new-owner-node");
+        private static final long PAST_LOCAL_OFFSET = 1L;
+
+        @Test
+        void readRouter_returnsIdenticalRouter_acrossTypedReads() {
+            var access = typedAccess(new AtomicReference<>(Option.some(OWNER)));
+            var first = access.readRouter();
+
+            access.fetch(PARTITION, PAST_LOCAL_OFFSET, MAX_EVENTS).await();
+            access.fetch(PAST_LOCAL_OFFSET, MAX_EVENTS).await();
+
+            assertThat(access.readRouter()).isSameAs(first);
+        }
+
+        @Test
+        void fetch_forwardsToNewOwner_whenTypedOwnerChangesBetweenReads() {
+            var owner = new AtomicReference<>(Option.some(OWNER));
+            var access = typedAccess(owner);
+
+            access.fetch(PARTITION, PAST_LOCAL_OFFSET, MAX_EVENTS).await();
+            owner.set(Option.some(NEW_OWNER));
+            access.fetch(PARTITION, PAST_LOCAL_OFFSET, MAX_EVENTS).await();
+
+            assertThat(forwardClient.reads).extracting(RecordingForwardClient.ReadCall::target)
+                                           .containsExactly(OWNER, NEW_OWNER);
+        }
+
+        @Test
+        void readRouter_returnsIdenticalRouterPerPreference_acrossRawReads() {
+            var router = rawRouter(new AtomicReference<>(Option.some(OWNER)));
+
+            for (var preference : ReadPreference.values()) {
+                var first = router.readRouter(preference);
+
+                router.read(STREAM, PARTITION, PAST_LOCAL_OFFSET, MAX_EVENTS, preference).await();
+
+                assertThat(router.readRouter(preference)).isSameAs(first);
+            }
+        }
+
+        @Test
+        void readRouter_returnsDistinctRouterPerPreference() {
+            var router = rawRouter(new AtomicReference<>(Option.some(OWNER)));
+            var routers = new HashSet<ForwardingReadRouter<OffHeapRingBuffer.RawEvent>>();
+
+            for (var preference : ReadPreference.values()) {
+                routers.add(router.readRouter(preference));
+            }
+
+            assertThat(routers).hasSize(ReadPreference.values().length);
+        }
+
+        @Test
+        void read_forwardsToNewOwner_whenRawOwnerChangesBetweenReads() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+            var owner = new AtomicReference<>(Option.some(OWNER));
+            var router = rawRouter(owner);
+
+            router.read(STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS, ReadPreference.ANY_REPLICA).await();
+            owner.set(Option.some(NEW_OWNER));
+            router.read(STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS, ReadPreference.ANY_REPLICA).await();
+
+            assertThat(forwardClient.reads).extracting(RecordingForwardClient.ReadCall::target)
+                                           .containsExactly(OWNER, NEW_OWNER);
+        }
+
+        // NEAREST with a registry wired and self not a replica: the local read past the single seeded
+        // event is empty, so every read forwards to whatever owner the resolver names at route time.
+        private PartitionedStreamAccess<byte[]> typedAccess(AtomicReference<Option<NodeId>> owner) {
+            return PartitionedStreamAccess.streamAccess(partitionManager,
+                                                        identitySerializer(),
+                                                        identityDeserializer(),
+                                                        STREAM,
+                                                        1,
+                                                        Option.none(),
+                                                        Option.some(forwardClient),
+                                                        SELF,
+                                                        Option.some(owner::get),
+                                                        Option.none(),
+                                                        Option.none(),
+                                                        Option.none(),
+                                                        Option.some(replicaRegistry));
+        }
+
+        private StreamReadRouter rawRouter(AtomicReference<Option<NodeId>> owner) {
+            return StreamReadRouter.streamReadRouter(partitionManager,
+                                                     Option.some(replicaRegistry),
+                                                     Option.some(forwardClient),
+                                                     SELF,
+                                                     (_, _) -> owner.get(),
                                                      StreamReadForwardMetrics.NOOP);
         }
     }

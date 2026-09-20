@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
+import org.pragmatica.aether.slice.blueprint.StreamSourceError;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
@@ -50,11 +51,17 @@ import org.pragmatica.lang.utils.Causes.CompositeCause;
 @SuppressWarnings("JBCT-SEQ-01")
 public sealed interface StreamResourceValidator {
     String RULE_NAMESPACE_RESERVED = "namespace-reserved";
+    /// #1282: a blueprint `External` source naming a stream kind only the runtime provisions.
+    String RULE_SOURCE_RESERVED_KIND = "source-reserved-kind";
     String RULE_RESOURCES_PARSE = "resources-toml-parse";
     String RULE_BLUEPRINT_NAMESPACE = "blueprint-namespace-invalid";
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
     String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
+    /// The ONE gating rule (#1262): a STRONG declaration fails the deploy, where every other stream-validation
+    /// failure degrades to empty bindings. Its own id, so a runbook, a UI or a test keying on the rule can
+    /// tell the refusal from the non-gating class.
+    String RULE_UNSUPPORTED_CONSISTENCY = "unsupported-stream-consistency";
     String STREAMS_SECTION_PREFIX = "streams.";
     String STRONG = "strong";
     List<String> CONSISTENCY_KEYS = List.of("consistency_mode", "consistency");
@@ -96,7 +103,9 @@ public sealed interface StreamResourceValidator {
     /// empty bindings: a stream declaring `STRONG` consistency. No write path can honour it (the consensus
     /// publish path has no production caller), so deploying it would produce a stream every write refuses.
     /// `BlueprintService` runs this on every `resources.toml` it deploys, on both the artifact and the body
-    /// publish path, before any command is applied.
+    /// publish path, before any command is applied — and regardless of `registerOnly`, so a STRONG blueprint
+    /// cannot even be registered. Reported under [#RULE_UNSUPPORTED_CONSISTENCY], not the non-gating
+    /// [#RULE_INERT_STREAM_CONFIG].
     static Result<Unit> ensureHonourableConsistency(Option<String> resourcesConfig) {
         var failures = resourcesConfig.map(StreamResourceValidator::consistencyFailures).or(List.of());
 
@@ -143,7 +152,7 @@ public sealed interface StreamResourceValidator {
 
     private static StreamValidationFailure unsupportedConsistency(String section, String key) {
         return StreamValidationFailure.streamValidationFailure("[" + section + "]",
-                                                               RULE_INERT_STREAM_CONFIG,
+                                                               RULE_UNSUPPORTED_CONSISTENCY,
                                                                key
                                                               + " 'strong' cannot be honoured — the consensus publish path is not wired in "
                                                               + "this release, so every write to the stream would be refused (#1262). Remove the "
@@ -187,7 +196,14 @@ public sealed interface StreamResourceValidator {
     private static StreamValidationFailure toFailure(Cause cause) {
         var message = cause.message();
 
-        return StreamValidationFailure.streamValidationFailure(extractField(message), inferRule(message), message);
+        return StreamValidationFailure.streamValidationFailure(extractField(message), ruleFor(cause, message), message);
+    }
+
+    /// Typed parser failures carry their rule; the rest are still classified from the message text.
+    private static String ruleFor(Cause cause, String message) {
+        return cause instanceof StreamSourceError.ReservedKindSource
+               ? RULE_SOURCE_RESERVED_KIND
+               : inferRule(message);
     }
 
     /// #576: a blueprint's `[streams.X]`/`[streams.X.consumers.Y]` config parses and diffs cleanly,

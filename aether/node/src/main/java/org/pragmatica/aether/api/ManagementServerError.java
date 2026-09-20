@@ -111,6 +111,23 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1282: a Management-API write would mint a stream whose engine name carries a reserved kind
+    /// prefix (`system:`, `topic:`, `entity:`). Those streams are created only by internal provisioning;
+    /// minting one here would plant an operator-chosen config the real resource later finds in place.
+    record ReservedStreamName(String streamName, String prefix) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Stream name '" + streamName
+                 + "' uses the reserved prefix '" + prefix
+                 + "'; streams under it are created only by internal provisioning";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
     enum StrategyChangeNotSupported implements ManagementServerError {
         INSTANCE;
         @Override

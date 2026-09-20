@@ -32,8 +32,11 @@
   misreads a partial batch; read `notPublished`.** A typed non-2xx that carries structured offsets needs
   `ManagementRouter` to support typed success statuses — ticket to be filed by the CTO. The former `Result.allOf`
   fold returned only the first failure and discarded the offsets of the items that had landed. An item
-  rejected before writing (stream unavailable, partition out of range) is `NOT_ATTEMPTED`; an item the
-  write router refused is `OUTCOME_UNKNOWN` (#1236).
+  rejected before writing for a PARTITION-level reason (out of range) is `NOT_ATTEMPTED`; an item the
+  write router refused is `OUTCOME_UNKNOWN` (#1236). A STREAM-LEVEL admission failure — a reserved name (`400`,
+  #1282) or an unavailable stream (`409`) — is checked ONCE before the fan-out and fails the whole batch with its
+  own typed status, writing nothing; an all-items-rejected-by-partition batch is still `200` with `published: 0`
+  (CTO ruling, #1342 × #1299).
   [verified: `StreamApiRoutesPublishBatchTest`, 4 tests, including
   `partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset` — the real route through
   `ManagementRouter`, asserting the written status 200 and the JSON body

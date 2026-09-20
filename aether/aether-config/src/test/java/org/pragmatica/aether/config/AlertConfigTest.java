@@ -74,6 +74,39 @@ class AlertConfigTest {
         }
     }
 
+    /// #1302: the checkpoint-lag pair refuses at boot when it could not describe a ladder.
+    @Nested
+    class EntityCheckpointLagValidation {
+        @Test
+        void defaults_areHalfTheRingAndTheRing_andPassCheck() {
+            assertThat(AlertConfig.alertConfig().entityCheckpointLag())
+                .isEqualTo(AlertConfig.EntityCheckpointLag.entityCheckpointLag(5_000, 10_000));
+            assertThat(AlertConfig.alertConfig().check().isSuccess()).isTrue();
+        }
+
+        @Test
+        void criticalBelowWarning_isRefused_namingBothKeys() {
+            withLag(8_000, 4_000).check()
+                                 .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("an inverted ladder must be refused"))
+                                 .onFailure(cause -> assertThat(cause.message()).contains("entity_checkpoint_lag_warning")
+                                                                                .contains("entity_checkpoint_lag_critical"));
+        }
+
+        @Test
+        void nonPositiveWarning_isRefused() {
+            assertThat(withLag(0, 10_000).check().isFailure()).isTrue();
+        }
+
+        private static AlertConfig withLag(double warning, double critical) {
+            return AlertConfig.alertConfig(true,
+                                           AlertConfig.WebhookConfig.webhookConfig(),
+                                           AlertConfig.EventConfig.eventConfig(),
+                                           AlertConfig.DEFAULT_HYSTERESIS_MARGIN,
+                                           AlertConfig.EntityCheckpointLag.entityCheckpointLag(warning, critical))
+                              .unwrap();
+        }
+    }
+
     @Nested
     class WebhookFailClosed {
 

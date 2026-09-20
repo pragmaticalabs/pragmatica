@@ -555,7 +555,8 @@ class BlueprintServiceInstance implements BlueprintService {
         // on validation failure an empty bindings entry is still written, preserving rc1's deploy
         // semantics (the gate that would HTTP-422 on bad stream config is a separate stage).
         // #1262 exception: a STRONG-consistency declaration is refused BEFORE this point
-        // (StreamResourceValidator.ensureHonourableConsistency in storeAllInSingleBatch), failing the deploy.
+        // (StreamResourceValidator.ensureHonourableConsistency in storeAllInSingleBatch), failing the deploy —
+        // registerOnly included: a STRONG blueprint is not even registered.
         commands.add(buildStreamBindingsCommand(expanded, resourcesConfig, roleHints));
         if (!migrations.isEmpty()) {
             commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords, expanded.id()));

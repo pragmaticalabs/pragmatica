@@ -20,8 +20,10 @@ import org.pragmatica.lang.Result;
 ///   local append (`ensureWritableConsistency`) or after it (#1236: the min-sync barrier); the caller cannot
 ///   tell which, so the event MAY be in the log. Retry only with a stable message key (#1237).
 /// - [NotAttempted]: the event never reached the write path (no consensus path for a STRONG stream, an earlier
-///   event of the same partition group failed, or the request was rejected before writing). It is NOT in the
-///   log and can be retried without duplicating.
+///   event of the same partition group failed, or the request was rejected before writing for a PARTITION-level
+///   reason — a stream-level refusal such as a reserved name or an unavailable stream is the whole batch's own
+///   typed failure, never a per-item outcome; CTO ruling #1342 × #1299). It is NOT in the log and can be retried
+///   without duplicating.
 public sealed interface PublishOutcome {
     record Published(long offset) implements PublishOutcome {}
 

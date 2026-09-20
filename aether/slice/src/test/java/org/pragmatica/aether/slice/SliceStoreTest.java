@@ -27,6 +27,9 @@ import org.pragmatica.lang.utils.Causes;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.JarURLConnection;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -34,6 +37,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -465,6 +469,41 @@ class SliceStoreTest {
             assertThat(composite.unwrap().getString("database.orders.url").isEmpty())
                     .describedAs("the own jar's file is the whole intrinsic layer; the dependency's is not merged in")
                     .isTrue();
+        }
+    }
+
+    // s25-inv1277: the own-jar pre-flight reads resources.toml through a throwaway loader and closes it.
+    // An unfixed loader registered the JVM-shared cached JarFile of the own jar in its closeables, so
+    // that close() closed a jar every other reader in the forge JVM shares — and a jar: open racing it
+    // re-cached the closed instance for good. J1 held here IS that shared instance; it must survive.
+    @Test
+    void buildSliceCompositeFromClassLoader_readingOwnJarToml_leavesTheSharedJarUsable() throws IOException {
+        var ownJar = jar("own.jar", Option.some(WELL_FORMED_TOML));
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+        var shared = sharedJarFile(ownJar);
+
+        try (var loader = new SliceClassLoader(new URL[]{ownJar}, sharedLoader)) {
+            var composite = store.buildSliceCompositeFromClassLoader(artifact, loader);
+
+            assertThat(composite.unwrap().getString("deployed.endpoint.port").unwrap()).isEqualTo("8080");
+        }
+
+        // Unfixed: IllegalStateException: zip file closed
+        assertThat(shared.getEntry("META-INF/resources.toml"))
+                .describedAs("the pre-flight's throwaway loader must not close the JVM-shared jar")
+                .isNotNull();
+    }
+
+    /// J1: the instance every caching `jar:` opener of this jar in the JVM shares.
+    private static JarFile sharedJarFile(URL jar) throws IOException {
+        try {
+            var connection = (JarURLConnection) new URI("jar:" + jar + "!/META-INF/resources.toml").toURL().openConnection();
+
+            connection.setUseCaches(true);
+
+            return connection.getJarFile();
+        } catch (URISyntaxException e) {
+            throw new IOException(e);
         }
     }
 
