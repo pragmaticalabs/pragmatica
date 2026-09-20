@@ -181,6 +181,16 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A ring's index or offset arithmetic produced an out-of-bounds native access (#1247) — a defect in
+    /// the ring, never the closed-arena race. Distinct from {@link General#BUFFER_CLOSED} so a corrupted
+    /// ring is not reported as a benign release; `detail` carries the JDK's bounds message.
+    record RingIndexCorrupted(String streamName, int partition, String detail) implements StreamError {
+        @Override
+        public String message() {
+            return "Ring index corrupted at %s[%d]: %s".formatted(streamName, partition, detail);
+        }
+    }
+
     record EventProcessingFailed(String streamName, int partition, long offset, String reason) implements StreamError {
         @Override
         public String message() {
