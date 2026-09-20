@@ -330,7 +330,8 @@ class DurableProjectionRebuildTest {
     void rewind_detachesTheZombieInTheSameApply_andRefusesItsLateCheckpoint() throws InterruptedException {
         publishAll(1, 6);
         awaitModel(123456L, 15_000);
-        awaitCommittedCursor(6L, 20_000);
+        // No committed-cursor control here: six events inside the first 500 ms on a partition that then
+        // goes quiet leave NO checkpoint (#1385); the zombie's late put below is what lands one at NONE.
         var before = subscriptionsForGroup();
 
         assertThat(before).as("control: one live consumer, never rewound, cursor fetched").hasSize(1);
