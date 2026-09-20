@@ -40,9 +40,27 @@ class TopologyParserManifestReadFailureTest {
 
     @Test
     void manifestReadFailure_warnsOnce_namingTheArtifactAndTheCause() throws Exception {
-        var slice = (Slice) new ThrowingResourceLoader().loadClass(ProbeSlice.class.getName())
-                                                        .getDeclaredConstructor()
-                                                        .newInstance();
+        var warnings = parseCapturingWarnings(new ThrowingResourceLoader(true));
+        var withCause = warnings.stream().filter(line -> line.contains(CAUSE)).toList();
+
+        // Unfixed: DEBUG, so no WARN carries the cause at all.
+        assertThat(withCause).describedAs("exactly one WARN carries the cause; captured: %s", warnings).hasSize(1);
+        assertThat(withCause.getFirst()).contains(ARTIFACT).contains("META-INF/slice/ProbeService.manifest");
+    }
+
+    /// The quiet branch: no manifest is `null` from the loader, not a failure, and must not WARN as
+    /// one (the pre-existing "no topology found" WARN is a different message and stays).
+    @Test
+    void absentManifest_isNotAReadFailure_andStaysQuiet() throws Exception {
+        var warnings = parseCapturingWarnings(new ThrowingResourceLoader(false));
+
+        assertThat(warnings).describedAs("captured: %s", warnings).noneMatch(line -> line.startsWith("Could not read"));
+    }
+
+    private static List<String> parseCapturingWarnings(ThrowingResourceLoader loader) throws Exception {
+        var slice = (Slice) loader.loadClass(ProbeSlice.class.getName())
+                                  .getDeclaredConstructor()
+                                  .newInstance();
         var warnings = new ArrayList<String>();
         var detach = capturingWarnings(warnings);
 
@@ -52,18 +70,18 @@ class TopologyParserManifestReadFailureTest {
             detach.run();
         }
 
-        var withCause = warnings.stream().filter(line -> line.contains(CAUSE)).toList();
-
-        // Unfixed: DEBUG, so no WARN carries the cause at all.
-        assertThat(withCause).describedAs("exactly one WARN carries the cause; captured: %s", warnings).hasSize(1);
-        assertThat(withCause.getFirst()).contains(ARTIFACT).contains("META-INF/slice/ProbeService.manifest");
+        return warnings;
     }
 
     /// Defines [ProbeSlice] itself (child-first for that one name) so the slice's defining loader is
-    /// this one, and fails every resource read the way a poisoned jar cache does.
+    /// this one, and either fails every resource read the way a poisoned jar cache does or answers
+    /// `null` the way a jar with no manifest does.
     private static final class ThrowingResourceLoader extends ClassLoader {
-        ThrowingResourceLoader() {
+        private final boolean failing;
+
+        ThrowingResourceLoader(boolean failing) {
             super(TopologyParserManifestReadFailureTest.class.getClassLoader());
+            this.failing = failing;
         }
 
         @Override
@@ -87,7 +105,11 @@ class TopologyParserManifestReadFailureTest {
 
         @Override
         public InputStream getResourceAsStream(String name) {
-            throw new IllegalStateException("zip file closed");
+            if (failing) {
+                throw new IllegalStateException("zip file closed");
+            }
+
+            return null;
         }
 
         private byte[] classBytes(String name) throws ClassNotFoundException {

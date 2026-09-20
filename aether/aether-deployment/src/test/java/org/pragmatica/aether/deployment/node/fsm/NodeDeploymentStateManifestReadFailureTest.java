@@ -92,6 +92,7 @@ class NodeDeploymentStateManifestReadFailureTest {
     private static final String MANIFEST = "META-INF/slice/ManifestProbeSlice.manifest";
 
     private RecordingClusterNode cluster;
+    private ProbeSliceStore store;
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> harness;
 
     @BeforeEach
@@ -107,6 +108,7 @@ class NodeDeploymentStateManifestReadFailureTest {
                                                                                                           Option.some(BlueprintId.blueprintId(BLUEPRINT)))))));
 
         cluster = new RecordingClusterNode(SELF);
+        store = new ProbeSliceStore();
 
         Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> factory = fsm -> buildContext(fsm,
                                                                                                               ctxHolder,
@@ -117,6 +119,31 @@ class NodeDeploymentStateManifestReadFailureTest {
 
     @Test
     void manifestReadFailures_onTheActivationChain_warnNamingTheArtifactAndTheCause() {
+        var warnings = activateCapturingWarnings(true);
+        var withCause = warnings.stream().filter(line -> line.contains(CAUSE)).toList();
+
+        // Unfixed: DEBUG, so no WARN carries the cause at all.
+        assertThat(withCause).describedAs("captured WARNs: %s", warnings).isNotEmpty();
+        assertThat(withCause).allSatisfy(line -> assertThat(line).contains(SLICE.asString()).contains(MANIFEST));
+        // One per reader on the chain: reactive bindings are read for topic subscriptions, stream
+        // subscriptions and scheduled tasks; config updates once; stream roles once at ACTIVE.
+        assertThat(withCause.stream().filter(line -> line.startsWith("Could not read reactive manifest")).count()).isEqualTo(3);
+        assertThat(withCause.stream().filter(line -> line.startsWith("Could not read config update manifest")).count()).isEqualTo(1);
+        assertThat(withCause.stream().filter(line -> line.startsWith("Could not read stream role declarations")).count()).isEqualTo(1);
+        assertThat(withCause).hasSize(5);
+    }
+
+    /// The quiet branch: a slice whose jar ships no manifest answers `null`, which is not a read
+    /// failure and must not WARN as one.
+    @Test
+    void absentManifest_onTheActivationChain_isNotAReadFailure_andStaysQuiet() {
+        var warnings = activateCapturingWarnings(false);
+
+        assertThat(warnings).describedAs("captured: %s", warnings).noneMatch(line -> line.startsWith("Could not read"));
+    }
+
+    private List<String> activateCapturingWarnings(boolean failingReads) {
+        store.failingReads = failingReads;
         var warnings = new ArrayList<String>();
         var detach = capturingWarnings(warnings);
 
@@ -131,17 +158,7 @@ class NodeDeploymentStateManifestReadFailureTest {
             detach.run();
         }
 
-        var withCause = warnings.stream().filter(line -> line.contains(CAUSE)).toList();
-
-        // Unfixed: DEBUG, so no WARN carries the cause at all.
-        assertThat(withCause).describedAs("captured WARNs: %s", warnings).isNotEmpty();
-        assertThat(withCause).allSatisfy(line -> assertThat(line).contains(SLICE.asString()).contains(MANIFEST));
-        // One per reader on the chain: reactive bindings are read for topic subscriptions, stream
-        // subscriptions and scheduled tasks; config updates once; stream roles once at ACTIVE.
-        assertThat(withCause.stream().filter(line -> line.startsWith("Could not read reactive manifest")).count()).isEqualTo(3);
-        assertThat(withCause.stream().filter(line -> line.startsWith("Could not read config update manifest")).count()).isEqualTo(1);
-        assertThat(withCause.stream().filter(line -> line.startsWith("Could not read stream role declarations")).count()).isEqualTo(1);
-        assertThat(withCause).hasSize(5);
+        return warnings;
     }
 
     /// The node's own state put (`NodeArtifactKey` → `NodeArtifactValue`) carrying ACTIVE.
@@ -163,7 +180,7 @@ class NodeDeploymentStateManifestReadFailureTest {
         var context = new NodeDeploymentContext(fsm,
                                                 SELF,
                                                 new NodeAddress("localhost", 9000),
-                                                new ProbeSliceStore(),
+                                                store,
                                                 SliceActionConfig.sliceActionConfig(),
                                                 SliceCodec.sliceCodec(List.of()),
                                                 cluster,
@@ -205,10 +222,14 @@ class NodeDeploymentStateManifestReadFailureTest {
     }
 
     /// Defines [ProbeSlice] itself (child-first for that one name) so the slice's defining loader is
-    /// this one, and fails every resource read the way a poisoned jar cache does.
+    /// this one, and either fails every resource read the way a poisoned jar cache does or answers
+    /// `null` the way a jar with no manifest does.
     private static final class ThrowingResourceLoader extends ClassLoader {
-        ThrowingResourceLoader() {
+        private final boolean failing;
+
+        ThrowingResourceLoader(boolean failing) {
             super(NodeDeploymentStateManifestReadFailureTest.class.getClassLoader());
+            this.failing = failing;
         }
 
         @Override
@@ -232,7 +253,11 @@ class NodeDeploymentStateManifestReadFailureTest {
 
         @Override
         public InputStream getResourceAsStream(String name) {
-            throw new IllegalStateException("zip file closed");
+            if (failing) {
+                throw new IllegalStateException("zip file closed");
+            }
+
+            return null;
         }
 
         private byte[] classBytes(String name) throws ClassNotFoundException {
@@ -248,11 +273,11 @@ class NodeDeploymentStateManifestReadFailureTest {
         }
     }
 
-    private static Slice probeSlice() {
+    private static Slice probeSlice(boolean failingReads) {
         try {
-            return (Slice) new ThrowingResourceLoader().loadClass(ProbeSlice.class.getName())
-                                                       .getDeclaredConstructor()
-                                                       .newInstance();
+            return (Slice) new ThrowingResourceLoader(failingReads).loadClass(ProbeSlice.class.getName())
+                                                                   .getDeclaredConstructor()
+                                                                   .newInstance();
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException(e);
         }
@@ -260,9 +285,10 @@ class NodeDeploymentStateManifestReadFailureTest {
 
     private static final class ProbeSliceStore implements SliceStore {
         private final List<LoadedSlice> loadedSlices = new CopyOnWriteArrayList<>();
+        private volatile boolean failingReads = true;
 
-        private static LoadedSlice loadedSlice(Artifact artifact) {
-            var slice = probeSlice();
+        private LoadedSlice loadedSlice(Artifact artifact) {
+            var slice = probeSlice(failingReads);
 
             return new LoadedSlice() {
                 @Override public Artifact artifact() {

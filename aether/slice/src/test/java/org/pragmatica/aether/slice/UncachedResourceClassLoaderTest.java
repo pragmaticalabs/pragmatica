@@ -99,6 +99,23 @@ class UncachedResourceClassLoaderTest {
         }
     }
 
+    /// The override keeps `URLClassLoader`'s delegation: `getResource` asks the parent first, so a
+    /// slice can still read a resource only its shared-library parent ships. `findResource` here would
+    /// answer `null` for it, silently.
+    @Test
+    void resourceRead_answersFromTheParent_whenOnlyTheParentShipsIt() throws IOException {
+        var parentJar = tempDir.resolve("parent.jar");
+        var ownJar = tempDir.resolve("own-without-it.jar");
+
+        writeJar(parentJar, ENTRY, "slice.name=from-parent\n");
+        writeJar(ownJar, "META-INF/slice/Other.manifest", "slice.name=own\n");
+
+        try (var parent = new URLClassLoader(new URL[]{parentJar.toUri().toURL()}, PLATFORM);
+             var loader = new UncachedResourceClassLoader(new URL[]{ownJar.toUri().toURL()}, parent)) {
+            assertThat(read(loader)).isEqualTo("slice.name=from-parent\n");
+        }
+    }
+
     private static void assertSharedJarSurvivesLoaderClose(URL jar, URLClassLoader loader) throws IOException {
         var shared = sharedJarFile(jar);
 
@@ -148,8 +165,12 @@ class UncachedResourceClassLoaderTest {
     }
 
     private static void writeJar(Path path, String manifestText) throws IOException {
+        writeJar(path, ENTRY, manifestText);
+    }
+
+    private static void writeJar(Path path, String entry, String manifestText) throws IOException {
         try (var out = new JarOutputStream(Files.newOutputStream(path))) {
-            out.putNextEntry(new JarEntry(ENTRY));
+            out.putNextEntry(new JarEntry(entry));
             out.write(manifestText.getBytes(StandardCharsets.UTF_8));
             out.closeEntry();
         }
