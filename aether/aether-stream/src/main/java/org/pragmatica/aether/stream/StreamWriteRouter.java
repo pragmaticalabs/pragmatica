@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.consensus.NodeId;
@@ -77,8 +78,10 @@ public final class StreamWriteRouter {
 
     private Promise<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(streamName);
-
-        return partitionManager.publishLocal(streamName, partition, payload, timestamp)
+        // #1230: a NotOwnerAppend refusal is redirected to the committed owner, before #1236's floor check;
+        // the floor precedes the append (a refusal is not in the log); after it, an unconfirmed barrier is
+        // an unknown outcome.
+        return partitionManager.publishLocalAtFloor(streamName, partition, payload, timestamp, minSyncReplicas - 1)
                                .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
                                                                                   owner -> forwardTo(owner,
                                                                                                      streamName,
@@ -91,6 +94,7 @@ public final class StreamWriteRouter {
     private Promise<Long> awaitMinSync(String streamName, int partition, long offset, int minSyncReplicas) {
         return minSyncReplicas > 1
                ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
+                                 .mapError(PublishOutcomeUnknown.FACTORY)
                                  .map(_ -> offset)
                : Promise.success(offset);
     }
