@@ -158,8 +158,13 @@ public sealed interface Causes {
     }
 
     /// Typed variant of [#forThreeValues(String)]; see [#forOneValue(String, Fn1)].
-    static <T1, T2, T3, C extends Cause> Fn3<C, T1, T2, T3> forThreeValues(String template, Fn1<C, String> causeFactory) {
-        return (input1, input2, input3) -> causeFactory.apply(String.format(Locale.ROOT, template, input1, input2, input3));
+    static <T1, T2, T3, C extends Cause> Fn3<C, T1, T2, T3> forThreeValues(String template,
+                                                                           Fn1<C, String> causeFactory) {
+        return (input1, input2, input3) -> causeFactory.apply(String.format(Locale.ROOT,
+                                                                            template,
+                                                                            input1,
+                                                                            input2,
+                                                                            input3));
     }
 
     /// Data-retaining rung of [#forOneValue(String, Fn1)]: the mapper receives the VALUE and the
@@ -176,7 +181,9 @@ public sealed interface Causes {
 
     /// Two-value data-retaining rung; see [#forOneValue(String, Fn2)].
     static <T1, T2, C extends Cause> Fn2<C, T1, T2> forTwoValues(String template, Fn3<C, T1, T2, String> causeFactory) {
-        return (input1, input2) -> causeFactory.apply(input1, input2, String.format(Locale.ROOT, template, input1, input2));
+        return (input1, input2) -> causeFactory.apply(input1,
+                                                      input2,
+                                                      String.format(Locale.ROOT, template, input1, input2));
     }
 
     /// Three-value data-retaining rung; see [#forOneValue(String, Fn2)].
@@ -185,7 +192,11 @@ public sealed interface Causes {
         return (input1, input2, input3) -> causeFactory.apply(input1,
                                                               input2,
                                                               input3,
-                                                              String.format(Locale.ROOT, template, input1, input2, input3));
+                                                              String.format(Locale.ROOT,
+                                                                            template,
+                                                                            input1,
+                                                                            input2,
+                                                                            input3));
     }
 
     interface CompositeCause extends Cause {

@@ -17,7 +17,6 @@ package org.pragmatica.lang;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -452,8 +451,10 @@ public sealed interface Option<T> permits Some, None {
     ///
     /// @return created instance
     @Contract
-    default Optional<T> toOptional() {
-        return fold(Optional::empty, Optional::of);
+    // JBCT-BND-01 waived: this IS the interop boundary — the one place Option meets java.util.Optional (#1356).
+    @SuppressWarnings("JBCT-BND-01")
+    default java.util.Optional<T> toOptional() {
+        return fold(java.util.Optional::empty, java.util.Optional::of);
     }
 
     /// **[Pure Transform]**
@@ -916,6 +917,8 @@ public sealed interface Option<T> permits Some, None {
     /// @param value Value to convert.
     ///
     /// @return a created instance.
+    // JBCT-RET-06 waived: this factory IS the null boundary — it is where a nullable becomes an Option (#1356).
+    @SuppressWarnings("JBCT-RET-06")
     static <T> Option<T> option(T value) {
         return value == null
                ? Option.empty()
@@ -928,8 +931,9 @@ public sealed interface Option<T> permits Some, None {
     /// @param optional input optional instance.
     ///
     /// @return a created instance.
-    @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
-    static <T> Option<T> from(Optional<T> optional) {
+    // JBCT-BND-01 waived: this IS the interop boundary — the one place Option meets java.util.Optional (#1356).
+    @SuppressWarnings({"OptionalUsedAsFieldOrParameterType", "JBCT-BND-01"})
+    static <T> Option<T> from(java.util.Optional<T> optional) {
         return optional.map(Option::some)
                        .orElse(Option.none());
     }
