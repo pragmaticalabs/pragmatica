@@ -20,9 +20,13 @@ public interface FailoverRecovery {
         }
     }
 
+    /// `durability` is the replica WAL barrier each recovered partition commits through once its last event
+    /// is applied (#1244 × #1235); production wires `StreamPartitionManager::syncReplicated`, WAL-less
+    /// callers pass [ReplicationReceiveHandler#NO_DURABILITY_BARRIER].
     static FailoverRecovery failoverRecovery(ReplicaRegistry registry,
                                              StreamPartitionRecovery partitionRecovery,
-                                             CatchupTransport transport) {
-        return new DefaultFailoverRecovery(registry, partitionRecovery, transport);
+                                             CatchupTransport transport,
+                                             ReplicationReceiveHandler.ReplicaDurability durability) {
+        return new DefaultFailoverRecovery(registry, partitionRecovery, transport, durability);
     }
 }
