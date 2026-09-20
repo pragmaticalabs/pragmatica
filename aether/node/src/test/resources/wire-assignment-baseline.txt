@@ -153,6 +153,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityKey 1099
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityPlacementAvailabilityKey 2112
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityPlacementOperationKey 1682
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ConfigKey 1100
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ConsumerAssignmentKey 1131
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ConsumerGroupKey 1101
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DeploymentKey 1102
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DeploymentOutcomeKey 1671
@@ -185,7 +186,6 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StorageStatusKey 1127
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamConfigKey 1128
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamCursorCheckpointKey 1129
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamMetadataKey 1130
-TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamPartitionAssignmentKey 1131
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamPartitionOwnershipKey 1132
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistrationKey 1133
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistryKey 1134
@@ -213,6 +213,8 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementAvailabil
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementOperationValue 1683
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityValue 1613
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConfigValue 1614
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue 1650
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken 1651
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue 1615
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus 1672
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeValue 1673
@@ -252,8 +254,6 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStat
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue 1647
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamCursorCheckpointValue 1648
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamMetadataValue 1649
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionAssignmentValue 1650
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionAssignmentValue$PartitionAssignment 1651
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipValue 1652
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistrationValue 1653
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryValue 1654

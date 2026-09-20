@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -23,6 +24,26 @@ public interface ConsumerCursorStore {
     Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset);
     Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition);
 
+    /// #1271: a commit made under the committed consumer assignment `assignmentEpoch`. A store that
+    /// guards the cursor by assignment (the node's cluster-aware store) admits it only while that
+    /// assignment is still committed and reports a refusal as [CommitOutcome.Fenced]; a store with no
+    /// notion of assignment ignores the epoch.
+    default Promise<CommitOutcome> commit(String consumerGroup,
+                                          String streamName,
+                                          int partition,
+                                          long offset,
+                                          Epoch assignmentEpoch) {
+        return commit(consumerGroup, streamName, partition, offset);
+    }
+
+    /// #1271: the cursor as seen by a consumer admitted under `assignmentEpoch`. A store that records
+    /// the epoch with the offset returns only a cursor written under THAT epoch — a node that regains a
+    /// partition must not resume from a cursor it wrote in an earlier tenure, which can be ahead of the
+    /// committed cursor its successor left behind.
+    default Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
+        return fetch(consumerGroup, streamName, partition);
+    }
+
     /// #1239: what a SUCCESSFUL `commit(...)` actually persisted, carried on that commit's own promise.
     /// A store composed of stages (the node's cluster-aware store chains a consensus checkpoint after the
     /// local write) may let a later stage fail without failing the commit; the outcome says so, for THIS
@@ -38,6 +59,12 @@ public interface ConsumerCursorStore {
         /// consumer runtime counts it and retries the periodic checkpoint until it persists.
         record LocalOnly(Cause cause) implements CommitOutcome {}
 
+        /// #1271: the cursor is guarded by a consumer assignment that is no longer this node's — the
+        /// commit was refused and nothing cluster-visible moved. TERMINAL: no retry can succeed, because
+        /// retrying re-sends the same deposed assignment. The consumer stops delivering and detaches
+        /// without a final flush (which would be refused the same way).
+        record Fenced(String detail) implements CommitOutcome {}
+
         CommitOutcome PERSISTED = new Persisted();
 
         static CommitOutcome persisted() {
@@ -46,6 +73,10 @@ public interface ConsumerCursorStore {
 
         static CommitOutcome localOnly(Cause cause) {
             return new LocalOnly(cause);
+        }
+
+        static CommitOutcome fenced(String detail) {
+            return new Fenced(detail);
         }
     }
 }

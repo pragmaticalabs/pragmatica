@@ -270,15 +270,16 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale
     /// `LeaderKey` write (H4 leader fence), a stale-epoch write to any [EpochBearing] value
     /// (ownership fence), a non-successor write to a [VersionFenced] value (lost-update fence,
-    /// RFC-0018 #570), or a regressive write to a [MonotonicFenced] value (running-max fence,
-    /// #700). All arms are pure functions of the committed storage content and the
+    /// RFC-0018 #570), a regressive write to a [MonotonicFenced] value (running-max fence,
+    /// #700), or a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271). All arms are pure functions of the committed storage content and the
     /// incoming value alone, so every replica decides identically inside the consensus applier.
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
         return dropsOwnerFence(key, incoming) || staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key,
                                                                                                                                           incoming) || regressiveWatermarkWrite(key,
-                                                                                                                                                                                incoming);
+                                                                                                                                                                                incoming) || unassignedWrite(key,
+                                                                                                                                                                                                             incoming);
     }
 
     private boolean dropsOwnerFence(K key, Object incoming) {
@@ -360,6 +361,23 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                && in.fenceWatermark() < stored.fenceWatermark();
     }
 
+    /// Cross-key assignment fence (#1271): a write to an [AssignmentGuarded] key is rejected unless the
+    /// committed value under its guard key is an [AssignmentTokenBearing] authority whose token EQUALS
+    /// the incoming value's. An absent authority, a non-token incoming value, or a different token all
+    /// reject. Deterministic like the arms above: reads only committed storage (the guard key's value) and
+    /// the incoming value. A rejected write mutates nothing and emits NO notification (see
+    /// [AssignmentGuarded] for the caller-side detection caveat).
+    private boolean unassignedWrite(K key, Object incoming) {
+        return key instanceof AssignmentGuarded guarded && !heldAssignment(guarded, incoming);
+    }
+
+    private boolean heldAssignment(AssignmentGuarded guarded, Object incoming) {
+        return incoming instanceof AssignmentTokenBearing claim
+               && storage.get(guarded.guardKey()) instanceof AssignmentTokenBearing authority
+               && authority.guardToken()
+                           .equals(claim.guardToken());
+    }
+
     private Option<V> handleRemove(Remove<K> remove) {
         if (staleRemove(remove)) {
             return Option.option(storage.get(remove.key()));
@@ -400,9 +418,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     @SuppressWarnings("unchecked")
-    private static <E extends Comparable<E>> boolean newerOwnerWitness(OwnerFenced<E, ?> committed, Option<Object> witness) {
-        return witness.map(value -> value instanceof OwnerFenced<?, ?> owner
-                                    && ((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0)
+    private static <E extends Comparable<E>> boolean newerOwnerWitness(OwnerFenced<E, ?> committed,
+                                                                       Option<Object> witness) {
+        return witness.map(value -> value instanceof OwnerFenced<?, ?> owner && ((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0)
                       .or(false);
     }
 

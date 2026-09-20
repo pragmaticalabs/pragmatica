@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.cluster.state.kvstore.AssignmentTokenBearing;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
@@ -1413,21 +1414,56 @@ public sealed interface AetherValue {
         }
     }
 
-    record StreamPartitionAssignmentValue(List<PartitionAssignment> assignments, long updatedAt) implements AetherValue {
-        public record PartitionAssignment(int partition, NodeId consumerNode) {
-            public static PartitionAssignment partitionAssignment(int partition, NodeId consumerNode) {
-                return new PartitionAssignment(partition, consumerNode);
+    /// Committed assignee of one consumer group's partition (#1271). Written by the leader-only
+    /// `ConsumerAssignmentWriter`; read by every node's attach admission and by the applier's cross-key
+    /// guard on [StreamCursorCheckpointValue] writes. `epoch` is `Epoch(rabiaTerm, assignmentTerm)`, so it
+    /// advances on a leader change and on every same-term reassignment; [EpochBearing] fences a deposed
+    /// leader's stale write to this record. Replaces the never-used `StreamPartitionAssignmentValue`.
+    record ConsumerAssignmentValue(NodeId assignee, Epoch epoch, long assignmentTerm, HlcTimestamp assignedAt) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
+        /// The token a checkpoint must carry to be admitted: this exact assignee at this exact epoch.
+        /// Equality on both halves is what makes an A→B→A flap refuse A's writes from its FIRST tenure.
+        @Codec
+        public record AssignmentToken(NodeId assignee, Epoch epoch) {
+            public static AssignmentToken assignmentToken(NodeId assignee, Epoch epoch) {
+                return new AssignmentToken(assignee, epoch);
             }
         }
 
-        public static StreamPartitionAssignmentValue streamPartitionAssignmentValue(List<PartitionAssignment> assignments) {
-            return new StreamPartitionAssignmentValue(List.copyOf(assignments), System.currentTimeMillis());
+        @Override
+        public Epoch fenceEpoch() {
+            return epoch;
+        }
+
+        @Override
+        public Object guardToken() {
+            return token();
+        }
+
+        public AssignmentToken token() {
+            return AssignmentToken.assignmentToken(assignee, epoch);
+        }
+
+        public static ConsumerAssignmentValue consumerAssignmentValue(NodeId assignee,
+                                                                      Epoch epoch,
+                                                                      long assignmentTerm,
+                                                                      HlcTimestamp assignedAt) {
+            return new ConsumerAssignmentValue(assignee, epoch, assignmentTerm, assignedAt);
         }
     }
 
-    record StreamCursorCheckpointValue(long committedOffset, long commitTimestamp) implements AetherValue {
-        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset) {
-            return new StreamCursorCheckpointValue(committedOffset, System.currentTimeMillis());
+    /// Consensus-visible consumer cursor (#488). `token` names the assignment it was written under
+    /// (#1271): the applier admits it only while that token is the committed [ConsumerAssignmentValue]'s.
+    record StreamCursorCheckpointValue(long committedOffset,
+                                       long commitTimestamp,
+                                       ConsumerAssignmentValue.AssignmentToken token) implements AetherValue, AssignmentTokenBearing {
+        @Override
+        public Object guardToken() {
+            return token;
+        }
+
+        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
+                                                                              ConsumerAssignmentValue.AssignmentToken token) {
+            return new StreamCursorCheckpointValue(committedOffset, System.currentTimeMillis(), token);
         }
     }
 

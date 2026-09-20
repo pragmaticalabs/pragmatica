@@ -8,8 +8,10 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.BlockLifecycle;
@@ -41,6 +43,49 @@ class CursorStoreTest {
     void setUp() {
         storage = StorageInstance.storageInstance("test", List.of(MemoryTier.memoryTier(ONE_GB)));
         store = cursorStore(storage);
+    }
+
+    /// #1271: a cursor written under a consumer assignment records the assignment's epoch, and a fenced
+    /// fetch returns it only for THAT epoch — a node regaining a partition must not resume from its own
+    /// earlier tenure's cursor, which can be ahead of what the successor committed (skipping events).
+    @Nested
+    class AssignmentEpoch {
+        private static final Epoch FIRST_TENURE = Epoch.epoch(1L, 1L);
+        private static final Epoch SECOND_TENURE = Epoch.epoch(1L, 3L);
+
+        @Test
+        void fencedFetch_returnsTheCursor_forTheEpochItWasWrittenUnder() {
+            store.commit(GROUP, STREAM, PARTITION, 42L, FIRST_TENURE).await();
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION, FIRST_TENURE).await())
+                    .isEqualTo(Result.success(Option.some(42L)));
+        }
+
+        @Test
+        void fencedFetch_ignoresTheCursor_fromAnEarlierTenure() {
+            store.commit(GROUP, STREAM, PARTITION, 900L, FIRST_TENURE).await();
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION, SECOND_TENURE).await())
+                    .describedAs("resuming at 900 would skip whatever the other node's tenure had not yet committed")
+                    .isEqualTo(Result.success(Option.none()));
+        }
+
+        @Test
+        void fencedFetch_ignoresAnUnfencedCursor() {
+            store.commit(GROUP, STREAM, PARTITION, 7L).await();
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION, FIRST_TENURE).await())
+                    .isEqualTo(Result.success(Option.none()));
+        }
+
+        /// The pull API reads any recorded cursor, fenced or not — its rewinds stay legitimate.
+        @Test
+        void unfencedFetch_readsAFencedCursor() {
+            store.commit(GROUP, STREAM, PARTITION, 42L, FIRST_TENURE).await();
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION).await())
+                    .isEqualTo(Result.success(Option.some(42L)));
+        }
     }
 
     @Nested
