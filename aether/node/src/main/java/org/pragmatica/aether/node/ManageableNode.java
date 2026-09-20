@@ -39,6 +39,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
@@ -134,6 +135,12 @@ public interface ManageableNode {
     /// that truthfully reports no declared consumers rather than fabricating any.
     default StreamConsumerManager streamConsumerManager() {
         return StreamConsumerManager.inactive();
+    }
+
+    /// #1333: the projections this node hosts and their cursor-report failure count; none on a proxy
+    /// without a stream runtime, which then answers the topic-group routes with no projection column.
+    default Option<ProjectionNodeSupport> projectionNodeSupport() {
+        return Option.none();
     }
 
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();

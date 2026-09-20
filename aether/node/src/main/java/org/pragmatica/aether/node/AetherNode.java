@@ -1645,6 +1645,7 @@ public interface AetherNode extends ManageableNode {
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
                           StreamConsumerManager streamConsumerManager,
+                          Option<ProjectionNodeSupport> projectionNodeSupport,
                           StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
                           ClusterTopologyManager clusterTopologyManagerInstance,
@@ -4256,6 +4257,7 @@ public interface AetherNode extends ManageableNode {
         // the replay cursor's collaborators (partition bounds from the local ring, the fenced checkpoint
         // put, the committed read-back). Registered beside the entity drivers, as one extension.
         var projectionNodeSupport = ProjectionNodeSupport.projectionNodeSupport(projectionRegistry,
+                                                                                streamClusterCursorStore::reportFailureCount,
                                                                                 streamConsumerOwnership::partitionCount,
                                                                                 PartitionBounds.localOnly(streamPartitionManager),
                                                                                 cursorCommandWriter,
@@ -4518,6 +4520,7 @@ public interface AetherNode extends ManageableNode {
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
                                   streamConsumerManager,
+                                  Option.some(projectionNodeSupport),
                                   streamNamespacesService,
                                   storageSetups,
                                   clusterTopologyManager,
@@ -4733,6 +4736,7 @@ public interface AetherNode extends ManageableNode {
                                                                         consumerGroupCoordinator,
                                                                         consumerGroupRegistry,
                                                                         streamConsumerManager,
+                                                                        Option.some(projectionNodeSupport),
                                                                         streamNamespacesService,
                                                                         storageSetups,
                                                                         clusterTopologyManager,
