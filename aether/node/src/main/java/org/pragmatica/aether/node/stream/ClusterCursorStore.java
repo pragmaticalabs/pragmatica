@@ -7,6 +7,7 @@ package org.pragmatica.aether.node.stream;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
+import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
@@ -21,6 +22,7 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,9 +66,19 @@ import org.slf4j.LoggerFactory;
 /// through consensus before re-reading. [unverified: that the barrier also brings a forwarding node's
 /// LOCAL mirror up to the decision — the fence itself does not depend on it; only how fast the loser
 /// learns does, and the manager's own reconcile detaches it regardless.]
+///
+/// Both re-reads are of THIS node's committed-state mirror, which on a worker can trail the core that
+/// admitted the write (#1335 B1). A mirror one decision behind shows this node's OWN previous checkpoint —
+/// same token, older offset — and reading that as `Fenced` would latch delivery off on a node the record
+/// still names. So a checkpoint that is not ours is `Fenced` only when the ASSIGNMENT record has moved
+/// too; while it still names this node at the consumer's epoch, the verdict is [CommitOutcome.LocalOnly]:
+/// retryable, and the retry re-reads the cursor. The applier stays the one authority — a retry cannot
+/// bypass it — only the loser's self-diagnosis changes. The same lag delays a GENUINE fence by one retry
+/// (the mirror shows the reassignment a moment after the core refused the write), never skips it.
 public record ClusterCursorStore(ConsumerCursorStore local,
                                  NodeId self,
                                  Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
+                                 CommittedAssignments committedAssignments,
                                  Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
                                  BooleanSupplier forwarding) implements ConsumerCursorStore {
     private static final Logger log = LoggerFactory.getLogger(ClusterCursorStore.class);
@@ -76,9 +88,10 @@ public record ClusterCursorStore(ConsumerCursorStore local,
     public static ConsumerCursorStore clusterCursorStore(ConsumerCursorStore local,
                                                          NodeId self,
                                                          Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
+                                                         CommittedAssignments committedAssignments,
                                                          Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
                                                          BooleanSupplier forwarding) {
-        return new ClusterCursorStore(local, self, committedReader, commandWriter, forwarding);
+        return new ClusterCursorStore(local, self, committedReader, committedAssignments, commandWriter, forwarding);
     }
 
     /// #1271: a commit with no assignment cannot pass the applier's guard, so it is not published at all.
@@ -147,7 +160,28 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                               .filter(committed -> committed.token()
                                                             .equals(token) && committed.committedOffset() == offset)
                               .map(_ -> CommitOutcome.persisted())
-                              .or(() -> fenced(key, token));
+                              .or(() -> notOurs(key, token));
+    }
+
+    /// The committed checkpoint is not ours. Fenced only if the assignment record agrees — it no longer
+    /// names this node at the consumer's epoch. If it still does, the applier admitted the write and this
+    /// node's mirror has not caught up with it (#1335 B1): retryable, not terminal.
+    private CommitOutcome notOurs(StreamCursorCheckpointKey key, AssignmentToken token) {
+        return committedAssignments.assignmentOf(key.streamName(),
+                                                 key.partitionIndex(),
+                                                 key.consumerGroup())
+                                   .filter(assignment -> assignment.token()
+                                                                   .equals(token))
+                                   .map(_ -> mirrorLagging(key, token))
+                                   .or(() -> fenced(key, token));
+    }
+
+    private static CommitOutcome mirrorLagging(StreamCursorCheckpointKey key, AssignmentToken token) {
+        return localOnly(key,
+                         Causes.cause("checkpoint " + key
+                                     + " not yet visible in this node's committed state; " + token.assignee()
+                                     + " at " + token.epoch()
+                                     + " is still the committed consumer assignment"));
     }
 
     private static CommitOutcome fenced(StreamCursorCheckpointKey key, AssignmentToken token) {

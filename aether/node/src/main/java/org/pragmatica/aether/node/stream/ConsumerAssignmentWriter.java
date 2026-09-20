@@ -44,6 +44,14 @@ import org.pragmatica.lang.Option;
 /// The epoch is `Epoch(rabiaTerm, assignmentTerm)`, exactly as the stream-ownership writer builds it: it
 /// advances on a leader change and on every same-term reassignment, and the applier's `EpochBearing`
 /// fence rejects a deposed leader's stale write to the record.
+///
+/// `assignmentTerm + 1` is derived from the leader's OWN mirror, and the epoch fence accepts an EQUAL
+/// epoch (rev1335 §2 residual): a leader whose mirror lags across consecutive ticks while placement flaps
+/// can therefore commit two different assignees at the same epoch. The `AssignmentToken` still tells them
+/// apart (it carries the assignee); the node-local disk cursor's tag does not (epoch only), so a stale
+/// local cursor from an earlier same-epoch tenure of the same node could pass the disk filter. Reaching
+/// it needs both a lagging leader mirror and a flapping placement, and the cost is duplicate delivery,
+/// not a skip, unless the cursor was deliberately rewound.
 public interface ConsumerAssignmentWriter {
     /// The `Put`s that make the committed records match `assignments` for one declaration — empty on a
     /// follower (the leadership check runs before any committed-state read).

@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.DeadLetterHandler;
@@ -29,6 +30,7 @@ import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -114,6 +116,10 @@ class StreamConsumerRuntimeClusterCursorTest {
         return ClusterCursorStore.clusterCursorStore(succeedingLocal(),
                                                      SELF,
                                                      _ -> committed.get(),
+                                                     (_, _, _) -> Option.some(ConsumerAssignmentValue.consumerAssignmentValue(SELF,
+                                                                                                                              EPOCH,
+                                                                                                                              1L,
+                                                                                                                              HlcTimestamp.ZERO)),
                                                      commands -> writer.apply(commands)
                                                                        .onSuccess(_ -> remember(committed, commands)),
                                                      () -> false);

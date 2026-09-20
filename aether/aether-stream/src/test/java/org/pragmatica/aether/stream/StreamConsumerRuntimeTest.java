@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -827,6 +828,83 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// rev1335 M18: the retry arm of terminality. [#fencedOutcome_isTerminal_noRetry_andDeliveryStops]
+        /// passes through the delivery-stop half alone — with delivery stopped nothing requests a checkpoint,
+        /// so `issueCheckpoint`'s fenced short-circuit is unobservable there. Here the checkpoint IS requested
+        /// after the fence: the pass keeps delivering the batch it had already read (`deliverNextEvent` does
+        /// not re-check admission mid-batch; the next PASS reads nothing), each delivery asks for a checkpoint
+        /// (the counters reset only on a Persisted commit), and the slot is free. Every later event waits until
+        /// the fence is latched before it returns, so the requests provably arrive after the refusal, and the
+        /// assertion is that not one of them reaches the store. `Fenced` routed to `retryCheckpoint` instead
+        /// (rev1335 M7) is masked by this same short-circuit and stays unobservable — defence in depth.
+        @Test
+        void fencedOutcome_issuesNoFurtherCommit_whenTheRestOfTheBatchRequestsOne() throws InterruptedException {
+            createTestStream("orders");
+            var fenced = new CopyOnWriteArrayList<Epoch>();
+            var deliveredAfterTheFence = new CopyOnWriteArrayList<Long>();
+            var fencedRuntime = streamConsumerRuntime(manager,
+                                                      DeadLetterHandler.deadLetterHandler(),
+                                                      recordingFencedStore(fenced,
+                                                                           new CopyOnWriteArrayList<>(),
+                                                                           CommitOutcome.fenced("moved")));
+
+            try {
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "event-3".getBytes(UTF_8), 3000L);
+                Thread.sleep(50);
+                fencedRuntime.subscribe("orders",
+                                        0,
+                                        fastCheckpoints(),
+                                        (offset, payload, ts) -> deliverAfterTheFence(fencedRuntime, offset, deliveredAfterTheFence),
+                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                                        new SwitchableFence(new AtomicBoolean(true)));
+                awaitNonEmpty(fenced);
+                awaitSize(deliveredAfterTheFence, 2);
+                Thread.sleep(300);
+
+                assertThat(deliveredAfterTheFence).describedAs("precondition: the rest of the batch was delivered AFTER the fence latched, so each of them requested a checkpoint")
+                                                  .containsExactly(1L, 2L);
+                assertThat(fenced).describedAs("the refused commit is the last one — a fenced consumer never re-sends its deposed token")
+                                  .hasSize(1);
+            } finally {
+                fencedRuntime.close();
+            }
+        }
+
+        /// Every delivery holds 20ms before its cursor advance, so the 10ms checkpoint interval has certainly
+        /// elapsed and the advance requests a checkpoint: offset 0's is the first (refused) commit. Every later
+        /// delivery additionally returns only once that refusal has been latched, so its request is provably
+        /// made after the fence.
+        private static Promise<Unit> deliverAfterTheFence(StreamConsumerRuntime fencedRuntime,
+                                                          long offset,
+                                                          List<Long> deliveredAfterTheFence) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+            if (offset == 0L) {
+                return Promise.unitPromise();
+            }
+
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (!fenceLatched(fencedRuntime) && System.currentTimeMillis() < deadline) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+            }
+
+            if (fenceLatched(fencedRuntime)) {
+                deliveredAfterTheFence.add(offset);
+            }
+
+            return Promise.unitPromise();
+        }
+
+        private static boolean fenceLatched(StreamConsumerRuntime fencedRuntime) {
+            return fencedRuntime.subscriptions()
+                                .stream()
+                                .anyMatch(subscription -> subscription.lastCursorCommitFailure()
+                                                                      .map(failure -> failure.startsWith("fenced: "))
+                                                                      .or(false));
+        }
+
         @Test
         void unsubscribe_skipsTheFinalFlush_afterAFencedOutcome() throws InterruptedException {
             createTestStream("orders");
@@ -897,9 +975,13 @@ class StreamConsumerRuntimeTest {
         }
 
         private static void awaitNonEmpty(List<?> list) throws InterruptedException {
+            awaitSize(list, 1);
+        }
+
+        private static void awaitSize(List<?> list, int size) throws InterruptedException {
             var deadline = System.currentTimeMillis() + 3_000;
 
-            while (list.isEmpty() && System.currentTimeMillis() < deadline) {
+            while (list.size() < size && System.currentTimeMillis() < deadline) {
                 Thread.sleep(10);
             }
         }

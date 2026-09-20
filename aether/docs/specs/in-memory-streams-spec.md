@@ -436,6 +436,11 @@ record StreamPartitionAssignmentValue(
 ) implements AetherValue { }
 ```
 
+> **Status (#1271, verified at `13cab2ceb`):** shipped as a per-PARTITION `ConsumerAssignmentKey`
+> (`consumer-assign/{stream}/{partition}/{group}`) whose `ConsumerAssignmentValue` carries the assignee,
+> an epoch and the `AssignmentToken` the applier checks on every cursor checkpoint write. The per-stream
+> map above was never implemented; see `streaming-spec.md` §5.
+
 **Option B: Governor-Local Assignment**
 
 The governor that owns a partition assigns it to a consumer in the group based on consistent hashing, similar to slice instance assignment (REQ-SLICE-01 in passive worker pools spec). No consensus round needed. Faster rebalancing on consumer join/leave.

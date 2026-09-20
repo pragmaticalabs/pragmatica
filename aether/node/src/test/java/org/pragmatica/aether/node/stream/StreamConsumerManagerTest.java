@@ -202,11 +202,30 @@ class StreamConsumerManagerTest {
 
     /// Commit an assignment directly — a leader elsewhere reassigning the partition.
     private void commitAssignment(int partition, NodeId assignee, Epoch epoch) {
-        committedAssignments.put(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP),
-                                 ConsumerAssignmentValue.consumerAssignmentValue(assignee,
-                                                                                 epoch,
-                                                                                 epoch.localCounter(),
-                                                                                 HlcTimestamp.ZERO));
+        committedAssignments.put(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP), assignmentRecord(assignee, epoch));
+    }
+
+    private static ConsumerAssignmentValue assignmentRecord(NodeId assignee, Epoch epoch) {
+        return ConsumerAssignmentValue.consumerAssignmentValue(assignee, epoch, epoch.localCounter(), HlcTimestamp.ZERO);
+    }
+
+    /// The same seam for the committed-assignment reader: a record that moves BETWEEN two reads of one
+    /// pass. Follower writer, so the pass itself commits nothing.
+    private StreamConsumerManager managerReading(ConsumerAssignmentWriter.CommittedAssignments committed) {
+        return StreamConsumerManager.streamConsumerManager(registry,
+                                                           runtime,
+                                                           invoker,
+                                                           invocationHandler,
+                                                           FrameworkCodecs.frameworkCodecs(),
+                                                           ownership,
+                                                           placement,
+                                                           SELF,
+                                                           AssignmentAuthority.assignmentAuthority(committed,
+                                                                                                   ConsumerAssignmentWriter.consumerAssignmentWriter(() -> false,
+                                                                                                                                                     () -> 1L,
+                                                                                                                                                     HlcClock.hlcClock(SELF),
+                                                                                                                                                     committed),
+                                                                                                   this::applyAssignments));
     }
 
     /// A seam for a registry whose answer changes BETWEEN reads — a KV notification landing while a
@@ -1176,6 +1195,27 @@ class StreamConsumerManagerTest {
 
             assertThat(peerRuntime.subscribedPartitions()).describedAs("committed: 0→SELF, 1→PEER, 2 and 3 → none")
                                                           .containsExactly(1);
+        }
+
+        /// rev1335 M12: `attach` re-reads the committed record instead of trusting the desired set computed a
+        /// moment earlier in the same pass. On a first pass partition 0's record is read exactly twice — once
+        /// into the desired set, once at attach — so a reader that names this node on its first read and PEER
+        /// from the second on is a reassignment landing between the two, and it must attach nothing.
+        @Test
+        void attach_reReadsTheCommittedRecord_andAttachesNothing_whenItMovedSinceTheDesiredSetWasComputed() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var readsOfPartition0 = new AtomicInteger();
+            ConsumerAssignmentWriter.CommittedAssignments movingAway = (_, partition, _) -> partition == 0 && readsOfPartition0.getAndIncrement() == 0
+                                                                                           ? Option.some(assignmentRecord(SELF, EPOCH_1))
+                                                                                           : Option.some(assignmentRecord(PEER, EPOCH_2));
+
+            managerReading(movingAway).reconcile();
+
+            assertThat(readsOfPartition0.get()).describedAs("precondition: the desired set's read and the attach re-read")
+                                               .isEqualTo(2);
+            assertThat(runtime.subscribedPartitions()).describedAs("by the time attach re-read it, the record named PEER")
+                                                      .isEmpty();
         }
 
         @Test

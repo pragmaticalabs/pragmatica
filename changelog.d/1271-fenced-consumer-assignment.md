@@ -19,6 +19,15 @@
   `CommitOutcome.Fenced`; the runtime stops delivery, never retries it, and detaches without a final
   flush. Delivery is also re-checked against the committed record on every pass, and the node's
   quorum-loss self-fence now abandons every consumer at DETECTION.
+- **A worker's own mirror is not the applier (review B1).** Both re-reads are of the node's committed-state
+  mirror, and on a forwarding node that mirror can trail the core that admitted the write by a decision —
+  showing the node's own previous checkpoint, same token, older offset. Read as `Fenced` that latched
+  delivery off on the node the record still named, until the assignment moved. Now a checkpoint that is
+  not ours is `Fenced` only when the ASSIGNMENT record no longer names this node at the consumer's epoch;
+  while it still does, the commit is `LocalOnly` (retryable, and the retry re-reads the cursor). The applier
+  stays the authority — a genuine fence is delayed by one retry on a lagging worker, never bypassed.
+  [mechanism: `ClusterCursorStore.notOurs`; pinned by `ClusterCursorStoreTest$WorkerMirrorLag` against two
+  real `KVStore`s, core and mirror] [unverified: the mirror-lag window has not been measured on a real worker]
 - **The guarantee is a BOUNDED overlap, not a single deliverer:** two nodes deliver one partition only
   while their committed-state mirrors disagree (apply skew plus one in-flight batch), or, on the
   minority side of a partition, until its quorum-loss detector fires. The disk cursor records the epoch

@@ -6,6 +6,7 @@ package org.pragmatica.aether.node.stream;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
@@ -234,6 +236,7 @@ class ClusterCursorStoreTest {
             return ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
                                                          node,
                                                          key -> kv.getTyped(key, StreamCursorCheckpointValue.class),
+                                                         assignmentsIn(kv),
                                                          commands -> applyAndRecord(commands, sent),
                                                          () -> forwarding);
         }
@@ -343,6 +346,156 @@ class ClusterCursorStoreTest {
                                                 .map(outcome -> outcome instanceof CommitOutcome.Fenced)).isEqualTo(Result.success(true));
             assertThat(sent).isEmpty();
         }
+
+        /// The assignment record itself is gone: the applier admits nobody, and a record that names nobody
+        /// does not name this node — Fenced, not the retryable verdict a lagging mirror gets (#1335 B1). The
+        /// record is `EpochBearing`, so deleting it takes the committed value as witness; a witnessless
+        /// remove is refused and the assignment stands (`KVStore.staleRemove`).
+        @Test
+        void commit_isFenced_whenTheAssignmentRecordIsGone() {
+            var node = storeFor(SELF, false, new ArrayList<>());
+
+            assign(SELF, EPOCH);
+            node.commit(GROUP, STREAM, PARTITION, 100L, EPOCH).await();
+            var record = kv.getTyped(ASSIGNMENT_KEY, ConsumerAssignmentValue.class);
+
+            kv.process(kv.createBatch(List.of(new KVCommand.Remove<AetherKey>(ASSIGNMENT_KEY, record.map(value -> (Object) value)))));
+            assertThat(kv.getTyped(ASSIGNMENT_KEY, ConsumerAssignmentValue.class)).describedAs("precondition: the witnessed remove landed")
+                                                                                   .isEqualTo(Option.none());
+
+            assertThat(node.commit(GROUP, STREAM, PARTITION, 150L, EPOCH).await()
+                           .map(outcome -> outcome instanceof CommitOutcome.Fenced)).isEqualTo(Result.success(true));
+            assertThat(committed().map(StreamCursorCheckpointValue::committedOffset)).isEqualTo(Option.some(100L));
+        }
+    }
+
+    /// #1335 B1: a FORWARDING (worker) node's publish resolves on a core peer's reply, and its verdict reads
+    /// its OWN committed-state mirror, which can trail that reply by a decision. `core` is the applier that
+    /// admits or refuses; `mirror` is what the worker reads; `mirrorLags` withholds the latest decision from
+    /// the mirror, which is the window the barrier narrows but does not close.
+    @Nested
+    class WorkerMirrorLag {
+        private KVStore<AetherKey, AetherValue> core;
+        private KVStore<AetherKey, AetherValue> mirror;
+        private final AtomicBoolean mirrorLags = new AtomicBoolean(false);
+
+        @BeforeEach
+        void setUp() {
+            core = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            mirror = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        }
+
+        private ConsumerCursorStore worker() {
+            return ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                         SELF,
+                                                         key -> mirror.getTyped(key, StreamCursorCheckpointValue.class),
+                                                         assignmentsIn(mirror),
+                                                         this::applyOnCoreThenMirror,
+                                                         () -> true);
+        }
+
+        private Promise<Unit> applyOnCoreThenMirror(List<KVCommand<AetherKey>> commands) {
+            core.process(core.createBatch(commands));
+            if (!mirrorLags.get()) {
+                mirror.process(mirror.createBatch(commands));
+            }
+
+            return Promise.unitPromise();
+        }
+
+        /// A decision taken on the core while the mirror lagged reaches the mirror now.
+        private void mirrorCatchesUp(List<KVCommand<AetherKey>> decision) {
+            mirrorLags.set(false);
+            mirror.process(mirror.createBatch(decision));
+        }
+
+        private void assignEverywhere(NodeId assignee, Epoch epoch) {
+            var command = assignment(assignee, epoch);
+
+            core.process(core.createBatch(List.of(command)));
+            mirror.process(mirror.createBatch(List.of(command)));
+        }
+
+        private Option<Long> coreCheckpoint() {
+            return core.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class)
+                       .map(StreamCursorCheckpointValue::committedOffset);
+        }
+
+        /// The defect (rev1335 B1): the applier ADMITTED the checkpoint, the mirror still shows this node's
+        /// own previous one — same token, older offset — and the base called that Fenced, which is terminal
+        /// and stops delivery on the node the record still names. The verdict must be retryable, and the
+        /// retry must persist once the mirror shows the decision.
+        @Test
+        void commit_onAWorkerWhoseMirrorLagsTheCoreReply_isLocalOnly_notFenced() {
+            var worker = worker();
+
+            assignEverywhere(SELF, EPOCH);
+            assertThat(worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await())
+                    .describedAs("control: with a caught-up mirror the same commit is Persisted")
+                    .isEqualTo(Result.success(CommitOutcome.persisted()));
+
+            mirrorLags.set(true);
+            var lagging = worker.commit(GROUP, STREAM, PARTITION, 20L, EPOCH).await();
+
+            assertThat(coreCheckpoint()).describedAs("control: the authoritative applier ADMITTED the worker's checkpoint")
+                                        .isEqualTo(Option.some(20L));
+            assertThat(lagging.map(outcome -> outcome instanceof CommitOutcome.LocalOnly))
+                    .describedAs("a checkpoint the applier admitted is retryable, never the terminal Fenced; got %s", lagging)
+                    .isEqualTo(Result.success(true));
+
+            mirrorCatchesUp(List.of(new KVCommand.Put<AetherKey, AetherValue>(CHECKPOINT_KEY, checkpoint(20L, SELF_TOKEN))));
+            assertThat(worker.commit(GROUP, STREAM, PARTITION, 20L, EPOCH).await())
+                    .describedAs("the retry persists once the mirror shows the decision")
+                    .isEqualTo(Result.success(CommitOutcome.persisted()));
+        }
+
+        /// The other direction of the same lag: the assignment MOVED on the core, which refused the write,
+        /// and the mirror has not shown the move yet. The verdict is delayed by one retry, not skipped — the
+        /// applier stays the authority, and the retry is Fenced the moment the mirror shows the reassignment.
+        @Test
+        void commit_onAWorkerWhoseMirrorLagsAReassignment_isFencedOnTheRetry_notBypassed() {
+            var worker = worker();
+
+            assignEverywhere(SELF, EPOCH);
+            worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            mirrorLags.set(true);
+            var reassignment = List.<KVCommand<AetherKey>>of(assignment(PEER, NEXT_EPOCH));
+            core.process(core.createBatch(reassignment));
+
+            var lagging = worker.commit(GROUP, STREAM, PARTITION, 20L, EPOCH).await();
+
+            assertThat(coreCheckpoint()).describedAs("control: the applier REFUSED the deposed write")
+                                        .isEqualTo(Option.some(10L));
+            assertThat(lagging.map(outcome -> outcome instanceof CommitOutcome.LocalOnly))
+                    .describedAs("the mirror still names this node, so the loser cannot yet tell refused from not-yet-visible")
+                    .isEqualTo(Result.success(true));
+
+            mirrorCatchesUp(reassignment);
+            assertThat(worker.commit(GROUP, STREAM, PARTITION, 20L, EPOCH).await()
+                             .map(outcome -> outcome instanceof CommitOutcome.Fenced))
+                    .describedAs("the retry is refused again, and now the mirror shows why")
+                    .isEqualTo(Result.success(true));
+            assertThat(coreCheckpoint()).describedAs("the retry bypassed nothing").isEqualTo(Option.some(10L));
+        }
+    }
+
+    private static KVCommand.Put<AetherKey, AetherValue> assignment(NodeId assignee, Epoch epoch) {
+        return new KVCommand.Put<>(ASSIGNMENT_KEY,
+                                   ConsumerAssignmentValue.consumerAssignmentValue(assignee,
+                                                                                   epoch,
+                                                                                   epoch.localCounter(),
+                                                                                   HlcTimestamp.ZERO));
+    }
+
+    /// The committed consumer assignments as `kv` holds them — the same read the manager's admission makes.
+    private static CommittedAssignments assignmentsIn(KVStore<AetherKey, AetherValue> kv) {
+        return (stream, partition, group) -> kv.getTyped(ConsumerAssignmentKey.consumerAssignmentKey(stream, partition, group),
+                                                         ConsumerAssignmentValue.class);
+    }
+
+    /// The steady state for the stubbed-reader tests: this node IS the committed assignee at [#EPOCH].
+    private static CommittedAssignments assignedToSelf() {
+        return (_, _, _) -> Option.some(ConsumerAssignmentValue.consumerAssignmentValue(SELF, EPOCH, 1L, HlcTimestamp.ZERO));
     }
 
     private static StreamCursorCheckpointValue checkpoint(long offset, AssignmentToken token) {
@@ -352,7 +505,7 @@ class ClusterCursorStoreTest {
     private static ConsumerCursorStore storeWith(ConsumerCursorStore local,
                                                  Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> reader,
                                                  Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> writer) {
-        return ClusterCursorStore.clusterCursorStore(local, SELF, reader, writer, () -> false);
+        return ClusterCursorStore.clusterCursorStore(local, SELF, reader, assignedToSelf(), writer, () -> false);
     }
 
     private static Serializer stubSerializer() {

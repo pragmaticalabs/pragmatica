@@ -4111,10 +4111,19 @@ public interface AetherNode extends ManageableNode {
         // #1271: checkpoints carry this node's consumer-assignment token and are refused by the applier
         // once the assignment moves; a forwarding (worker) node sends a Noop barrier before re-reading the
         // verdict, since its publish resolves on the core's reply rather than its own apply.
+        // #1271: the committed consumer assignment is the one authority for which node delivers a
+        // (group, partition). The leader writes it from the same computation every node used to act on
+        // alone; every node attaches only where the committed record names it — and the cursor store's
+        // verdict re-reads it before calling a refused checkpoint Fenced (#1335 B1).
+        ConsumerAssignmentWriter.CommittedAssignments committedConsumerAssignments = (stream, partition, group) -> kvStore.getTyped(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                                partition,
+                                                                                                                                                                                group),
+                                                                                                                                    ConsumerAssignmentValue.class);
         var streamClusterCursorStore = ClusterCursorStore.clusterCursorStore(streamCursorStore,
                                                                              config.self(),
                                                                              cursorKey -> kvStore.getTyped(cursorKey,
                                                                                                            AetherValue.StreamCursorCheckpointValue.class),
+                                                                             committedConsumerAssignments,
                                                                              commands -> clusterNode.apply(commands)
                                                                                                     .mapToUnit(),
                                                                              () -> switchableCluster.current() instanceof ForwardingClusterNode);
@@ -4152,13 +4161,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                     maxEvents,
                                                                                                                                                     ReadPreference.GOVERNOR));
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
-        // #1271: the committed consumer assignment is the one authority for which node delivers a
-        // (group, partition). The leader writes it from the same computation every node used to act on
-        // alone; every node attaches only where the committed record names it.
-        ConsumerAssignmentWriter.CommittedAssignments committedConsumerAssignments = (stream, partition, group) -> kvStore.getTyped(ConsumerAssignmentKey.consumerAssignmentKey(stream,
-                                                                                                                                                                                partition,
-                                                                                                                                                                                group),
-                                                                                                                                    ConsumerAssignmentValue.class);
         var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
                                                                                                         ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,
                                                                                                                                                           rabiaTermSupplier,
