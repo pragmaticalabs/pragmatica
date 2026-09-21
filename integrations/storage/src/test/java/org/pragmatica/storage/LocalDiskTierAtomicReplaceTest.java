@@ -46,7 +46,11 @@ class LocalDiskTierAtomicReplaceTest {
     @Test
     void directoryPartial_renameRefused_previousCopySurvivesUntouched() {
         var dir = tempDir.resolve("blocks");
-        var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024, timeSpan(30).seconds(), none(), some(LocalDiskTierAtomicReplaceTest::directoryAsPartial))
+        var tier = LocalDiskTier.localDiskTier(dir,
+                                               1024 * 1024,
+                                               timeSpan(30).seconds(),
+                                               none(),
+                                               some(LocalDiskTierAtomicReplaceTest::directoryAsPartial))
                                 .unwrap();
         var id = BlockId.blockId(OLD).unwrap();
         var path = blockPath(dir, id);
@@ -56,13 +60,13 @@ class LocalDiskTierAtomicReplaceTest {
         tier.put(id, NEW)
             .await()
             .onSuccess(_ -> fail("a partial that cannot be renamed over the block must fail the put"));
-
         assertThat(Files.isRegularFile(path)).as("the previous copy at %s was unlinked before the rename", path)
                   .isTrue();
         assertThat(FileOps.readBytes(path).unwrap()).containsExactly(OLD);
-        assertThat(tier.get(id).await().unwrap().unwrap()).as("the tier still serves the previous copy").containsExactly(OLD);
+        assertThat(tier.get(id).await().unwrap().unwrap()).as("the tier still serves the previous copy")
+                  .containsExactly(OLD);
         assertThat(FileOps.list(path.getParent()).unwrap()).as("the directory partial was discarded")
-                                                          .containsExactly(path);
+                  .containsExactly(path);
     }
 
     /// A reader racing the replace sees the previous copy or the new one, never absence. Under
@@ -81,23 +85,25 @@ class LocalDiskTierAtomicReplaceTest {
         var torn = new AtomicLong();
 
         tier.put(id, OLD).await().unwrap();
-
         var reader = Thread.ofPlatform().start(() -> {
             while (!stop.get()) {
                 reads.incrementAndGet();
                 FileOps.readBytes(path)
                        .onFailure(_ -> absent.incrementAndGet())
                        .onSuccess(bytes -> {
-                           if (!Arrays.equals(bytes, OLD) && !Arrays.equals(bytes, NEW)) {
-                               torn.incrementAndGet();
-                           }
-                       });
+                                      if (!Arrays.equals(bytes, OLD) && !Arrays.equals(bytes, NEW)) {
+                                      torn.incrementAndGet();
+                                  }
+                                  });
             }
         });
 
         try {
             for (int i = 0; i < 2_000; i++) {
-                tier.put(id, i % 2 == 0 ? NEW : OLD).await().unwrap();
+                tier.put(id,
+                         i % 2 == 0
+                         ? NEW
+                         : OLD).await().unwrap();
             }
         } finally {
             stop.set(true);
@@ -105,10 +111,8 @@ class LocalDiskTierAtomicReplaceTest {
         }
 
         assertThat(reads.get()).as("the reader must have observed the replace loop").isGreaterThan(0);
-        assertThat(absent.get()).as("reads that found NO file at the block path (of %d reads)", reads.get())
-                  .isZero();
-        assertThat(torn.get()).as("reads that found neither copy (of %d reads)", reads.get())
-                  .isZero();
+        assertThat(absent.get()).as("reads that found NO file at the block path (of %d reads)", reads.get()).isZero();
+        assertThat(torn.get()).as("reads that found neither copy (of %d reads)", reads.get()).isZero();
     }
 
     private static Result<Unit> directoryAsPartial(Path partial, byte[] ignored) {

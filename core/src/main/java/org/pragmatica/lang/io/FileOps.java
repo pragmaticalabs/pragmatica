@@ -121,23 +121,36 @@ public sealed interface FileOps {
     /// force fails and this returns a failure rather than a silently weaker guarantee; Linux and
     /// macOS honour both forces.]
     static Result<Unit> writeBytesDurable(Path path, byte[] content) {
+        return writeAndForce(path, content).flatMap(_ -> forceParentDirectory(path));
+    }
+
+    private static Result<Unit> writeAndForce(Path path, byte[] content) {
         return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
                            () -> {
                                try (var file = FileChannel.open(path,
                                                                 StandardOpenOption.CREATE,
                                                                 StandardOpenOption.TRUNCATE_EXISTING,
                                                                 StandardOpenOption.WRITE)) {
-                                   var buffer = ByteBuffer.wrap(content);
+                               var buffer = ByteBuffer.wrap(content);
 
-                                   while (buffer.hasRemaining()) {
-                                       file.write(buffer);
-                                   }
-                                   file.force(true);
-                               }
+                               while (buffer.hasRemaining()) {
+                               file.write(buffer);
+                           }
+
+                               file.force(true);
+                           }
+
+                               return unit();
+                           });
+    }
+
+    private static Result<Unit> forceParentDirectory(Path path) {
+        return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
+                           () -> {
                                try (var directory = FileChannel.open(path.toAbsolutePath().getParent(),
                                                                      StandardOpenOption.READ)) {
-                                   directory.force(true);
-                               }
+                               directory.force(true);
+                           }
 
                                return unit();
                            });

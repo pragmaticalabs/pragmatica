@@ -15,11 +15,12 @@ import java.util.Map;
 
 import org.pragmatica.lang.io.FileOps;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordingFile;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -35,7 +36,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// from `FileChannelImpl.force` itself. [unverified: power loss -- what the device does with a
 /// completed fsync is outside the JVM; the pin is that the fsyncs were issued.]
 class EncryptionMarkerDurabilityTest {
-
     @TempDir
     Path tempDir;
 
@@ -47,12 +47,13 @@ class EncryptionMarkerDurabilityTest {
         var marker = tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME);
 
         assertThat(armed.pendingKeyId().isPresent()).as("fresh directory: the marker write is pending").isTrue();
-
-        var forced = forcedPathsDuring(() -> armed.commitMarker().unwrap());
+        var forced = forcedPathsDuring(() -> armed.commitMarker()
+                                                  .unwrap());
 
         assertThat(FileOps.readBytes(marker).unwrap()).containsExactly("key-1190".getBytes(StandardCharsets.UTF_8));
         assertThat(forced).as("jdk.FileForce events recorded while commitMarker ran")
-                          .contains(marker.toAbsolutePath(), tempDir.toAbsolutePath());
+                  .contains(marker.toAbsolutePath(),
+                            tempDir.toAbsolutePath());
     }
 
     /// Records every `jdk.FileForce` the JVM emits while `action` runs. Threshold zero: the
@@ -63,7 +64,6 @@ class EncryptionMarkerDurabilityTest {
             recording.start();
             action.run();
             recording.stop();
-
             var dump = Files.createTempFile("file-force", ".jfr");
 
             try {
@@ -71,7 +71,9 @@ class EncryptionMarkerDurabilityTest {
 
                 return RecordingFile.readAllEvents(dump)
                                     .stream()
-                                    .filter(event -> event.getEventType().getName().equals("jdk.FileForce"))
+                                    .filter(event -> event.getEventType()
+                                                          .getName()
+                                                          .equals("jdk.FileForce"))
                                     .map(EncryptionMarkerDurabilityTest::forcedPath)
                                     .toList();
             } finally {
@@ -88,12 +90,22 @@ class EncryptionMarkerDurabilityTest {
 
     private static EncryptionKeyring singleKeyRing(String keyId) {
         var key = new byte[32];
+
         new SecureRandom().nextBytes(key);
+        var encryptor = BlockEncryptor.aesGcm(key, keyId).fold(c -> {
+                                                                   fail("encryptor creation failed: " + c.message());
 
-        var encryptor = BlockEncryptor.aesGcm(key, keyId)
-                                      .fold(c -> { fail("encryptor creation failed: " + c.message()); return null; }, e -> e);
+                                                                   return null;
+                                                               },
+                                                               e -> e);
 
-        return EncryptionKeyring.encryptionKeyring(Map.of(keyId, encryptor), keyId)
-                                .fold(c -> { fail("keyring creation failed: " + c.message()); return null; }, k -> k);
+        return EncryptionKeyring.encryptionKeyring(Map.of(keyId, encryptor),
+                                                   keyId)
+                                .fold(c -> {
+                                          fail("keyring creation failed: " + c.message());
+
+                                          return null;
+                                      },
+                                      k -> k);
     }
 }
