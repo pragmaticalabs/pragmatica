@@ -96,6 +96,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
     private WorkerRecordingLifecycleManager lifecycleManager;
     private AtomicReference<Option<ClusterConfigValue>> configRef;
     private ClusterTopologyManager ctm;
+    private final java.util.concurrent.atomic.AtomicInteger communityPasses = new java.util.concurrent.atomic.AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -121,7 +122,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             _ -> {},
                                                             Option::none,
                                                             MembershipLiveness.UNWIRED);
-        var placements = new java.util.HashMap<AetherKey, AetherValue>();
+        var placements = new java.util.concurrent.ConcurrentHashMap<AetherKey, AetherValue>();
         ctm.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
             () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
             key -> Option.option(placements.get(key)), commands -> {
@@ -251,7 +252,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
     private List<String> captureRetirementRequests() {
         var requested = new java.util.concurrent.CopyOnWriteArrayList<String>();
         ctm.installCommunityPlacement(new CommunityPlacementReconciler() {
-            public Promise<org.pragmatica.lang.Unit> reconcile() { return Promise.unitPromise(); }
+            public Promise<org.pragmatica.lang.Unit> reconcile() { communityPasses.incrementAndGet(); return Promise.unitPromise(); }
             public Promise<org.pragmatica.lang.Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) {
                 requested.add(node.id());
                 return Promise.unitPromise();
@@ -261,45 +262,34 @@ class ClusterTopologyManagerWorkerReconcileTest {
         return requested;
     }
 
-    /// Newest first: reconciler-minted `-r<clock36>` ids sort after bootstrap `-<index>` ids, so a
-    /// scale-down reaps cluster-provisioned workers before bootstrap-provisioned ones.
     @Test
-    void reconcile_workerSurplus_requestsDurableRetirementNewestFirst() {
+    void reconcile_workerSurplusLeavesVictimSelectionToCommunityController() {
         var requested = captureRetirementRequests();
         seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
         lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"),
                                      workerInstance("primary", "primary-worker-1"),
                                      workerInstance("primary", "primary-worker-rzzz-0"));
         ctm.activate();
-
         ctm.reconcileWorkerTopology();
-
+        assertThat(communityPasses.get()).isPositive();
         assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
-        assertThat(requested).startsWith("primary-worker-rzzz-0", "primary-worker-1");
+        assertThat(requested).isEmpty();
         assertThat(lifecycleManager.provisionedNodeIds()).isEmpty();
+        ctm.deactivate();
     }
 
-    /// Defect A's scale-down consequence, on the reconciler's OWN mints rather than on inventory the
-    /// test planted: with the label round-trip broken, surplus was structurally unreachable —
-    /// `actual` was always empty, so `terminateSurplusWorkers` had no victims to choose from and a
-    /// scale-down could only ever add VMs.
     @Test
-    void reconcile_scaleDownAfterOwnMints_neverBypassesDurableRetirement() {
+    void reconcile_targetChangeDoesNotRunASecondWorkerActuator() {
         var requested = captureRetirementRequests();
         seedTopology(entry("primary", "core", 3), entry("primary", "worker", 3));
         ctm.activate();
-        var newestTwo = lifecycleManager.provisionedNodeIds()
-                                        .stream()
-                                        .sorted(Comparator.reverseOrder())
-                                        .limit(2)
-                                        .toList();
         seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
-
         ctm.reconcileWorkerTopology();
-
-        assertThat(lifecycleManager.provisionedNodeIds()).hasSize(3);
-        assertThat(requested).containsExactlyElementsOf(newestTwo);
+        assertThat(communityPasses.get()).isPositive();
+        assertThat(lifecycleManager.provisionedNodeIds()).isEmpty();
+        assertThat(requested).isEmpty();
         assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        ctm.deactivate();
     }
 
     @Test
@@ -360,6 +350,18 @@ class ClusterTopologyManagerWorkerReconcileTest {
                .untilAsserted(() -> assertThat(lifecycleManager.listCalls()).isEqualTo(1));
     }
 
+    @Test
+    void stalledSourceInventoryDoesNotPreventAnotherSourceFromConverging() {
+        seedTopology(entry("unavailable", "worker", 1), entry("healthy", "worker", 1));
+        lifecycleManager.blockedSource = "unavailable";
+        var held = lifecycleManager.gateListing();
+        ctm.activate();
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+            assertThat(lifecycleManager.provisionedSourceNames()).containsExactly("healthy"));
+        held.succeed(unit()).await().unwrap();
+        ctm.deactivate();
+    }
+
     private static InstanceInfo workerInstance(String sourceName, String nodeId) {
         return instance(CLUSTER, sourceName, "worker", nodeId);
     }
@@ -395,6 +397,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
         private final AtomicReference<Map<String, String>> lastFilter = new AtomicReference<>(Map.of());
         private final AtomicReference<Promise<Unit>> listGate = new AtomicReference<>(Promise.success(unit()));
         private final AtomicLong listCalls = new AtomicLong();
+        private String blockedSource = "";
 
         void preExisting(InstanceInfo... instances) {
             inventory.addAll(List.of(instances));
@@ -459,7 +462,9 @@ class ClusterTopologyManagerWorkerReconcileTest {
             listCalls.incrementAndGet();
             lastFilter.set(tagFilter);
 
-            return listGate.get().map(_ -> matching(tagFilter));
+            var gate = blockedSource.isEmpty() || blockedSource.equals(tagFilter.get("aether-source"))
+                       ? listGate.get() : Promise.unitPromise();
+            return gate.map(_ -> matching(tagFilter));
         }
 
         private List<InstanceInfo> matching(Map<String, String> tagFilter) {

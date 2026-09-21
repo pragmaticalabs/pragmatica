@@ -208,11 +208,11 @@ class CapacityRefusalRecoveryTest {
         reconciler.reconcile().await().unwrap();
         var target = current().targetNode();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
-        lifecycle.reconcileRefusals().await().unwrap();
+        lifecycle.reconcileInventory().await().unwrap();
         assertThat(store.getTyped(new AetherKey.CapacityReservationKey(target), AetherValue.CapacityReservationValue.class)
             .unwrap().phase()).isEqualTo(AetherValue.CapacityReservationPhase.RELEASED);
         var recovered = CapacityControlledLifecycle.capacityControlledLifecycle(refusing, CORE, store, this::process, () -> true, () -> 10);
-        recovered.reconcileRefusals().await().unwrap();
+        recovered.reconcileInventory().await().unwrap();
         assertThat(store.get(new AetherKey.CapacityReservationKey(target)).isEmpty()).isTrue();
         assertThat(ledger().allocated()).isEqualTo(1);
         assertThat(creates.get()).isEqualTo(1);
@@ -233,12 +233,12 @@ class CapacityRefusalRecoveryTest {
         seed(new KVCommand.LeaderTransaction<>(key, "request", LEADER, List.of(), List.of(
             new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(reserved), Option.some(requested)))));
         assertThat(lifecycle.provisionNode(spec(requested.targetNode().id(), "pool")).await().isFailure()).isTrue();
-        lifecycle.reconcileRefusals().await().unwrap();
+        lifecycle.reconcileInventory().await().unwrap();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.CREATE_REQUESTED);
         var recovered = CapacityControlledLifecycle.capacityControlledLifecycle(refusing, CORE, store, this::process, () -> true, () -> 10);
         reconcilerOver(recovered).reconcile().await().unwrap();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
-        recovered.reconcileRefusals().await().unwrap();
+        recovered.reconcileInventory().await().unwrap();
         assertThat(store.get(new AetherKey.CapacityReservationKey(requested.targetNode())).isEmpty()).isTrue();
         assertThat(creates.get()).isEqualTo(1);
     }
@@ -257,7 +257,7 @@ class CapacityRefusalRecoveryTest {
 
         assertThat(creates.get()).isEqualTo(1);
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
-        lifecycle.reconcileRefusals().await().unwrap();
+        lifecycle.reconcileInventory().await().unwrap();
         assertThat(store.get(new AetherKey.CapacityReservationKey(target)).isEmpty()).isTrue();
         assertThat(store.get(new AetherKey.CommunityPlacementAvailabilityKey("stable", "pool", Option.some("new"))).isPresent()).isTrue();
         assertThat(ledger().allocated()).isEqualTo(1);

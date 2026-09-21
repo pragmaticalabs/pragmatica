@@ -424,6 +424,18 @@ class ClusterTopologyManagerActuatorTest {
     /// trips and further `provisionReplacement` calls are suppressed (no new `provisionNode`),
     /// preventing the crash-loop container storm. The cap is 3 (MAX_CONSECUTIVE_PROVISIONING_FAILURES).
     @Test
+    void sourceAdmissionDeferralDoesNotTripTheProviderFailureCircuit() {
+        ctm.activate();
+        lifecycleManager.deferProvision = true;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await().unwrap();
+            assertThat(disposition).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION));
+        }
+        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
+        assertThat(ctm.circuitBreakerState().tripped()).isFalse();
+    }
+
+    @Test
     void provisionReplacement_consecutiveFailures_tripCircuit_andSuppressFurtherProvisioning() {
         ctm.activate();
         lifecycleManager.failProvisions();
@@ -1655,6 +1667,14 @@ class ClusterTopologyManagerActuatorTest {
                    .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
         }
 
+        @Test
+        void disabledAutoHealHoldsDepartedDeletion() {
+            var reaper = activeCtm(SLOW_GRACE);
+            reaper.setAutoHealEnabled(false, "operator hold").await().unwrap();
+            reaper.onMembershipDecision(removedD());
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
         /// A genuinely departed node — no evidence of life — is reaped at once, with no added delay, and once.
         @Test
         void nodeRemoved_genuinelyDeparted_reapedImmediatelyOnce() {
@@ -2009,6 +2029,7 @@ class ClusterTopologyManagerActuatorTest {
         private final CopyOnWriteArrayList<NodeId> terminatedIds = new CopyOnWriteArrayList<>();
         private final AtomicReference<ProvisionSpec> lastSpec = new AtomicReference<>();
         private final java.util.concurrent.atomic.AtomicBoolean failProvision = new java.util.concurrent.atomic.AtomicBoolean(false);
+        private boolean deferProvision;
         /// #1050 R4 — the labelled provider inventory the activation replay lists. `terminateNode` removes from it.
         private final ConcurrentHashMap<NodeId, InstanceInfo> inventory = new ConcurrentHashMap<>();
         final AtomicInteger listCalls = new AtomicInteger();
@@ -2095,6 +2116,7 @@ class ClusterTopologyManagerActuatorTest {
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             var count = provisionCount.incrementAndGet();
             lastSpec.set(spec);
+            if (deferProvision) return CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE.promise();
             if (failProvision.get()) {
                 return org.pragmatica.lang.utils.Causes.cause("stub provision failure").promise();
             }

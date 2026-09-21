@@ -32,6 +32,20 @@ public interface NodeLifecycleManager {
     Promise<Unit> restartNode(NodeId nodeId);
     boolean isCloudManaged();
 
+    /// Committed allocations remain capacity even when their create acknowledgement was lost.
+    default java.util.Set<NodeId> allocatedNodes(String role) {
+        return java.util.Set.of();
+    }
+
+    /// Retirement intent survives the caller and is retried only after fresh safety checks.
+    default java.util.Set<NodeId> retiringNodes(String role) {
+        return java.util.Set.of();
+    }
+
+    default Promise<Unit> reconcileInventory() {
+        return Promise.unitPromise();
+    }
+
     /// Retry accounting for durable no-create evidence after its placement operation consumed it.
     default Promise<Unit> reconcileRefusals() {
         return Promise.unitPromise();

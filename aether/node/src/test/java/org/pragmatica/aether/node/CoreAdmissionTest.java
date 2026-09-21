@@ -52,6 +52,18 @@ class CoreAdmissionTest {
         membership.setTrackingEligibility(_ -> false);
     }
 
+    @Test
+    void retiringAllocationOverridesHistoricalAndHarnessAdmission() {
+        var membership = membership();
+        var core = new NodeId("retiring-core");
+        membership.onMemberDescriptor(info(core, "core"));
+        var admission = CoreAdmission.coreAdmission(() -> membership, () -> Set.of(core),
+            _ -> Option.some(new CapacityReservationValue("east", "binding", "core", CapacityReservationPhase.RETIRING)),
+            _ -> true);
+        assertThat(admission.isAllowed(core)).isFalse();
+        membership.setTrackingEligibility(_ -> false);
+    }
+
     private static MembershipFsm membership() {
         return MembershipFsm.membershipFsm(FsmObserver.noop(), System::currentTimeMillis,
             Long.MAX_VALUE, TimeSpan.timeSpan(40).millis());

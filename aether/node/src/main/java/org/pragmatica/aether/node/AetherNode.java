@@ -4058,13 +4058,10 @@ public interface AetherNode extends ManageableNode {
                                                                  SharedScheduler::schedule);
 
         leaderReconcilerRef.set(leaderReconciler);
-        // Provisioning-stickiness fix — read-only supplier wiring (no consensus). The leader's metrics
-        // ping carries its in-flight provisioning set (LeaderReconciler -> ClusterSyncPing.dispatchedNodes);
-        // followers retain it term-fenced. On leadership gain LeaderReconciler seeds its in-flight set
-        // from that retained set (ClusterSyncCollector::retainedDispatchedNodes) so a new leader does
-        // not re-dispatch replacements the prior leader already provisioned (the over-provisioning bug).
+        // Metrics advertise pending work; committed allocations recover it. Replaying a stale
+        // gossip announcement must not resurrect an allocation already released by consensus.
         metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
-        leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
+        leaderReconciler.setDurableProvisioningSupplier(() -> pendingCoreAllocations(lifecycleManager, clusterNode));
         leaderReconciler.setInstalledVotersSupplier(() -> installedVoterIds(clusterNode));
         // Drain-victim slice-owner exclusion (Approach 3): wire the authoritative KV-Store-backed
         // active-slice-ownership predicate so the reconciler never drains a node currently serving /
@@ -6917,6 +6914,16 @@ public interface AetherNode extends ManageableNode {
                                      .filter(AetherValue.CommunityPlacementOperationValue.class::isInstance)
                                      .map(AetherValue.CommunityPlacementOperationValue.class::cast)
                                      .toList());
+    }
+
+    private static Set<NodeId> pendingCoreAllocations(NodeLifecycleManager lifecycle,
+                                                      RabiaNode<KVCommand<AetherKey>> cluster) {
+        var installed = installedVoterIds(cluster);
+
+        return lifecycle.allocatedNodes("core")
+                        .stream()
+                        .filter(node -> !installed.contains(node))
+                        .collect(Collectors.toUnmodifiableSet());
     }
 
     private static Set<NodeId> readyCoreCandidates(Set<NodeId> ready, Supplier<MembershipFsm> membership) {

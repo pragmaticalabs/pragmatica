@@ -28,7 +28,11 @@ public record CoreAdmission(Supplier<MembershipFsm> membership,
     }
 
     public boolean isAllowed(NodeId node) {
-        return hasCoreDescriptor(node) && hasAdmissionIntent(node);
+        return reservation.apply(node)
+                          .filter(value -> value.phase() == CapacityReservationPhase.RETIRING)
+                          .isEmpty()
+               && hasCoreDescriptor(node)
+               && hasAdmissionIntent(node);
     }
 
     private boolean hasCoreDescriptor(NodeId node) {
