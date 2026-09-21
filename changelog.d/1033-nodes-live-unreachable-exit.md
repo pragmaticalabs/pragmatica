@@ -12,13 +12,27 @@
   separately) and `OutputFormatterErrorTest`.
 - **One consumer, one fix:** every query command that prints a `fetch` result through `printQuery` —
   `status`, `nodes`, `nodes live`, `slices`, `routes`, `versions`, `metrics …`, `alerts`, `traces`,
-  `blueprint list/get/status`, `artifact …` and the rest — takes the same path, so all of them now
+  `blueprints list/get/status`, `artifacts …` and the rest — takes the same path, so all of them now
   refuse an unreachable cluster. The `cluster …`, `storage …`, `ttm …`, `whoami` and `stream …`
   families were already honest: they receive a `Result<String>` from `ClusterHttpClient` and fold the
   failure before printing. `[mechanism: one `printQuery` entry, `isErrorResponse` before dispatch]`
 - **`nodes live --only-alive` erased the error before the formatter saw it:** `LiveNodesFilter.onlyAlive`
   rebuilt any parseable document — including the envelope — into `{"nodes":[],"liveCount":0,"zombieCount":0}`.
   It now passes through untouched any document without a `nodes` array. `[verified: LiveNodesFilterTest.onlyAlive_errorEnvelope_returnsOriginalUnchanged]`
+- **The action commands had the inverse defect** (found in review): `printAction` printed its success line over
+  the same envelope and exited 0, so `scale foo -n 3`, `logging set/reset`, `config set/remove`,
+  `thresholds set/remove`, `controller evaluate`, `scheduled-tasks pause/resume/trigger`,
+  `observability depth-set/depth-remove/config-set/config-remove`, `ab-tests conclude`, `streams
+  publish` and `consumer-group join/leave` (20 sites) reported an operation that never ran as one
+  that succeeded — `scale --wait` then polled `unknown / N` to the deadline. `printAction` now takes
+  the same refusal as `printQuery`, so `scale --wait` exits before the wait starts.
+  `[verified: UnreachableClusterExitTest.scale_*, configSet_*, scheduledTasksTrigger_*, scaleWait_refused_exitsNonZero_beforeAnyPolling]`
+- **A non-2xx with a JSON body that is neither an envelope nor a ProblemDetail rendered as a document**
+  (e.g. a gateway's `500 {"message":"boom"}`): `formatErrorResponse` passed any body starting with `{`
+  through. It now passes a body through only when it is itself an error envelope or a ProblemDetail,
+  and wraps anything else as `{"error":"HTTP <status>: …"}`. Aether's own management server always
+  answers a ProblemDetail, so this is reachable only through something in front of it.
+  `[verified: UnreachableClusterExitTest.nodesLive_gateway500_…, scale_gateway500_…]`
 - Not changed here: the message text for a refused connection reads `HTTP operation failed:
   java.net.ConnectException` rather than `Connection failed: Connection refused`, because the JDK
   client delivers the cause wrapped in a `CompletionException` that `HttpClientError.fromException`
