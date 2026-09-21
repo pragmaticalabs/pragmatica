@@ -98,6 +98,8 @@ public sealed interface SheetError extends Cause {
             case TomlError.InvalidSurrogate e -> e.line();
             case TomlError.DottedKeyConflict e -> e.line();
             case TomlError.FileReadFailed _ -> 0;
+            // #1098: raised by typed reads after parsing, so it carries keys, not a line.
+            case TomlError.TypeMismatches _ -> 0;
         };
     }
 }
