@@ -28,3 +28,9 @@
   delegates to a real instance must override it too. [unverified: concurrent `put`/`delete` on the SAME
   name — the previous-manifest read and the release are only ordered, not atomic with the ref swap, the
   same shape `repointRef` already documents for #737; not pinned by a test]
+- **A `put` over a name whose current manifest cannot be read FAILS, loudly** (`delete` already did): the
+  previous-manifest read in `previousChunkIds` propagates the storage failure and nothing is written. Ruled,
+  not an oversight — recovering to "nothing to release" would leak the previous chunks forever, since the
+  collector only ever takes refCount-0 blocks. The operability gap it leaves (such a name can be neither
+  overwritten nor deleted) is filed separately. [mechanism: `DefaultContentStore.previousChunkIds` /
+  `chunkIdsOf`]
