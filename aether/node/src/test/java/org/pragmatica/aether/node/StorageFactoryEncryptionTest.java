@@ -993,10 +993,14 @@ class StorageFactoryEncryptionTest {
     }
 
     /// #849 ruling (2026-09-21, "never-ready pin"): the node-level consequence of the refusal above,
-    /// through the two production steps `AetherNode` actually runs rather than a single check --
-    /// [StorageFactory#verifyDhtMarkers] over EVERY setup's check (`AetherNode.verifyDhtMarkers`,
-    /// post-formation) and [StorageFactory#dhtAdmission] over every read gate (the promise the NDM
-    /// self-ready signal is deferred on, `markSubsystemsReadyOnceDhtAdmitted`). Over a marked
+    /// through `StorageFactory`'s two admission functions rather than a single check --
+    /// [StorageFactory#verifyDhtMarkers] over every setup's check and [StorageFactory#dhtAdmission]
+    /// over every read gate. Those are what `AetherNode.start()` calls (`verifyDhtMarkers`, then the
+    /// NDM self-ready signal deferred on `dhtAdmission` in `markSubsystemsReadyOnceDhtAdmitted`), but
+    /// the check LIST here is built by [#checksOf], a test mirror of `AetherNode`'s private loop --
+    /// this test cannot see that loop diverge. The real-boundary pin, through a real `start()`, is
+    /// `AetherNodeStreamsDhtMarkerBootTest`; what this one adds is the refusal's exact identity
+    /// (`containsExactly` on the record) and that `artifacts`/`content` admit alongside. Over a marked
     /// `stream-segments` namespace with `streams_encrypted = false`, readiness must be WITHHELD with
     /// `EncryptedTierRequiresKeyring("streams", "key-1")` while the unmarked `artifacts`/`content`
     /// namespaces in the same boot are admitted -- so the withheld readiness is streams' alone. Before
@@ -1041,7 +1045,9 @@ class StorageFactoryEncryptionTest {
                                                               .isEmpty();
     }
 
-    /// The check list `AetherNode.verifyDhtMarkers` builds: every setup's `dhtMarkerCheck`, present ones only.
+    /// Test mirror of the check list `AetherNode.verifyDhtMarkers` builds (every setup's
+    /// `dhtMarkerCheck`, present ones only) -- that loop is private to the node record, so it is
+    /// re-stated here, not called.
     private static List<StorageFactory.DhtMarkerCheck> checksOf(Map<String, StorageFactory.StorageSetup> setups) {
         return setups.values()
                      .stream()
@@ -1076,6 +1082,19 @@ class StorageFactoryEncryptionTest {
         assertThat(marker.isPresent()).as("admitting an encrypted streams boot must stamp the stream-segments namespace")
                                       .isTrue();
         marker.onPresent(bytes -> assertThat(new String(bytes, StandardCharsets.UTF_8)).isEqualTo("key-1"));
+
+        // rev1413 MEDIUM-1: the production configuration -- encrypted, segments dir writable -- must
+        // still carry its sealed segments to the shared DHT. Dropping the DHT tier from the encrypted
+        // disk-available branch (`armEncryptedStreamTiers`) while keeping the check left the whole
+        // module green; this is the only assertion that observes that branch's tier list.
+        var blockId = writeThrough(setups.get(STREAMS));
+        var stored = dhtClient.rawValue(STREAM_SEGMENTS_PREFIX, blockId);
+
+        assertThat(stored.isPresent()).as("an encrypted streams write-through with the disk tier available must still "
+                                          + "reach the stream-segments DHT namespace -- absent means the DHT tier was "
+                                          + "dropped from the encrypted branch's tier list")
+                                      .isTrue();
+        stored.onPresent(raw -> assertCiphertextAtRest(raw, "the stream-segments DHT namespace"));
     }
 
     /// #849 control, and the pre-GA legacy ruling (2026-09-16: no migration path): an UNMARKED

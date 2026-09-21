@@ -11,10 +11,15 @@
   the per-instance tiers: on the post-formation admission `AetherNode.start()` already runs, an
   encrypted boot writes `stream-segments/.encryption-enabled` (the active key id), and a plain boot
   over a marked namespace refuses with `EncryptionError.EncryptedTierRequiresKeyring("streams", …)`
-  before any read — the read gate resolves with that cause, so no segment read reaches the integrity
-  check. An unmarked namespace booted plain is admitted as before; pre-GA, no migration path
-  (2026-09-16 ruling).
+  — every streams DHT-*tier* operation (`DhtStorageTier` get/put/delete/exists) fails with that cause
+  once the gate resolves, so no DHT-held segment reaches the integrity check; the memory and disk
+  tiers and the metadata-backed `exists()` are not gated, which in production nothing observes because
+  `start()` fails and the process stops. An unmarked namespace booted plain is admitted as before;
+  pre-GA, no migration path (2026-09-16 ruling).
 - `StorageFactoryEncryptionTest` gains the reverse-direction reproduction (encrypted boot with the
   segment disk tier unavailable, so the DHT holds the only durable copy; then a plain reboot), the
-  forward-direction marker write, and the unmarked-plain control. The `known-limitations.md` and
-  `configuration.md` lines that declared the gap are updated.
+  forward-direction marker write (including that sealed segments still reach the DHT with the disk
+  tier available), the unmarked-plain control, and the never-ready pin through `dhtAdmission`;
+  `AetherNodeStreamsDhtMarkerBootTest` drives a real single-node `start()` in both directions plus the
+  plain control. The `known-limitations.md` and `configuration.md` lines that declared the gap are
+  updated.
