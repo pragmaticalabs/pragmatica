@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Promise.resolved;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -78,7 +79,8 @@ public interface StorageInstance {
         return putRef(name, content);
     }
 
-    /// Delete a block from all tiers and remove its lifecycle metadata. Used by GC.
+    /// Delete a block from all tiers and remove its lifecycle metadata. Used by explicit content/manifest
+    /// deletion and stream retention -- never by GC, which uses [#deleteFromPrivateTiers] (#250).
     Promise<Unit> delete(BlockId id);
 
     /// Collect `orphan` -- the lifecycle record exactly as the caller's scan saw it -- from
@@ -154,7 +156,10 @@ final class DefaultStorageInstance implements StorageInstance {
     /// Blocks whose private-tier bytes GC is deleting right now, keyed by id, each resolving when that
     /// deletion has finished. A [#put] whose claim succeeds while its id is here has claimed the slot
     /// GC just vacated and must not write until GC's tier deletes are done, or GC deletes the bytes
-    /// it has just written (#801).
+    /// it has just written (#801). One collection per id at a time: the only caller is the single
+    /// scheduled maintenance tick, which awaits each block in turn, so `putIfAbsent` never loses --
+    /// it is there so that a second collector for the same id would wait on the first's promise
+    /// rather than replace it.
     private final Map<BlockId, Promise<Unit>> collecting = new ConcurrentHashMap<>();
 
     DefaultStorageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore, WritePolicy writePolicy) {
@@ -235,13 +240,16 @@ final class DefaultStorageInstance implements StorageInstance {
     /// Once the record is gone no put can deduplicate onto this block (its claim succeeds instead);
     /// `collecting` makes that claimant wait for the tier deletes so they cannot wipe its fresh
     /// write. A tier delete that fails puts the scanned record back (if no claimant has taken the
-    /// slot) so the next cycle retries it, as it did when the record was removed last.
+    /// slot) so the next cycle retries it, as it did when the record was removed last -- and does so
+    /// INSIDE the resolution of the failed delete, before the claimant is released and before the
+    /// returned promise resolves, never as an `onFailure` side effect (those run on the executor,
+    /// after the caller has already seen the result).
     @Override
     public Promise<Boolean> deleteFromPrivateTiers(BlockLifecycle orphan) {
         var id = orphan.blockId();
         var done = Promise.<Unit> promise();
 
-        collecting.put(id, done);
+        collecting.putIfAbsent(id, done);
         if (!metadataStore.releaseClaim(id, orphan)) {
             finishCollecting(id, done);
             log.debug("Block {} touched since the GC scan, not collected", id);
@@ -249,15 +257,17 @@ final class DefaultStorageInstance implements StorageInstance {
             return Promise.success(false);
         }
 
-        return deleteFromPrivateTiers(id, 0).onFailure(_ -> metadataStore.claimBlock(id, orphan))
-                                     .fold(result -> collected(id, done, result));
+        return deleteFromPrivateTiers(id, 0).fold(result -> collected(orphan, done, result));
     }
 
-    private Promise<Boolean> collected(BlockId id, Promise<Unit> done, Result<Unit> result) {
+    private Promise<Boolean> collected(BlockLifecycle orphan, Promise<Unit> done, Result<Unit> result) {
+        var id = orphan.blockId();
+
+        result.onFailure(_ -> metadataStore.claimBlock(id, orphan));
         finishCollecting(id, done);
         result.onSuccess(_ -> log.debug("Block {} deleted from private tiers; shared copy retained", id));
 
-        return Promise.resolved(result.map(_ -> true));
+        return resolved(result.map(_ -> true));
     }
 
     private void finishCollecting(BlockId id, Promise<Unit> done) {

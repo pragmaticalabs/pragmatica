@@ -3,6 +3,9 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
@@ -11,6 +14,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,6 +37,9 @@ class StorageGarbageCollectorClaimRaceTest {
     private static final long GRACE_PERIOD_MS = 1000;
     private static final int BATCH_SIZE = 500;
     private static final byte[] CONTENT = "gc-claim-race".getBytes(StandardCharsets.UTF_8);
+    /// Bounds every wait on the racing put: a claimant left chained behind a collection that never
+    /// releases it must fail the test, not hang it.
+    private static final TimeSpan WAIT = TimeSpan.timeSpan(5).seconds();
 
     private SeamTier tier;
     private SeamMetadataStore metadataStore;
@@ -71,8 +78,8 @@ class StorageGarbageCollectorClaimRaceTest {
 
     private BlockId racedId() {
         return racingPut.get()
-                        .await()
-                        .onFailure(c -> fail("racing put failed: " + c.message()))
+                        .await(WAIT)
+                        .onFailure(c -> fail("racing put did not complete: " + c.message()))
                         .unwrap();
     }
 
@@ -161,11 +168,69 @@ class StorageGarbageCollectorClaimRaceTest {
         assertThat(gc.collectGarbage()).as("the next cycle collects it").isEqualTo(1);
     }
 
+    /// A claimant chained behind a collection whose tier delete FAILS (rev1411 P1). Two properties
+    /// the no-claimant test above cannot see: the restore must be conditional -- an unconditional
+    /// put of the scanned orphan would overwrite the claimant's sentinel, its `trackNewBlock` would
+    /// then decorate an orphan record and the next cycle would collect a block the caller holds --
+    /// and the claimant must be released on the failure path too, or every later put of that
+    /// content chains behind a promise that never resolves.
+    @Test
+    void claimantChainedBehindFailedTierDelete_keepsItsRecordAndIsReleased() {
+        var id = storeOrphanPastGrace();
+
+        tier.beforeDelete(this::startRacingPut);
+        tier.failNextDelete();
+        var collected = gc.collectGarbage();
+
+        assertThat(racedId()).isEqualTo(id);
+        assertReadable(id, "claimant behind a failed tier delete");
+        assertThat(collected).as("a failed delete is not a collection").isZero();
+        assertThat(metadataStore.getLifecycle(id).map(BlockLifecycle::refCount).or(-1)).as("the claimant's record (refCount 1) must survive the restore -- an orphan here means the restore overwrote a live claim")
+                  .isEqualTo(1);
+        assertThat(gc.collectGarbage()).as("the next cycle must not collect a block a caller holds").isZero();
+        assertReadable(id, "after the next cycle");
+    }
+
+    /// The restore after a failed tier delete must happen INSIDE the resolution of that failure,
+    /// before the collection's own promise resolves (rev1411 M3/P4). Shipped tiers fail
+    /// asynchronously (`LocalDiskTier.delete` is lifted), and an `onFailure` registered on an
+    /// unresolved promise runs on the executor AFTER the fold that resolves the caller's promise, so
+    /// the record was absent for a window after `collectGarbage()` returned (19/200 measured). The
+    /// seam holds the delete open and the TEST thread fails it, so "inside the resolution" has an
+    /// exact observable: the restore ran on this thread, before `fail` returned.
+    @Test
+    void asyncTierDeleteFailure_restoresRecordBeforeTheCollectionResolves() throws InterruptedException {
+        var id = storeOrphanPastGrace();
+        var heldDelete = tier.holdNextDelete();
+        var presentOnReturn = new AtomicBoolean();
+        var collected = new AtomicInteger(-1);
+        var collector = new Thread(() -> {
+                                       collected.set(gc.collectGarbage());
+                                       presentOnReturn.set(metadataStore.containsBlock(id));
+                                   },
+                                   "gc-801");
+
+        collector.start();
+        assertThat(tier.awaitDeleteRequested(WAIT)).as("the collector must reach the tier delete").isTrue();
+        assertThat(metadataStore.containsBlock(id)).as("the record was taken before the tier delete").isFalse();
+        heldDelete.fail(StorageError.WriteError.writeError("induced async tier delete failure"));
+        assertThat(metadataStore.restoreThread()).as("the restore must run inside the failed delete's resolution, on the resolving thread, before the collection's promise resolves -- not as an executor-dispatched onFailure")
+                  .isSameAs(Thread.currentThread());
+        collector.join(WAIT.millis());
+        assertThat(collector.isAlive()).as("the collector must return").isFalse();
+        assertThat(collected.get()).isZero();
+        assertThat(presentOnReturn.get()).as("the record must be back the instant collectGarbage() returns").isTrue();
+        assertThat(metadataStore.getLifecycle(id).map(BlockLifecycle::isOrphaned).or(false)).as("the restored record is the orphan the next cycle will scan")
+                  .isTrue();
+    }
+
     /// Delegating tier with one seam: a hook run inline immediately BEFORE the backing delete, once.
     private static final class SeamTier implements StorageTier {
         private final StorageTier backing;
         private final AtomicReference<Runnable> beforeDelete = new AtomicReference<>();
         private final AtomicInteger putCount = new AtomicInteger();
+        private final AtomicReference<Promise<Unit>> heldDelete = new AtomicReference<>();
+        private final CountDownLatch deleteRequested = new CountDownLatch(1);
         private volatile boolean failNextDelete;
 
         SeamTier(StorageTier backing) {
@@ -178,6 +243,20 @@ class StorageGarbageCollectorClaimRaceTest {
 
         void failNextDelete() {
             failNextDelete = true;
+        }
+
+        /// The next delete returns this unresolved promise and counts [#awaitDeleteRequested] down;
+        /// the test resolves it from its own thread.
+        Promise<Unit> holdNextDelete() {
+            var held = Promise.<Unit> promise();
+
+            heldDelete.set(held);
+
+            return held;
+        }
+
+        boolean awaitDeleteRequested(TimeSpan timeout) throws InterruptedException {
+            return deleteRequested.await(timeout.millis(), TimeUnit.MILLISECONDS);
         }
 
         int putCount() {
@@ -203,6 +282,14 @@ class StorageGarbageCollectorClaimRaceTest {
                 failNextDelete = false;
 
                 return StorageError.WriteError.writeError("induced tier delete failure").promise();
+            }
+
+            var held = heldDelete.getAndSet(null);
+
+            if (held != null) {
+                deleteRequested.countDown();
+
+                return held;
             }
 
             return backing.delete(id);
@@ -235,6 +322,7 @@ class StorageGarbageCollectorClaimRaceTest {
         private final MetadataStore delegate;
         private final AtomicReference<Runnable> afterScan = new AtomicReference<>();
         private final AtomicReference<Runnable> afterFailedClaim = new AtomicReference<>();
+        private final AtomicReference<Thread> restoreThread = new AtomicReference<>();
 
         SeamMetadataStore(MetadataStore delegate) {
             this.delegate = delegate;
@@ -257,9 +345,19 @@ class StorageGarbageCollectorClaimRaceTest {
             return snapshot;
         }
 
+        /// The thread that re-claimed an ORPHAN record (GC's restore of the scanned record after a
+        /// failed delete); a put's own sentinel has refCount 1 and never matches. Null until it ran.
+        Thread restoreThread() {
+            return restoreThread.get();
+        }
+
         @Override
         public boolean claimBlock(BlockId blockId, BlockLifecycle sentinel) {
             var claimed = delegate.claimBlock(blockId, sentinel);
+
+            if (sentinel.isOrphaned()) {
+                restoreThread.set(Thread.currentThread());
+            }
 
             if (!claimed) {
                 Option.option(afterFailedClaim.getAndSet(null)).onPresent(Runnable::run);
