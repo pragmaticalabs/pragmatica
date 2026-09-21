@@ -832,6 +832,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       walBaseDir,
                                       lastSealedOffset)
                           .onFailure(_ -> release(floorBytes))
+                          .onSuccess(entry -> restoreVisible(config, entry))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
     }
 
@@ -1130,6 +1131,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                      partition),
                                       walBaseDir,
                                       lastSealedOffset)
+                          .onSuccess(entry -> restoreVisible(config, entry))
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
                           .or((StreamEntry) null);
@@ -1407,6 +1409,32 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
         ring.advanceVisible(Math.min(ring.durableOffset(),
                                      replicationManager.replicatedThrough(ack, minSyncReplicasFor(ack.streamName()) - 1)));
+    }
+
+    /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
+    /// restores `visible` to what the ack state supports, before the ring can be read. Nothing about acks
+    /// is persisted — the production [ReplicaRegistry] writes through `WatermarkStore.NOOP` — so on an
+    /// OWNER every peer is blind after a restart and the tail stays at the seed (the sealed bound) until a
+    /// live ack covers it, exactly its state before the restart; a stream with no peer barrier
+    /// (`minSyncReplicas <= 1`) sees the whole tail at once, as before. A REPLICA's visible position is its
+    /// OWN durability (#1235 replica side), so its tail is visible at once. `NONE` — the role unresolved —
+    /// takes the owner rule: an unresolved role must not expose more than the owner would. The min-sync
+    /// count is read from `config`, not [#minSyncReplicasFor]: on a fresh create the entry is not in
+    /// `streams` yet, and the lookup would report `0` — no barrier — and expose the tail.
+    @Contract
+    private void restoreVisible(StreamConfig config, int partition, OffHeapRingBuffer ring) {
+        switch (placementRoleSupplier.roleFor(config.name(), partition)) {
+            case REPLICA -> ring.advanceVisible(ring.durableOffset());
+            case OWNER, NONE -> ring.advanceVisible(Math.min(ring.durableOffset(),
+                                                             replicationManager.replicatedThrough(config.name(),
+                                                                                                  partition,
+                                                                                                  config.minSyncReplicas() - 1)));
+        }
+    }
+
+    @Contract
+    private void restoreVisible(StreamConfig config, StreamEntry entry) {
+        entry.materialized().forEach((partition, materialized) -> restoreVisible(config, partition, materialized.ring()));
     }
 
     /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).
@@ -2676,6 +2704,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           walBaseDir,
                                           lastSealedOffset)
                           .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
+                          .onSuccess(candidate -> restoreVisible(config, partition, candidate.ring()))
                           .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
     }
 
@@ -3652,9 +3681,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// thereby recovered correctly; a gap between records or a duplicate stops the recovery with
         /// [StreamError.WalReplayMismatch] at the first mismatch. Records are NEVER renumbered: that would
         /// shift every later record against replicas, sealed segments and consumer cursors. The events
-        /// are the un-sealed tail, which fits the fresh ring; a normal `append` is used (no
-        /// quiet/recovered variant exists), so a recovered event may re-trigger the eviction→seal listener
-        /// — idempotent for the tail being recovered.
+        /// are the un-sealed tail, which fits the fresh ring; the ordered append is used, so a recovered
+        /// event may re-trigger the eviction→seal listener — idempotent for the tail being recovered.
         private static Result<Unit> appendTail(String streamName,
                                                int partition,
                                                Path walFile,
@@ -3685,6 +3713,11 @@ public final class StreamPartitionManager implements AutoCloseable {
             return sorted;
         }
 
+        /// The record is placed DURABLE and NOT VISIBLE (#1387): it was read back from the fsynced WAL, so
+        /// it is durable by construction, but nothing about its acks survived the restart. The plain
+        /// `append` exposed every replayed offset at once — an owner then served records its min-sync
+        /// peers never confirmed. Visibility is restored per role once the ring is installed
+        /// ([StreamPartitionManager#restoreVisible]).
         private static Result<Unit> placeRecord(String streamName,
                                                 int partition,
                                                 Path walFile,
@@ -3693,8 +3726,8 @@ public final class StreamPartitionManager implements AutoCloseable {
             var expected = ring.headOffset() + 1;
 
             return record.offset() == expected
-                   ? ring.append(record.payload(),
-                                 record.timestampMillis())
+                   ? ring.appendOrdered(record.payload(), record.timestampMillis(), Result::success)
+                         .onSuccess(ring::markDurable)
                          .mapToUnit()
                    : new StreamError.WalReplayMismatch(streamName, partition, walFile, expected, record.offset()).result();
         }
