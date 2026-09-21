@@ -32,6 +32,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -327,6 +330,39 @@ class PublisherFactoryTest {
             assertTrue(line.contains(expectedAddress), "names the resolved address: " + line);
             assertTrue(line.contains(PUBLISHER_SLICE.asString()), "names the publishing slice: " + line);
             assertTrue(!line.contains(PublisherFactory.UNSCOPED_PUBLISHER), "the slice id was in the context, so no placeholder: " + line);
+        }
+
+        /// rev1421 MEDIUM-2: the factory hands the node's `MeterRegistry` (a provisioning-context
+        /// extension, #278) to the publisher, so undelivered publishes are counted per topic,
+        /// address and publishing slice — the surface that survives a flood the WARN rate-limits.
+        @Test
+        void provision_undeliveredPublish_countsOnTheContextsMeterRegistry() {
+            var meters = new SimpleMeterRegistry();
+            var expectedAddress = TopicAddressResolver.resolve(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders")
+                                                      .unwrap()
+                                                      .asString();
+            registerBareSubscriptionFor(Option.some(OTHER_BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var context = ProvisioningContext.provisioningContext()
+                                             .withExtension(TopicSubscriptionRegistry.class, registry)
+                                             .withExtension(SliceInvoker.class, new MinimalStubSliceInvoker(invocations))
+                                             .withExtension(String.class, PUBLISHER_SLICE.asString())
+                                             .withExtension(OwningBlueprintResolver.class, _ -> Option.some(BLUEPRINT))
+                                             .withExtension(MeterRegistry.class, meters);
+            @SuppressWarnings("unchecked")
+            var publisher = (Publisher<Object>) factory.provision(new TopicConfig("orders"), context)
+                                                       .await()
+                                                       .onFailure(_ -> fail("Provisioning should succeed"))
+                                                       .unwrap();
+
+            publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            publisher.publish("order-2").await().onFailure(_ -> fail("Publish should succeed"));
+
+            var counter = meters.find(TopicPublisher.UNDELIVERED_COUNTER)
+                                .tags("topic", "orders", "address", expectedAddress, "slice", PUBLISHER_SLICE.asString())
+                                .counter();
+            assertTrue(counter != null, "counter registered on the context's MeterRegistry with the factory's tags");
+            assertEquals(2.0, counter.count());
+            assertTrue(invocations.isEmpty());
         }
 
         /// A runtime with no resolver registered (unit test, minimal runtime): both ends scope to the
