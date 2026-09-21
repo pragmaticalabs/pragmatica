@@ -252,7 +252,13 @@ public record EmberConfig(int nodes,
         return fromDocument(doc, Option.some(baseDir));
     }
 
+    // #1098: every typed read here answers Option and takes the default for a present-but-wrong-typed
+    // value; the document records those reads and the load refuses naming every one.
     private static Result<EmberConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
+        return assembleFromDocument(doc, baseDir).flatMap(config -> doc.requireNoTypeMismatches().map(_ -> config));
+    }
+
+    private static Result<EmberConfig> assembleFromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
         int nodes = doc.getInt("cluster", "nodes").or(DEFAULT_NODES);
         int basePort = doc.getInt("cluster", "base_port").or(DEFAULT_BASE_PORT);
         int managementPort = doc.getInt("cluster", "management_port").or(DEFAULT_MANAGEMENT_PORT);

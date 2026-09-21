@@ -69,9 +69,14 @@ public final class ClusterBootstrapConfigParser {
     }
 
     public static Result<ClusterBootstrapConfig> fromDocument(TomlDocument doc) {
+        // #1098: typed reads answer Option and default a present-but-wrong-typed value; the document
+        // records those reads and the parse refuses here naming every one.
         return parseConfigVersion(doc).flatMap(version -> parseClusterIdentity(doc).flatMap(cluster -> buildConfig(doc,
                                                                                                                    version,
-                                                                                                                   cluster)));
+                                                                                                                   cluster)))
+                                      .flatMap(config -> doc.requireNoTypeMismatches()
+                                                            .mapError(ClusterBootstrapConfigParser::wrapError)
+                                                            .map(_ -> config));
     }
 
     private static Result<ClusterBootstrapConfig> buildConfig(TomlDocument doc,

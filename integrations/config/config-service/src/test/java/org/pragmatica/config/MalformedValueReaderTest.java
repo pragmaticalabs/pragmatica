@@ -139,6 +139,21 @@ class MalformedValueReaderTest {
                                            "yes");
         }
 
+        record OptionalPort(String name, Option<Integer> port) {}
+
+        /// The record binder reads through TomlDocument's typed getters; a mistyped optional component
+        /// bound `none()` and the record was built. The bind refuses it by name (#1098, A4).
+        @Test
+        void config_malformedOptionalComponent_isRefusedNamingKeyAndValue() {
+            var result = toml("[test]\nname = \"n\"\nport = \"80x\"\n").config("test", OptionalPort.class);
+
+            assertThat(result.isFailure()).describedAs("port = \"80x\" must refuse the bind, bound %s", result)
+                                          .isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("test.port")
+                                                                 .contains("80x"));
+            assertThat(toml("[test]\nname = \"n\"\nport = 8443\n").config("test", OptionalPort.class).unwrap().port()).isEqualTo(Option.some(8443));
+        }
+
         @Test
         void absentKey_isSuccessNone_wellFormed_isSuccessSome() {
             assertThat(toml("[server]\nport = 80\nsecure = true\n").getInt("server.nope")).isEqualTo(Result.success(Option.none()));

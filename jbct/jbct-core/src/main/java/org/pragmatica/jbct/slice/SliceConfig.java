@@ -33,13 +33,15 @@ public record SliceConfig(BlueprintConfig blueprint) {
 
     /// Load slice config from a TOML file.
     public static Result<SliceConfig> load(Path configPath) {
-        return TomlParser.parseFile(configPath).map(SliceConfig::fromTomlDocument);
+        return TomlParser.parseFile(configPath).flatMap(SliceConfig::fromTomlDocument);
     }
 
-    private static SliceConfig fromTomlDocument(org.pragmatica.config.toml.TomlDocument toml) {
+    // #1098: `instances = "3x"` used to read as absent and take the default; the document records the
+    // wrong-typed read and the load refuses it by name.
+    private static Result<SliceConfig> fromTomlDocument(org.pragmatica.config.toml.TomlDocument toml) {
         var instances = toml.getInt("blueprint", "instances").or(3);
         var blueprint = BlueprintConfig.blueprintConfig(instances);
 
-        return sliceConfig(blueprint);
+        return toml.requireNoTypeMismatches().map(_ -> sliceConfig(blueprint));
     }
 }

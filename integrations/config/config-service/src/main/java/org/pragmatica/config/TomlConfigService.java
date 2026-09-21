@@ -72,7 +72,9 @@ public final class TomlConfigService implements ConfigService {
             return ConfigError.sectionNotFound(section).result();
         }
 
-        return bindToClass(section, configClass);
+        // #1098: the binder reads through TomlDocument's typed getters, which default a present-but-
+        // wrong-typed value; the document records those reads and the bind refuses naming every one.
+        return bindToClass(section, configClass).flatMap(bound -> document.requireNoTypeMismatches().map(_ -> bound));
     }
 
     @Override

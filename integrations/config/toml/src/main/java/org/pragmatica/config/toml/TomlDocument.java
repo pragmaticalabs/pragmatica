@@ -19,9 +19,13 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 
 /// Immutable TOML document providing typed access to configuration values.
@@ -44,10 +48,21 @@ import org.pragmatica.lang.Option;
 /// document.getTableArray("products")  // Option<List<Map<String, Object>>>
 /// }</pre>
 ///
-/// @param sections     Map of section names to their key-value pairs
-/// @param tableArrays  Map of array table names to list of table maps
+/// The typed getters answer `Option`, and an absent key and a PRESENT key of the wrong TOML type
+/// (`port = "80x"`, `enabled = "yes"`, `tags = "a"`) both read as empty — which is what lets every
+/// `.or(default)` caller apply its default to a value the operator did write (#1098). The getters
+/// keep their shape (they have ~80 `.or(default)` call sites), and instead RECORD each such read on
+/// the document's [TypeMismatchLedger]; a parser checks [#requireNoTypeMismatches()] once after
+/// its reads and fails the load naming every offending key, value and expected type. The ledger is
+/// read-side state, not content: it is fresh on every parsed, merged or [#with]-derived document and
+/// excluded from [#equals] / [#hashCode].
+///
+/// @param sections            Map of section names to their key-value pairs
+/// @param tableArrays         Map of array table names to list of table maps
+/// @param typeMismatchLedger  Reads that found the key present with the wrong type (#1098)
 public record TomlDocument(Map<String, Map<String, Object>> sections,
-                           Map<String, List<Map<String, Object>>> tableArrays) {
+                           Map<String, List<Map<String, Object>>> tableArrays,
+                           TypeMismatchLedger typeMismatchLedger) {
     /// Empty document constant.
     public static final TomlDocument EMPTY = new TomlDocument(Map.of("", Map.of()),
                                                               Map.of());
@@ -56,6 +71,76 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     public TomlDocument {
         sections = Map.copyOf(sections);
         tableArrays = Map.copyOf(tableArrays);
+    }
+
+    /// The constructor every producer uses: content only, with a fresh ledger.
+    public TomlDocument(Map<String, Map<String, Object>> sections, Map<String, List<Map<String, Object>>> tableArrays) {
+        this(sections, tableArrays, new TypeMismatchLedger());
+    }
+
+    /// One read that found `section.key` present but not of the type the reader asked for.
+    public record TypeMismatch(String section, String key, String expected, String raw) {
+        public String describe() {
+            return (section.isEmpty()
+                    ? key
+                    : section + "." + key) + ": expected " + expected + ", got \"" + raw + "\"";
+        }
+    }
+
+    /// Append-only, thread-safe (a document may be read from several threads); equality is by the
+    /// recorded list so two untouched ledgers compare equal.
+    public static final class TypeMismatchLedger {
+        private final ConcurrentLinkedQueue<TypeMismatch> mismatches = new ConcurrentLinkedQueue<>();
+
+        void record(String section, String key, String expected, Object raw) {
+            mismatches.add(new TypeMismatch(section, key, expected, String.valueOf(raw)));
+        }
+
+        public List<TypeMismatch> snapshot() {
+            return List.copyOf(mismatches);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof TypeMismatchLedger that && snapshot().equals(that.snapshot());
+        }
+
+        @Override
+        public int hashCode() {
+            return snapshot().hashCode();
+        }
+
+        @Override
+        public String toString() {
+            return snapshot().toString();
+        }
+    }
+
+    /// Every typed read so far that found its key present with the wrong type, in read order.
+    public List<TypeMismatch> typeMismatches() {
+        return typeMismatchLedger.snapshot();
+    }
+
+    /// The load-time gate (#1098): `this` when no typed read hit a wrong-typed value, otherwise
+    /// [TomlError.TypeMismatches] naming every one. A parser calls it once, after its reads.
+    public Result<TomlDocument> requireNoTypeMismatches() {
+        var mismatches = typeMismatches();
+
+        return mismatches.isEmpty()
+               ? Result.success(this)
+               : new TomlError.TypeMismatches(mismatches).result();
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof TomlDocument that
+               && sections.equals(that.sections)
+               && tableArrays.equals(that.tableArrays);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(sections, tableArrays);
     }
 
     /// Compatibility constructor for documents without array tables.
@@ -78,7 +163,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     /// @param key     the property key
     /// @return Option containing the integer value, or empty if not found or not an integer
     public Option<Integer> getInt(String section, String key) {
-        return getValue(section, key).flatMap(this::toInt);
+        return typed(section, key, "integer", this::toInt);
     }
 
     /// Get a long value from the document.
@@ -87,7 +172,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     /// @param key     the property key
     /// @return Option containing the long value, or empty if not found or not a number
     public Option<Long> getLong(String section, String key) {
-        return getValue(section, key).flatMap(this::toLong);
+        return typed(section, key, "integer", this::toLong);
     }
 
     /// Get a double value from the document.
@@ -96,7 +181,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     /// @param key     the property key
     /// @return Option containing the double value, or empty if not found or not a number
     public Option<Double> getDouble(String section, String key) {
-        return getValue(section, key).flatMap(this::toDouble);
+        return typed(section, key, "float", this::toDouble);
     }
 
     /// Get a boolean value from the document.
@@ -105,7 +190,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     /// @param key     the property key
     /// @return Option containing the boolean value, or empty if not found or not a boolean
     public Option<Boolean> getBoolean(String section, String key) {
-        return getValue(section, key).flatMap(this::toBoolean);
+        return typed(section, key, "boolean", this::toBoolean);
     }
 
     /// Get a string list from the document.
@@ -114,7 +199,7 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     /// @param key     the property key
     /// @return Option containing the string list, or empty if not found or not a list
     public Option<List<String>> getStringList(String section, String key) {
-        return getValue(section, key).flatMap(this::toStringList);
+        return typed(section, key, "array of strings", this::toStringList);
     }
 
     /// Get all keys in a section.
@@ -218,6 +303,22 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
 
     private Option<Object> getValue(String section, String key) {
         return Option.option(sections.get(section)).flatMap(m -> Option.option(m.get(key)));
+    }
+
+    /// Absent → empty, silently. Present and convertible → the value. Present and NOT convertible →
+    /// empty, and the read is recorded so the load can refuse it (#1098).
+    private <T> Option<T> typed(String section, String key, String expected, Fn1<Option<T>, Object> convert) {
+        return getValue(section, key).flatMap(raw -> convertOrRecord(section, key, expected, raw, convert));
+    }
+
+    private <T> Option<T> convertOrRecord(String section, String key, String expected, Object raw, Fn1<Option<T>, Object> convert) {
+        var converted = convert.apply(raw);
+
+        if (converted.isEmpty()) {
+            typeMismatchLedger.record(section, key, expected, raw);
+        }
+
+        return converted;
     }
 
     private Option<Integer> toInt(Object value) {

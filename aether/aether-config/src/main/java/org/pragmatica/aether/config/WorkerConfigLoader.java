@@ -30,7 +30,13 @@ public final class WorkerConfigLoader {
         return TomlParser.parse(content).flatMap(WorkerConfigLoader::fromDocument);
     }
 
+    // #1098: the typed reads below answer Option and take a default for a present-but-wrong-typed
+    // value; the document records those reads and the load refuses here naming every one.
     private static Result<WorkerConfig> fromDocument(TomlDocument doc) {
+        return assembleFromDocument(doc).flatMap(config -> doc.requireNoTypeMismatches().map(_ -> config));
+    }
+
+    private static Result<WorkerConfig> assembleFromDocument(TomlDocument doc) {
         var coreNodes = parseCoreNodes(doc);
         var clusterPort = doc.getInt("worker", "cluster_port").or(WorkerConfig.DEFAULT_CLUSTER_PORT);
         var swimPort = doc.getInt("worker", "swim_port").or(WorkerConfig.DEFAULT_SWIM_PORT);

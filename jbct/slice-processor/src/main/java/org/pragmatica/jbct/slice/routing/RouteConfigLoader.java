@@ -84,7 +84,14 @@ public final class RouteConfigLoader {
                          .flatMap(RouteConfigLoader::buildRouteConfig);
     }
 
+    // #1098: the typed reads (`errors.default`, `errors.strict`, per-route `deprecated` …) answer
+    // Option and default a present-but-wrong-typed value; the document records those reads and the
+    // load refuses here naming every one.
     private static Result<RouteConfig> buildRouteConfig(TomlDocument toml) {
+        return assembleRouteConfig(toml).flatMap(config -> toml.requireNoTypeMismatches().map(_ -> config));
+    }
+
+    private static Result<RouteConfig> assembleRouteConfig(TomlDocument toml) {
         var errorsConfig = parseErrors(toml);
         var versionNumbers = discoverVersions(toml);
         var hasFlatRoutes = !toml.keys("routes").isEmpty();

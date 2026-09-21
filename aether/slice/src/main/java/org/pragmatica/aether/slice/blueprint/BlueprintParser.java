@@ -59,10 +59,13 @@ public interface BlueprintParser {
 
         var securityOverrides = parseSecurityOverrides(doc);
 
+        // #1098: the `[deployment]` typed reads answer Option and default a present-but-wrong-typed
+        // value; the document records those reads and the parse refuses here naming every one.
         return BlueprintId.blueprintId(idOpt.unwrap()).flatMap(id -> parseSlices(doc).flatMap(slices -> Blueprint.blueprint(id,
                                                                                                                             slices,
                                                                                                                             parseDeploymentConfig(doc),
-                                                                                                                            securityOverrides)));
+                                                                                                                            securityOverrides)))
+                          .flatMap(blueprint -> doc.requireNoTypeMismatches().map(_ -> blueprint));
     }
 
     private static Option<DeploymentConfig> parseDeploymentConfig(TomlDocument doc) {

@@ -112,7 +112,18 @@ public interface StreamConfigParser {
 
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .flatMap(doc -> aggregateStreamResources(doc, roleHints));
+                         .flatMap(doc -> typeChecked(doc, aggregateStreamResources(doc, roleHints)));
+    }
+
+    /// #1098: the typed reads (`partitions`, `replicas`, `batch-size`, `max-retries` …) answer Option
+    /// and take a default for a present-but-wrong-typed value; the document records those reads and
+    /// every entry point refuses the whole parse here, naming all of them. A wrong-typed key is a
+    /// whole-document refusal even on the partitioned path, whose per-section refusals are about
+    /// declared-but-unsatisfiable sections, not about values the operator mistyped.
+    private static <T> Result<T> typeChecked(TomlDocument doc, Result<T> parsed) {
+        return parsed.flatMap(value -> doc.requireNoTypeMismatches()
+                                          .mapError(err -> cause("Stream config parse error: " + err.message()))
+                                          .map(_ -> value));
     }
 
     private static Result<Map<String, StreamResource>> aggregateStreamResources(TomlDocument doc,
@@ -199,7 +210,7 @@ public interface StreamConfigParser {
 
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .map(doc -> partitionStreamResources(doc, roleHints));
+                         .flatMap(doc -> typeChecked(doc, success(partitionStreamResources(doc, roleHints))));
     }
 
     private static PartitionedStreamResources partitionStreamResources(TomlDocument doc,
@@ -228,13 +239,13 @@ public interface StreamConfigParser {
     private static Result<Map<String, StreamConfig>> parseStreamToml(String toml) {
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .map(StreamConfigParser::extractStreamConfigs);
+                         .flatMap(doc -> typeChecked(doc, success(extractStreamConfigs(doc))));
     }
 
     private static Result<Map<String, StreamResource>> parseResourceToml(String toml, Map<String, String> roleHints) {
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .flatMap(doc -> extractStreamResources(doc, roleHints));
+                         .flatMap(doc -> typeChecked(doc, extractStreamResources(doc, roleHints)));
     }
 
     private static Result<Map<String, StreamResource>> extractStreamResources(TomlDocument doc,
@@ -399,7 +410,7 @@ public interface StreamConfigParser {
     private static Result<Map<String, ConsumerConfig>> parseConsumerToml(String toml, String streamName) {
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .map(doc -> extractConsumerConfigs(doc, streamName));
+                         .flatMap(doc -> typeChecked(doc, success(extractConsumerConfigs(doc, streamName))));
     }
 
     private static Map<String, StreamConfig> extractStreamConfigs(TomlDocument doc) {

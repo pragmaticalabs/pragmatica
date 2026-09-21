@@ -15,6 +15,9 @@
  */
 package org.pragmatica.config.toml;
 
+import java.util.List;
+import java.util.stream.Collectors;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
@@ -53,6 +56,17 @@ public sealed interface TomlError extends Cause {
         @Override
         public String message() {
             return "Unterminated multiline string starting at line " + line;
+        }
+    }
+
+    /// #1098 — typed reads that found their key PRESENT but not of the asked-for type; raised by
+    /// [TomlDocument#requireNoTypeMismatches()] so a load fails naming every such key rather than
+    /// silently applying the reader's default to a value the operator wrote.
+    record TypeMismatches(List<TomlDocument.TypeMismatch> mismatches) implements TomlError {
+        @Override
+        public String message() {
+            return "Config value(s) present but not of the expected type: "
+                 + mismatches.stream().map(TomlDocument.TypeMismatch::describe).collect(Collectors.joining("; "));
         }
     }
 
