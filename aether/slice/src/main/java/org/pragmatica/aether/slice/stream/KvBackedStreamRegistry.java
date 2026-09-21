@@ -62,10 +62,20 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> kvStore;
+    private final TimeSpan registerTimeout;
 
     public KvBackedStreamRegistry(ClusterNode<KVCommand<AetherKey>> cluster, KVStore<AetherKey, AetherValue> kvStore) {
+        this(cluster, kvStore, REGISTER_TIMEOUT);
+    }
+
+    /// Bound seam for [#register] (#968): production wiring uses [#REGISTER_TIMEOUT]; the pin for a
+    /// consensus apply that never answers injects a short bound instead of waiting the real 10 s.
+    public KvBackedStreamRegistry(ClusterNode<KVCommand<AetherKey>> cluster,
+                                  KVStore<AetherKey, AetherValue> kvStore,
+                                  TimeSpan registerTimeout) {
         this.cluster = cluster;
         this.kvStore = kvStore;
+        this.registerTimeout = registerTimeout;
     }
 
     public static KvBackedStreamRegistry kvBackedStreamRegistry(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -113,7 +123,7 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
         }
 
         return cluster.apply(List.of(registerCommand(entry)))
-                      .await(REGISTER_TIMEOUT)
+                      .await(registerTimeout)
                       .onFailure(cause -> log.warn("Stream registry register({}) consensus apply failed: {}",
                                                    entry.address().asString(),
                                                    cause.message()))

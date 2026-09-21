@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.aether.api.routes.StreamApiRoutes.StreamCreateRequest;
@@ -32,6 +33,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -39,6 +41,7 @@ import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -166,29 +169,35 @@ class StreamCreateCatalogRegistrationTest {
         }
     }
 
-    /// The catalog put's third outcome: consensus never answers. `register` bounds the wait at 10 s
-    /// (`KvBackedStreamRegistry.REGISTER_TIMEOUT`, the same bound the stream-config commit has) and the
-    /// request fails with `CoreError.Timeout` — not `HttpStatusAware`, so `ProblemResponses.resolveStatus`
-    /// renders it `500`. The ring stays materialized (its own config commit is the stub's success path
-    /// here), so a retry registers it. Costs ~10 s wall-clock by construction; that is the bound under
-    /// test, not fixture slack.
+    /// The catalog put's third outcome: consensus never answers. `register` bounds the wait
+    /// (`KvBackedStreamRegistry.REGISTER_TIMEOUT`, 10 s in production; injected as 200 ms here through
+    /// the registry's bound seam — no sleep) and the request fails with `CoreError.Timeout`, which is
+    /// not `HttpStatusAware`, so `ProblemResponses.resolveStatus` renders it `500`. The ring stays
+    /// materialized, so once consensus answers again a retry registers it. `@Timeout` turns an
+    /// unbounded wait — the mutation that removes the bound — into a red instead of a hang.
     @Test
-    void legacyCreate_catalogPutNeverCompletes_timesOutAsFailure_andRingStays() {
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
+    void legacyCreate_catalogPutNeverCompletes_timesOutAsFailure_ringStays_andRetryRegisters() {
         var manager = streamPartitionManager(Long.MAX_VALUE);
-        var namespacesService = hangingNamespaces();
+        var hanging = new AtomicBoolean(true);
+        var namespacesService = hangingNamespaces(hanging, TimeSpan.timeSpan(200).millis());
         try {
-            var started = System.nanoTime();
             var result = legacyCreate(manager, namespacesService, new StreamCreateRequest(ADDRESS, 1));
-            var elapsedSeconds = (System.nanoTime() - started) / 1_000_000_000L;
 
             result.onSuccess(response -> fail("catalog put never completed, yet the response was: " + response));
             result.onFailure(cause -> {
                 assertThat(cause).isInstanceOf(CoreError.Timeout.class);
                 assertThat(cause).as("a Timeout is not HttpStatusAware, so it renders as 500").isNotInstanceOf(HttpStatusAware.class);
             });
-            assertThat(elapsedSeconds).as("the wait is bounded at REGISTER_TIMEOUT (10 s), not indefinite").isBetween(9L, 30L);
             assertThat(manager.streamInfo(ADDRESS).isPresent()).as("the ring stays materialized for the retry").isTrue();
             assertThat(namespacesService.lookup(address()).isEmpty()).isTrue();
+
+            hanging.set(false);
+            var retried = legacyCreate(manager, namespacesService, new StreamCreateRequest(ADDRESS, 1));
+
+            retried.onFailure(cause -> fail("retry once consensus answers must succeed: " + cause.message()));
+            retried.onSuccess(response -> assertThat(response.status()).isEqualTo("created"));
+            assertThat(namespacesService.lookup(address()).isPresent()).isTrue();
         } finally {
             manager.close();
         }
@@ -256,15 +265,18 @@ class StreamCreateCatalogRegistrationTest {
         return new StreamNamespacesService(registry, new SystemStreamBootstrap(registry));
     }
 
-    /// A registry whose consensus apply never resolves — the never-answers seam for the timeout branch.
-    private static StreamNamespacesService hangingNamespaces() {
+    /// A registry whose consensus apply never resolves while `hanging` is set (an unresolved promise),
+    /// and lands the put in the store once cleared — the never-answers seam for the timeout branch,
+    /// with the register bound injected so the test does not wait the production 10 s.
+    private static StreamNamespacesService hangingNamespaces(AtomicBoolean hanging, TimeSpan registerTimeout) {
         var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
-        var registry = new KvBackedStreamRegistry(hangingClusterNode(), store);
+        var registry = new KvBackedStreamRegistry(hangingClusterNode(store, hanging), store, registerTimeout);
 
         return new StreamNamespacesService(registry, new SystemStreamBootstrap(registry));
     }
 
-    private static ClusterNode<KVCommand<AetherKey>> hangingClusterNode() {
+    private static ClusterNode<KVCommand<AetherKey>> hangingClusterNode(KVStore<AetherKey, AetherValue> store,
+                                                                        AtomicBoolean hanging) {
         return new ClusterNode<>() {
             @Override public NodeId self() {
                 return NodeId.nodeId("test-node").unwrap();
@@ -283,7 +295,13 @@ class StreamCreateCatalogRegistrationTest {
             }
 
             @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-                return Promise.promise();
+                if (hanging.get()) {
+                    return Promise.promise();
+                }
+
+                store.process(store.createBatch(commands));
+
+                return Promise.success(List.of());
             }
         };
     }
