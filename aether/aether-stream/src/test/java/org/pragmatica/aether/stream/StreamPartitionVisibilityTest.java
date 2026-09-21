@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.wal.PartitionWal;
@@ -406,6 +407,99 @@ class StreamPartitionVisibilityTest {
         }
     }
 
+    /// #1387: `visible = min(durable, acked)` must survive a restart. Nothing about acks is persisted on
+    /// the owner (the production `ReplicaRegistry` writes through `WatermarkStore.NOOP`), so the honest
+    /// post-restart position is the sealed bound recovery seeds from: the replayed WAL tail is durable but
+    /// NOT visible until a peer ack covers it — exactly its state before the restart. Before the fix
+    /// recovery placed the tail with the plain `append`, which is visible at once. A "restart" is a second
+    /// manager on the same `walDir` with a fresh (blind) replica registry.
+    @Nested
+    class Restart {
+
+        /// The ticket's P5 scenario: minSync 2, offsets 0..4 published, 0..2 sealed, the peer acked through
+        /// 2. After the restart `visible` is 2 and a read above it sees nothing until the peer re-acks.
+        @Test
+        void walReplay_leavesUnacknowledgedTailInvisible_untilThePeerAcksIt() {
+            var replication = replicationWithPeer();
+            manager = replicatingWalManager(replication, walDir);
+            createStream(manager, 2, 2);
+            publishMany(manager, 5);
+            replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 2L));
+            assertThat(visibleOffset(manager)).as("before the restart").isEqualTo(2L);
+            manager.close();
+
+            var restarted = replicationWithPeer();
+            manager = replicatingWalManager(restarted, walDir, sealedUpTo(2L));
+            createStream(manager, 2, 2);
+
+            assertThat(durableOffset(manager)).as("the replayed tail is durable").isEqualTo(4L);
+            assertThat(visibleOffset(manager)).as("after the restart: no ack is persisted, so visible is the sealed bound")
+                                              .isEqualTo(2L);
+            assertThat(readFrom(manager, 3)).as("read(3) must not expose the unacknowledged tail").isEmpty();
+
+            restarted.handleAck(replicateAck(PEER, STREAM, PARTITION, 4L));
+
+            assertThat(readFrom(manager, 3)).as("re-acknowledged ⇒ visible").containsExactly("e3", "e4");
+        }
+
+        /// Nothing sealed and nothing persisted about acks: the whole replayed log is invisible after the
+        /// restart, and only what the peer confirms again becomes visible.
+        @Test
+        void walReplay_withNothingSealed_exposesNothing_untilThePeerAcks() {
+            var replication = replicationWithPeer();
+            manager = replicatingWalManager(replication, walDir);
+            createStream(manager, 2, 2);
+            publishMany(manager, 3);
+            replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 1L));
+            assertThat(readAll(manager)).as("before the restart").containsExactly("e0", "e1");
+            manager.close();
+
+            var restarted = replicationWithPeer();
+            manager = replicatingWalManager(restarted, walDir);
+            createStream(manager, 2, 2);
+
+            assertThat(visibleOffset(manager)).isEqualTo(-1L);
+            assertThat(readAll(manager)).as("read(0) after the restart").isEmpty();
+
+            restarted.handleAck(replicateAck(PEER, STREAM, PARTITION, 1L));
+
+            assertThat(readAll(manager)).as("what the peer confirms again").containsExactly("e0", "e1");
+        }
+
+        /// Owner-only control: with no peer barrier `visible = durable`, so the replayed tail is visible
+        /// as soon as the partition is rebuilt — the pre-#1387 behaviour, unchanged.
+        @Test
+        void walReplay_ownerOnly_isVisibleAtOnce() {
+            manager = replicatingWalManager(ReplicationManager.NONE, walDir);
+            createStream(manager, 1, 1);
+            publishMany(manager, 3);
+            manager.close();
+
+            manager = replicatingWalManager(ReplicationManager.NONE, walDir);
+            createStream(manager, 1, 1);
+
+            assertThat(readAll(manager)).containsExactly("e0", "e1", "e2");
+        }
+
+        /// Replica control: a replica's visible position is its OWN durability (#1235 replica side), never
+        /// the owner's acks — a blind registry must not hold its replayed tail back.
+        @Test
+        void walReplay_onAReplica_isVisibleAtOnce() {
+            manager = replicatingWalManager(replicationWithPeer(), walDir);
+            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+            createStream(manager, 2, 2);
+            appendRecovered(manager, 3);
+            manager.syncReplicated(STREAM, PARTITION).await().onFailure(cause -> fail(cause.message()));
+            manager.close();
+
+            manager = replicatingWalManager(replicationWithPeer(), walDir);
+            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+            createStream(manager, 2, 2);
+
+            assertThat(readAll(manager)).containsExactly("r0", "r1", "r2");
+        }
+    }
+
     // === helpers ===
 
     private static ReplicationManager replicationWithPeer() {
@@ -493,6 +587,14 @@ class StreamPartitionVisibilityTest {
     /// Replication AND a WAL, without a cluster node or an epoch fence. No public factory combines the two
     /// (production wires both through the fenced factory), so the private constructor is used directly.
     private static StreamPartitionManager replicatingWalManager(ReplicationManager replication, Path walDir) {
+        return replicatingWalManager(replication, walDir, LastSealedOffsetSource.none());
+    }
+
+    /// As above, with the sealed bound recovery seeds from (#1387): a "restart" is a second manager on the
+    /// same `walDir`, and the bound is what its sealed-segment index would report.
+    private static StreamPartitionManager replicatingWalManager(ReplicationManager replication,
+                                                                Path walDir,
+                                                                LastSealedOffsetSource lastSealed) {
         try {
             var constructor = StreamPartitionManager.class.getDeclaredConstructor(long.class,
                                                                                   EvictionListener.class,
@@ -512,8 +614,8 @@ class StreamPartitionVisibilityTest {
                                            Option.none(),
                                            StreamOwnerEpochSource.zero(),
                                            Option.some(walDir),
-                                           LastSealedOffsetSource.none(),
-                                           DurableSealedOffsetSource.none());
+                                           lastSealed,
+                                           DurableSealedOffsetSource.same(lastSealed));
         } catch (ReflectiveOperationException e) {
             return fail("manager construction failed: " + e);
         }
@@ -584,6 +686,31 @@ class StreamPartitionVisibilityTest {
             Thread.onSpinWait();
         }
         return notifications.get();
+    }
+
+    private static LastSealedOffsetSource sealedUpTo(long offset) {
+        return (_, _) -> offset;
+    }
+
+    private static void publishMany(StreamPartitionManager manager, int count) {
+        for (var i = 0; i < count; i++) {
+            publish(manager, "e" + i);
+        }
+    }
+
+    private static long durableOffset(StreamPartitionManager manager) {
+        return manager.partitionBuffer(STREAM, PARTITION)
+                      .map(OffHeapRingBuffer::durableOffset)
+                      .or(Long.MIN_VALUE);
+    }
+
+    private static List<String> readFrom(StreamPartitionManager manager, long fromOffset) {
+        return manager.readLocal(STREAM, PARTITION, fromOffset, 100)
+                      .map(events -> events.stream()
+                                           .map(event -> new String(event.data(), UTF_8))
+                                           .toList())
+                      .onFailure(cause -> fail("read failed: " + cause.message()))
+                      .or(List.of());
     }
 
     private static long visibleOffset(StreamPartitionManager manager) {
