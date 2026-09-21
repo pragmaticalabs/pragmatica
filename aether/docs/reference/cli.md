@@ -1710,6 +1710,48 @@ aether streams read user-events 0 --since 100 --limit 50
 
 ---
 
+## Durable Topics (`aether topics`)
+
+Operator surface for durable pub/sub consumer groups and the projections behind them (#1333). Both
+commands are LOCAL: they describe, and act on, the node the CLI is pointed at.
+
+### `aether topics groups <namespace:topic:version>`
+
+Show every consumer group over a durable topic — one per durable subscriber method, identified as the
+runtime identifies it (`artifactBase#method`) — and, per partition, which node consumes it and which
+owns it, the consensus-committed cursor with its rewind epoch, the live cursor where this node runs the
+consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection.
+
+```bash
+aether topics groups com.example:projection-events:1.0.0
+```
+
+The topic must be addressed in full (`namespace:topic:version`); a bare name is refused because it
+could name two different backing streams. `replayState: UNKNOWN` means this node hosts no projection
+for the group — ask the node shown as `consumerNode`.
+
+See [Management API — Durable Topic Groups](management-api.md#durable-topic-groups).
+
+### `aether topics rebuild <namespace:topic:version> <group>`
+
+Rebuild the read model behind one consumer group's projection: capture the replay range, reset the
+projection store to a new generation, rewind the group's committed cursor under a fenced epoch. Run it
+against the node that consumes the group's partitions (`consumerNode` from `aether topics groups`); any
+other node answers `409` naming that node.
+
+```bash
+aether topics rebuild com.example:projection-events:1.0.0 'com.example:orders-slice#onProjectionEvent'
+```
+
+The answer carries the new generation, the rewind token and the captured range per partition. Follow
+progress with `aether topics groups`: the partition reads `REBUILDING` with `nextReplayOffset` advancing,
+then `LIVE`; `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
+replay event that dead-letters is skipped and stays out of the rebuilt model until redriven.
+
+See [Management API — Rebuild Projection](management-api.md#rebuild-projection).
+
+---
+
 ## Stream Namespaces (`aether stream`)
 
 The `aether stream` command group (singular) operates on **namespaced** streams addressed by a

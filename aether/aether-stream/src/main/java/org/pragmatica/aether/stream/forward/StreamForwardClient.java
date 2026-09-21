@@ -13,8 +13,10 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
@@ -111,14 +113,32 @@ public interface StreamForwardClient {
         return new DefaultStreamForwardClient(selfNodeId, transport, publishTimeout, readTimeout, metrics);
     }
 
-    record ReadForwardResult(List<RawEventDto> events, boolean truncated) {
+    /// `bounds` (#1333): the serving node's visible span of the partition at answer time; none when it held
+    /// no ring, or from a client that does not carry it.
+    record ReadForwardResult(List<RawEventDto> events, boolean truncated, Option<VisibleBounds> bounds) {
         public ReadForwardResult {
             events = List.copyOf(events);
+        }
+
+        public ReadForwardResult(List<RawEventDto> events, boolean truncated) {
+            this(events, truncated, Option.none());
         }
 
         public static ReadForwardResult readForwardResult(List<RawEventDto> events, boolean truncated) {
             return new ReadForwardResult(events, truncated);
         }
+    }
+
+    /// #1333: the owner's visible bounds of a partition this node holds no ring for — a `ReadForward` that
+    /// asks for no events (`maxEvents = 0`, from beyond any head so retention can never refuse it) and keeps
+    /// only the bounds the response carries. Fails when the serving node holds no ring either.
+    default Promise<VisibleBounds> boundsRemote(NodeId ownerId, String streamName, int partition) {
+        return readRemote(ownerId, streamName, partition, Long.MAX_VALUE, 0).flatMap(result -> result.bounds()
+                                                                                                     .toResult(new StreamForwardError.ReadForwardFailed("Node " + ownerId.id()
+                                                                                                                                                       + " holds no ring for " + streamName
+                                                                                                                                                       + "[" + partition
+                                                                                                                                                       + "]"))
+                                                                                                     .async());
     }
 
     private static StreamForwardClient noOpClient() {
@@ -309,7 +329,7 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     private void resolveFromReadResponse(Promise<ReadForwardResult> promise, ReadForwardResponse response) {
         if (response.success()) {
             metrics.recordSuccess();
-            promise.succeed(new ReadForwardResult(response.events(), response.truncated()));
+            promise.succeed(new ReadForwardResult(response.events(), response.truncated(), response.bounds()));
         } else {
             promise.resolve(new StreamForwardError.ReadForwardFailed(response.errorMessage()).result());
         }

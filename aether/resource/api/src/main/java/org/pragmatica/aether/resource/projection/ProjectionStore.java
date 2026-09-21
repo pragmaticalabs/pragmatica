@@ -59,8 +59,9 @@ import org.pragmatica.lang.Unit;
 /// and asynchronous (§6), and a zombie consumer can still be reporting its pre-rewind position, so a report
 /// computed before the rewind can ARRIVE after it. Honoured, an in-range stale cursor makes the replay's own
 /// offsets answer [WriteOutcome#ALREADY_APPLIED] — acknowledged, never written, silently lost. So
-/// [#beginRewind] mints a [RewindToken] which the rebuild hands to whatever rewinds the cursor, every
-/// report carries it, and a report stamped by any other rewind is ignored.
+/// [#beginRewind] records the [RewindToken] the runtime minted from committed state, the rebuild hands it
+/// to whatever rewinds the cursor, every report carries it, and a report stamped by any other rewind is
+/// ignored.
 ///
 /// **Generation slot durability:** the counter must survive both [#reset] and process restart with
 /// the same durability as the read model itself — it versions that model, and a model that
@@ -107,10 +108,13 @@ public interface ProjectionStore<S> {
     /// honoured, so a report produced before it — however late it arrives — cannot move the replay.
     record RewindToken(long generation, long rewind) {}
 
-    /// Begin `generation`'s rewind: mint its token, which the rebuild hands to whatever rewinds the cursor.
-    /// The cursor has NOT moved yet when this resolves — the rewind itself follows. Minting VOIDS any
-    /// earlier token. A stale generation changes nothing and its token is already dead.
-    Promise<RewindToken> beginRewind(long generation);
+    /// Begin `generation`'s rewind under `token` — minted by the RUNTIME from the group's committed
+    /// cursor state (`Projection.ReplayCursor#mintRewindToken`), never by the store: a store-local counter
+    /// restarts with the process, and a token equal to one already committed would let a stale consumer's
+    /// checkpoint pass for replay progress (#1333 review). Recording it VOIDS any earlier token. The cursor
+    /// has NOT moved yet when this resolves — the rewind itself follows. A stale generation records nothing
+    /// and answers the token unchanged; its rewind is already dead.
+    Promise<RewindToken> beginRewind(long generation, RewindToken token);
     /// The group's committed cursor for `partition` — the next offset it will read — as reported by the
     /// consumer the rewind started and READ AFTER the rewind took effect, stamped with that rewind's `token`
     /// (a valid token on a cursor read before the rewind completed reproduces the stale-report loss). While
@@ -120,4 +124,24 @@ public interface ProjectionStore<S> {
     Promise<Unit> cursorCommitted(RewindToken token, int partition, long committedCursor);
     /// Current generation; 0 when never reset.
     Promise<Long> generation();
+
+    /// One partition still REBUILDING: the next replay offset it will admit and the head it goes LIVE
+    /// past.
+    record PartitionReplay(long nextOffset, long throughOffset) {}
+
+    /// The generation's replay state as the store sees it (#1333, added for the operator surface): the
+    /// current generation, the partitions still REBUILDING keyed by partition, and the current rewind's
+    /// token when one has been minted. A partition absent from `rebuilding` is LIVE; the generation is
+    /// LIVE when the map is empty. Pure read — nothing here moves the replay.
+    record ReplayStatus(long generation, Map<Integer, PartitionReplay> rebuilding, Option<RewindToken> currentRewind) {
+        public boolean isLive() {
+            return rebuilding.isEmpty();
+        }
+
+        public boolean isLive(int partition) {
+            return ! rebuilding.containsKey(partition);
+        }
+    }
+
+    Promise<ReplayStatus> replayStatus();
 }

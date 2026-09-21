@@ -1416,7 +1416,7 @@ public final class KVStoreSerializer {
                                                                                           .epoch()
                                                                                           .rabiaTerm() + PIPE + v.token()
                                                                                                                  .epoch()
-                                                                                                                 .localCounter();
+                                                                                                                 .localCounter() + PIPE + v.rewindGeneration() + PIPE + v.rewindSequence() + PIPE + v.rewind();
     }
 
     private static String serializeStreamRegistration(StreamRegistrationValue v) {
@@ -1702,17 +1702,19 @@ public final class KVStoreSerializer {
                                                                                                                                                           new NodeId(parts[5]))));
     }
 
-    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (5 fields, pipe-delimited):
-    /// `committedOffset|commitTimestamp|assignee|rabiaTerm|localCounter` — the last three are the
-    /// [AssignmentToken] the checkpoint was written under (#1271). Consensus-visible consumer checkpoints
-    /// (#488): a declarative consumer resumes from the cluster cursor when a partition's owner changes,
-    /// so the entry MUST survive a snapshot round-trip.
+    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (8 fields, pipe-delimited):
+    /// `committedOffset|commitTimestamp|assignee|rabiaTerm|localCounter|rewindGeneration|rewindSequence|rewind`
+    /// — fields 3–5 are the [AssignmentToken] the checkpoint was written under (#1271), fields 6–8 its
+    /// rewind epoch and rewind-record flag (#1333). Consensus-visible consumer checkpoints (#488): a
+    /// declarative consumer resumes from the cluster cursor when a partition's owner changes, so the entry
+    /// MUST survive a snapshot round-trip — including its rewind epoch, which is what fences a zombie's
+    /// post-restore checkpoint.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamCursorCheckpointEntry(String identity,
                                                                                               String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 5) {
-            return parseFailure("stream-cursor value requires 5 fields, got " + parts.length);
+        if (parts.length != 8) {
+            return parseFailure("stream-cursor value requires 8 fields, got " + parts.length);
         }
 
         return StreamCursorCheckpointKey.streamCursorCheckpointKey("stream-cursor/" + identity).flatMap(key -> buildStreamCursorCheckpointValue(parts).map(value -> entry(key,
@@ -1722,14 +1724,25 @@ public final class KVStoreSerializer {
     private static Result<AetherValue> buildStreamCursorCheckpointValue(String[] parts) {
         return Result.all(Number.parseLong(parts[0]),
                           Number.parseLong(parts[1]),
-                          NodeId.nodeId(parts[2]),
-                          Number.parseLong(parts[3]),
-                          Number.parseLong(parts[4]))
-                     .map((offset, timestamp, assignee, rabiaTerm, localCounter) -> new StreamCursorCheckpointValue(offset,
-                                                                                                                    timestamp,
-                                                                                                                    AssignmentToken.assignmentToken(assignee,
-                                                                                                                                                    Epoch.epoch(rabiaTerm,
-                                                                                                                                                                localCounter))));
+                          parseAssignmentToken(parts[2], parts[3], parts[4]),
+                          Number.parseLong(parts[5]),
+                          Number.parseLong(parts[6]))
+                     .map((offset, timestamp, token, rewindGeneration, rewindSequence) -> new StreamCursorCheckpointValue(offset,
+                                                                                                                          timestamp,
+                                                                                                                          token,
+                                                                                                                          rewindGeneration,
+                                                                                                                          rewindSequence,
+                                                                                                                          Boolean.parseBoolean(parts[7])));
+    }
+
+    private static Result<AssignmentToken> parseAssignmentToken(String assignee,
+                                                                String rabiaTerm,
+                                                                String localCounter) {
+        return Result.all(NodeId.nodeId(assignee),
+                          Number.parseLong(rabiaTerm),
+                          Number.parseLong(localCounter))
+                     .map((node, term, counter) -> AssignmentToken.assignmentToken(node,
+                                                                                   Epoch.epoch(term, counter)));
     }
 
     /// Mirror of [#serializeStreamRegistration]. Declarative stream-consumer registrations have been

@@ -14,6 +14,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class KVStoreOwnerFenceTest {
     private record Key(String value) implements StructuredKey {}
     private record Owner(Long fenceEpoch, String fenceOwner, String payload) implements OwnerFenced<Long, String> {}
+    private record MintingOwner(Long fenceEpoch, String fenceOwner) implements OwnerFenced<Long, String> {
+        @Override public boolean mintsEpoch() { return true; }
+    }
     private static final Key KEY = new Key("community");
 
     private KVStore<Key, Object> store() {
@@ -51,6 +54,26 @@ class KVStoreOwnerFenceTest {
         put(store, successor);
         put(store, refreshed);
         assertThat(store.get(KEY).unwrap()).isEqualTo(successor);
+    }
+
+    @Test
+    void mintRequiresSuccessorEpoch_evenForTheSameOwner() {
+        var store = store();
+        var incumbent = new Owner(7L, "a", "initial");
+        put(store, incumbent);
+        put(store, new MintingOwner(7L, "a"));
+        assertThat(store.get(KEY).unwrap()).isEqualTo(incumbent);
+
+        var successor = new MintingOwner(8L, "b");
+        put(store, successor);
+        assertThat(store.get(KEY).unwrap()).isEqualTo(successor);
+        var refresh = new Owner(8L, "b", "refreshed");
+        put(store, refresh);
+        assertThat(store.get(KEY).unwrap()).isEqualTo(refresh);
+        put(store, new MintingOwner(8L, "b"));
+        assertThat(store.get(KEY).unwrap()).isEqualTo(refresh);
+        put(store, new Owner(8L, "c", "conflicting"));
+        assertThat(store.get(KEY).unwrap()).isEqualTo(refresh);
     }
 
     @Test

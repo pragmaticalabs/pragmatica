@@ -7,7 +7,9 @@ package org.pragmatica.aether.stream.forward;
 import java.util.Arrays;
 import java.util.List;
 
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
@@ -169,12 +171,19 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
         }
     }
 
+    /// `earliestRetained` / `visibleHead` (#1333): the serving node's consumer-visible span of the partition
+    /// at answer time — the ring tail and the VISIBLE position — on every successful response, `-1/-1` when
+    /// the serving node holds no ring and on a failure. They let a node that holds no ring learn the bounds
+    /// a projection rebuild must capture through the same forward a consumer read takes (CTO ruling 4 (a),
+    /// know `99b1a8d58`): a layout widening of this pinned record, no new message type and no KV record.
     record ReadForwardResponse(NodeId sender,
                                String correlationId,
                                boolean success,
                                List<RawEventDto> events,
                                boolean truncated,
-                               String errorMessage) implements StreamForwardMessage {
+                               String errorMessage,
+                               long earliestRetained,
+                               long visibleHead) implements StreamForwardMessage {
         public ReadForwardResponse {
             events = List.copyOf(events);
         }
@@ -182,17 +191,57 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
         public static ReadForwardResponse successResponse(NodeId sender,
                                                           String correlationId,
                                                           List<RawEventDto> events) {
-            return new ReadForwardResponse(sender, correlationId, true, events, false, "");
+            return successResponse(sender, correlationId, events, VisibleBounds.absent());
+        }
+
+        public static ReadForwardResponse successResponse(NodeId sender,
+                                                          String correlationId,
+                                                          List<RawEventDto> events,
+                                                          VisibleBounds bounds) {
+            return new ReadForwardResponse(sender,
+                                           correlationId,
+                                           true,
+                                           events,
+                                           false,
+                                           "",
+                                           bounds.earliestRetained(),
+                                           bounds.visibleHead());
         }
 
         public static ReadForwardResponse truncatedResponse(NodeId sender,
                                                             String correlationId,
                                                             List<RawEventDto> events) {
-            return new ReadForwardResponse(sender, correlationId, true, events, true, "");
+            return truncatedResponse(sender, correlationId, events, VisibleBounds.absent());
+        }
+
+        public static ReadForwardResponse truncatedResponse(NodeId sender,
+                                                            String correlationId,
+                                                            List<RawEventDto> events,
+                                                            VisibleBounds bounds) {
+            return new ReadForwardResponse(sender,
+                                           correlationId,
+                                           true,
+                                           events,
+                                           true,
+                                           "",
+                                           bounds.earliestRetained(),
+                                           bounds.visibleHead());
         }
 
         public static ReadForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
-            return new ReadForwardResponse(sender, correlationId, false, List.of(), false, errorMessage);
+            return new ReadForwardResponse(sender,
+                                           correlationId,
+                                           false,
+                                           List.of(),
+                                           false,
+                                           errorMessage,
+                                           VisibleBounds.NONE,
+                                           VisibleBounds.NONE);
+        }
+
+        /// The serving node's bounds, or none when it held no ring (or the read failed).
+        public Option<VisibleBounds> bounds() {
+            return VisibleBounds.of(earliestRetained, visibleHead);
         }
     }
 }

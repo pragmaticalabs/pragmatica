@@ -63,6 +63,7 @@ import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
 import org.pragmatica.aether.api.routes.StreamManager;
 import org.pragmatica.aether.api.routes.StreamRoutes;
+import org.pragmatica.aether.api.routes.TopicRoutes;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.Pipeline;
@@ -349,6 +350,7 @@ class ManagementServerImpl implements ManagementServer {
                                      .map(applier -> ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier, applier))
                                      .or(ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier)));
         routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
+        routeSources.add(TopicRoutes.topicRoutes(nodeSupplier));
         routeSources.add(StreamRoutes.streamRoutes(nodeSupplier,
                                                    nodeSupplier.get().consumerGroupCoordinator(),
                                                    nodeSupplier.get().consumerGroupRegistry()));

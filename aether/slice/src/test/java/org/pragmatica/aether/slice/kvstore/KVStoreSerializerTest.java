@@ -1175,14 +1175,14 @@ class KVStoreSerializerTest {
         @Test
         void fromToml_streamCursorCheckpoint_recoversKeyAndOffset() {
             var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("orders", 2, "orders-onOrderEvent");
-            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L, TOKEN);
+            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L, TOKEN, 3L, 2L, true);
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(entries -> {
                                  assertThat(entries).containsKey(key);
-                                 assertThat(entries.get(key)).describedAs("offset AND the assignment token it was written under (#1271)")
+                                 assertThat(entries.get(key)).describedAs("offset, the assignment token (#1271) AND the rewind epoch + rewind flag (#1333) survive the round-trip")
                                                              .isEqualTo(value);
                              });
         }
@@ -1226,7 +1226,7 @@ class KVStoreSerializerTest {
                                                                         "orders-onOrderEvent",
                                                                         false,
                                                                         "java.lang.String"));
-            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L, TOKEN));
+            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L, TOKEN, 0L, 0L, false));
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)

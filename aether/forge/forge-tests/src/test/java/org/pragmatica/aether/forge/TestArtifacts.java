@@ -91,6 +91,11 @@ final class TestArtifacts {
     /// blueprint version, resolved from the local Maven repo).
     static final String DURABLE_TOPIC_SLICE = "org.pragmatica.aether.test:test-durable-topic-durable-topic-slice:1.0.0";
 
+    /// The second slice of the same fixture module (#1333): a [Projection] over the single-partition
+    /// durable topic `projection-events`, attached through the provisioned `ProjectionRuntime`, with an
+    /// order-sensitive fold and a poison arm — what `DurableProjectionRebuildForgeTest` drives.
+    static final String DURABLE_PROJECTION_SLICE = "org.pragmatica.aether.test:test-durable-topic-projection-slice:1.0.0";
+
     /// The version every `[streams.X]` declaration in `aether/tests/blueprints` leaves implicit —
     /// `ResourceVersion.defaultVersion()`. It is the STREAM's version, not the blueprint's; the two
     /// merely coincide in this repository (`BlueprintStreamAddresses` on why they need not).

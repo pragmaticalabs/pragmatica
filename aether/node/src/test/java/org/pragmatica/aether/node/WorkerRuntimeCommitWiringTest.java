@@ -75,7 +75,8 @@ class WorkerRuntimeCommitWiringTest {
             }
         });
         var runtimeCursors = (Option<?>) field(component(node, "streamConsumerRuntime"), "cursorStore");
-        var clusterCursors = (org.pragmatica.aether.node.stream.ClusterCursorStore) runtimeCursors.unwrap();
+        var projectionCursors = (org.pragmatica.aether.node.projection.ProjectionAwareCursorStore) runtimeCursors.unwrap();
+        var clusterCursors = (org.pragmatica.aether.node.stream.ClusterCursorStore) projectionCursors.delegate();
         var command = new KVCommand.Noop<AetherKey>(AetherKey.ClusterConfigKey.CURRENT);
         assertThat(context.cluster().apply(List.of(command)).await().isSuccess()).isTrue();
         assertThat(publisherCluster.apply(List.of(command)).await().isSuccess()).isTrue();

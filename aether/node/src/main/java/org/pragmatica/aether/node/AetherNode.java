@@ -170,6 +170,10 @@ import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.node.projection.PartitionBounds;
+import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
+import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
+import org.pragmatica.aether.node.projection.ProjectionRegistry;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
@@ -1775,6 +1779,7 @@ public interface AetherNode extends ManageableNode {
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
                           StreamConsumerManager streamConsumerManager,
+                          Option<ProjectionNodeSupport> projectionNodeSupport,
                           StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
                           ClusterTopologyManager clusterTopologyManagerInstance,
@@ -4967,14 +4972,23 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                 partition,
                                                                                                                                                                                 group),
                                                                                                                                     ConsumerAssignmentValue.class);
-        var streamClusterCursorStore = ClusterCursorStore.clusterCursorStore(streamCursorStore,
-                                                                             config.self(),
-                                                                             cursorKey -> kvStore.getTyped(cursorKey,
-                                                                                                           AetherValue.StreamCursorCheckpointValue.class),
-                                                                             committedConsumerAssignments,
-                                                                             commands -> switchableCluster.apply(commands)
-                                                                                                          .mapToUnit(),
-                                                                             () -> switchableCluster.current() instanceof ForwardingClusterNode);
+        // #1333: the cluster cursor store is decorated with the projection commit hook — after every
+        // resolved commit the group's projection (if this node hosts one) learns the committed cursor,
+        // stamped with the committing consumer's rewind epoch. The registry is keyed on the runtime's own
+        // group identity (artifactBase#method) and resolves lazily against the topic subscriptions.
+        var projectionRegistry = ProjectionRegistry.projectionRegistry(topicSubscriptionRegistry::allSubscriptions);
+        Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
+                                                                                                                                                        AetherValue.StreamCursorCheckpointValue.class);
+        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = commands -> switchableCluster.apply(commands)
+                                                                                                    .mapToUnit();
+        var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
+                                                                                                                                   config.self(),
+                                                                                                                                   committedCursorReader,
+                                                                                                                                   committedConsumerAssignments,
+                                                                                                                                   cursorCommandWriter,
+                                                                                                                                   () -> switchableCluster.current() instanceof ForwardingClusterNode),
+                                                                                             projectionRegistry);
+
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
@@ -5027,7 +5041,11 @@ public interface AetherNode extends ManageableNode {
                                                                                 TopicGroupDeclarationSource.topicGroupDeclarationSource(topicSubscriptionRegistry,
                                                                                                                                         streamName -> streamConsumerOwnership.partitionCount(streamName)
                                                                                                                                                                              .isPresent()),
-                                                                                consumerAssignmentAuthority);
+                                                                                consumerAssignmentAuthority,
+                                                                                (streamName, partition, group) -> committedCursorReader.apply(AetherKey.StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName,
+                                                                                                                                                                                                            partition,
+                                                                                                                                                                                                            group))
+                                                                                                                                       .map(AetherValue.StreamCursorCheckpointValue::rewindEpoch));
         // #1271: a node that loses quorum stops delivering at the self-fence's DETECTION, not at the drain's
         // halt — the majority is free to reassign its partitions from that moment. Re-set here because the
         // manager exists only now; the detector was armed with the same chain earlier and this replaces it
@@ -5038,6 +5056,24 @@ public interface AetherNode extends ManageableNode {
         // consumer that outlived its node would deliver into a torn-down slice.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamConsumerManager::reconcile,
                                                                       STREAM_CONSUMER_RECONCILE_INTERVAL));
+        // #1333: a committed checkpoint carrying a newer rewind epoch than the held consumer's restarts
+        // that consumer on the next pass, now rather than on the 5s tick. The manager filters the key type.
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                 streamConsumerManager::onCheckpointPut));
+        // #1333: what a slice's ProjectionRuntime resource needs from the node — the registry above and
+        // the replay cursor's collaborators (partition bounds from the local ring or forwarded to the owner
+        // through the read router, the fenced checkpoint put, the committed read-back). Registered beside
+        // the entity drivers, as one extension.
+        var projectionNodeSupport = ProjectionNodeSupport.projectionNodeSupport(projectionRegistry,
+                                                                                streamClusterCursorStore::reportFailureCount,
+                                                                                streamConsumerOwnership::partitionCount,
+                                                                                PartitionBounds.routed(streamReadRouter),
+                                                                                cursorCommandWriter,
+                                                                                committedCursorReader,
+                                                                                committedConsumerAssignments);
+
+        resourceProviderSetup.spiProvider()
+                             .onPresent(spi -> spi.registerExtension(ProjectionNodeSupport.class, projectionNodeSupport));
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,
@@ -5294,6 +5330,7 @@ public interface AetherNode extends ManageableNode {
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
                                   streamConsumerManager,
+                                  Option.some(projectionNodeSupport),
                                   streamNamespacesService,
                                   storageSetups,
                                   clusterTopologyManager,
@@ -5510,6 +5547,7 @@ public interface AetherNode extends ManageableNode {
                                                                         consumerGroupCoordinator,
                                                                         consumerGroupRegistry,
                                                                         streamConsumerManager,
+                                                                        Option.some(projectionNodeSupport),
                                                                         streamNamespacesService,
                                                                         storageSetups,
                                                                         clusterTopologyManager,
