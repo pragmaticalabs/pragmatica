@@ -12,7 +12,10 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.SliceClassLoader;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -27,19 +30,23 @@ import static org.pragmatica.lang.Unit.unit;
 public interface SharedDependencyLoader {
     Logger log = LoggerFactory.getLogger(SharedDependencyLoader.class);
 
+    /// `requester` is the slice whose dependency file is being processed; it is recorded against
+    /// every artifact it puts into the shared loader so a later conflict can name both sides (#1184).
     static Promise<Unit> processInfraDependencies(List<ArtifactDependency> dependencies,
                                                   SharedLibraryClassLoader sharedLibraryLoader,
-                                                  Repository repository) {
+                                                  Repository repository,
+                                                  String requester) {
         if (dependencies.isEmpty()) {
             return Promise.success(unit());
         }
 
-        return processInfraSequentially(dependencies, sharedLibraryLoader, repository);
+        return processInfraSequentially(dependencies, sharedLibraryLoader, repository, requester);
     }
 
     private static Promise<Unit> processInfraSequentially(List<ArtifactDependency> dependencies,
                                                           SharedLibraryClassLoader sharedLibraryLoader,
-                                                          Repository repository) {
+                                                          Repository repository,
+                                                          String requester) {
         if (dependencies.isEmpty()) {
             return Promise.success(unit());
         }
@@ -47,44 +54,95 @@ public interface SharedDependencyLoader {
         var dependency = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
 
-        return loadInfraIntoShared(dependency, sharedLibraryLoader, repository).flatMap(_ -> processInfraSequentially(remaining,
-                                                                                                                      sharedLibraryLoader,
-                                                                                                                      repository));
+        return loadInfraIntoShared(dependency, sharedLibraryLoader, repository, requester).flatMap(_ -> processInfraSequentially(remaining,
+                                                                                                                                 sharedLibraryLoader,
+                                                                                                                                 repository,
+                                                                                                                                 requester));
     }
 
+    /// #1184 — `[infra]` has no per-slice fallback (unlike `[shared]`, which loads a conflicting
+    /// version into the slice's own loader), so the compatibility verdict decides the slice load:
+    /// `Compatible` (the loaded version satisfies this slice's pattern) reuses it; `Conflict` fails
+    /// the load, naming both versions and both requesters. Before this the verdict was discarded
+    /// and both cases were a DEBUG "already loaded" no-op.
     private static Promise<Unit> loadInfraIntoShared(ArtifactDependency dependency,
                                                      SharedLibraryClassLoader sharedLibraryLoader,
-                                                     Repository repository) {
+                                                     Repository repository,
+                                                     String requester) {
         return sharedLibraryLoader.checkCompatibility(dependency)
-                                  .fold(() -> loadInfraArtifact(dependency, sharedLibraryLoader, repository),
-                                        _ -> logInfraAlreadyLoaded(dependency));
+                                  .fold(() -> loadInfraArtifact(dependency, sharedLibraryLoader, repository, requester),
+                                        result -> handleInfraCompatibilityResult(dependency,
+                                                                                 result,
+                                                                                 sharedLibraryLoader,
+                                                                                 requester));
+    }
+
+    private static Promise<Unit> handleInfraCompatibilityResult(ArtifactDependency dependency,
+                                                                CompatibilityResult result,
+                                                                SharedLibraryClassLoader sharedLibraryLoader,
+                                                                String requester) {
+        return switch (result) {
+            case CompatibilityResult.Compatible(var loadedVersion) -> logInfraCompatible(dependency, loadedVersion);
+            case CompatibilityResult.Conflict(var loadedVersion, _) -> refuseInfraConflict(dependency,
+                                                                                           loadedVersion,
+                                                                                           sharedLibraryLoader,
+                                                                                           requester);
+            case CompatibilityResult.unused() -> Promise.success(unit());
+        };
     }
 
     private static Promise<Unit> loadInfraArtifact(ArtifactDependency dependency,
                                                    SharedLibraryClassLoader sharedLibraryLoader,
-                                                   Repository repository) {
+                                                   Repository repository,
+                                                   String requester) {
         return toArtifact(dependency).async()
                          .flatMap(repository::locate)
-                         .map(location -> addInfraToSharedLoader(dependency,
-                                                                 sharedLibraryLoader,
-                                                                 location.url()));
+                         .flatMap(location -> addInfraToSharedLoader(dependency,
+                                                                     sharedLibraryLoader,
+                                                                     location.url(),
+                                                                     requester).async());
     }
 
-    private static Unit addInfraToSharedLoader(ArtifactDependency dependency,
-                                               SharedLibraryClassLoader sharedLibraryLoader,
-                                               URL url) {
+    private static Result<Unit> addInfraToSharedLoader(ArtifactDependency dependency,
+                                                       SharedLibraryClassLoader sharedLibraryLoader,
+                                                       URL url,
+                                                       String requester) {
         var version = extractVersion(dependency.versionPattern());
 
-        sharedLibraryLoader.addArtifact(dependency.groupId(), dependency.artifactId(), version, url);
-        log.debug("Loaded infra dependency {} into SharedLibraryClassLoader", dependency.asString());
-
-        return unit();
+        return sharedLibraryLoader.addArtifact(dependency.groupId(),
+                                               dependency.artifactId(),
+                                               version,
+                                               url,
+                                               requester)
+                                  .onSuccessRun(() -> log.debug("Loaded infra dependency {} into SharedLibraryClassLoader for {}",
+                                                                dependency.asString(),
+                                                                requester));
     }
 
-    private static Promise<Unit> logInfraAlreadyLoaded(ArtifactDependency dependency) {
-        log.debug("Infra dependency {} already loaded", dependency.asString());
+    private static Promise<Unit> logInfraCompatible(ArtifactDependency dependency, Version loadedVersion) {
+        log.debug("Infra dependency {} compatible with loaded version {}",
+                  dependency.asString(),
+                  loadedVersion.withQualifier());
 
         return Promise.success(unit());
+    }
+
+    private static Promise<Unit> refuseInfraConflict(ArtifactDependency dependency,
+                                                     Version loadedVersion,
+                                                     SharedLibraryClassLoader sharedLibraryLoader,
+                                                     String requester) {
+        var key = dependency.groupId() + ":" + dependency.artifactId();
+        var conflict = new SliceLoadingFailure.Fatal.SharedLoaderVersionConflict(requester,
+                                                                                 dependency.asString(),
+                                                                                 key
+                                                                                + ":" + loadedVersion.withQualifier(),
+                                                                                 sharedLibraryLoader.loadedBy(dependency.groupId(),
+                                                                                                              dependency.artifactId())
+                                                                                                    .or("<unrecorded>"));
+
+        log.error(conflict.message());
+
+        return conflict.promise();
     }
 
     record SharedDependencyResult(SliceClassLoader sliceClassLoader, List<URL> conflictingJarUrls) {}
@@ -92,12 +150,13 @@ public interface SharedDependencyLoader {
     static Promise<SharedDependencyResult> processSharedDependencies(List<ArtifactDependency> dependencies,
                                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                                      Repository repository,
-                                                                     URL sliceJarUrl) {
+                                                                     URL sliceJarUrl,
+                                                                     String requester) {
         var conflictUrls = new ArrayList<URL>();
 
-        return processSequentially(dependencies, sharedLibraryLoader, repository, conflictUrls).map(_ -> createSliceClassLoader(sharedLibraryLoader,
-                                                                                                                                sliceJarUrl,
-                                                                                                                                conflictUrls));
+        return processSequentially(dependencies, sharedLibraryLoader, repository, conflictUrls, requester).map(_ -> createSliceClassLoader(sharedLibraryLoader,
+                                                                                                                                           sliceJarUrl,
+                                                                                                                                           conflictUrls));
     }
 
     private static SharedDependencyResult createSliceClassLoader(SharedLibraryClassLoader sharedLibraryLoader,
@@ -115,7 +174,8 @@ public interface SharedDependencyLoader {
     private static Promise<Unit> processSequentially(List<ArtifactDependency> dependencies,
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      Repository repository,
-                                                     List<URL> conflictUrls) {
+                                                     List<URL> conflictUrls,
+                                                     String requester) {
         if (dependencies.isEmpty()) {
             return Promise.success(unit());
         }
@@ -123,18 +183,20 @@ public interface SharedDependencyLoader {
         var dependency = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
 
-        return processSingleDependency(dependency, sharedLibraryLoader, repository, conflictUrls).flatMap(_ -> processSequentially(remaining,
-                                                                                                                                   sharedLibraryLoader,
-                                                                                                                                   repository,
-                                                                                                                                   conflictUrls));
+        return processSingleDependency(dependency, sharedLibraryLoader, repository, conflictUrls, requester).flatMap(_ -> processSequentially(remaining,
+                                                                                                                                              sharedLibraryLoader,
+                                                                                                                                              repository,
+                                                                                                                                              conflictUrls,
+                                                                                                                                              requester));
     }
 
     private static Promise<Unit> processSingleDependency(ArtifactDependency dependency,
                                                          SharedLibraryClassLoader sharedLibraryLoader,
                                                          Repository repository,
-                                                         List<URL> conflictUrls) {
+                                                         List<URL> conflictUrls,
+                                                         String requester) {
         return sharedLibraryLoader.checkCompatibility(dependency)
-                                  .fold(() -> loadIntoShared(dependency, sharedLibraryLoader, repository),
+                                  .fold(() -> loadIntoShared(dependency, sharedLibraryLoader, repository, requester),
                                         result -> handleCompatibilityResult(dependency, result, repository, conflictUrls));
     }
 
@@ -171,36 +233,59 @@ public interface SharedDependencyLoader {
         return loadConflictIntoSlice(dependency, repository, conflictUrls);
     }
 
+    /// The runtime-provided fallback covers a FAILED LOCATE only. Before #1184 the `orElse` sat
+    /// after the add as well, so a refusal from `addArtifact` would have been re-routed into a
+    /// runtime-provided registration — a no-op success on a key that is already held. The locate
+    /// is resolved to an `Option` first so the add's own verdict propagates.
     private static Promise<Unit> loadIntoShared(ArtifactDependency dependency,
                                                 SharedLibraryClassLoader sharedLibraryLoader,
-                                                Repository repository) {
+                                                Repository repository,
+                                                String requester) {
+        return locateOptional(dependency, repository).flatMap(located -> located.fold(() -> registerAsRuntimeProvided(dependency,
+                                                                                                                      sharedLibraryLoader,
+                                                                                                                      requester),
+                                                                                      location -> addToSharedLoader(dependency,
+                                                                                                                    sharedLibraryLoader,
+                                                                                                                    location.url(),
+                                                                                                                    requester).async()));
+    }
+
+    private static Promise<Option<Location>> locateOptional(ArtifactDependency dependency, Repository repository) {
         return toArtifact(dependency).async()
                          .flatMap(repository::locate)
-                         .map(location -> addToSharedLoader(dependency,
-                                                            sharedLibraryLoader,
-                                                            location.url()))
-                         .orElse(() -> registerAsRuntimeProvided(dependency, sharedLibraryLoader));
+                         .map(Option::<Location> some)
+                         .orElse(() -> Promise.success(Option.none()));
     }
 
     private static Promise<Unit> registerAsRuntimeProvided(ArtifactDependency dependency,
-                                                           SharedLibraryClassLoader sharedLibraryLoader) {
+                                                           SharedLibraryClassLoader sharedLibraryLoader,
+                                                           String requester) {
         var version = extractVersion(dependency.versionPattern());
 
-        sharedLibraryLoader.registerRuntimeProvided(dependency.groupId(), dependency.artifactId(), version);
-        log.info("Shared dependency {} not found in repositories, registered as runtime-provided", dependency.asString());
-
-        return Promise.success(unit());
+        return sharedLibraryLoader.registerRuntimeProvided(dependency.groupId(),
+                                                           dependency.artifactId(),
+                                                           version,
+                                                           requester)
+                                  .onSuccessRun(() -> log.info("Shared dependency {} not found in repositories, registered as runtime-provided for {}",
+                                                               dependency.asString(),
+                                                               requester))
+                                  .async();
     }
 
-    private static Unit addToSharedLoader(ArtifactDependency dependency,
-                                          SharedLibraryClassLoader sharedLibraryLoader,
-                                          URL url) {
+    private static Result<Unit> addToSharedLoader(ArtifactDependency dependency,
+                                                  SharedLibraryClassLoader sharedLibraryLoader,
+                                                  URL url,
+                                                  String requester) {
         var version = extractVersion(dependency.versionPattern());
 
-        sharedLibraryLoader.addArtifact(dependency.groupId(), dependency.artifactId(), version, url);
-        log.debug("Loaded shared dependency {} into SharedLibraryClassLoader", dependency.asString());
-
-        return unit();
+        return sharedLibraryLoader.addArtifact(dependency.groupId(),
+                                               dependency.artifactId(),
+                                               version,
+                                               url,
+                                               requester)
+                                  .onSuccessRun(() -> log.debug("Loaded shared dependency {} into SharedLibraryClassLoader for {}",
+                                                                dependency.asString(),
+                                                                requester));
     }
 
     private static Promise<Unit> loadConflictIntoSlice(ArtifactDependency dependency,
