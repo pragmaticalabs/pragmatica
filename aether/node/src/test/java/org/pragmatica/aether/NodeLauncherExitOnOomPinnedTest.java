@@ -54,9 +54,9 @@ class NodeLauncherExitOnOomPinnedTest {
 
             assertThat(dockerfile).as("control: the image entrypoint launches the node jar")
                                   .contains("-jar /app/aether-node.jar");
-            assertThat(launcherLine(dockerfile, "java "))
+            assertThat(launcherLine(dockerfile, "$JAVA_OPTS"))
                 .as("#966: %s ENTRYPOINT must put %s on the java token, BEFORE $JAVA_OPTS", NODE_DOCKERFILE, FLAG)
-                .contains("java " + FLAG + " $JAVA_OPTS");
+                .startsWith("java " + FLAG + " $JAVA_OPTS");
         }
 
         /// The remote-build path writes its own `Dockerfile.local`.
