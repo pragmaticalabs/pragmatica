@@ -65,6 +65,8 @@ class StorageFactoryEncryptionTest {
     private static final String NODE_ID = "node-1";
     private static final String ARTIFACTS = "artifacts";
     private static final String CONTENT = "content";
+    private static final String STREAMS = "streams";
+    private static final String STREAM_SEGMENTS_PREFIX = "stream-segments";
     /// #858 C2 test seam bound -- far below the 30s production `DHT_MARKER_TIMEOUT` so the
     /// never-responding-client test proves the timeout cause in milliseconds. Mirrors
     /// `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT`.
@@ -885,6 +887,166 @@ class StorageFactoryEncryptionTest {
         assertThat(Files.exists(streamDataDir.resolve("segments").resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
                 .as("an admitted boot stamps the encrypted segments directory")
                 .isTrue();
+    }
+
+    /// #849: the `streams` counterpart of [#bootDecision] with the in-JVM DHT client on BOTH the
+    /// per-instance and the streams arm -- the shape `AetherNode.assembleNode` hands `createAll` on a
+    /// DHT-enabled node. `artifacts`/`content` get explicit unencrypted disk paths so the synthesized
+    /// production defaults (`/data/aether/...`, #1276) are never touched.
+    private Result<Map<String, StorageFactory.StorageSetup>> streamsBoot(DHTClient dhtClient,
+                                                                         Path streamDataDir,
+                                                                         Option<EncryptionKeyring> streamsKeyring) {
+        var configs = Map.of(ARTIFACTS, storageConfigAt(streamDataDir.resolveSibling(streamDataDir.getFileName() + "-artifacts"), false),
+                             CONTENT, storageConfigAt(streamDataDir.resolveSibling(streamDataDir.getFileName() + "-content"), false));
+
+        return StorageFactory.createAll(configs,
+                                         NODE_ID,
+                                         Option.some(dhtClient),
+                                         Option.none(),
+                                         new StorageFactory.StreamSetupRequest(Option.some(dhtClient),
+                                                                               streamDataDir,
+                                                                               NODE_ID,
+                                                                               streamsKeyring));
+    }
+
+    private Map<String, StorageFactory.StorageSetup> streamsBootOrFail(DHTClient dhtClient,
+                                                                       Path streamDataDir,
+                                                                       Option<EncryptionKeyring> streamsKeyring) {
+        return streamsBoot(dhtClient, streamDataDir, streamsKeyring).onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                                                    .unwrap();
+    }
+
+    /// #849: a stream data dir whose `segments` entry is a regular file, so `LocalDiskTier` cannot be
+    /// built under it and the streams segment tiers take the memory+DHT fallback -- the configuration
+    /// the ticket names, where the `stream-segments` DHT namespace is the ONLY durable tier. Mirrors
+    /// the per-instance `vault-disk-unavailable` fixture above.
+    private Path streamDataDirWithoutDisk(String name) throws IOException {
+        var streamDataDir = tempDir.resolve(name);
+
+        Files.createDirectories(streamDataDir);
+        Files.writeString(streamDataDir.resolve("segments"), "a plain file here forces LocalDiskTier construction to fail");
+
+        return streamDataDir;
+    }
+
+    private static String describeServed(Option<byte[]> served) {
+        return served.map(bytes -> bytes.length + " bytes, header '" + new String(bytes, 0, Math.min(4, bytes.length), StandardCharsets.ISO_8859_1)
+                                   + "', equals the plaintext block: " + java.util.Arrays.equals(bytes, PLAINTEXT))
+                     .or("absent");
+    }
+
+    /// #849 -- the ticket's defect, reverse direction over the DHT half of the streams path. Boot 1
+    /// has `streams_encrypted = true` with the segment disk tier unavailable, so the ciphertext's only
+    /// durable copy sits in the `stream-segments` DHT namespace. Boot 2 turns `streams_encrypted` off
+    /// over the same namespace (same DHT, same node data dir -- the disk guard has nothing to refuse
+    /// on because no disk tier was ever built). Before #849, `streams` carried NO `DhtMarkerCheck`
+    /// (`assembleStreamSetup` built the setup without one) and its DHT tier was the UNGATED two-arg
+    /// `DhtStorageTier`, so the plain boot was admitted with nothing to refuse it and the read below
+    /// reached the framed `AEC1...` block. `StorageInstance.get` is content-addressed, so what the
+    /// caller saw was not the ciphertext the ticket predicted but
+    /// `StorageError.IntegrityError[expected=<plaintext id>, actual=<ciphertext id>]` on EVERY
+    /// segment read -- a configuration error presenting as per-block data corruption, after a boot
+    /// that reported ready. Now `streams` is checked post-formation exactly like every
+    /// `<name>-blocks` namespace: `verifyDhtMarker` refuses with
+    /// `EncryptionError.EncryptedTierRequiresKeyring`, that refusal resolves the tier's `readGate`
+    /// (#875), and the read fails with the same cause -- nothing reaches the integrity check.
+    @Test
+    void bootDecision_refusesStreamsDhtNamespace_whenStreamsEncryptedIsTurnedOffOverEncryptedSegments() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var streamDataDir = streamDataDirWithoutDisk("streams-dht-rev");
+        var encrypted = streamsBootOrFail(dhtClient, streamDataDir, Option.some(singleKeyRing("key-1")));
+
+        admitDhtTier(encrypted.get(STREAMS), dhtClient);
+
+        var blockId = writeThrough(encrypted.get(STREAMS));
+        var stored = dhtClient.rawValue(STREAM_SEGMENTS_PREFIX, blockId);
+
+        assertThat(stored.isPresent()).as("PRECONDITION: the encrypted boot's write-through must reach the "
+                                          + "stream-segments DHT namespace -- with the disk tier unavailable it "
+                                          + "is the only durable tier")
+                                      .isTrue();
+        stored.onPresent(raw -> assertCiphertextAtRest(raw, "the stream-segments DHT namespace"));
+
+        var plain = streamsBootOrFail(dhtClient, streamDataDir, Option.none());
+        var streams = plain.get(STREAMS);
+        // Production order (`AetherNode.start()`): the marker check runs before any read is admitted.
+        var admission = streams.dhtMarkerCheck()
+                               .map(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                           .await());
+
+        streams.instance()
+               .get(blockId)
+               .await()
+               .onSuccess(served -> fail("streams_encrypted=false over a DHT namespace holding encrypted segments "
+                                         + "served the block as content instead of refusing: " + describeServed(served)))
+               .onFailure(cause -> assertThat(cause).as("the read must be refused by the streams marker check -- before "
+                                                        + "#849 it reached the block and failed the content-address check "
+                                                        + "with StorageError.IntegrityError instead")
+                                                    .isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
+        assertThat(admission.isPresent()).as("streams must carry a DHT marker check for AetherNode.start() to verify "
+                                             + "post-formation, like every other DHT-backed instance")
+                                         .isTrue();
+        admission.onPresent(result -> result.onSuccess(_ -> fail("the streams marker check must refuse a plain boot "
+                                                                  + "over a marked stream-segments namespace"))
+                                            .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class)));
+    }
+
+    /// #849 forward direction: an encrypted streams boot must WRITE the marker into the
+    /// `stream-segments` namespace on admission -- the reverse guard above has nothing to refuse on
+    /// otherwise. The marker carries the active key id, same as `<name>-blocks/.encryption-enabled`.
+    @Test
+    void bootDecision_writesStreamsDhtMarker_whenStreamsEncrypted() {
+        var dhtClient = new InMemoryDHTClient();
+        var setups = streamsBootOrFail(dhtClient, tempDir.resolve("streams-dht-fwd"), Option.some(singleKeyRing("key-1")));
+        var check = setups.get(STREAMS).dhtMarkerCheck();
+
+        assertThat(check.isPresent()).as("an encrypted streams boot with a DHT client must carry a marker check")
+                                     .isTrue();
+        check.onPresent(c -> {
+            assertThat(c.instanceName()).isEqualTo(STREAMS);
+            assertThat(c.dhtKeyPrefix()).isEqualTo(STREAM_SEGMENTS_PREFIX);
+            StorageFactory.verifyDhtMarker(dhtClient, c)
+                          .await()
+                          .onFailure(cause -> fail("writing the streams DHT marker on first enable failed: " + cause.message()));
+        });
+
+        var marker = dhtClient.get((STREAM_SEGMENTS_PREFIX + "/" + EncryptingStorageTier.MARKER_FILE_NAME).getBytes(StandardCharsets.UTF_8))
+                              .await()
+                              .unwrap();
+
+        assertThat(marker.isPresent()).as("admitting an encrypted streams boot must stamp the stream-segments namespace")
+                                      .isTrue();
+        marker.onPresent(bytes -> assertThat(new String(bytes, StandardCharsets.UTF_8)).isEqualTo("key-1"));
+    }
+
+    /// #849 control, and the pre-GA legacy ruling (2026-09-16: no migration path): an UNMARKED
+    /// `stream-segments` namespace booted with `streams_encrypted = false` is admitted and stays
+    /// plaintext -- the refusal above is keyed on the marker, not on the flag. The plain path carries a
+    /// check too: its gate must be resolved by the same post-formation step, or every streams DHT
+    /// operation would sit out the 30s admission bound and fail `TierNotAdmitted`.
+    @Test
+    void bootDecision_admitsUnmarkedStreamsDhtNamespace_whenStreamsNotEncrypted() {
+        var dhtClient = new InMemoryDHTClient();
+        var setups = streamsBootOrFail(dhtClient, tempDir.resolve("streams-dht-plain"), Option.none());
+        var streams = setups.get(STREAMS);
+
+        assertThat(streams.dhtMarkerCheck().isPresent()).as("a plain streams boot with a DHT client must carry a marker "
+                                                             + "check, so its read gate is resolved post-formation")
+                                                         .isTrue();
+
+        admitDhtTier(streams, dhtClient);
+
+        var blockId = writeThrough(streams);
+        var stored = dhtClient.rawValue(STREAM_SEGMENTS_PREFIX, blockId);
+
+        assertThat(stored.isPresent()).isTrue();
+        stored.onPresent(raw -> assertPlaintextAtRest(raw, "the stream-segments DHT namespace"));
+        assertThat(dhtClient.get((STREAM_SEGMENTS_PREFIX + "/" + EncryptingStorageTier.MARKER_FILE_NAME).getBytes(StandardCharsets.UTF_8))
+                            .await()
+                            .unwrap()
+                            .isPresent())
+                .as("a plain boot must not stamp the namespace")
+                .isFalse();
     }
 
     /// #253 BLOCKING #3 (2026-09-04 ruling): the reverse direction of the test above, through
