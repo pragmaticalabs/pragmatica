@@ -1573,20 +1573,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// frame waits on (already resolved when the partition has no WAL).
     private record LoggedAppend(long offset, Promise<Unit> durable) {}
 
-    /// Batch sibling of [#publishLocal] (#1245): `payloads` become ONE contiguous run in one ordered
-    /// section — ring batch append, one WAL frame per event, ONE replication message — and ONE group
-    /// commit is awaited after the section is released. Resolves with the run's LAST offset, so a
-    /// caller awaiting replication awaits it once (acks are cumulative). Stamped with this node's current
-    /// owner epoch, as the no-epoch [#publishLocal] is.
-    public Result<Long> publishLocalBatch(String streamName, int partition, List<byte[]> payloads, long timestamp) {
-        return publishLocalBatchAtFloor(streamName, partition, payloads, timestamp, NO_REPLICA_FLOOR).fold(cause -> publishEachIfRunDoesNotFit(cause,
-                                                                                                                                               streamName,
-                                                                                                                                               partition,
-                                                                                                                                               payloads,
-                                                                                                                                               timestamp),
-                                                                                                           Result::success);
-    }
-
     /// Admitted storage run without single-event fallback: a caller retains per-event outcomes when
     /// an oversized run must be retried one event at a time. Refusals before append preserve the run.
     public Result<Long> publishLocalBatchAtFloor(String streamName,
@@ -1605,31 +1591,6 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                      minAcks))
                                  .flatMap(this::awaitDurable)
                                  .onSuccess(offset -> ownerDurable(streamName, partition, offset));
-    }
-
-    /// #1287 review K1. Not an absorbed failure: a run the ring cannot hold as one contiguous unit (an
-    /// event larger than the frozen ring can ever allocate) is published event by event instead, in
-    /// order, stopping at the first failure — so a batch is never worse than the single publishes it
-    /// replaces, and the oversized event gets exactly a single publish's outcome (#1233). Any other
-    /// failure propagates unchanged.
-    private Result<Long> publishEachIfRunDoesNotFit(Cause cause,
-                                                    String streamName,
-                                                    int partition,
-                                                    List<byte[]> payloads,
-                                                    long timestamp) {
-        return cause == StreamError.General.RUN_DOES_NOT_FIT
-               ? publishEachInOrder(streamName, partition, payloads, timestamp)
-               : cause.result();
-    }
-
-    private Result<Long> publishEachInOrder(String streamName, int partition, List<byte[]> payloads, long timestamp) {
-        Result<Long> last = success(-1L);
-
-        for (var payload : payloads) {
-            last = last.flatMap(_ -> publishLocal(streamName, partition, payload, timestamp));
-        }
-
-        return last;
     }
 
     private Result<LoggedAppend> publishBatchInSection(StreamEntry entry,

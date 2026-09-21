@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
@@ -134,6 +135,43 @@ class DefaultStreamPublisherBatchTest {
     @Test
     void publishBatch_largerThanTheDataRegion_isNeverWorseThanPerEventPublishes() {
         assertBatchMatchesPerEvent(Option.none(), distinctEvents(2_000, 1024));
+    }
+
+    /// A no-WAL ring can refuse sealing after an oversized run has already appended a prefix.
+    @Test
+    void publishBatch_sealingBackpressureMidRun_keepsEveryOutcomeUnknownWithoutRetry() {
+        var refusals = new AtomicInteger();
+        var sends = new AtomicInteger();
+        var self = NodeId.nodeId("self").unwrap();
+        var registry = replicaRegistry();
+        registry.registerReplica(STREAM, 0, self);
+        registry.registerReplica(STREAM, 0, NodeId.nodeId("replica").unwrap());
+        var replication = ReplicationManager.replicationManager(self, registry, (_, _) -> sends.incrementAndGet());
+        EvictionListener blockedSealer = (_, _, _) -> {
+            refusals.incrementAndGet();
+            return StreamError.General.SEALING_BEHIND.result();
+        };
+
+        // No WAL: the eviction listener must retain the unsealed prefix and may refuse hand-over.
+        try (var manager = streamPartitionManager(Long.MAX_VALUE, blockedSealer, replication)) {
+            manager.createStream(StreamConfig.streamConfig(STREAM, 1,
+                RetentionPolicy.retentionPolicy(16, 1024 * 1024, 60_000), "earliest")).unwrap();
+            var publisher = streamPublisher(manager, identitySerializer(), STREAM, 1,
+                Option.<java.util.function.Function<byte[], Object>> none());
+            var payloads = distinctEvents(3, 512 * 1024);
+            var outcomes = publisher.publishBatch(payloads).await().unwrap();
+            var unknown = new PublishOutcome.OutcomeUnknown(StreamError.General.SEALING_BEHIND);
+
+            assertThat(outcomes).containsExactly(unknown, unknown, unknown);
+            assertThat(refusals.get()).as("an uncertain run must not retry its inputs").isEqualTo(1);
+            var ring = manager.partitionBuffer(STREAM, 0).unwrap();
+            assertThat(ring.headOffset()).as("two inputs appended before sealing refused the third").isEqualTo(1);
+            assertThat(ring.readAppended(0, 3).unwrap()).extracting(OffHeapRingBuffer.RawEvent::offset)
+                .containsExactly(0L, 1L);
+            assertThat(ring.durableOffset()).isEqualTo(-1);
+            assertThat(ring.visibleOffset()).isEqualTo(-1);
+            assertThat(sends.get()).as("failed ring run skips the replication continuation").isZero();
+        }
     }
 
     /// The same with a WAL: the run's frames must land at their offsets, contiguous, with no refusal.

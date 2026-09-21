@@ -128,14 +128,12 @@ final class DefaultReplicationManager implements ReplicationManager {
         this.timerScheduler = timerScheduler;
     }
 
-    /// Encoded bytes per `ReplicateEvents` message (#1287 review K3): half the cluster transport's frame
-    /// limit ([QuicClusterServer#MAX_FRAME_LENGTH]). The other half is headroom for the message's fixed
-    /// fields and envelope; the fraction is a chosen margin, not a derived one.
+    /// Estimated bytes per `ReplicateEvents` chunk: half the transport frame limit. The other half
+    /// leaves headroom for fixed fields and the envelope; this is a chosen margin, not a measured
+    /// bound on serialized messages. A single event larger than this budget is still sent alone.
     static final long MAX_REPLICATE_MESSAGE_BYTES = QuicClusterServer.MAX_FRAME_LENGTH / 2;
-    /// Encoded framing the generic codec adds per event, bounded (#1287 review nit a): the payload's type
-    /// tag and length (varints, at most five bytes each) plus the timestamp's tag (at most five) and its
-    /// eight bytes — 23 at most, rounded up. Without it, millions of tiny events fit the payload budget
-    /// while their encoding exceeds the frame.
+    /// Per-event accounting allowance added to payload bytes so tiny events also consume the chunk
+    /// budget. The allowance is not verified here against the complete codec/envelope encoding.
     static final long PER_EVENT_ENCODING_BYTES = 32;
 
     @Contract
@@ -427,7 +425,7 @@ final class DefaultReplicationManager implements ReplicationManager {
         replicas.forEach(replica -> transport.send(replica, message));
     }
 
-    /// Exclusive end of the chunk starting at `start`: as many events as fit the encoded-size cap, and at least
+    /// Exclusive end of the chunk starting at `start`: as many events as fit the accounting budget, and at least
     /// one — a single event above the cap goes out alone, as every event did before batching.
     private static long encodedSize(byte[] payload) {
         return payload.length + PER_EVENT_ENCODING_BYTES;

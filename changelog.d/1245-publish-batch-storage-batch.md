@@ -23,11 +23,13 @@
   Previously such a batch was dropped whole and acked as success.
   `[mechanism: OffHeapRingBuffer.appendRunLocked plus RUN_DOES_NOT_FIT routing; pinned by
   DefaultStreamPublisherBatchTest's batch-versus-per-event comparisons]`
-- **Replication messages are split by bytes** below the cluster transport's frame limit
-  (`QuicClusterServer.MAX_FRAME_LENGTH`, now declared once for server and client). Each chunk's encoded
-  size (payload plus a bounded per-event framing cost, so millions of tiny events split too) is at most half
-  of it; the batch still awaits one ack on its last offset.
-  `[mechanism: DefaultReplicationManager.chunkEnd; pinned by DefaultStreamPublisherBatchTest]`
+- **Replication chunks use a byte accounting budget** of half the cluster transport frame limit
+  (`QuicClusterServer.MAX_FRAME_LENGTH`). Each event contributes its payload length plus a 32-byte
+  allowance, so tiny events also consume the budget. The other half is chosen headroom for fixed
+  fields/envelopes, not a measured serialized-size bound; one event above the budget is sent alone.
+  The batch still awaits one cumulative acknowledgement on its last offset.
+  `[mechanism: DefaultReplicationManager.chunkEnd; tests exercise payload splitting, not a complete
+  codec-size or throughput bound]`
 - **rc4 integration preserves per-input outcomes and current write authority.** Local runs use the shared
   owner router, committed-owner admission, live min-sync floor/barrier, and durable/visible frontier.
   A failed cumulative barrier reports every submitted event as outcome-unknown; it never labels an
@@ -35,3 +37,7 @@
   prefix and stop before later events after a failure. The batch is not atomic and ambiguous runs are not
   automatically retried.
   `[verified: BatchPublishOutcomeTest, StreamWritePathContractTest.StreamPublisherBatchPath]`
+- **Review cleanup:** removed the unused `StreamPartitionManager.publishLocalBatch` wrapper and its
+  private fallback chain; live batch callers retain the owner/floor-aware router. A no-WAL EVENTUAL
+  regression pins `SEALING_BEHIND` after a partial ring append: every input remains outcome-unknown,
+  the durable/visible frontier does not advance, no replication continuation runs and no retry occurs.
