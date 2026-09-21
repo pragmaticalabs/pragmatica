@@ -155,6 +155,25 @@ Restart=no
 
 The operator-supplied systemd may be appropriate for launching aether-node on host boot (same role as cloud-init's `docker run`), but it must not respawn on exit.
 
+### 4.5 Heap exhaustion exits the process — exit code 3
+
+Every node launcher Aether ships (`aether-node` image entrypoint, `install.sh`/`upgrade.sh` wrappers, the
+JVM-mode cloud launcher, the dist launcher, `aether-node.sh`, and the local `start.sh` from `aether setup`)
+runs the JVM with `-XX:+ExitOnOutOfMemoryError` on the `java` token itself, ahead of `JAVA_OPTS`, so
+replacing `JAVA_OPTS` cannot drop it. **What it guarantees:** on the first Java-heap or Metaspace
+allocation HotSpot cannot satisfy after a full GC, the JVM `_exit(3)`s from inside the VM — the error
+never reaches a `catch (Throwable)`, a Netty event loop, or a shutdown hook (hooks are skipped). The
+process is then dead the same way a `kill -9` makes it dead: SWIM pings go unanswered, peers mark the
+node SUSPECT then FAULTY (~11 s), it is terminally removed, CTM sees a deficit and provisions a
+replacement (#966 — without the flag an exhausted node kept answering pings from the SWIM thread, held
+its membership slot for ten days, and `Restart=no` had nothing to react to). **What it does not cover:**
+an `OutOfMemoryError` thrown from Java code (direct/`Unsafe` memory, or an explicit `throw`) does not
+route through the VM's out-of-memory report and behaves as before; a JVM that thrashes in GC without ever
+throwing is not detected. An `aether-node` process or container that exited with code 3 was killed by
+this flag: read the tail of its log for `Terminating due to java.lang.OutOfMemoryError`, and expect
+auto-heal to have replaced it under a new node id rather than restarting it — do not restart it by hand
+under the old identity (§1).
+
 ---
 
 ## 5 · Kubernetes pattern

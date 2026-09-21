@@ -67,7 +67,7 @@ start_node() {
 
     log_info "Starting $node_id on ports $cluster_port (cluster) / $mgmt_port (mgmt)..."
 
-    java -jar "$NODE_JAR" \
+    java -XX:+ExitOnOutOfMemoryError -jar "$NODE_JAR" \
         --node-id="$node_id" \
         --port="$cluster_port" \
         --management-port="$mgmt_port" \
