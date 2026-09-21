@@ -1353,6 +1353,320 @@ class StreamConsumerManagerTest {
         }
     }
 
+
+    /// #1389: a node the COMMITTED record names that has no local slice consumes nothing, and the
+    /// leader keeps naming it for as long as the deployment map still says ACTIVE there. That state
+    /// used to be silent — `desiredFor` returned `[]` without a word, and `attachAdmitted` forgot the
+    /// key without one. Every test here captures the manager's own logger, because "logged at WARN"
+    /// is the claim, and a `diagnostic` field alone does not prove a log line exists.
+    @Nested
+    class ParkedAssignment {
+        private static final String LOGGER_NAME = StreamConsumerManager.class.getName();
+        private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
+        private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
+
+        private CapturingAppender appender;
+        private org.apache.logging.log4j.core.config.LoggerConfig loggerConfig;
+        private org.apache.logging.log4j.Level originalLevel;
+
+        @BeforeEach
+        void captureLog() {
+            appender = new CapturingAppender("ParkedAssignmentCapture");
+            appender.start();
+            var ctx = (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+            var configuration = ctx.getConfiguration();
+            var existing = configuration.getLoggerConfig(LOGGER_NAME);
+
+            if (LOGGER_NAME.equals(existing.getName())) {
+                loggerConfig = existing;
+            } else {
+                loggerConfig = new org.apache.logging.log4j.core.config.LoggerConfig(LOGGER_NAME, org.apache.logging.log4j.Level.INFO, true);
+                configuration.addLogger(LOGGER_NAME, loggerConfig);
+            }
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, org.apache.logging.log4j.Level.INFO, null);
+            loggerConfig.setLevel(org.apache.logging.log4j.Level.INFO);
+            ctx.updateLoggers();
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void releaseLog() {
+            var ctx = (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        /// The parked state itself: the committed records name this node for every partition, the
+        /// deployment map still says ACTIVE here, and the invocation handler has no bridge. Nothing can
+        /// consume, and the leader will not move it — so the node must SAY so, naming what an operator
+        /// needs to find it: group, stream, partitions, this node, the missing slice.
+        @Test
+        void reconcile_warnsAndReportsTheParkedPartitions_whenCommittedHereButTheSliceIsNotLoadedHere() {
+            declareStringConsumer();
+            placement.activeOn(SELF, PEER);
+            // PEER owns: on the unfixed code the diagnosis then logs "consuming … forwarded to the owner"
+            // for a node that consumes nothing — the misleading INFO the last assertion pins away.
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            for (var partition : List.of(0, 1, 2, 3)) {
+                commitAssignment(partition, SELF, EPOCH_1);
+            }
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("control: with no local bridge nothing is attached")
+                                                      .isEmpty();
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic().or("")).describedAs("the FAULT channel must name the parked partitions")
+                                                     .contains("[0, 1, 2, 3]")
+                                                     .contains(STREAM)
+                                                     .contains(GROUP)
+                                                     .contains(SELF.id())
+                                                     .contains(ARTIFACT.asString()));
+            var warns = appender.warns();
+
+            assertThat(warns).describedAs("#1389: a committed assignee with no local slice is never silent; captured: %s", appender.all())
+                             .hasSize(1);
+            assertThat(warns.getFirst()).contains(GROUP)
+                                        .contains(STREAM)
+                                        .contains("[0, 1, 2, 3]")
+                                        .contains(SELF.id())
+                                        .contains(ARTIFACT.asString());
+            assertThat(appender.infos()).describedAs("the misleading 'consuming … forwarded' INFO must not fire for a node that consumes nothing")
+                                        .noneMatch(line -> line.contains("forwarded to the owner"));
+        }
+
+        /// Transition-logged like every other diagnosis: a 5-second tick must not repeat the WARN forever,
+        /// and the `diagnostic` field carries it for as long as the state persists.
+        @Test
+        void reconcile_warnsOnce_whileTheParkedStatePersists() {
+            declareStringConsumer();
+            placement.activeOn(SELF, PEER);
+            ownership.ownedBySelf(0, 1, 2, 3);
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            manager.reconcile();
+            manager.reconcile();
+
+            assertThat(appender.warns()).hasSize(1);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic().isPresent()).describedAs("the fault stays visible in the status while it persists")
+                                                     .isTrue());
+        }
+
+        /// A node that hosts the slice but is committed nowhere, and a node committed elsewhere, are not
+        /// parked — the WARN is for the assignee, not for every node without the slice.
+        @Test
+        void reconcile_doesNotWarn_whenTheCommittedAssigneeIsAnotherNode() {
+            declareStringConsumer();
+            placement.activeOn(PEER);
+            ownership.ownedBySelf(0, 1, 2, 3);
+            for (var partition : List.of(0, 1, 2, 3)) {
+                commitAssignment(partition, PEER, EPOCH_1);
+            }
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+
+            assertThat(appender.warns()).isEmpty();
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic()).isEqualTo(Option.none()));
+        }
+
+        /// The literal site the ticket cites: the bridge was there when the desired set was computed and
+        /// gone by the time `attach` re-read it. `localSlice` is read exactly twice for one committed
+        /// partition — once by `desiredFor`, once by `attachAdmitted` — so consecutive stubbing puts the
+        /// unload between them. The key is forgotten (the next pass re-evaluates), but not silently.
+        @Test
+        void attach_warns_whenTheSliceVanishesBetweenTheDesiredSetAndTheAttach() {
+            declareStringConsumer();
+            placement.activeOn(SELF, PEER);
+            ownership.ownedBySelf(0, 1, 2, 3);
+            commitAssignment(0, SELF, EPOCH_1);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())), Option.none());
+
+            managerFor(SELF, runtime, ownership, false).reconcile();
+
+            verify(invocationHandler, times(2)).localSlice(ARTIFACT);
+            assertThat(runtime.subscribedPartitions()).describedAs("control: the attach found no bridge and subscribed nothing")
+                                                      .isEmpty();
+            assertThat(appender.warns()).describedAs("#1389: the attach-time drop names what it dropped; captured: %s", appender.all())
+                                        .singleElement()
+                                        .satisfies(line -> assertThat(line).contains(GROUP)
+                                                                           .contains(STREAM)
+                                                                           .contains("[0]")
+                                                                           .contains(SELF.id())
+                                                                           .contains(ARTIFACT.asString()));
+        }
+
+        /// Ticket item 2, "state which": the writer RE-ASSIGNS when the instance disappears, it does not
+        /// refuse up front — and "disappears" means the deployment map stops saying ACTIVE, which every
+        /// node-side unload path writes BEFORE it unregisters the bridge. This pins the existing repair
+        /// so the WARN above is honest about being transient in that case.
+        @Test
+        void reconcile_reassignsToARemainingCandidate_whenTheAssigneeLeavesActive() {
+            declareStringConsumer();
+            placement.activeOn(SELF, PEER);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("precondition: the leader committed itself and attached")
+                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+
+            // The instance here is unloaded: UNLOADING is committed (no longer ACTIVE), then the bridge goes.
+            placement.activeOn(PEER);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.none());
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+            for (var partition : List.of(0, 1, 2, 3)) {
+                var record = committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP));
+
+                assertThat(record.assignee()).describedAs("partition %s moves to the node that can still run the slice", partition)
+                                             .isEqualTo(PEER);
+                assertThat(record.assignmentTerm()).describedAs("a rewrite, not a first put")
+                                                   .isEqualTo(2L);
+            }
+            assertThat(appender.warns()).describedAs("no longer committed here, so nothing is parked here")
+                                        .isEmpty();
+        }
+
+        /// TRIPWIRE for the producer of the M1 stall (#1389, item 3 — awaiting a ruling on the fix):
+        /// `TopicSubscriptionKey` has no node component, so one instance's unload REMOVES the record every
+        /// other instance's durable group is declared from. The group is un-declared cluster-wide, the
+        /// consumer detaches on the next pass, and no diagnosis exists to report it. This test asserts
+        /// that CURRENT behaviour so the moment the key becomes node-scoped or re-asserted it goes red —
+        /// then delete it and enable the inverse: SELF stays attached and its status stays reported.
+        @Test
+        void tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_untilItem3IsFixed() {
+            var topics = org.pragmatica.aether.endpoint.TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
+            var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, METHOD);
+            var group = DurableGroupIdentity.groupId(ARTIFACT, METHOD);
+
+            deploySliceEverywhere();
+            ownership.withPartitionCount(1);
+            ownership.ownedBySelf(0);
+            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF)), Option.none()));
+            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(PEER)), Option.none()));
+            var manager = StreamConsumerManager.streamConsumerManager(registry,
+                                                                      runtime,
+                                                                      invoker,
+                                                                      invocationHandler,
+                                                                      FrameworkCodecs.frameworkCodecs(),
+                                                                      ownership,
+                                                                      placement,
+                                                                      SELF,
+                                                                      TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
+                                                                      authority(true));
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("precondition: SELF consumes the durable group's partition")
+                                                                  .containsExactly(0);
+            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).singleElement()
+                      .satisfies(status -> assertThat(status.consumerGroup()).isEqualTo(group));
+
+            // PEER's instance is descaled: NodeDeploymentState.handleUnloading unpublishes ITS subscription,
+            // which is the same cluster-wide key SELF's declaration is synthesised from. The capture is
+            // cleared first: the stub bridge's codec draws an unrelated publishability WARN on pass one.
+            appender.clear();
+            topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("TRIPWIRE (#1389 item 3): SELF still hosts the slice and is still the committed assignee, yet the group is un-declared here and its consumer detached. If this assertion fails, the node-less TopicSubscriptionKey defect is fixed — delete this test and enable `descaleOfAnotherInstance_leavesThisNodeAttached` below")
+                                                                  .isEmpty();
+            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("TRIPWIRE: no declaration, so no status, so no diagnostic — the stall is unreported")
+                                                                .isEmpty();
+            assertThat(appender.warns()).describedAs("TRIPWIRE: and nothing is logged at WARN about it")
+                                        .isEmpty();
+        }
+
+        /// The inverse of the tripwire above. `@Disabled` here is deliberate and bounded: enabled today it
+        /// would pass VACUOUSLY only if the registry kept the key, which it does not — it would fail, and
+        /// an enabled failing test is noise, not a tripwire. The tripwire is what guarantees it is enabled.
+        @Test
+        @org.junit.jupiter.api.Disabled("#1389 item 3: enable when TopicSubscriptionKey is node-scoped or re-asserted; the tripwire above goes red at that moment")
+        void descaleOfAnotherInstance_leavesThisNodeAttached() {
+            var topics = org.pragmatica.aether.endpoint.TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
+            var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, METHOD);
+
+            deploySliceEverywhere();
+            ownership.withPartitionCount(1);
+            ownership.ownedBySelf(0);
+            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF)), Option.none()));
+            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(PEER)), Option.none()));
+            var manager = StreamConsumerManager.streamConsumerManager(registry,
+                                                                      runtime,
+                                                                      invoker,
+                                                                      invocationHandler,
+                                                                      FrameworkCodecs.frameworkCodecs(),
+                                                                      ownership,
+                                                                      placement,
+                                                                      SELF,
+                                                                      TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
+                                                                      authority(true));
+
+            manager.reconcile();
+            topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).containsExactly(0);
+            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).hasSize(1);
+        }
+    }
+
+    /// Captures the manager's own log lines by level, so a "logged at WARN" claim is checked against a
+    /// line rather than inferred from a status field.
+    private static final class CapturingAppender extends org.apache.logging.log4j.core.appender.AbstractAppender {
+        private final List<org.apache.logging.log4j.core.LogEvent> events = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender(String name) {
+            super(name,
+                  (org.apache.logging.log4j.core.Filter) null,
+                  org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLayout(),
+                  true,
+                  org.apache.logging.log4j.core.config.Property.EMPTY_ARRAY);
+        }
+
+        @Override
+        public void append(org.apache.logging.log4j.core.LogEvent event) {
+            events.add(event.toImmutable());
+        }
+
+        List<String> warns() {
+            return lines(org.apache.logging.log4j.Level.WARN);
+        }
+
+        List<String> infos() {
+            return lines(org.apache.logging.log4j.Level.INFO);
+        }
+
+        void clear() {
+            events.clear();
+        }
+
+        List<String> all() {
+            return events.stream()
+                         .map(event -> event.getLevel() + " " + event.getMessage().getFormattedMessage())
+                         .toList();
+        }
+
+        private List<String> lines(org.apache.logging.log4j.Level level) {
+            return events.stream()
+                         .filter(event -> event.getLevel().equals(level))
+                         .map(event -> event.getMessage().getFormattedMessage())
+                         .toList();
+        }
+    }
+
     /// Ownership stub. Defaults to a resolved three-node cluster in which nobody owns anything, which
     /// forces every test to state the ownership it depends on.
     private static final class MutableOwnership implements PartitionOwnership {

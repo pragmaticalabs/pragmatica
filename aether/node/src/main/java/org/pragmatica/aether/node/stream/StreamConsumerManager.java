@@ -577,13 +577,24 @@ public interface StreamConsumerManager {
 
             var assignments = assignmentsFor(declaration);
             var bridge = invocationHandler.localSlice(declaration.artifact());
-
-            recordDiagnosis(declaration, diagnose(declaration, assignments, bridge));
+            // #1389: publish BEFORE diagnosing, so the parked set below reads the records this pass
+            // committed — a leader that just moved a partition away from itself is not parked on it.
             publishAssignments(declaration, assignments);
+            recordDiagnosis(declaration, diagnose(declaration, assignments, bridge));
 
             return bridge.isPresent()
                    ? subscriptionKeys(declaration, admittedPartitions(declaration))
                    : unsubscribeAndDropAll(declaration);
+        }
+
+        /// #1389: the partitions the COMMITTED records name this node for while it has no local slice —
+        /// nothing here can consume them, and the leader will not move them while the deployment map
+        /// still says ACTIVE here. Empty whenever the slice is local: then admission, not parking, is
+        /// the question.
+        private List<Integer> parkedPartitions(ConsumerDeclaration declaration, Option<SliceBridge> bridge) {
+            return bridge.isPresent()
+                   ? List.of()
+                   : admittedPartitions(declaration);
         }
 
         /// #1271: on the leader, commit this pass's computed assignment as the per-partition records every
@@ -654,7 +665,7 @@ public interface StreamConsumerManager {
         }
 
         private List<SubscriptionKey> declineColliding(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
-            recordDiagnosis(declaration, collisionDiagnosis(declaration, bases));
+            recordDiagnosis(declaration, collisionDiagnosis(self, declaration, bases));
 
             return unsubscribeAndDropAll(declaration);
         }
@@ -785,23 +796,29 @@ public interface StreamConsumerManager {
         private Diagnosis diagnose(ConsumerDeclaration declaration,
                                    List<PartitionAssignment> assignments,
                                    Option<SliceBridge> bridge) {
-            return Diagnosis.diagnosis(declaration,
+            return Diagnosis.diagnosis(self,
+                                       declaration,
                                        assignments,
                                        unassignedPartitions(assignments),
                                        forwardedPartitions(assignments),
+                                       parkedPartitions(declaration, bridge),
                                        bridge.map(loaded -> publishable(declaration, loaded)),
                                        deploymentPending(declaration));
         }
 
         /// #545: bypasses `Diagnosis.diagnosis`'s message derivation entirely — there is no assignment
         /// computation to report on here, only the named cross-artifact collision.
-        private static Diagnosis collisionDiagnosis(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
-            return new Diagnosis(declaration.artifact(),
+        private static Diagnosis collisionDiagnosis(NodeId node,
+                                                    ConsumerDeclaration declaration,
+                                                    List<ArtifactBase> bases) {
+            return new Diagnosis(node,
+                                 declaration.artifact(),
                                  declaration.methodName().name(),
                                  declaration.streamName(),
                                  false,
                                  Option.none(),
                                  declaration.eventType(),
+                                 List.of(),
                                  List.of(),
                                  List.of(),
                                  List.of(),
@@ -919,7 +936,20 @@ public interface StreamConsumerManager {
             admittedEpochs.put(key, epoch);
             invocationHandler.localSlice(declaration.artifact())
                              .onPresent(bridge -> doSubscribe(key, declaration, bridge, epoch))
-                             .onEmpty(() -> forget(key));
+                             .onEmpty(() -> dropUnloaded(key, declaration));
+        }
+
+        /// #1389: the slice was here when the desired set was computed and is gone now. Forgotten so the
+        /// next pass re-evaluates it — but said out loud, because the committed record still names this
+        /// node and nothing else will report the partition as consumed by nobody.
+        private void dropUnloaded(SubscriptionKey key, ConsumerDeclaration declaration) {
+            forget(key);
+            log.warn("Declarative stream consumer NOT attached: partitions [{}] of stream {} are committed to this node ({}) for consumer group {}, but slice {} is not loaded here — nothing is consuming them until the leader reassigns them or the slice activates here",
+                     key.partition(),
+                     key.streamName(),
+                     self.id(),
+                     key.consumerGroup(),
+                     declaration.artifact());
         }
 
         private void forget(SubscriptionKey key) {
@@ -1253,7 +1283,8 @@ public interface StreamConsumerManager {
     /// `eventTypePublishable` is [Option#none] when the slice is not local: the probe needs the slice's
     /// own codec registry, so a node without the slice genuinely cannot know, and saying `false` there
     /// would invent a value.
-    record Diagnosis(Artifact artifact,
+    record Diagnosis(NodeId node,
+                     Artifact artifact,
                      String methodName,
                      String streamName,
                      boolean deployedLocally,
@@ -1262,17 +1293,21 @@ public interface StreamConsumerManager {
                      List<PartitionAssignment> assignments,
                      List<Integer> unassignedPartitions,
                      List<Integer> forwardedPartitions,
+                     List<Integer> parkedPartitions,
                      boolean deploymentPending,
                      Option<String> message) {
         private static final Logger log = LoggerFactory.getLogger(StreamConsumerManager.class);
 
-        static Diagnosis diagnosis(ConsumerDeclaration declaration,
+        static Diagnosis diagnosis(NodeId node,
+                                   ConsumerDeclaration declaration,
                                    List<PartitionAssignment> assignments,
                                    List<Integer> unassigned,
                                    List<Integer> forwarded,
+                                   List<Integer> parked,
                                    Option<Boolean> publishable,
                                    boolean deploymentPending) {
-            return new Diagnosis(declaration.artifact(),
+            return new Diagnosis(node,
+                                 declaration.artifact(),
                                  declaration.methodName().name(),
                                  declaration.streamName(),
                                  publishable.isPresent(),
@@ -1281,8 +1316,9 @@ public interface StreamConsumerManager {
                                  assignments,
                                  unassigned,
                                  forwarded,
+                                 parked,
                                  deploymentPending,
-                                 message(declaration, unassigned, publishable, deploymentPending));
+                                 message(node, declaration, unassigned, parked, publishable, deploymentPending));
         }
 
         /// The FAULT channel: populated only for a condition an operator must act on. Routine
@@ -1290,12 +1326,18 @@ public interface StreamConsumerManager {
         /// and it is already visible structurally in `partitionAssignments`, where `consumerNode`
         /// differs from `ownerNode`. Mixing it in would destroy the property that makes this field
         /// useful: a non-empty `diagnostic` means something is wrong.
-        private static Option<String> message(ConsumerDeclaration declaration,
+        private static Option<String> message(NodeId node,
+                                              ConsumerDeclaration declaration,
                                               List<Integer> unassigned,
+                                              List<Integer> parked,
                                               Option<Boolean> publishable,
                                               boolean deploymentPending) {
             if (!unassigned.isEmpty()) {
                 return Option.some(unassignedText(declaration, unassigned, deploymentPending));
+            }
+
+            if (!parked.isEmpty()) {
+                return Option.some(parkedText(node, declaration, parked));
             }
 
             if (publishable.map(known -> !known).or(false)) {
@@ -1327,10 +1369,30 @@ public interface StreamConsumerManager {
                     + " consumed by anyone";
         }
 
+        /// #1389: the committed assignee that cannot consume. WARN, not ERROR: the leader repairs it on its
+        /// next pass once the deployment map stops saying ACTIVE here (every unload path writes that before
+        /// it drops the bridge), so it is transient unless the map is stale — and then it is the only sign.
+        /// Named before the forwarding INFO, which would otherwise claim this node is consuming.
+        private static String parkedText(NodeId node, ConsumerDeclaration declaration, List<Integer> parked) {
+            return "partitions " + parked
+                 + " of stream " + declaration.streamName()
+                 + " are committed to this node (" + node.id()
+                 + ") for consumer group " + declaration.consumerGroup()
+                 + ", but slice " + declaration.artifact()
+                                               .asString()
+                 + " is not loaded here — nothing is consuming them until the leader reassigns them or the slice activates here";
+        }
+
         @Contract
         void log() {
             if (!unassignedPartitions.isEmpty()) {
                 logUnassigned();
+
+                return;
+            }
+
+            if (!parkedPartitions.isEmpty()) {
+                message.onPresent(text -> log.warn("Declarative stream consumer {}.{}: {}", artifact, methodName, text));
 
                 return;
             }
