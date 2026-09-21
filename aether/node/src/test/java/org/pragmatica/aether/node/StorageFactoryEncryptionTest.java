@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -989,6 +990,64 @@ class StorageFactoryEncryptionTest {
         admission.onPresent(result -> result.onSuccess(_ -> fail("the streams marker check must refuse a plain boot "
                                                                   + "over a marked stream-segments namespace"))
                                             .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class)));
+    }
+
+    /// #849 ruling (2026-09-21, "never-ready pin"): the node-level consequence of the refusal above,
+    /// through the two production steps `AetherNode` actually runs rather than a single check --
+    /// [StorageFactory#verifyDhtMarkers] over EVERY setup's check (`AetherNode.verifyDhtMarkers`,
+    /// post-formation) and [StorageFactory#dhtAdmission] over every read gate (the promise the NDM
+    /// self-ready signal is deferred on, `markSubsystemsReadyOnceDhtAdmitted`). Over a marked
+    /// `stream-segments` namespace with `streams_encrypted = false`, readiness must be WITHHELD with
+    /// `EncryptedTierRequiresKeyring("streams", "key-1")` while the unmarked `artifacts`/`content`
+    /// namespaces in the same boot are admitted -- so the withheld readiness is streams' alone. Before
+    /// #849 `streams` contributed no check and no gate, so both loops ran over `artifacts`/`content`
+    /// only and the node reported ready; mutating the streams check back out of the setup reproduces
+    /// exactly that (`dhtAdmission` resolves) and this test goes red.
+    @Test
+    void bootDecision_withholdsReadiness_whenStreamsEncryptedIsTurnedOffOverAMarkedNamespace() throws IOException {
+        var dhtClient = new InMemoryDHTClient();
+        var streamDataDir = streamDataDirWithoutDisk("streams-dht-ready");
+        var encrypted = streamsBootOrFail(dhtClient, streamDataDir, Option.some(singleKeyRing("key-1")));
+
+        StorageFactory.verifyDhtMarkers(dhtClient, checksOf(encrypted), () -> false)
+                      .await()
+                      .onFailure(cause -> fail("admitting the encrypted boot failed: " + cause.message()));
+
+        var plain = streamsBootOrFail(dhtClient, streamDataDir, Option.none());
+        var verification = StorageFactory.verifyDhtMarkers(dhtClient, checksOf(plain), () -> false)
+                                         .await();
+        var admission = StorageFactory.dhtAdmission(plain)
+                                      .await();
+
+        assertThat(plain.get(ARTIFACTS).dhtAdmissionPending()).as("artifacts' unmarked namespace is admitted in the same "
+                                                                   + "boot -- the withheld readiness below is streams' alone")
+                                                               .isFalse();
+        assertThat(plain.get(CONTENT).dhtAdmissionPending()).isFalse();
+        admission.onSuccess(_ -> fail("the node reported ready (dhtAdmission resolved) over a marked stream-segments "
+                                      + "namespace with streams_encrypted=false"))
+                 // `dhtAdmission` folds every gate's result (`Result.allOf`), so the withheld readiness arrives
+                 // as a composite; its constituents must be the streams refusal and NOTHING else.
+                 .onFailure(cause -> assertThat(cause.stream().toList()).as("readiness must be withheld by the streams "
+                                                                            + "refusal itself, not by a timeout or an "
+                                                                            + "unrelated gate")
+                                                                        .containsExactly(new EncryptionError.EncryptedTierRequiresKeyring(STREAMS,
+                                                                                                                                          "key-1")));
+        verification.onSuccess(_ -> fail("the post-formation marker loop admitted a plain boot over a marked "
+                                         + "stream-segments namespace"))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(new EncryptionError.EncryptedTierRequiresKeyring(STREAMS, "key-1")));
+        assertThat(StorageFactory.pendingDhtAdmissions(plain)).as("a refused gate is resolved (with the refusal), not left "
+                                                                  + "pending -- the readiness detail must not report streams "
+                                                                  + "as still checking")
+                                                              .isEmpty();
+    }
+
+    /// The check list `AetherNode.verifyDhtMarkers` builds: every setup's `dhtMarkerCheck`, present ones only.
+    private static List<StorageFactory.DhtMarkerCheck> checksOf(Map<String, StorageFactory.StorageSetup> setups) {
+        return setups.values()
+                     .stream()
+                     .map(StorageFactory.StorageSetup::dhtMarkerCheck)
+                     .flatMap(Option::stream)
+                     .toList();
     }
 
     /// #849 forward direction: an encrypted streams boot must WRITE the marker into the
