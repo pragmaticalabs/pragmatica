@@ -4248,10 +4248,24 @@ scale_cluster() {
     # already works for docker/remote.
     local scale_ep
     scale_ep=$(_resolve_live_endpoint)
+    # #1086: `expectedVersion:0` is no longer a bypass on the scale route — against a populated
+    # config the server refuses it with 409 UnfencedOverwrite, the same #289 fence apply-config has.
+    # Read the committed configVersion and fence with it (what `aether cluster scale` does). An
+    # unreadable version is a failure here, never a silent 0: a 0 would now be refused anyway, and
+    # substituting it would hide WHY the scale did not happen behind the fence's message.
+    local stored_version
+    stored_version=$(curl -sk -m 30 -H "X-API-Key: ${API_KEY}" "${scale_ep}/api/v1/cluster/config" 2>/dev/null \
+        | grep -oE '"configVersion"[[:space:]]*:[[:space:]]*[0-9]+' \
+        | head -1 | grep -oE '[0-9]+$')
+    if [ -z "$stored_version" ]; then
+        rm -f "$body_file"
+        log_warn "scale_cluster: could not read configVersion from GET ${scale_ep}/api/v1/cluster/config — the cluster was NOT rescaled (a scale needs the committed version to fence with, #1086)"
+        return 1
+    fi
     url="${scale_ep}/api/v1/cluster/scale"
     http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
                       -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":0}" "$url")
+                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":${stored_version}}" "$url")
     rc=$?
     local body
     body=$(head -c 500 "$body_file" 2>/dev/null)
