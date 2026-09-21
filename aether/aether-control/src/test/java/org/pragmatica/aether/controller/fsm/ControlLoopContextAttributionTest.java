@@ -319,7 +319,7 @@ class ControlLoopContextAttributionTest {
         var slices = List.of(PerSliceMetrics.perSliceMetrics(HOT, hotActive, 0.0, 0.0, hotActive),
                              PerSliceMetrics.perSliceMetrics(IDLE, idleActive, 0.0, 0.0, idleActive));
 
-        return CommunityMetricsSnapshot.communityMetricsSnapshot("community", WORKER, 1, slices);
+        return CommunityMetricsSnapshot.communityMetricsSnapshot("community", WORKER, 1, slices, System.currentTimeMillis(), 1, System.nanoTime());
     }
 
     private ControlLoopContext buildContext() {

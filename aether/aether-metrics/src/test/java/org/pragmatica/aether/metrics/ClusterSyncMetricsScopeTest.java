@@ -47,6 +47,22 @@ class ClusterSyncMetricsScopeTest {
         verifyCoverage(10_000);
     }
 
+    @Test
+    void sourceRelayDoesNotRepublishExpiredOrFutureReports() {
+        var network = new RecordingNetwork();
+        var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+        var context = context(network, collector);
+        var now = System.currentTimeMillis();
+        var fresh = new CommunityMetricsSnapshot("c", SELF, 1, List.of(), now, 1, 1);
+        context.setMetricsRecipient(CORE::equals);
+        context.setSourceMetricsSupplier(() -> List.of(fresh,
+            new CommunityMetricsSnapshot("c", WORKER, 1, List.of(), now - 60_000, 1, 1),
+            new CommunityMetricsSnapshot("c", CORE, 1, List.of(), now + 60_000, 1, 1)));
+        context.broadcastPing(Epoch.epoch(1, 0), 1);
+        assertThat(network.sent.stream().filter(item -> item.message() instanceof SourceMetricsBatch).toList())
+            .singleElement().satisfies(item -> assertThat(((SourceMetricsBatch) item.message()).snapshots()).containsExactly(fresh));
+    }
+
     private void verifyCoverage(int producerCount) {
         var network = new RecordingNetwork();
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);

@@ -46,6 +46,11 @@ public interface NodeLifecycleManager {
         return Promise.unitPromise();
     }
 
+    /// Retry accounting for durable no-create evidence after its placement operation consumed it.
+    default Promise<Unit> reconcileRefusals() {
+        return Promise.unitPromise();
+    }
+
     /// RFC-0017 stage 5 — the worker reconciler's ACTUAL-inventory read: instances matching the
     /// upper-layer tag filter (providers translate key conventions at their boundary, see
     /// `NODE_ID_TAG`). Default refusal keeps non-provisioning fakes honest — a fake that

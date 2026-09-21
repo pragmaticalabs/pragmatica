@@ -480,10 +480,13 @@ public final class ControlLoopContext {
     private ArtifactLoad computeArtifactLoad(Artifact artifact) {
         var sample = sampleArtifactMetrics(artifact);
         var loadFactor = artifactLoadFactors.computeIfAbsent(artifact, _ -> newLoadFactor());
-
-        sample.forEach(loadFactor::recordSample);
-        var result = loadFactor.computeWithCurrentValues(sample);
         var covered = hasMetricCoverage(artifact);
+
+        if (covered) {
+            sample.forEach(loadFactor::recordSample);
+        }
+
+        var result = loadFactor.computeWithCurrentValues(sample);
 
         recordBaseline(artifact, result.compositeScore(), result.canScale(), loadFactor.isErrorRateHigh());
         if (!covered) {

@@ -112,6 +112,10 @@ public class DashboardMetricsPublisher {
     /// threshold evaluation used to be skipped.
     @SuppressWarnings("JBCT-EX-01")
     void publishMetrics() {
+        if (!hasCompleteClusterView()) {
+            return;
+        }
+
         try {
             // Threshold evaluation is an operator-facing capability, not a UI feature: it runs
             // whether or not anyone has the dashboard open. It used to sit AFTER the
@@ -143,6 +147,11 @@ public class DashboardMetricsPublisher {
                             .onPresent(DashboardWebSocketHandler::broadcast);
             }
         }
+    }
+
+    public boolean hasCompleteClusterView() {
+        return nodeSupplier.get()
+                           .hasCompleteClusterView();
     }
 
     public String buildInitialState() {

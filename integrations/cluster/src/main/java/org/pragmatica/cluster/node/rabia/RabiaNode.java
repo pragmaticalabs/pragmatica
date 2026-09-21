@@ -183,6 +183,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return Option.none();
     }
 
+    default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+        return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
+    }
+
     default Option<VoterConfiguration> voterConfiguration() {
         return Option.none();
     }
@@ -749,6 +753,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Option<VoterConfiguration> genesisVoters() {
                 return consensus().genesisVoters();
+            }
+
+            @Override
+            public org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+                return consensus().voterReconfigurationStatus();
             }
 
             @Override

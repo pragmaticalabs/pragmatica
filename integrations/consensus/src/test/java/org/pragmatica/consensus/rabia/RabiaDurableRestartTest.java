@@ -97,6 +97,48 @@ class RabiaDurableRestartTest {
         assertThat(restarted.stop().await().isSuccess()).isTrue();
     }
 
+    @Test void cleanStopRestoresCheckpointBeforeStalePeersCanActivateOrReplayOldSlots() {
+        var machine = new SnapshotStateMachine();
+        var engine = create(open(directory), new TestClusterNetwork(), machine);
+        activate(engine, RabiaPersistence.SavedState.empty());
+        var committed = Batch.create(CODEC, List.of(new TestCommand("committed")));
+        engine.processDecision(new Decision<>(B, 0, Phase.ZERO, StateValue.V1, committed));
+        settle(engine);
+        assertThat(engine.stop().await().isSuccess()).isTrue();
+        // Exercise both the normal clean stop and a second restart after recovery compacts its WAL.
+        for (int restart = 0; restart < 2; restart++) {
+            var disk = open(directory);
+            assertThat(disk.loadJournal().unwrap()).isEmpty();
+            assertThat(disk.load().unwrap().lastCommittedPhase()).isEqualTo(Phase.phase(1));
+            var recovered = new SnapshotStateMachine();
+            var restarted = create(disk, new TestClusterNetwork(), recovered);
+            activate(restarted, RabiaPersistence.SavedState.empty());
+            assertThat(restarted.currentPhaseForTesting()).isEqualTo(Phase.phase(1));
+            assertThat(recovered.getProcessedCommands()).extracting(TestCommand::value).containsExactly("committed");
+            restarted.processDecision(new Decision<>(B, 0, Phase.ZERO, StateValue.V1,
+                Batch.create(CODEC, List.of(new TestCommand("different")))));
+            settle(restarted);
+            assertThat(recovered.getProcessedCommands()).extracting(TestCommand::value).containsExactly("committed");
+            assertThat(restarted.currentPhaseForTesting()).isEqualTo(Phase.phase(1));
+            assertThat(restarted.stop().await().isSuccess()).isTrue();
+        }
+    }
+
+    private static final class SnapshotStateMachine extends TestStateMachine {
+        @Override public Result<byte[]> makeSnapshot() {
+            return Result.success(String.join("\n", getProcessedCommands().stream().map(TestCommand::value).toList())
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        @Override public Result<Unit> restoreSnapshot(byte[] snapshot) {
+            reset();
+            if (snapshot.length > 0) {
+                process(Batch.create(serializer(), new String(snapshot, java.nio.charset.StandardCharsets.UTF_8)
+                    .lines().map(TestCommand::new).toList()));
+            }
+            return Result.success(Unit.unit());
+        }
+    }
+
     @Test void failedWriteCannotEscapeAsAVoteOrAppliedDecision() {
         for (int stage = 0; stage < 4; stage++) {
             var disk = new CrashPersistence(open(directory.resolve("failure-" + stage)));

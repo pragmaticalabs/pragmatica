@@ -80,6 +80,7 @@ class EntityCheckpointLagMetricTest {
 
     private static ManageableNode nodeWith(ClusterSyncCollector collector) {
         var node = Mockito.mock(ManageableNode.class);
+        Mockito.when(node.hasCompleteClusterView()).thenReturn(true);
 
         Mockito.when(node.metricsCollector()).thenReturn(collector);
 

@@ -45,6 +45,36 @@ class RabiaVoterRecoveryTest {
         assertThat(machine.getProcessedCommands()).isEmpty();
         assertThat(network.getMessages()).noneMatch(message -> message instanceof VoteRound1 || message instanceof VoteRound2);
         assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(8));
+        var status = engine.voterReconfigurationStatus();
+        assertThat(status.stage()).isEqualTo("CHECKPOINT_COLLECTION");
+        assertThat(status.installedEpoch().unwrap()).isZero();
+        assertThat(status.barrierSlot().unwrap()).isEqualTo(8);
+        assertThat(status.targetVoters()).containsExactly("node-2", "node-3", "node-4");
+        assertThat(status.certifiedCheckpointWitnesses()).isZero();
+    }
+
+    @Test void repeatedHandoffRequestsAdvertiseWithoutRewritingTheFrozenCheckpoint() {
+        var counting = new FailingPersistence();
+        persistence = counting;
+        var handoff = new ConfigurationHandoff<TestCommand>(BEFORE, AFTER, Phase.phase(8), new byte[0], List.of());
+        assertThat(persistence.save(machine, Phase.phase(8), List.of(),
+            new VoterAuthority<>(BEFORE, Option.some(handoff))).isSuccess()).isTrue();
+        engine = create(A);
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+        // The first executor-delivered request completes lazy WAL recovery and checkpoints that
+        // recovered prefix. Measure repeated handoff advertisements only after that required save.
+        engine.handleSyncRequest(new SyncRequest(B));
+        settle();
+        var saved = counting.authoritySaves;
+        network.clearMessages();
+        for (int request = 0; request < 5; request++) {
+            engine.handleSyncRequest(new SyncRequest(B));
+            settle();
+        }
+        assertThat(counting.authoritySaves).isEqualTo(saved);
+        assertThat(network.getMessages()).anyMatch(ConfigurationTransfer.class::isInstance);
+        assertThat(engine.isActive()).isFalse();
     }
 
     @Test void failedHandoffReloadFailsStartupAndCannotResumeVoting() {
@@ -83,6 +113,9 @@ class RabiaVoterRecoveryTest {
         assertThat(engine.voterConfiguration().unwrap()).isEqualTo(AFTER);
         assertThat(engine.genesisVoters().unwrap()).isEqualTo(BEFORE);
         assertThat(engine.verifiedVoterHistoryIds()).containsExactlyInAnyOrder(A, B, C, D);
+        assertThat(engine.voterReconfigurationStatus().stage()).isEqualTo("INSTALLATION_PENDING");
+        assertThat(engine.voterReconfigurationStatus().certifiedCheckpointWitnesses()).isEqualTo(2);
+        assertThat(engine.voterReconfigurationStatus().certifiedInstallationWitnesses()).isZero();
         var old = Batch.create(machine.serializer(), List.of(new TestCommand("old")));
         engine.processDecision(new Decision<>(C, 0, Phase.phase(12), StateValue.V1, old));
         settle();
@@ -135,6 +168,8 @@ class RabiaVoterRecoveryTest {
         assertThat(completion.await().isSuccess()).isTrue();
         assertThat(engine.retirementSafeVoters().unwrap()).isEqualTo(AFTER);
         assertThat(persistence.load().unwrap().authority().unwrap().retirementSafe()).isTrue();
+        assertThat(engine.voterReconfigurationStatus().stage()).isEqualTo("COMPLETE");
+        assertThat(engine.voterReconfigurationStatus().certifiedInstallationWitnesses()).isGreaterThanOrEqualTo(2);
     }
 
     @Test void oldBarrierPersistenceFailureNeverAdvertisesOrReopensVoting() {
@@ -152,6 +187,7 @@ class RabiaVoterRecoveryTest {
         settle();
         assertThat(engine.isActive()).isFalse();
         assertThat(network.getMessages()).noneMatch(ConfigurationTransfer.class::isInstance);
+        assertThat(engine.voterReconfigurationStatus().failure()).isNotEmpty();
         engine.processPropose(new Propose<>(B, 0, Phase.phase(1), Batch.emptyBatch()));
         settle();
         assertThat(network.getMessages()).noneMatch(message -> message instanceof VoteRound1 || message instanceof VoteRound2);
@@ -160,6 +196,7 @@ class RabiaVoterRecoveryTest {
         settle();
         assertThat(network.getMessages()).anyMatch(ConfigurationTransfer.class::isInstance);
         assertThat(persistence.load().unwrap().authority().unwrap().handoff().isPresent()).isTrue();
+        assertThat(engine.voterReconfigurationStatus().failure()).isEmpty();
     }
 
     @Test void invalidElectorateIsRejectedBeforeAnyBarrierCanBeProposed() {
@@ -179,6 +216,7 @@ class RabiaVoterRecoveryTest {
         private final RabiaPersistence<TestCommand> delegate = RabiaPersistence.inMemory();
         private long failEpoch = -1;
         private boolean failLoads;
+        private int authoritySaves;
         @Override public org.pragmatica.lang.Result<Option<SavedState<TestCommand>>> loadVerified() {
             return failLoads ? ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.result() : delegate.loadVerified();
         }
@@ -194,6 +232,7 @@ class RabiaVoterRecoveryTest {
         @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> save(
             org.pragmatica.consensus.StateMachine<TestCommand> machine, Phase phase,
             java.util.Collection<Batch<TestCommand>> pending, VoterAuthority<TestCommand> authority) {
+            authoritySaves++;
             return authority.configuration().epoch() == failEpoch
                 ? ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.result()
                 : delegate.save(machine, phase, pending, authority);

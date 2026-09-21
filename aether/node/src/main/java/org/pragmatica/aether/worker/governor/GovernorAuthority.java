@@ -98,9 +98,9 @@ public interface GovernorAuthority {
                 var community = store.getTyped(communityKey, AetherValue.CommunityValue.class)
                                      .filter(value -> value.state() != org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVING && value.state() != org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED);
                 var directive = store.getTyped(directiveKey, AetherValue.ActivationDirectiveValue.class)
-                                     .filter(value -> (value.role()
-                                                            .equals(AetherValue.ActivationDirectiveValue.WORKER) || "SPOT".equalsIgnoreCase(value.role())) && value.communityId()
-                                                                                                                                                                   .equals(communityId));
+                                     .filter(value -> value.role()
+                                                           .equals(AetherValue.ActivationDirectiveValue.WORKER) && value.communityId()
+                                                                                                                        .equals(communityId));
 
                 if (community.isEmpty() || directive.isEmpty()) {
                     return Promise.success(previous);

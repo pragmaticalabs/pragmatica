@@ -56,7 +56,7 @@ public record CommunityHealthRuntime(NodeId self,
     }
 
     public org.pragmatica.lang.Unit onReport(CommunityHealthMessage.Report report) {
-        if (core.getAsBoolean() && index.accept(report.sender(), report)) {
+        if (core.getAsBoolean() && index.acceptAuthenticated(report)) {
             index.positiveEvidence(report.communityId()).forEach(positiveEvidence);
         }
 

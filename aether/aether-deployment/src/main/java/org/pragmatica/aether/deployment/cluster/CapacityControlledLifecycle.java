@@ -91,7 +91,10 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                 .fold(this::completeInventory);
     }
 
-    private Promise<Unit> reconcileRefusals() {
+    @Override
+    public Promise<Unit> reconcileRefusals() {
+        if (leader().isEmpty()) return Promise.unitPromise();
+
         return ReconciliationBatch.reconcile(reservations().entrySet()
                                                          .stream()
                                                          .filter(entry -> entry.getValue()

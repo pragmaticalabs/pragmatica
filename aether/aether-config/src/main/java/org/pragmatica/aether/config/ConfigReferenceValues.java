@@ -18,7 +18,7 @@ import org.pragmatica.lang.utils.Causes;
 /// secrets references use the established AETHER_<UPPERCASE_NAME> environment convention.
 /// Missing bindings fail before provider construction; values never enter failure messages.
 public interface ConfigReferenceValues {
-    Pattern REFERENCE = Pattern.compile("\\$\\{(env|secrets):([^}]+)}");
+    Pattern REFERENCE = Pattern.compile("\\$\\{(env|secrets):([^{}]+)}");
 
     static Result<String> resolve(String value) {
         return resolve(value,
@@ -26,6 +26,12 @@ public interface ConfigReferenceValues {
     }
 
     static Result<String> resolve(String value, Function<String, Option<String>> environment) {
+        // Validate the expression before substitution; resolved secrets remain opaque literal bytes.
+        return rejectUnresolved(REFERENCE.matcher(value).replaceAll("")).flatMap(_ -> resolveReferences(value,
+                                                                                                        environment));
+    }
+
+    private static Result<String> resolveReferences(String value, Function<String, Option<String>> environment) {
         var matcher = REFERENCE.matcher(value);
         var result = new StringBuilder();
         var position = 0;
@@ -45,7 +51,7 @@ public interface ConfigReferenceValues {
 
         result.append(value, position, value.length());
 
-        return rejectUnresolved(result.toString());
+        return Result.success(result.toString());
     }
 
     static Result<Map<String, String>> resolve(Map<String, String> values) {

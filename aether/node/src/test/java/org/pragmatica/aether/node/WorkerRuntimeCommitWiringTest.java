@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class WorkerRuntimeCommitWiringTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path storageRoot;
     private AetherNode node;
 
     @AfterEach void close() {
@@ -45,15 +46,7 @@ class WorkerRuntimeCommitWiringTest {
     @SuppressWarnings("unchecked")
     void assembledWorkerRuntimeWritersFollowTheForwardingDelegate() throws ReflectiveOperationException {
         var self = new NodeId("worker-commit-wiring-" + UUID.randomUUID());
-        var config = AetherNodeConfig.builder().self(self)
-            .coreNodes(List.of(NodeInfo.nodeInfo(self, NodeAddress.nodeAddress("localhost", 6123).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")),
-                              NodeInfo.nodeInfo(new NodeId("core-seed"), NodeAddress.nodeAddress("localhost", 6124).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "core"))))
-            .managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
-            .sliceConfig(org.pragmatica.aether.config.SliceConfig.sliceConfig())
-            .artifactRepo(org.pragmatica.dht.DHTConfig.FULL).coreMax(1)
-            .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none())
-            .quicTls(TlsConfig.selfSignedMutual()).certificateProvider(Option.none())
-            .configProvider(Option.none()).environment(Option.none()).build();
+        var config = workerConfig(self);
         node = AetherNode.aetherNode(config, () -> {}).unwrap();
         var switchable = (SwitchableClusterNode<KVCommand<AetherKey>>) component(node, "switchableCluster");
         assertThat(switchable.current()).as("first metadata LOAD must already use forwarding before activation")
@@ -96,6 +89,43 @@ class WorkerRuntimeCommitWiringTest {
             .containsExactlyInAnyOrder(installed, staged);
         var unavailable = org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.MEMBERSHIP_NOT_WIRED;
         assertThat(AetherNode.installedCorePlacementMembers(unavailable, counted)).isSameAs(unavailable);
+    }
+
+    @Test void assembledWorkerUsesDurableEpochBeforeAnyMetricsCanBePublished() {
+        var self = new NodeId("durable-worker");
+        var config = workerConfig(self);
+        node = AetherNode.aetherNode(config, () -> {}).unwrap();
+        assertThat(node.metricsCollector().allObservations().get(self).incarnation()).isEqualTo(1);
+        node.stop().await(timeSpan(10).seconds()).unwrap();
+        node = null;
+        ConfigService.clear();
+        ResourceProvider.clear();
+        node = AetherNode.aetherNode(config, () -> {}).unwrap();
+        assertThat(node.metricsCollector().allObservations().get(self).incarnation()).isEqualTo(2);
+    }
+
+    @Test void corruptEpochRefusesAssemblyInsteadOfPublishingAnUnfencedSample() {
+        var config = workerConfig(new NodeId("corrupt-epoch-worker"));
+        var control = storageRoot.resolve("control");
+        org.pragmatica.lang.Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
+            () -> java.nio.file.Files.createDirectories(control)).unwrap();
+        org.pragmatica.lang.Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
+            () -> java.nio.file.Files.write(control.resolve("producer-incarnation.bin"), new byte[]{1})).unwrap();
+        assertThat(AetherNode.aetherNode(config, () -> {}).isFailure()).isTrue();
+    }
+
+    private AetherNodeConfig workerConfig(NodeId self) {
+        return AetherNodeConfig.builder().self(self)
+            .coreNodes(List.of(NodeInfo.nodeInfo(self, NodeAddress.nodeAddress("localhost", 6123).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")),
+                              NodeInfo.nodeInfo(new NodeId("core-seed"), NodeAddress.nodeAddress("localhost", 6124).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "core"))))
+            .managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
+            .sliceConfig(org.pragmatica.aether.config.SliceConfig.sliceConfig())
+            .artifactRepo(org.pragmatica.dht.DHTConfig.FULL).coreMax(1)
+            .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none())
+            .quicTls(TlsConfig.selfSignedMutual()).certificateProvider(Option.none())
+            .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
+                org.pragmatica.config.ConfigurationProvider.builder().build())))
+            .environment(Option.none()).managementHttpProtocol(org.pragmatica.aether.config.HttpProtocol.H1).storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false)).build();
     }
 
     private static Object component(Object instance, String name) throws ReflectiveOperationException {

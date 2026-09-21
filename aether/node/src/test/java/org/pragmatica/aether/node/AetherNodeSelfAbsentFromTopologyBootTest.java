@@ -33,6 +33,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// `self ∉ coreNodes` must fail naming the self id, never reach assembly and advertise `("", 0)` /
 /// `localhost`. It reddens the moment assembly is reordered ahead of the observer factory.
 class AetherNodeSelfAbsentFromTopologyBootTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path storageRoot;
     private AetherNode node;
 
     @AfterEach
@@ -64,8 +65,9 @@ class AetherNodeSelfAbsentFromTopologyBootTest {
                                      .tls(Option.none())
                                      .quicTls(TlsConfig.selfSignedMutual())
                                      .certificateProvider(Option.none())
-                                     .configProvider(Option.none())
-                                     .environment(Option.none())
+                                     .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
+                org.pragmatica.config.ConfigurationProvider.builder().build())))
+                                     .environment(Option.none()).managementHttpProtocol(org.pragmatica.aether.config.HttpProtocol.H1).storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                      .build();
 
         AetherNode.aetherNode(config, () -> {})

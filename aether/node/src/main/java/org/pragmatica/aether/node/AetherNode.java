@@ -740,7 +740,14 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static Result<Path> consensusDirectory(AetherNodeConfig config) {
-        return Result.lift(Causes::fromThrowable, () -> configuredConsensusDirectory(config));
+        if (config.configProvider().flatMap(provider -> provider.getString("cluster.consensus_path")).isEmpty() && !config.storageConfig()
+                                                                                                                          .containsKey("artifacts")) {
+            return Causes.cause("Durable control storage requires cluster.consensus_path or an explicit artifacts storage path").result();
+        }
+
+        return Result.lift(Causes::fromThrowable, () -> configuredConsensusDirectory(config)).flatMap(path -> path.isAbsolute()
+                                                                                                              ? Result.success(path)
+                                                                                                              : Causes.cause("Durable control storage path must be absolute").result());
     }
 
     private static Path configuredConsensusDirectory(AetherNodeConfig config) {
@@ -753,7 +760,7 @@ public interface AetherNode extends ManageableNode {
     static Path defaultConsensusDirectory(AetherNodeConfig config) {
         var root = Option.option(config.storageConfig().get("artifacts"))
                          .map(storage -> Path.of(storage.diskPath()).resolveSibling("aether-control"))
-                         .or(Path.of("data", "aether"));
+                         .or(Path.of(org.pragmatica.aether.config.StorageConfig.storageConfig().diskPath()).resolveSibling("aether-control"));
         var identity = Base64.getUrlEncoder()
                              .withoutPadding()
                              .encodeToString(config.self().id().getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -782,9 +789,13 @@ public interface AetherNode extends ManageableNode {
         return Result.success(Base64.getEncoder().encodeToString(snapshot));
     }
 
-    private static Result<byte[]> base64ToSnapshot(String encoded) {
+    /// Git-backed persistence prepends its phase header before invoking the snapshot decoder.
+    /// Remove exactly that envelope; malformed headers and payloads remain typed decode failures.
+    static Result<byte[]> base64ToSnapshot(String encoded) {
+        var payload = encoded.replaceFirst("^# Phase: [0-9]+\\R", "").trim();
+
         return Result.lift(Causes::fromThrowable,
-                           () -> Base64.getDecoder().decode(encoded.trim()));
+                           () -> Base64.getDecoder().decode(payload));
     }
 
     /// NTT reconcile fan-out (membership v2). Fired once per stable presence-sensor membership
@@ -2300,6 +2311,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+                return clusterNode.voterReconfigurationStatus();
+            }
+
+            @Override
             public Set<NodeId> coreNodeIds() {
                 return configuredWorker(config)
                        ? membershipFsm.memberDescriptors()
@@ -3549,8 +3565,7 @@ public interface AetherNode extends ManageableNode {
         var bootIncarnation = System.currentTimeMillis();
 
         metricsCollector.setIncarnationSupplier(() -> producerIncarnation);
-        metricsCollector.setMembershipIncarnationSupplier(() -> Math.max(bootIncarnation,
-                                                                         swimHealthDetector.selfIncarnation()));
+        metricsCollector.setMembershipIncarnationSupplier(() -> producerIncarnation);
         workerMetricsAggregator.setIncarnationSupplier(() -> producerIncarnation);
         // RC1 (S01 fix) — wire the SWIM-backed liveness check for owner-broadcast eviction
         // hints. Followers REFUSE to act on the owner's `ClusterSyncPing.evictionHints` for
@@ -3872,8 +3887,16 @@ public interface AetherNode extends ManageableNode {
                                                                       .onSuccess(response -> clusterNode.network()
                                                                                                         .send(request.sender(),
                                                                                                               response))
-                                                                      .onFailure(cause -> LOG.debug("Governor authority request refused: {}",
-                                                                                                    cause.message()));
+                                                                      .onFailure(cause -> {
+                                                                                     LOG.debug("Governor authority request refused: {}",
+                                                                                               cause.message());
+                                                                                     clusterNode.network()
+                                                                                                .send(request.sender(),
+                                                                                                      new GovernorAuthorityMessage.Response(config.self(),
+                                                                                                                                            request.communityId(),
+                                                                                                                                            request.requestId(),
+                                                                                                                                            Option.none()));
+                                                                                 });
                                                  }));
         swimHealthDetector.addObservationListener(observation -> Option.option(governorAnnouncerHolder.get()).onPresent(announcer -> announceCommunityMembership(announcer,
                                                                                                                                                                  swimHealthDetector,
@@ -3887,8 +3910,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                     () -> installedVoterIds(clusterNode).contains(config.self()),
                                                                                                     () -> nodeReportedStateHolder.current()
                                                                                                                                  .name(),
-                                                                                                    () -> Math.max(bootIncarnation,
-                                                                                                                   swimHealthDetector.selfIncarnation()),
+                                                                                                    () -> producerIncarnation,
                                                                                                     (peer, message) -> clusterNode.network()
                                                                                                                                   .send(peer,
                                                                                                                                         message),
