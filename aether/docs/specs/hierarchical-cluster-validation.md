@@ -289,3 +289,10 @@ and keeps `ProjectionAwareCursorStore` around the cluster cursor store while dir
 command writer through `switchableCluster`. `WorkerRuntimeCommitWiringTest` traverses that
 actual wrapper and pins the worker forwarding path. The integrated head's targeted checks,
 live projection/consumer gates and CI must pass independently of the preceding checkpoint.
+
+The combined projection integration passed **356 focused cases, zero failures/errors/skips**
+in five modules (`/private/tmp/hierarchy-review-projection-integration.log`). Its selector covers
+all KV-store tests, facade/rebuild behavior, binary/TOML cursor round trips, actual worker assembly,
+read forwarding/bounds and both wire-registry gates. The complete six-step rebuild also passed.
+The dedicated CI selector now includes `DurableProjectionRebuildForgeTest`, raising the expected
+live matrix from 49 to 50 cases; its new-head artifact must include the added case without skips.

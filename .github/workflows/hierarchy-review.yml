@@ -64,7 +64,7 @@ jobs:
       - name: Run hierarchy correctness and recovery acceptance
         run: >-
           env -u HCLOUD_TOKEN ./forge.sh
-          'HierarchyAuthorityAcceptanceTest,HierarchicalDecisionReplayTest,HierarchicalLeaderObservationGraceTest,HierarchicalWorkerRuntimeReplayTest,HierarchicalWorkerReconnectTest,HierarchicalRecoveryEnvelopeTest,HierarchicalMetadataRecoveryTest,HierarchicalGovernorReportLossTest,HierarchicalGovernorConcurrencyRestartTest,HierarchicalWorkerFormationTest,HierarchicalCoreRestartTest,HierarchicalCoreResizeTest,HierarchicalWorkerDrainTest,HierarchicalLoadedMovementTest,HierarchicalMovementTakeoverTest,HierarchicalCapacityFallbackTest,HierarchicalCommunityMovementTest,HierarchicalWorkerWorkloadTest,EmberAddNodeRoleLabelTest,ClusterFormationTest,StreamOwnershipDriverFenceTest,SliceInvocationTest,DeclarativeStreamConsumerTest'
+          'HierarchyAuthorityAcceptanceTest,HierarchicalDecisionReplayTest,HierarchicalLeaderObservationGraceTest,HierarchicalWorkerRuntimeReplayTest,HierarchicalWorkerReconnectTest,HierarchicalRecoveryEnvelopeTest,HierarchicalMetadataRecoveryTest,HierarchicalGovernorReportLossTest,HierarchicalGovernorConcurrencyRestartTest,HierarchicalWorkerFormationTest,HierarchicalCoreRestartTest,HierarchicalCoreResizeTest,HierarchicalWorkerDrainTest,HierarchicalLoadedMovementTest,HierarchicalMovementTakeoverTest,HierarchicalCapacityFallbackTest,HierarchicalCommunityMovementTest,HierarchicalWorkerWorkloadTest,EmberAddNodeRoleLabelTest,ClusterFormationTest,StreamOwnershipDriverFenceTest,SliceInvocationTest,DeclarativeStreamConsumerTest,DurableProjectionRebuildForgeTest'
       - name: Collect measured envelope records
         if: always()
         run: |
