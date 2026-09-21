@@ -15,14 +15,28 @@
   `RabiaSyncAdoptionOwnSnapshotTest#everyResponderBehind_activatesWithOwnPersistedSnapshotInstalled`,
   `#singleNode_activatesWithOwnPersistedSnapshotInstalled` — red on the unmodified engine with `lastRestored: null`
   and `Phase[value=0]`; `#resyncFromActive_ownStaleDiskSnapshotIsNotInstalledOverTheLivePhase` reddens when the
-  ahead-of-live guard is dropped]
+  ahead-of-live guard is dropped] [verified on the live path:
+  `ApiKeyFullRestartForgeTest#fullGracefulRestart_everyNodeAcceptsTheKeysMintedBeforeTheStop` — three Ember nodes
+  with per-node `[backup]` dirs, `API_KEY` management security; mint, graceful stop of node 1, mint again through the
+  survivors (phase skew), stop, restart with node 3 held back so node 2's only responder is behind it. With the engine
+  hunk reverted on the same base: `second-minted-key presented on akr-2: expected 200 but was 403` for the full 30 s
+  poll; with it: node 2 logs `activating on its own persisted state … persisted phase 14`, both keys answer 200 on
+  every node, and `BootstrapAdminKeyRegistrar` finds the restored admin key instead of minting one]
+- Depends on #1341, which landed the same day: before it `AetherNode::base64ToSnapshot` was handed the `# Phase: N`
+  header `GitBackedPersistence` writes and every production `load()` failed to `none()`, so a restarted node was
+  amnesiac whatever was on its disk — the first run of the forge pin against `d444d22c6` wedged the restart at
+  "restored state … phase 0" on one node and Syncing forever on the other. On top of #1341 the tie-only restore
+  above is the remaining defect, and this fix closes it.
 - **Two existing pins asserted the defect** (`RabiaSyncAdoptionQuorumTest#ownMoreAdvancedState_isNotRegressed_byStalerResponses`,
   `#futureHistory_stillDetected_butNoLongerRegressesOntoTheOlderClusterState`): both asserted that NOTHING was
   installed, on the argument that the persisted snapshot lags the live state. That argument holds for a resync from
   ACTIVE and not for a fresh process whose live store is empty. They now assert that the RESPONDERS' snapshot is not
   installed and self's is — which still reddens if the adoption floor is deleted, the mutation the originals were
   written against.
-- What this does NOT earn, stated so a sweep returns it beside the claim: the shipped
+- What this does NOT earn, stated so a sweep returns it beside the claim: `GitBackedPersistence` does not create
+  `[backup] path`, so a path that does not exist (the shipped image creates `/data`, not `/data/backups`) fails every
+  save at ERROR while the node runs on — provision the directory. [unverified: not pinned; the harness pre-creates
+  per-node dirs, as #1341's `withConsensusBaseDir` requires] The shipped
   `aether/docker/docker-compose.yml` and container `aether.toml` carry no `[backup]` section and mount no volume, so
   a deployment made from them still runs `RabiaPersistence.inMemory()` and loses every KV record — every minted key
   and every revocation — on a full restart; the derived `bootstrap-admin` key is re-registered by the fresh leader
