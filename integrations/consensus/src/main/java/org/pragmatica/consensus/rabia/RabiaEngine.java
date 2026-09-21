@@ -814,7 +814,8 @@ public class RabiaEngine<C extends Command> {
         // survivor and the first caller saw ApplyTimeout although its command had applied.
         pendingBatches.compute(batch.id(),
                                (_, existing) -> Option.option(existing).fold(() -> batch,
-                                                                             current -> stateMachine.merge(current, batch)));
+                                                                             current -> stateMachine.merge(current,
+                                                                                                           batch)));
         metrics.updatePendingBatches(self, pendingBatches.size());
         onBatchPrepared.accept(batch);
         triggerPhaseIfNeeded();

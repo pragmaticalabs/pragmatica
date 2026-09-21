@@ -188,10 +188,13 @@ class RabiaEngineTest {
             // first promise never settled and surfaced as ApplyTimeout although the command applied.
             // Guarantee pinned: every caller's promise completes with its own command's outcome,
             // and the command is applied exactly once.
-            var target = new RabiaEngine<>(topologyManager, network, stateMachine, applyTimeoutConfig(timeSpan(2).seconds()));
+            var target = new RabiaEngine<>(topologyManager,
+                                           network,
+                                           stateMachine,
+                                           applyTimeoutConfig(timeSpan(2).seconds()));
+
             activate(target);
             network.clearMessages();
-
             var command = new TestCommand("identical");
             var start = new CountDownLatch(1);
             var submitted = new CountDownLatch(2);
@@ -203,15 +206,14 @@ class RabiaEngineTest {
             start.countDown();
             assertThat(submitted.await(2, SECONDS)).as("both submissions must be issued").isTrue();
             Thread.sleep(50);
-
-            var batches = network.getMessages().stream()
+            var batches = network.getMessages()
+                                 .stream()
                                  .filter(m -> m instanceof RabiaProtocolMessage.Asynchronous.NewBatch<?>)
                                  .map(m -> ((RabiaProtocolMessage.Asynchronous.NewBatch<TestCommand>) m).batch())
                                  .toList();
 
             assertThat(batches).as("each submission broadcasts its own batch").hasSize(2);
             assertThat(batches.get(0).id()).as("identical content hashes to one id").isEqualTo(batches.get(1).id());
-
             target.processPropose(new Propose<>(NODE_2, Phase.ZERO, batches.getFirst()));
             Thread.sleep(50);
             target.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
@@ -219,19 +221,15 @@ class RabiaEngineTest {
             Thread.sleep(50);
             target.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
             target.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
-
             var firstResult = first.get().await(timeSpan(5).seconds());
             var secondResult = second.get().await(timeSpan(5).seconds());
 
-            assertThat(stateMachine.getProcessedCommands())
-                .as("the identical command is applied exactly once")
-                .containsExactly(command);
-            assertThat(firstResult)
-                .as("first caller's promise must settle with its command's outcome")
-                .isEqualTo(Result.success(List.of("result:identical")));
-            assertThat(secondResult)
-                .as("second caller's promise must settle with its command's outcome")
-                .isEqualTo(Result.success(List.of("result:identical")));
+            assertThat(stateMachine.getProcessedCommands()).as("the identical command is applied exactly once")
+                      .containsExactly(command);
+            assertThat(firstResult).as("first caller's promise must settle with its command's outcome")
+                      .isEqualTo(Result.success(List.of("result:identical")));
+            assertThat(secondResult).as("second caller's promise must settle with its command's outcome")
+                      .isEqualTo(Result.success(List.of("result:identical")));
             target.stop().await();
         }
 
@@ -245,9 +243,11 @@ class RabiaEngineTest {
                     start.await();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+
                     return;
                 }
-                slot.set(target.<String>apply(List.of(command)));
+
+                slot.set(target.<String> apply(List.of(command)));
                 submitted.countDown();
             });
         }
