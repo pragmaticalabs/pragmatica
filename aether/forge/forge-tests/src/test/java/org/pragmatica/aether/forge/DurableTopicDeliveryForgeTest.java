@@ -898,6 +898,10 @@ class DurableTopicDeliveryForgeTest {
     /// runtime that never reads the backlog at subscribe (rev1341 F8, measured under M1). Only an owner
     /// assignee attaches in push mode, where #1238(c) lives. With the owner's instance ACTIVE before the
     /// first attach, the first assignee is the owner; [#orderGroupSitsOnItsOwner] checks the outcome.
+    /// Reading order is the argument: the owner's instance is confirmed ACTIVE FIRST and
+    /// `attachedSubscriptions` is (re-)read AFTER it, so at the moment nobody was attached the owner
+    /// could already run the slice and the next attach is the owner's. `attached` from the caller is a
+    /// precondition only; the read that establishes is the one taken here.
     private void establishPreAttachId(String id, int attached, String how) {
         if (attached != 0 || preAttachOrderId.isPresent()) {
             return;
@@ -905,6 +909,18 @@ class DurableTopicDeliveryForgeTest {
 
         var owner = ownerReplicaView().flatMap(DurableTopicDeliveryForgeTest::hrwOwner);
         var ownerActive = owner.map(this::instanceActiveOn).or(false);
+        var attachedAfterOwnerRead = ownerActive
+                                     ? attachedSubscriptionsClusterWide()
+                                     : -1;
+
+        if (ownerActive && attachedAfterOwnerRead != 0) {
+            if (excludedWarmupIds.stream().noneMatch(entry -> entry.startsWith(id + "("))) {
+                excludedWarmupIds.add(id + "(nobody attached at the first read, but attachedSubscriptions=" + attachedAfterOwnerRead
+                                      + " once the owner's instance was confirmed ACTIVE: the attach raced the establishment)");
+            }
+
+            return;
+        }
 
         if (!ownerActive) {
             if (excludedWarmupIds.stream().noneMatch(entry -> entry.startsWith(id + "("))) {
@@ -920,7 +936,7 @@ class DurableTopicDeliveryForgeTest {
         preAttachEvidence = how + (how.startsWith("in-flight")
                                    ? ""
                                    : ", and attachedSubscriptions read 0 on every node afterwards")
-                            + "; the owner " + owner.or("?") + "'s instance was ACTIVE, so the first assignee is the owner (push mode)";
+                            + "; the owner " + owner.or("?") + "'s instance was ACTIVE and attachedSubscriptions re-read 0 after that, so the first assignee is the owner (push mode)";
     }
 
     private boolean instanceActiveOn(String nodeId) {
@@ -958,20 +974,29 @@ class DurableTopicDeliveryForgeTest {
                                                        (first, _) -> first,
                                                        java.util.TreeMap::new));
         var total = perNode.values().stream().mapToInt(Integer::intValue).sum();
-        var expectedAtOrderOwner = 1 + (orderOwner.isPresent() && orderOwner.equals(poisonOwner)
-                                        ? POISON_GROUPS
-                                        : 0);
+        var sameOwner = orderOwner.isPresent() && orderOwner.equals(poisonOwner);
         var atOrderOwner = orderOwner.map(owner -> perNode.getOrDefault(owner, -1)).or(-1);
-        var sits = total == TOTAL_GROUPS && atOrderOwner == expectedAtOrderOwner;
+        var atPoisonOwner = poisonOwner.map(owner -> perNode.getOrDefault(owner, -1)).or(-1);
+        // Same owner: that node must carry all three. Different owners: the poison owner must carry BOTH
+        // poison groups, which is what makes the single subscription on the order owner necessarily the
+        // order-events group rather than a poison group that moved there.
+        var sits = total == TOTAL_GROUPS && (sameOwner
+                                             ? atOrderOwner == TOTAL_GROUPS
+                                             : atOrderOwner == 1 && atPoisonOwner == POISON_GROUPS);
 
-        assigneeReading = "order-events owner=%s, poison-events owner=%s, attachedSubscriptions per node=%s (expected %d at the order-events owner, %d in total): %s".formatted(orderOwner.or("<unresolved>"),
-                                                                                                                                                                            poisonOwner.or("<unresolved>"),
-                                                                                                                                                                            perNode,
-                                                                                                                                                                            expectedAtOrderOwner,
-                                                                                                                                                                            TOTAL_GROUPS,
-                                                                                                                                                                            sits
-                                                                                                                                                                            ? "the order-events group sits on its owner (push mode)"
-                                                                                                                                                                            : "the order-events group is NOT on its owner (poll mode, not the #1238(c) path)");
+        assigneeReading = "order-events owner=%s, poison-events owner=%s (%s), attachedSubscriptions per node=%s (expected %s, %d in total): %s".formatted(orderOwner.or("<unresolved>"),
+                                                                                                                                                       poisonOwner.or("<unresolved>"),
+                                                                                                                                                       sameOwner
+                                                                                                                                                       ? "same node"
+                                                                                                                                                       : "different nodes",
+                                                                                                                                                       perNode,
+                                                                                                                                                       sameOwner
+                                                                                                                                                       ? "3 on that node"
+                                                                                                                                                       : "1 on the order-events owner and 2 on the poison-events owner",
+                                                                                                                                                       TOTAL_GROUPS,
+                                                                                                                                                       sits
+                                                                                                                                                       ? "the order-events group sits on its owner (push mode)"
+                                                                                                                                                       : "the order-events group is NOT shown to be on its owner (poll mode or an ambiguous distribution — not the #1238(c) path)");
 
         return sits;
     }
