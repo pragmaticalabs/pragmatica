@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.forward;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
@@ -18,6 +19,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -236,11 +238,98 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                                          request.sender());
     }
 
+    /// #1383: a replica catch-up read is served from the ring up to the APPENDED head, or — for a prefix the
+    /// ring has evicted but this node's tier retains — from the tier, then the ring for the rest of the page.
+    /// Before this the read was ring-only, so a replacement replica whose catch-up started below the ring tail
+    /// was answered `CursorExpired` on every redrive and never left SYNCING; with `min-sync` 2 and the original
+    /// peer gone, the partition's visible position never advanced again. The tier read is bounded by the
+    /// appended head — the replication-read class (#1235), never the consumer's visible bound (#1352) — so the
+    /// replica holds every offset it acks and nothing this owner has not appended. A prefix retention has
+    /// reclaimed is still `CursorExpired` (from the tier, [TieredStreamReader#read]) and still stalls: #1407.
     private Promise<List<OffHeapRingBuffer.RawEvent>> readAppended(ReadForward request) {
         return partitionManager.readAppended(request.streamName(),
                                              request.partition(),
                                              request.fromOffset(),
                                              request.maxEvents())
+                               .fold(cause -> recoverEvicted(request, cause),
+                                     Promise::success);
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> recoverEvicted(ReadForward request, Cause cause) {
+        return cause instanceof StreamError.CursorExpired
+               ? readEvictedPrefix(request, cause)
+               : cause.promise();
+    }
+
+    /// An evicted offset the sealer still retains is IN FLIGHT: its seal is not indexed yet, so it is in neither
+    /// place, and the read fails transient ([SegmentError.SealInFlight]) for the backfill to redrive — never
+    /// `CursorExpired`, which names an offset nobody holds. Asked BEFORE the tier read, as the consumer path
+    /// does: the sink indexes a segment before the sealer releases its copy, so an offset not retained here is
+    /// already findable in the index. Without a tier wired the ring's own refusal stands.
+    private Promise<List<OffHeapRingBuffer.RawEvent>> readEvictedPrefix(ReadForward request, Cause expired) {
+        if (partitionManager.sealInFlight(request.streamName(), request.partition(), request.fromOffset())) {
+            return new SegmentError.SealInFlight(request.streamName(), request.partition(), request.fromOffset()).promise();
+        }
+
+        return tieredReader.fold(expired::promise, reader -> readTierThenRing(request, reader, expired));
+    }
+
+    /// The tier is asked for no more than `[fromOffset, appended head]`; nothing sealed at `fromOffset` means the
+    /// ring's refusal was right (a seal that failed for good, a ring released under the read) and it is returned
+    /// as-is — an empty success would let the backfill take the no-source path off a partition that has history.
+    private Promise<List<OffHeapRingBuffer.RawEvent>> readTierThenRing(ReadForward request,
+                                                                       TieredStreamReader reader,
+                                                                       Cause expired) {
+        var head = appendedHead(request);
+
+        if (request.fromOffset() > head) {
+            return expired.promise();
+        }
+
+        return reader.read(request.streamName(),
+                           request.partition(),
+                           request.fromOffset(),
+                           (int) Math.min(request.maxEvents(),
+                                          head - request.fromOffset() + 1))
+                     .flatMap(sealed -> serveSealedPrefix(request, sealed, expired));
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> serveSealedPrefix(ReadForward request,
+                                                                        List<OffHeapRingBuffer.RawEvent> sealed,
+                                                                        Cause expired) {
+        return sealed.isEmpty()
+               ? expired.promise()
+               : appendRingTail(request, sealed);
+    }
+
+    private long appendedHead(ReadForward request) {
+        return partitionManager.partitionBuffer(request.streamName(),
+                                                request.partition())
+                               .map(OffHeapRingBuffer::headOffset)
+                               .or(-1L);
+    }
+
+    /// FER (degrade forward) for the ring's share of the page, which starts right after the sealed prefix: a
+    /// ring failure there returns the prefix alone, because under sustained eviction the ring can wrap past that
+    /// offset between the tier read and this one, and failing the whole page would redrive the backfill from the
+    /// same cursor into the same race. A short page is applied, stays SYNCING (`INCOMPLETE_BACKFILL`) and redrives
+    /// from the advanced watermark, where the failure — in-flight seal, wrapped ring, corrupted ring — surfaces at
+    /// the exact offset it occurs.
+    private Promise<List<OffHeapRingBuffer.RawEvent>> appendRingTail(ReadForward request,
+                                                                     List<OffHeapRingBuffer.RawEvent> sealed) {
+        var remaining = request.maxEvents() - sealed.size();
+
+        if (remaining <= 0) {
+            return Promise.success(sealed);
+        }
+
+        return partitionManager.readAppended(request.streamName(),
+                                             request.partition(),
+                                             sealed.getLast().offset() + 1,
+                                             remaining)
+                               .map(ring -> List.copyOf(Stream.concat(sealed.stream(),
+                                                                      ring.stream()).toList()))
+                               .recover(_ -> sealed)
                                .async();
     }
 
