@@ -4188,7 +4188,8 @@ public interface AetherNode extends ManageableNode {
                                                                              streamForwardTransport,
                                                                              streamingConfig.maxReadResponseBytes(),
                                                                              streamReadForwardMetrics,
-                                                                             Option.some(linearizableOwnerServe));
+                                                                             Option.some(linearizableOwnerServe),
+                                                                             Option.some(streamTieredReader));
         var streamReadRouter = StreamReadRouter.streamReadRouter(streamPartitionManager,
                                                                  Option.some(streamReplicaRegistry),
                                                                  Option.some(streamForwardClient),

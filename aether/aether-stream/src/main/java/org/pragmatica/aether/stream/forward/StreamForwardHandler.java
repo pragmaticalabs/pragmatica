@@ -18,6 +18,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -49,6 +50,7 @@ public interface StreamForwardHandler {
                                                transport,
                                                DEFAULT_MAX_READ_RESPONSE_BYTES,
                                                StreamReadForwardMetrics.NOOP,
+                                               Option.none(),
                                                Option.none());
     }
 
@@ -62,6 +64,7 @@ public interface StreamForwardHandler {
                                                transport,
                                                maxReadResponseBytes,
                                                metrics,
+                                               Option.none(),
                                                Option.none());
     }
 
@@ -80,7 +83,28 @@ public interface StreamForwardHandler {
                                                transport,
                                                maxReadResponseBytes,
                                                metrics,
-                                               ownerServe);
+                                               ownerServe,
+                                               Option.none());
+    }
+
+    /// #1383 overload: wires this node's tiered reader so a replica catch-up read falls through to the
+    /// owner's tier for a prefix the ring has evicted but the tier retains (see [DefaultStreamForwardHandler#readAppended]).
+    /// Without it (base handler / NOOP) the catch-up read stays ring-only and answers the evicted prefix
+    /// `CursorExpired`, exactly as before.
+    static StreamForwardHandler streamForwardHandler(NodeId selfNodeId,
+                                                     StreamPartitionManager partitionManager,
+                                                     StreamForwardTransport transport,
+                                                     long maxReadResponseBytes,
+                                                     StreamReadForwardMetrics metrics,
+                                                     Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe,
+                                                     Option<TieredStreamReader> tieredReader) {
+        return new DefaultStreamForwardHandler(selfNodeId,
+                                               partitionManager,
+                                               transport,
+                                               maxReadResponseBytes,
+                                               metrics,
+                                               ownerServe,
+                                               tieredReader);
     }
 
     StreamForwardHandler NOOP = new StreamForwardHandler() {
@@ -105,19 +129,22 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private final long maxReadResponseBytes;
     private final StreamReadForwardMetrics metrics;
     private final Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe;
+    private final Option<TieredStreamReader> tieredReader;
 
     DefaultStreamForwardHandler(NodeId selfNodeId,
                                 StreamPartitionManager partitionManager,
                                 StreamForwardTransport transport,
                                 long maxReadResponseBytes,
                                 StreamReadForwardMetrics metrics,
-                                Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe) {
+                                Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe,
+                                Option<TieredStreamReader> tieredReader) {
         this.selfNodeId = selfNodeId;
         this.partitionManager = partitionManager;
         this.transport = transport;
         this.maxReadResponseBytes = maxReadResponseBytes;
         this.metrics = metrics;
         this.ownerServe = ownerServe;
+        this.tieredReader = tieredReader;
     }
 
     /// #1236: the replica floor (`min-sync - 1` peers) is checked BEFORE the owner appends, so a forwarded
