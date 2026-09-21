@@ -758,9 +758,10 @@ public final class EmberCluster {
     /// TEST SEAM (#509 probe) — start the instances [#start] created and held back, in their original
     /// identities/ports/slots, registering each in [#nodes] only once its `start()` has SUCCEEDED (so a
     /// concurrent [#currentLeader] never answers from a node that is still coming up). Succeeds
-    /// trivially when nothing was held back. Failures are accumulated and propagated; unlike [#start]
-    /// no cleanup of the already-running cluster is attempted, because a held-back start failure is a
-    /// probe-setup failure, not a formation failure.
+    /// trivially when nothing was held back. Failures are accumulated and propagated, and the node
+    /// whose start failed is stopped (#1308, [#stopFailedHeldBackNode]); unlike [#start] no cleanup of
+    /// the already-running cluster is attempted, because a held-back start failure is a probe-setup
+    /// failure, not a formation failure.
     public Promise<Unit> startHeldBackNodes() {
         var heldIds = List.copyOf(heldBackNodes.keySet());
 
@@ -784,9 +785,22 @@ public final class EmberCluster {
         return node.start()
                    .onSuccess(_ -> nodes.put(nodeIdStr, node))
                    .onSuccess(_ -> log.info("Held-back node {} started and rejoined the cluster", nodeIdStr))
-                   .onFailure(cause -> log.error("Held-back node {} failed to start: {}",
-                                                 nodeIdStr,
-                                                 cause.message()));
+                   .fold(result -> result.fold(cause -> stopFailedHeldBackNode(nodeIdStr, node, cause),
+                                               _ -> Promise.unitPromise()));
+    }
+
+    /// #1308: a held-back node enters [#nodes] only once its start SUCCEEDS, so on a start failure
+    /// its own `jvmExit` ([#handleSelfDrain]) finds nothing to remove and stops nothing — a node whose
+    /// SWIM could not bind kept running SWIM-less, with its QUIC and management ports bound. The
+    /// failure is made to reach the node here: stop it (bounded, recovered — the failure it is
+    /// stopped for is the one propagated), then fail the held-back start with the original cause.
+    private Promise<Unit> stopFailedHeldBackNode(String nodeIdStr, AetherNode node, Cause cause) {
+        log.error("Held-back node {} failed to start: {}", nodeIdStr, cause.message());
+
+        return node.stop()
+                   .timeout(NODE_TIMEOUT)
+                   .recover(_ -> Unit.unit())
+                   .flatMap(_ -> cause.promise());
     }
 
     private static Promise<Unit> allHeldBackStartedOrFail(List<Result<Unit>> results) {

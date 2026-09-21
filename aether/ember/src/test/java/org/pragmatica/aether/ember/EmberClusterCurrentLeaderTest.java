@@ -53,7 +53,9 @@ class EmberClusterCurrentLeaderTest {
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
     /// Disjoint from the ranges `EmberClusterObservedNodeStateTest` (25700–27500) and
-    /// `EmberBootstrapAdminKeyAuthTest` (27700–29500) probe, so the three never contend.
+    /// `EmberBootstrapAdminKeyAuthTest` (27700–29500) probe, so the three never contend. The fixed blocks of
+    /// `EmberClusterSwimStartFailureTest` (31700) and `EmberClusterHeldBackSwimStartFailureTest` (31900) sit
+    /// above this range's last candidate (31500 + 102).
     private static final int FIRST_CANDIDATE_BASE = 29700;
     private static final int LAST_CANDIDATE_BASE = 31500;
     private static final int CANDIDATE_STEP = 200;
