@@ -42,3 +42,9 @@
   both counted] [unverified: the attachment ORDER (count before the handle) — its only observer past the
   handle's settle is `close()`'s join waking a thread, a nanosecond window no test can close; stated at the
   attachment site]
+- Also added, the CI shape itself as a regression test:
+  `periodicCommitTimedOutByItsBoundWhileCloseWaits_bothIncidentsAreCountedAsOfCloseReturning` — the periodic's
+  store promise is failed by its own bound while `close()` waits, the final fails synchronously, and the count
+  read on the closing thread with no wait is 2. Green deterministically with the fix; it does NOT redden with the
+  increment back on `onFailure` (0/10 on the build host — the closing thread's wake-up loses to the executor,
+  which had the whole inline frame's head start), which is why the same-frame observer test above is the pin.

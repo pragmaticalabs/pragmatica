@@ -2125,6 +2125,68 @@ class StreamConsumerRuntimeTest {
             assertThat(countAtClose.get()).describedAs("both incidents were counted as of close() returning").isEqualTo(2L);
         }
 
+        /// #1401 product pin, the CI shape itself: the periodic commit's store promise never settles, so its OWN
+        /// [ConsumerRuntimeState#PERIODIC_COMMIT_BOUND] timeout fails it — on the scheduler's thread — while
+        /// `close()` is inside its wait. The final commit, issued in that same frame once the periodic slot
+        /// settles, fails synchronously, so both handles settle there and `close()`'s `allOf` join wakes the
+        /// closing thread. Read with no wait on that thread, the count must be 2: with the increments on
+        /// `with*()` they ran inline BEFORE each handle settled; on `onFailure` they were dispatched to the
+        /// executor and the closing thread could wake first (CI run 35548028994: 1). The 200 ms between issue and
+        /// `close()` only orders the two 5 s clocks so the periodic's bound fires before the shutdown bound —
+        /// the verdict is 2 either way with the fix (the shutdown bound reports both synchronously); it makes the
+        /// interleaving under test the one that happens. This is the CI shape, not the discriminating pin: with
+        /// the increment back on `onFailure` the executor usually wins the race against the closing thread's
+        /// wake-up (0/10 red on the build host) — `commitFails_incidentIsCountedBeforeItsHandleSettles_…` above,
+        /// whose observer sits inside the resolve frame, is the pin that reddens (10/10).
+        @Test
+        void periodicCommitTimedOutByItsBoundWhileCloseWaits_bothIncidentsAreCountedAsOfCloseReturning() throws InterruptedException {
+            createTestStream("orders");
+            var issued = new CountDownLatch(1);
+            var store = new ConsumerCursorStore() {
+                private final AtomicInteger calls = new AtomicInteger();
+
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (calls.getAndIncrement() == 0) {
+                        issued.countDown();
+
+                        return Promise.promise();
+                    }
+
+                    return StreamError.General.BUFFER_EMPTY.promise();
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            assertThat(issued.await(5, TimeUnit.SECONDS)).describedAs("the periodic commit was issued").isTrue();
+            Thread.sleep(200);
+
+            var returned = new CountDownLatch(1);
+            var countAtClose = new AtomicLong(-1);
+
+            Thread.ofPlatform().start(() -> {
+                observedRuntime.close();
+                countAtClose.set(observedRuntime.cursorCommitFailureCount());
+                returned.countDown();
+            });
+            awaitUntil(() -> observedRuntime.inFlightCommitCount() == 2, "close() registered the final commit behind the pending periodic one");
+            assertThat(returned.getCount()).describedAs("close() is waiting on both").isEqualTo(1L);
+
+            assertThat(returned.await(10, TimeUnit.SECONDS)).describedAs("close() returned").isTrue();
+            assertThat(countAtClose.get())
+                      .describedAs("both incidents counted as of close() returning — the periodic by its own bound, the final synchronously; read on the closing thread with no wait")
+                      .isEqualTo(2L);
+        }
+
         /// The first `commit` runs `onEntry`, counts down `entered`, parks inside the call until `gate` opens, and
         /// then returns `first`; every later commit returns a fresh promise that never settles.
         private static ConsumerCursorStore heldThenPending(CountDownLatch entered,
