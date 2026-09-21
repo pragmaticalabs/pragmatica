@@ -2,8 +2,11 @@ package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
+import java.util.function.UnaryOperator;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -40,7 +43,7 @@ class ContentStoreDeleteRefcountTest {
 
     private MemoryTier memoryTier;
     private DeleteObservingTier tier;
-    private MetadataStore metadataStore;
+    private SeamMetadataStore metadataStore;
     private GatedStorage storage;
     private ContentStore store;
     private StorageGarbageCollector gc;
@@ -55,7 +58,7 @@ class ContentStoreDeleteRefcountTest {
     private void wire(long tierCapacity) {
         memoryTier = MemoryTier.memoryTier(tierCapacity);
         tier = new DeleteObservingTier(memoryTier);
-        metadataStore = MetadataStore.inMemoryMetadataStore("content-delete-refcount");
+        metadataStore = new SeamMetadataStore(MetadataStore.inMemoryMetadataStore("content-delete-refcount"));
         var instance = StorageInstance.storageInstance("content-delete-refcount", List.of(tier), metadataStore);
 
         storage = new GatedStorage(instance);
@@ -413,6 +416,197 @@ class ContentStoreDeleteRefcountTest {
             assertThat(delete1Result.isSuccess()).as("locator: delete1 must complete once released").isTrue();
             assertThat(afterDelete2).as("locator: the delete that removed the name released once").containsOnly(1);
             assertThat(afterBoth).as("locator: the delete that removed nothing released nothing").containsOnly(1);
+        }
+
+        /// The primitive underneath, pinned where its window is: `DefaultStorageInstance.swapRef` must report
+        /// the id `MetadataStore.replaceRef` displaced, not one read a statement earlier. The competing
+        /// overwrite runs to completion from INSIDE that statement gap (a one-shot hook before the first
+        /// `replaceRef`), so an implementation that pre-reads reports the stale id, releases its chunks a
+        /// second time, and the third name loses them. Red under exactly that mutation.
+        @Test
+        void put_competingOverwriteInsideTheSwap_releasesWhatTheSwapDisplaced_notAPreRead() {
+            var x = generateContent(CHUNK_SIZE * 3 + 15, 1);
+            var y = generateContent(CHUNK_SIZE * 3 + 15, 2);
+            var z = generateContent(CHUNK_SIZE * 3 + 15, 3);
+
+            putContent(OTHER_NAME, x);
+            var chunksX = chunkIdsOf(putContent(NAME, x));
+
+            metadataStore.beforeNextReplaceRef(() -> putContent(NAME, z));
+            var manifestY = putContent(NAME, y);
+            var xAfterBoth = refCountsOf(chunksX);
+            var collected = collectAfterGrace(gc);
+
+            assertReadable(OTHER_NAME, x);
+            assertReadable(NAME, y);
+            assertThat(metadataStore.replaceRefHookFired()).as("locator: the competing overwrite must have run inside the swap")
+                      .isTrue();
+            assertThat(xAfterBoth).as("locator: X's chunks were released once, by the overwrite that displaced X")
+                      .containsOnly(1);
+            assertThat(collected).as("locator: X's manifest, and Z's manifest with its chunks")
+                      .isEqualTo(chunksX.size() + 2);
+            assertThat(storage.resolveRef(NAME)).as("locator: the name ends at Y").isEqualTo(Option.some(manifestY));
+        }
+
+        /// Same for `dropRef`: the id must come from `MetadataStore.removeRef` itself. The competing delete
+        /// runs to completion from inside the gap before the first `removeRef`; a pre-reading
+        /// implementation reports the id twice and the third name loses its chunks.
+        @Test
+        void delete_competingDeleteInsideTheDrop_releasesWhatTheDropRemoved_notAPreRead() {
+            var content = generateContent(CHUNK_SIZE * 3 + 15, 1);
+
+            putContent(OTHER_NAME, content);
+            var chunks = chunkIdsOf(putContent(NAME, content));
+
+            metadataStore.beforeNextRemoveRef(() -> deleteContent(NAME));
+            deleteContent(NAME);
+            var afterBoth = refCountsOf(chunks);
+            var collected = collectAfterGrace(gc);
+
+            assertReadable(OTHER_NAME, content);
+            assertThat(metadataStore.removeRefHookFired()).as("locator: the competing delete must have run inside the drop")
+                      .isTrue();
+            assertThat(afterBoth).as("locator: released once, by the delete whose removal took the name")
+                      .containsOnly(1);
+            assertThat(collected).as("locator: the deleted name's manifest only").isEqualTo(1);
+        }
+    }
+
+    /// Delegating metadata store with one-shot hooks BEFORE `replaceRef` / `removeRef` -- the statement gap
+    /// in which a pre-reading `swapRef` / `dropRef` would hold a stale id.
+    private static final class SeamMetadataStore implements MetadataStore {
+        private final MetadataStore delegate;
+        private final AtomicReference<Runnable> beforeReplaceRef = new AtomicReference<>();
+        private final AtomicReference<Runnable> beforeRemoveRef = new AtomicReference<>();
+        private final AtomicBoolean replaceRefHookFired = new AtomicBoolean();
+        private final AtomicBoolean removeRefHookFired = new AtomicBoolean();
+
+        SeamMetadataStore(MetadataStore delegate) {
+            this.delegate = delegate;
+        }
+
+        void beforeNextReplaceRef(Runnable hook) {
+            beforeReplaceRef.set(hook);
+        }
+
+        void beforeNextRemoveRef(Runnable hook) {
+            beforeRemoveRef.set(hook);
+        }
+
+        boolean replaceRefHookFired() {
+            return replaceRefHookFired.get();
+        }
+
+        boolean removeRefHookFired() {
+            return removeRefHookFired.get();
+        }
+
+        private static void fireOnce(AtomicReference<Runnable> hook, AtomicBoolean fired) {
+            var once = hook.getAndSet(null);
+
+            if (once != null) {
+                fired.set(true);
+                once.run();
+            }
+        }
+
+        @Override
+        public Option<BlockId> replaceRef(String refName, BlockId blockId) {
+            fireOnce(beforeReplaceRef, replaceRefHookFired);
+
+            return delegate.replaceRef(refName, blockId);
+        }
+
+        @Override
+        public Option<BlockId> removeRef(String refName) {
+            fireOnce(beforeRemoveRef, removeRefHookFired);
+
+            return delegate.removeRef(refName);
+        }
+
+        @Override
+        public Option<BlockLifecycle> getLifecycle(BlockId blockId) {
+            return delegate.getLifecycle(blockId);
+        }
+
+        @Override
+        public void createLifecycle(BlockLifecycle lifecycle) {
+            delegate.createLifecycle(lifecycle);
+        }
+
+        @Override
+        public boolean claimBlock(BlockId blockId, BlockLifecycle sentinel) {
+            return delegate.claimBlock(blockId, sentinel);
+        }
+
+        @Override
+        public boolean releaseClaim(BlockId blockId, BlockLifecycle sentinel) {
+            return delegate.releaseClaim(blockId, sentinel);
+        }
+
+        @Override
+        public Option<BlockLifecycle> computeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater) {
+            return delegate.computeLifecycle(blockId, updater);
+        }
+
+        @Override
+        public void removeLifecycle(BlockId blockId) {
+            delegate.removeLifecycle(blockId);
+        }
+
+        @Override
+        public void putRef(String refName, BlockId blockId) {
+            delegate.putRef(refName, blockId);
+        }
+
+        @Override
+        public Option<BlockId> resolveRef(String refName) {
+            return delegate.resolveRef(refName);
+        }
+
+        @Override
+        public boolean containsBlock(BlockId blockId) {
+            return delegate.containsBlock(blockId);
+        }
+
+        @Override
+        public String instanceName() {
+            return delegate.instanceName();
+        }
+
+        @Override
+        public List<BlockLifecycle> listBlocksByTier(TierLevel tier) {
+            return delegate.listBlocksByTier(tier);
+        }
+
+        @Override
+        public List<BlockLifecycle> listAllLifecycles() {
+            return delegate.listAllLifecycles();
+        }
+
+        @Override
+        public Map<String, BlockId> listAllRefs() {
+            return delegate.listAllRefs();
+        }
+
+        @Override
+        public long currentEpoch() {
+            return delegate.currentEpoch();
+        }
+
+        @Override
+        public void restoreLifecycles(List<BlockLifecycle> entries) {
+            delegate.restoreLifecycles(entries);
+        }
+
+        @Override
+        public void restoreRefs(Map<String, BlockId> refs) {
+            delegate.restoreRefs(refs);
+        }
+
+        @Override
+        public void restoreEpoch(long epoch) {
+            delegate.restoreEpoch(epoch);
         }
     }
 
