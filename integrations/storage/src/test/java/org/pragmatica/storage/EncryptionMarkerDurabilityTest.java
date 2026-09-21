@@ -33,27 +33,48 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// JDK actually issued: `FileChannel.force(true)` on the marker file (its bytes and inode) AND on
 /// the parent directory (the directory entry that makes the marker findable), both before
 /// `commitMarker` returns -- observed through JFR's `jdk.FileForce` event, which the JDK emits
-/// from `FileChannelImpl.force` itself. [unverified: power loss -- what the device does with a
-/// completed fsync is outside the JVM; the pin is that the fsyncs were issued.]
+/// from `FileChannelImpl.force` itself, recorded at threshold ZERO (the default profile's 20 ms
+/// would drop every warm-disk fsync). On the unmodified base the recording held zero events. The
+/// plain-JUnit control beside it pins that the marker exists with the key id, so the JFR observer
+/// is never the only assertion. [unverified: power loss -- what the device does with a completed
+/// fsync is outside the JVM; the pin is that the fsyncs were issued.]
 class EncryptionMarkerDurabilityTest {
     @TempDir
     Path tempDir;
 
     @Test
     void commitMarker_forcesTheMarkerFileAndItsDirectory_beforeReturning() {
-        var keyring = singleKeyRing("key-1190");
-        var disk = LocalDiskTier.localDiskTier(tempDir, 1024 * 1024).unwrap();
-        var armed = EncryptingStorageTier.armLocalDisk(disk, tempDir, keyring).unwrap();
+        var armed = armedOverFreshDirectory();
         var marker = tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME);
-
-        assertThat(armed.pendingKeyId().isPresent()).as("fresh directory: the marker write is pending").isTrue();
         var forced = forcedPathsDuring(() -> armed.commitMarker()
                                                   .unwrap());
 
-        assertThat(FileOps.readBytes(marker).unwrap()).containsExactly("key-1190".getBytes(StandardCharsets.UTF_8));
         assertThat(forced).as("jdk.FileForce events recorded while commitMarker ran")
                   .contains(marker.toAbsolutePath(),
                             tempDir.toAbsolutePath());
+    }
+
+    /// Plain control, no JFR: the marker exists and carries the active key id once `commitMarker`
+    /// returns, so the durability pin above is never the only assertion on this path.
+    @Test
+    void commitMarker_createsTheMarkerHoldingTheActiveKeyId() {
+        var armed = armedOverFreshDirectory();
+        var marker = tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME);
+
+        assertThat(FileOps.exists(marker)).as("nothing is written before commit").isFalse();
+        armed.commitMarker().unwrap();
+        assertThat(FileOps.isRegularFile(marker)).isTrue();
+        assertThat(FileOps.readBytes(marker).unwrap()).containsExactly("key-1190".getBytes(StandardCharsets.UTF_8));
+    }
+
+    private EncryptingStorageTier.ArmedLocalDisk armedOverFreshDirectory() {
+        var keyring = singleKeyRing("key-1190");
+        var disk = LocalDiskTier.localDiskTier(tempDir, 1024 * 1024).unwrap();
+        var armed = EncryptingStorageTier.armLocalDisk(disk, tempDir, keyring).unwrap();
+
+        assertThat(armed.pendingKeyId().isPresent()).as("fresh directory: the marker write is pending").isTrue();
+
+        return armed;
     }
 
     /// Records every `jdk.FileForce` the JVM emits while `action` runs. Threshold zero: the
