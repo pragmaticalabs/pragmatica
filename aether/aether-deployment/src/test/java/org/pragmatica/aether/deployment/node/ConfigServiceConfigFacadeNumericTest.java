@@ -9,14 +9,14 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.config.ConfigService;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.source.MapConfigSource;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.config.ProviderBasedConfigService.providerBasedConfigService;
 
 
 /// #276 R20: the legacy `ConfigService` adapter parsed numbers with `Long.parseLong` /
@@ -25,10 +25,12 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// as absent). Every probe here calls through a `ConfigService` whose value is not a number and
 /// asserts no exception escapes.
 class ConfigServiceConfigFacadeNumericTest {
-    private static final ConfigFacade FACADE = NodeDeploymentManager.configServiceToFacade(stringsOnly(Map.of("pool.size",
+    private static final ConfigFacade FACADE = NodeDeploymentManager.configServiceToFacade(serviceOver(Map.of("pool.size",
                                                                                                               "twelve",
                                                                                                               "pool.ratio",
                                                                                                               "half",
+                                                                                                              "pool.flag",
+                                                                                                              "yes",
                                                                                                               "pool.max",
                                                                                                               "42",
                                                                                                               "pool.load",
@@ -54,18 +56,35 @@ class ConfigServiceConfigFacadeNumericTest {
                                             .contains("pool.ratio"));
     }
 
+    /// #1098 — the optional twin must not read a malformed value as ABSENT either: that is the
+    /// path on which the caller's default applies silently. (Before #1098 this test asserted the
+    /// opposite, `readsAsAbsent` — it specified the defect.)
     @Test
-    void getLong_malformedValue_readsAsAbsent_doesNotThrow() {
+    void getLong_malformedValue_isNotAbsent_doesNotThrow() {
         var value = callWithoutThrowing(() -> FACADE.getLong("pool", "size"));
 
-        assertThat(value.isEmpty()).isTrue();
+        assertThat(value.isEmpty()).describedAs("pool.size=\"twelve\" read as absent, default would apply").isFalse();
     }
 
     @Test
-    void getDouble_malformedValue_readsAsAbsent_doesNotThrow() {
+    void getDouble_malformedValue_isNotAbsent_doesNotThrow() {
         var value = callWithoutThrowing(() -> FACADE.getDouble("pool", "ratio"));
 
-        assertThat(value.isEmpty()).isTrue();
+        assertThat(value.isEmpty()).describedAs("pool.ratio=\"half\" read as absent, default would apply").isFalse();
+    }
+
+    @Test
+    void getInt_malformedValue_isNotAbsent_doesNotThrow() {
+        var value = callWithoutThrowing(() -> FACADE.getInt("pool", "size"));
+
+        assertThat(value.isEmpty()).describedAs("pool.size=\"twelve\" read as absent, default would apply").isFalse();
+    }
+
+    @Test
+    void getBoolean_malformedValue_isNotAbsent_doesNotThrow() {
+        var value = callWithoutThrowing(() -> FACADE.getBoolean("pool", "flag"));
+
+        assertThat(value.isEmpty()).describedAs("pool.flag=\"yes\" read as absent, default would apply").isFalse();
     }
 
     /// Control: well-formed values still parse.
@@ -95,32 +114,12 @@ class ConfigServiceConfigFacadeNumericTest {
         }
     }
 
-    private static ConfigService stringsOnly(Map<String, String> values) {
-        return new ConfigService() {
-            @Override
-            public <T> Result<T> config(String section, Class<T> configClass) {
-                return Causes.cause("not under test").result();
-            }
+    /// The real `ProviderBasedConfigService` rather than a fake: a fake whose `getInt`/`getBoolean`
+    /// always answered `none()` could not distinguish a malformed value from an absent one, which is
+    /// the very thing #1098 pins.
+    private static ConfigService serviceOver(Map<String, String> values) {
+        var source = MapConfigSource.mapConfigSource("test-source", values).unwrap();
 
-            @Override
-            public boolean hasSection(String section) {
-                return false;
-            }
-
-            @Override
-            public Option<String> getString(String key) {
-                return Option.option(values.get(key));
-            }
-
-            @Override
-            public Option<Integer> getInt(String key) {
-                return Option.none();
-            }
-
-            @Override
-            public Option<Boolean> getBoolean(String key) {
-                return Option.none();
-            }
-        };
+        return providerBasedConfigService(ConfigurationProvider.builder().withSource(source).build());
     }
 }

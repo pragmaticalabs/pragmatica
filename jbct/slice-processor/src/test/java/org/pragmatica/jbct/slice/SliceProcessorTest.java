@@ -4339,8 +4339,12 @@ class SliceProcessorTest {
         var factoryContent = compilation.generatedSourceFile("test.ServerServiceFactory")
                                         .get().getCharContent(false).toString();
         assertThat(factoryContent).contains("ctx.config().requireString(\"app.server\", \"host\")");
-        assertThat(factoryContent).contains("Result.success(ctx.config().getInt(\"app.server\", \"port\"))");
-        assertThat(factoryContent).contains("Result.success(ctx.config().getBoolean(\"app.server\", \"enable_tls\"))");
+        // #1098: the typed get* methods return Result<Option<T>> so a malformed value fails the
+        // Result.all chain; wrapping them in Result.success would swallow that failure again.
+        assertThat(factoryContent).contains("ctx.config().getInt(\"app.server\", \"port\")");
+        assertThat(factoryContent).contains("ctx.config().getBoolean(\"app.server\", \"enable_tls\")");
+        assertThat(factoryContent).doesNotContain("Result.success(ctx.config().getInt(");
+        assertThat(factoryContent).doesNotContain("Result.success(ctx.config().getBoolean(");
         assertThat(factoryContent).contains("ServerConfig::serverConfig");
     }
 

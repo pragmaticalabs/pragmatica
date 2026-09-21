@@ -162,6 +162,44 @@ class DeployedConfigFacadeTest {
             assertThat(facade(Map.of()).getLong(SECTION, "size").isPresent()).isFalse();
             assertThat(facade(Map.of()).getDouble(SECTION, "ratio").isPresent()).isFalse();
         }
+
+        /// #1098 — a PRESENT but UNPARSEABLE value must not read as absent: that is what lets the
+        /// slice's default apply and `@ConfigUpdate` run with a state nobody configured.
+        @Test
+        void optionalReadsDoNotReadAMalformedValueAsAbsent() {
+            var config = facade(Map.of(SECTION + ".port", "80x",
+                                        SECTION + ".size", "twelve",
+                                        SECTION + ".ratio", "half",
+                                        SECTION + ".secure", "yes"));
+
+            assertThat(config.getInt(SECTION, "port").isEmpty()).describedAs("port=\"80x\" read as absent, default would apply")
+                                                                 .isFalse();
+            assertThat(config.getLong(SECTION, "size").isEmpty()).describedAs("size=\"twelve\" read as absent, default would apply")
+                                                                  .isFalse();
+            assertThat(config.getDouble(SECTION, "ratio").isEmpty()).describedAs("ratio=\"half\" read as absent, default would apply")
+                                                                     .isFalse();
+            assertThat(config.getBoolean(SECTION, "secure").isEmpty()).describedAs("secure=\"yes\" read as absent, default would apply")
+                                                                       .isFalse();
+        }
+
+        /// #1098 — the `require*` twin: a malformed value is not a MISSING key, and the refusal has
+        /// to say which it was, with the value, or the operator goes looking for a key that is there.
+        @Test
+        void requiredReadsNameTheMalformedValueRatherThanReportingItMissing() {
+            var config = facade(Map.of(SECTION + ".port", "80x",
+                                        SECTION + ".secure", "yes"));
+
+            config.requireInt(SECTION, "port")
+                  .onSuccess(v -> org.junit.jupiter.api.Assertions.fail("port=\"80x\" bound as " + v))
+                  .onFailure(cause -> assertThat(cause.message()).contains("80x")
+                                                                 .contains(SECTION + ".port")
+                                                                 .doesNotContain("not found"));
+            config.requireBoolean(SECTION, "secure")
+                  .onSuccess(v -> org.junit.jupiter.api.Assertions.fail("secure=\"yes\" bound as " + v))
+                  .onFailure(cause -> assertThat(cause.message()).contains("yes")
+                                                                 .contains(SECTION + ".secure")
+                                                                 .doesNotContain("not found"));
+        }
     }
 
     /// The seam itself: which facade a loading context hands to the slice factory.
