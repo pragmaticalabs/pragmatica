@@ -34,6 +34,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import static org.pragmatica.lang.io.FileOps.createDirectories;
 import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.io.FileOps.moveAtomic;
@@ -107,6 +108,20 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
                            .flatMap(_ -> pushIfRemoteConfigured());
     }
 
+    /// #1020 — an existing `state.toml` that fails to read or decode is a FAILURE naming the path and
+    /// the decode error, never `Option.none()`: `load()`'s `.option()` turned a corrupt or unreadable
+    /// checkpoint into a silent cold start. An absent file is the legitimate empty.
+    @Override
+    public Result<Option<SavedState<C>>> loadVerified() {
+        var file = backupDir.resolve(STATE_FILE);
+
+        return exists(file)
+               ? readString(file).flatMap(this::parseTomlContent)
+                                 .map(Option::some)
+                                 .mapError(cause -> PersistenceError.unreadableState(file, cause))
+               : Result.success(Option.none());
+    }
+
     @Override
     public Option<SavedState<C>> load() {
         var stateFile = backupDir.resolve(STATE_FILE);
@@ -143,10 +158,12 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         return "# Phase: " + phase.value() + "\n" + toml;
     }
 
+    /// #1020 — the directory is created here: a `[backup] path` that did not exist failed every save
+    /// at ERROR while the node ran on as if persistence were off.
     private Result<Unit> writeTomlFile(String toml) {
         var partial = backupDir.resolve(PARTIAL_FILE);
 
-        return fileWriter.apply(partial, toml)
+        return createDirectories(backupDir).flatMap(_ -> fileWriter.apply(partial, toml))
                          .flatMap(_ -> moveAtomic(partial,
                                                   backupDir.resolve(STATE_FILE)))
                          .onFailure(_ -> deleteIfExists(partial))

@@ -33,10 +33,12 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequ
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -47,23 +49,27 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #1020 — a node that restarts from disk must install its OWN persisted snapshot when it
-/// activates on its own state.
+/// #1020 — boot restores this node's OWN durable checkpoint before it collects sync responses.
 ///
-/// `RabiaEngine` reads `persistence.load()` for three things — the sync-response payload it serves
+/// `RabiaEngine` read `persistence.load()` for three things — the sync-response payload it serves
 /// to peers, the adoption floor, and the boot future-history detector — and never to populate its
 /// own state machine. So the branch that activates "on this node's own state" (every response
 /// behind self, or a single-node cluster with no peer to adopt from) activated an EMPTY state
-/// machine at phase 0: the docstring's "the majority's most advanced state is already here" was
-/// true of the disk and false of the process. After a full-cluster stop with `[backup]` enabled,
-/// whether a committed KV record (an API key minted through `/api/v1/cluster/keys`) came back
-/// depended on the first responder's persisted phase happening to EQUAL self's — a staggered
-/// graceful stop breaks the tie through the last node's quorum-loss pause save, and the node
-/// holding the most advanced snapshot came up empty and answered 403 for a key it had acknowledged.
+/// machine at phase 0: "the majority's most advanced state is already here" was true of the disk
+/// and false of the process. After a full-cluster stop with `[backup]` enabled, whether a committed
+/// KV record (an API key minted through `/api/v1/cluster/keys`) came back depended on the first
+/// responder's persisted phase happening to EQUAL self's — a staggered graceful stop breaks the tie
+/// through the last node's quorum-loss pause save, and the node holding the most advanced snapshot
+/// came up empty and answered 403 for a key it had acknowledged.
 ///
-/// The pin: activation on own state installs the persisted snapshot and advances `currentPhase` to
-/// its phase. The controls keep the adoption rule where it was — a responder AHEAD of self is still
-/// the source, and an empty persisted snapshot installs nothing.
+/// The fix mirrors #1390's B1 (`ensureRecovered` / `recoverLocalState`, verdict M19): the checkpoint
+/// is installed once, on the apply thread, before the first `SyncRequest`, and `currentPhase` is set
+/// to its phase. The primary pin is named after #1390's
+/// `cleanStopRestoresCheckpointBeforeStalePeersCanActivateOrReplayOldSlots`; rc4 has no slots or
+/// voting journal, so the replay arm does not exist here. The controls keep the adoption rule where
+/// it was — a responder AHEAD of self is still the source, an empty persisted snapshot installs
+/// nothing — and a checkpoint that EXISTS but cannot be read is a refusal to start, never a cold
+/// start over history the node cannot see.
 class RabiaSyncAdoptionOwnSnapshotTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
@@ -86,7 +92,7 @@ class RabiaSyncAdoptionOwnSnapshotTest {
     /// The adoption floor refuses the response — correctly — and the node activates on its own
     /// state. That state is on disk, not in the process: it must be installed.
     @Test
-    void everyResponderBehind_activatesWithOwnPersistedSnapshotInstalled() {
+    void cleanStopRestoresCheckpointBeforeStalePeersCanActivate() {
         var stateMachine = new RecordingStateMachine();
         var engine = coldStarted(3, stateMachine, durableAt(OWN_PHASE, OWN_SNAPSHOT));
 
@@ -110,8 +116,9 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         assertThat(engine.currentPhaseForTesting()).isEqualTo(OWN_PHASE);
     }
 
-    /// CONTROL — the adoption rule is untouched: a responder AHEAD of self is the source, and self's
-    /// snapshot is not installed over it.
+    /// CONTROL — the adoption rule is untouched: a responder AHEAD of self is still the source. Boot
+    /// installed self's checkpoint first (the #1390 shape restores before any response is collected),
+    /// then adoption installed the responder's over it — two installs, the peer's last.
     @Test
     void responderAhead_adoptsTheResponder_notOwnSnapshot() {
         var stateMachine = new RecordingStateMachine();
@@ -121,7 +128,7 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         assertThat(awaitActive(engine)).isTrue();
         assertThat(stateMachine.lastRestored()).as("a response ahead of self remains the source")
                   .isEqualTo(PEER_SNAPSHOT);
-        assertThat(stateMachine.restoreCount()).as("exactly one install — the peer's").isEqualTo(1);
+        assertThat(stateMachine.restoreCount()).as("own checkpoint at boot, then the ahead responder's").isEqualTo(2);
         assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(10));
     }
 
@@ -182,6 +189,69 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         assertThat(stateMachine.lastRestored()).isEqualTo(PEER_SNAPSHOT);
     }
 
+    /// A checkpoint that EXISTS but cannot be read is a refusal: `start()` fails with the cause, the
+    /// engine never leaves `Stopped`, and no `SyncRequest` goes out — a node must not cold-start over
+    /// history it cannot see and then answer peers as if it had none.
+    @Test
+    void unreadableCheckpoint_refusesToStart_withTheCause() throws InterruptedException {
+        var stateMachine = new RecordingStateMachine();
+        var network = new TestClusterNetwork();
+        var engine = engine(3, stateMachine, unreadable(), network);
+
+        engine.clusterState(ClusterStateNotification.active());
+        var started = engine.start()
+                            .await(timeSpan(2).seconds());
+
+        String message = started.fold(Cause::message, _ -> "");
+
+        assertThat(started.isFailure()).as("start must FAIL, not hang or succeed: %s", started).isTrue();
+        assertThat(message).contains(UNREADABLE_MESSAGE);
+        assertThat(staysInactive(engine)).isTrue();
+        assertThat(stateMachine.lastRestored()).as("nothing installed over an unreadable checkpoint").isNull();
+        assertThat(network.getMessages().stream().anyMatch(SyncRequest.class::isInstance))
+            .as("a refused engine does not open a sync round")
+            .isFalse();
+    }
+
+    /// CONTROL for the refusal — an ABSENT checkpoint is the legitimate empty: the sync round opens
+    /// and the node starts amnesiac, exactly as before.
+    @Test
+    void absentCheckpoint_startsTheSyncRound() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = coldStarted(3, stateMachine, RabiaPersistence.inMemory());
+
+        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+
+        assertThat(awaitActive(engine)).isTrue();
+    }
+
+    private static final String UNREADABLE_MESSAGE = "state.toml exists but cannot be restored";
+
+    /// Persistence whose checkpoint exists but cannot be decoded: `loadVerified` fails, `load` (the
+    /// responder/floor path) still answers none — the same split `GitBackedPersistence` has.
+    private static RabiaPersistence<TestCommand> unreadable() {
+        record unreadable() implements RabiaPersistence<TestCommand> {
+            @Override
+            public Result<Unit> save(StateMachine<TestCommand> stateMachine,
+                                     Phase lastCommittedPhase,
+                                     Collection<Batch<TestCommand>> pendingBatches) {
+                return Result.success(Unit.unit());
+            }
+
+            @Override
+            public Result<Option<SavedState<TestCommand>>> loadVerified() {
+                return Causes.cause(UNREADABLE_MESSAGE).result();
+            }
+
+            @Override
+            public Option<SavedState<TestCommand>> load() {
+                return Option.none();
+            }
+        }
+
+        return new unreadable();
+    }
+
     /// Persistence reporting a fixed durable snapshot: a node that restarted from disk.
     private static RabiaPersistence<TestCommand> durableAt(Phase phase, byte[] snapshot) {
         record durable(Phase phase, byte[] snapshot) implements RabiaPersistence<TestCommand> {
@@ -231,6 +301,31 @@ class RabiaSyncAdoptionOwnSnapshotTest {
                                                  RabiaPersistence<TestCommand> persistence,
                                                  TimeSpan syncRetryInterval) {
         var network = new TestClusterNetwork();
+        var engine = engine(clusterSize, stateMachine, persistence, network, syncRetryInterval);
+
+        engine.clusterState(ClusterStateNotification.active());
+        if (clusterSize > 1) {
+            assertThat(awaitCondition(() -> network.getMessages()
+                                                   .stream()
+                                                   .anyMatch(SyncRequest.class::isInstance))).as("engine must have started its sync round before responses are delivered")
+                      .isTrue();
+        }
+
+        return engine;
+    }
+
+    private RabiaEngine<TestCommand> engine(int clusterSize,
+                                            StateMachine<TestCommand> stateMachine,
+                                            RabiaPersistence<TestCommand> persistence,
+                                            TestClusterNetwork network) {
+        return engine(clusterSize, stateMachine, persistence, network, timeSpan(60).seconds());
+    }
+
+    private RabiaEngine<TestCommand> engine(int clusterSize,
+                                            StateMachine<TestCommand> stateMachine,
+                                            RabiaPersistence<TestCommand> persistence,
+                                            TestClusterNetwork network,
+                                            TimeSpan syncRetryInterval) {
         var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, clusterSize),
                                        network,
                                        stateMachine,
@@ -241,15 +336,14 @@ class RabiaSyncAdoptionOwnSnapshotTest {
                                        timeSpan(50).millis());
 
         engines.add(engine);
-        engine.clusterState(ClusterStateNotification.active());
-        if (clusterSize > 1) {
-            assertThat(awaitCondition(() -> network.getMessages()
-                                                   .stream()
-                                                   .anyMatch(SyncRequest.class::isInstance))).as("engine must have started its sync round before responses are delivered")
-                      .isTrue();
-        }
 
         return engine;
+    }
+
+    private static boolean staysInactive(RabiaEngine<TestCommand> engine) throws InterruptedException {
+        Thread.sleep(300);
+
+        return !engine.isActive();
     }
 
     private static final class RecordingStateMachine extends TestStateMachine {

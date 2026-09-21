@@ -170,6 +170,10 @@ public class RabiaEngine<C extends Command> {
     private final AtomicBoolean stopping = new AtomicBoolean();
     private final Promise<Unit> stoppedCompletion = Promise.promise();
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
+    /// #1020 — boot recovery runs ONCE per engine, on the consensus apply thread (see
+    /// [#ensureRecovered]); both fields are confined to that thread, as in #1390.
+    private boolean recoveryComplete = false;
+    private Option<Cause> recoveryFailure = Option.none();
     // Per Rabia spec: after a decision, the next phase inherits this value for round 1 vote
     private final AtomicReference<Option<StateValue>> lockedValue = new AtomicReference<>(Option.none());
     /// The old-phase sweep, armed on ACTIVATION rather than in the constructor (#714).
@@ -491,6 +495,10 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doClusterConnected() {
+        if (ensureRecovered().isFailure()) {
+            return;
+        }
+
         syncResponses.clear();
         syncRounds.set(0);
         // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
@@ -506,6 +514,73 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         notifyConsensusStateTransition();
+    }
+
+    /// #1020 — boot restores this node's OWN durable checkpoint BEFORE it collects sync responses.
+    ///
+    /// `persistence.load()` fed the sync-response payload, the adoption floor and the D9 boot
+    /// future-history detector, and never the state machine: a process restarted from disk held its
+    /// history in `load()` and nothing else, so the branch that activates "on this node's own state"
+    /// ([#activateWithoutAdoption] — every response behind self's persisted phase, or n=1) activated
+    /// an EMPTY store at phase 0. After a full-cluster stop with `[backup]` enabled, a committed KV
+    /// record (an API key minted through `/api/v1/cluster/keys`) came back only if the first
+    /// responder's persisted phase happened to EQUAL self's; a staggered graceful stop breaks that tie,
+    /// and the node holding the most advanced snapshot came up empty and answered 403.
+    ///
+    /// Same shape as #1390's `ensureRecovered` / `recoverLocalState` (its B1 fix, M19), so the two
+    /// merge trivially: once per engine, on the apply thread, before the first `SyncRequest`; the
+    /// checkpoint is installed silently and `currentPhase` set to its phase, so [#ownStateFloor]'s
+    /// live arm equals its persisted arm and [#activateWithoutAdoption]'s "already here" is true of
+    /// the process. rc4 has no voting journal, so the journal arm of #1390's recovery is absent. A
+    /// checkpoint that EXISTS but cannot be read is a refusal, not a cold start
+    /// ([RabiaPersistence#loadVerified]): the engine stays `Stopped` and [#start] fails with the cause.
+    private Result<Unit> ensureRecovered() {
+        if (recoveryComplete) {
+            return recoveryFailure.fold(() -> Result.success(Unit.unit()),
+                                        Cause::result);
+        }
+
+        recoveryComplete = true;
+
+        return persistence.loadVerified()
+                          .flatMap(this::recoverLocalState)
+                          .onFailure(cause -> {
+                              recoveryFailure = Option.some(cause);
+                              failRecovery(cause);
+                          });
+    }
+
+    private Result<Unit> recoverLocalState(Option<SavedState<C>> saved) {
+        if (saved.isEmpty()) {
+            return Result.success(Unit.unit());
+        }
+
+        var checkpoint = saved.or(SavedState.empty());
+        var restored = checkpoint.snapshot().length == 0
+                       ? Result.success(Unit.unit())
+                       : stateMachine.restoreSnapshot(checkpoint.snapshot());
+
+        return restored.map(_ -> {
+            currentPhase.set(checkpoint.lastCommittedPhase());
+            checkpoint.pendingBatches()
+                      .forEach(batch -> pendingBatches.put(batch.id(),
+                                                           batch));
+            log.info("Node {} restored its own checkpoint at boot: phase {}", self, checkpoint.lastCommittedPhase());
+
+            return Unit.unit();
+        });
+    }
+
+    /// Refuse to start on an unreadable checkpoint. `Stopped`, not `Observing`: on rc4 an Observing
+    /// engine answers sync requests with a LIVE snapshot of its (empty) state machine, which a peer
+    /// could adopt; a Stopped engine answers COLD from `load()`, which the floor rules keep harmless.
+    private void failRecovery(Cause cause) {
+        var old = engineState.getAndSet(new EngineState.Stopped());
+
+        exitState(old);
+        notifyConsensusStateTransition();
+        startPromise.get().fail(cause);
+        log.error("Node {} refuses to start: persisted consensus state exists but cannot be restored — {}", self, cause.message());
     }
 
     /// Membership-architecture-spec §4.5 / §7.3 — quorum-loss handler.
@@ -1144,7 +1219,7 @@ public class RabiaEngine<C extends Command> {
         if (responses.isEmpty()) {
             // Only reachable at clusterSize 1, where the requirement is zero responses: self is the
             // whole majority and there is no peer to adopt from.
-            activateWithoutAdoption(persisted, "no peers to adopt from");
+            activateWithoutAdoption("no peers to adopt from");
 
             return;
         }
@@ -1154,7 +1229,7 @@ public class RabiaEngine<C extends Command> {
         detectBootFutureHistory(persisted, candidate);
 
         if (candidate.lastCommittedPhase().compareTo(ownStateFloor(persisted)) < 0) {
-            activateWithoutAdoption(persisted, "every response is behind this node's own state");
+            activateWithoutAdoption("every response is behind this node's own state");
 
             return;
         }
@@ -1166,13 +1241,13 @@ public class RabiaEngine<C extends Command> {
         restoreState(candidate);
     }
 
-    /// Activates on this node's OWN state, installing no RESPONSE.
+    /// Activates on this node's OWN state, installing nothing.
     ///
     /// Reached when the response threshold is met but no response carries a state more advanced than
     /// this node already holds. Self is part of the majority, so the majority's most advanced state is
-    /// already self's and there is nothing to fetch from a peer.
+    /// already here and there is nothing to fetch.
     ///
-    /// This deliberately does NOT route a response through [#restoreState]: that would call
+    /// This deliberately does NOT route through [#restoreState]: that would call
     /// `stateMachine.restoreSnapshot` with a state that is BEHIND the live one, overwriting a live state
     /// machine with a staler snapshot while `applyRestoredState`'s advance-only `currentPhase` kept the
     /// counter where it was — committed writes gone with no phase to indicate it. That is precisely the
@@ -1180,34 +1255,7 @@ public class RabiaEngine<C extends Command> {
     ///
     /// Mirrors the tail of [#restoreState]'s empty-snapshot branch — activate, then replay, then notify —
     /// so post-restore listeners still fire exactly once, as they did when an empty response was adopted.
-    ///
-    /// #1020 — "already here" is true of the LIVE state machine only when self's history is in it.
-    /// A process restarted from disk holds its history in `persistence.load()` and nothing else:
-    /// `load()` fed the sync-response payload, the adoption floor and the future-history detector,
-    /// and never the state machine. Activating bare here left such a node ACTIVE with an EMPTY store
-    /// at phase 0 — an API key it had committed and acknowledged answered 403 after a full-cluster
-    /// stop with `[backup]` enabled, on exactly the node whose snapshot was the most advanced. So
-    /// when the persisted phase is ahead of the live one, the persisted state IS the own state and is
-    /// installed through [#restoreState] (phase advance-only, pending batches, re-persist, activate,
-    /// replay, notify). A live phase at or past the persisted one means the history is already in
-    /// the process — a resync from ACTIVE — and installing the older snapshot would regress it.
-    private void activateWithoutAdoption(Option<SavedState<C>> persisted, String reason) {
-        persisted.filter(state -> state.lastCommittedPhase()
-                                       .compareTo(currentPhase.get()) > 0)
-                 .onPresent(state -> restoreOwnState(state, reason))
-                 .onEmpty(() -> activateOnLiveState(reason));
-    }
-
-    private void restoreOwnState(SavedState<C> state, String reason) {
-        log.info("Node {} activating on its own persisted state ({}); persisted phase {}, live phase {}",
-                 self,
-                 reason,
-                 state.lastCommittedPhase(),
-                 currentPhase.get());
-        restoreState(state);
-    }
-
-    private void activateOnLiveState(String reason) {
+    private void activateWithoutAdoption(String reason) {
         log.debug("Node {} activating on its own state ({}); own phase {}", self, reason, currentPhase.get());
         syncResponses.clear();
         activate();

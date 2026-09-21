@@ -186,13 +186,13 @@ class RabiaSyncAdoptionQuorumTest {
         /// silently discard a committed phase this node may be the sole surviving witness of.
         ///
         /// Self is a FLOOR, not an adopted candidate — so the assertion is that the RESPONDERS' snapshot
-        /// was not installed. What IS installed is self's own persisted snapshot (#1020): this is a cold
-        /// start, the live state machine is empty at phase 0, and the persisted phase 42 is the only
-        /// copy of that history in the process. (Before #1020 this asserted that NOTHING was installed,
-        /// on the argument that `persistence.save` never runs on commit so the persisted snapshot lags
-        /// the live state. That holds for a resync from ACTIVE — where the live phase is at or past the
-        /// persisted one and the engine still installs nothing — and not for a fresh process, which
-        /// activated on an EMPTY store while its committed history sat on disk.)
+        /// was not installed. What IS installed is self's own durable checkpoint (#1020, the same
+        /// premise as #1390's B1): boot restores self's durable checkpoint before collecting responses,
+        /// so `lastRestored()` is `SELF_SNAPSHOT` and the live phase is the persisted 42. (Before #1020
+        /// this asserted that NOTHING was installed, on the argument that `persistence.save` never runs
+        /// on commit so the persisted snapshot lags the live state. That describes a resync from ACTIVE,
+        /// where nothing is re-installed; a fresh process activated on an EMPTY store while its
+        /// committed history sat on disk.)
         ///
         /// The responders carry a NON-EMPTY snapshot on purpose. `restoreState` skips `restoreSnapshot`
         /// entirely when the adopted state's snapshot is empty, so stale-but-EMPTY responders would leave
@@ -214,6 +214,7 @@ class RabiaSyncAdoptionQuorumTest {
             assertThat(stateMachine.lastRestored())
                 .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed — self's own is")
                 .isEqualTo(SELF_SNAPSHOT);
+            assertThat(engine.currentPhaseForTesting()).as("the live phase is the restored checkpoint's").isEqualTo(Phase.phase(42));
         }
 
         /// The discriminator for the test above: when a RESPONSE is the most advanced state, it must be
@@ -311,7 +312,7 @@ class RabiaSyncAdoptionQuorumTest {
 
             // HALF TWO — CHANGED by #660. D9 previously restored anyway, discarding the node's own
             // committed history. It now holds that history: the cluster's older snapshot is not
-            // installed, and (#1020) its own persisted snapshot is — the live store was empty.
+            // installed, and (#1020) boot restored its own durable checkpoint before the responses came.
             assertThat(stateMachine.lastRestored())
                 .as("the node must NOT regress onto the cluster's older state — that is the ratified behaviour #660 supersedes")
                 .isEqualTo(SELF_SNAPSHOT);

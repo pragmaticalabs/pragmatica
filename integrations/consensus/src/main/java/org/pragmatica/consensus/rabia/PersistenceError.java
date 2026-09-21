@@ -15,6 +15,8 @@
  */
 package org.pragmatica.consensus.rabia;
 
+import java.nio.file.Path;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
@@ -40,6 +42,19 @@ public sealed interface PersistenceError extends Cause {
         public String message() {
             return "Deserialization failed: " + cause.message();
         }
+    }
+
+    /// #1020 — a checkpoint that EXISTS but cannot be read. Distinct from "no checkpoint": the engine
+    /// refuses to start on this rather than cold-starting over history it cannot see.
+    record UnreadableState(Path path, Cause cause) implements PersistenceError {
+        @Override
+        public String message() {
+            return "Persisted consensus state at " + path + " exists but cannot be restored: " + cause.message();
+        }
+    }
+
+    static PersistenceError unreadableState(Path path, Cause cause) {
+        return new UnreadableState(path, cause);
     }
 
     static PersistenceError ioFailure(Throwable cause) {

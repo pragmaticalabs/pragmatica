@@ -38,6 +38,14 @@ public interface RabiaPersistence<C extends Command> {
     /// Save the current state.
     Result<Unit> save(StateMachine<C> stateMachine, Phase lastCommittedPhase, Collection<Batch<C>> pendingBatches);
 
+    /// #1020 — the load BOOT consults. An implementation whose state can exist but be unreadable
+    /// answers a failure here, and the engine refuses to start on it; `load()` keeps answering the
+    /// sync-response and floor paths, where an unreadable state degrades to "none" harmlessly.
+    /// Same signature as #1390's `loadVerified`.
+    default Result<Option<SavedState<C>>> loadVerified() {
+        return Result.success(load());
+    }
+
     /// Load the persisted state.
     Option<SavedState<C>> load();
 

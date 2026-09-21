@@ -21,11 +21,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileError;
 import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -88,6 +90,59 @@ class GitBackedPersistenceTest {
         var loaded = persistence.load();
 
         assertThat(loaded.isPresent()).isFalse();
+    }
+
+    /// #1020 — the load BOOT consults: an absent file is the legitimate empty …
+    @Test
+    void loadVerified_absentFile_isEmpty() {
+        var loaded = persistence.loadVerified();
+
+        boolean present = loaded.fold(_ -> true, Option::isPresent);
+
+        assertThat(loaded.isSuccess()).isTrue();
+        assertThat(present).isFalse();
+    }
+
+    /// … and a file that EXISTS but cannot be decoded is a FAILURE naming the path and the decode
+    /// error — never `Option.none()`, which is what `load()` still answers for the responder/floor
+    /// paths and what turned a corrupt checkpoint into a silent cold start.
+    @Test
+    void loadVerified_undecodableStateFile_failsNamingThePath() throws Exception {
+        var strict = RabiaPersistence.<TestCommand> gitBacked(tempDir,
+                                                              Option.none(),
+                                                              GitBackedPersistenceTest::snapshotToToml,
+                                                              GitBackedPersistenceTest::strictTomlToSnapshot);
+        var stateFile = tempDir.resolve("state.toml");
+
+        Files.writeString(stateFile, "# Phase: 9\n[snapshot]\ndata = \"not-hex\"\n");
+
+        var loaded = strict.loadVerified();
+
+        String message = loaded.fold(Cause::message, _ -> "");
+
+        assertThat(loaded.isFailure()).as("an existing but undecodable checkpoint must not read as absent").isTrue();
+        assertThat(message)
+            .contains(stateFile.toString())
+            .contains("exists but cannot be restored");
+        assertThat(strict.load().isPresent()).as("the responder path still degrades to none").isFalse();
+    }
+
+    /// #1020 — a `[backup] path` that does not exist yet is created by the first save. Before this,
+    /// every save failed at ERROR and the node ran on as if persistence were off.
+    @Test
+    void save_missingBackupDir_createsItAndSaves() {
+        var missing = tempDir.resolve("not").resolve("yet").resolve("created");
+        var fresh = RabiaPersistence.<TestCommand> gitBacked(missing,
+                                                             Option.none(),
+                                                             GitBackedPersistenceTest::snapshotToToml,
+                                                             GitBackedPersistenceTest::tomlToSnapshot);
+        stateMachine.setSnapshot(new byte[]{4, 2});
+
+        var saved = fresh.save(stateMachine, Phase.phase(3), List.of());
+
+        assertThat(saved.isSuccess()).as("save into a missing dir: %s", saved).isTrue();
+        assertThat(missing.resolve("state.toml")).exists();
+        assertThat(fresh.load().isPresent()).isTrue();
     }
 
     @Test
@@ -246,6 +301,17 @@ class GitBackedPersistenceTest {
     private static Result<String> snapshotToToml(byte[] snapshot) {
         var hex = HexFormat.of().formatHex(snapshot);
         return Result.success("[snapshot]\ndata = \"" + hex + "\"\n");
+    }
+
+    /// Production's decoder fails on garbage (`Result.lift`); the lenient one below throws on it.
+    private static Result<byte[]> strictTomlToSnapshot(String toml) {
+        var dataLine = toml.lines()
+                           .filter(line -> line.startsWith("data = \""))
+                           .findFirst()
+                           .orElse("data = \"\"");
+        var hex = dataLine.replace("data = \"", "").replace("\"", "").trim();
+
+        return Result.lift(Causes::fromThrowable, () -> HexFormat.of().parseHex(hex));
     }
 
     private static Result<byte[]> tomlToSnapshot(String toml) {
