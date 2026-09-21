@@ -27,7 +27,17 @@ public sealed interface OutputFormatter {
         return printQuery(json, options, Option.option(tableSpec));
     }
 
+    /// #1033: `AetherCli.fetch` folds a failed send (or a non-2xx reply) into an error envelope
+    /// rather than a `Result`, so it arrives here looking like a document. Rendered as one, a
+    /// transport failure became an empty table with exit 0 — "no nodes" where the truth was
+    /// "could not ask". The envelope is refused before any format or `--quiet` handling: the cause
+    /// goes to stderr and the exit code is `ERROR` (`NOT_FOUND` for a 404), as `checkResponseError`
+    /// already does for the commands that call it explicitly.
     private static int printQuery(String json, OutputOptions options, Option<TableSpec> tableSpec) {
+        if (isErrorResponse(json)) {
+            return printResponseError(json, extractErrorMessage(json), options);
+        }
+
         if (options.isQuiet()) {
             return ExitCode.SUCCESS;
         }
@@ -334,8 +344,10 @@ public sealed interface OutputFormatter {
             return -1;
         }
 
-        var message = actionLabel + ": " + extractErrorMessage(response);
+        return printResponseError(response, actionLabel + ": " + extractErrorMessage(response), options);
+    }
 
+    private static int printResponseError(String response, String message, OutputOptions options) {
         return isNotFoundResponse(response)
                ? printNotFound(message, options)
                : printError(message, options);
