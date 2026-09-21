@@ -6,11 +6,15 @@
   promise never settled and surfaced as `ApplyTimeout` although its command had applied — the caller's
   outcome and the committed state disagreed. [mechanism: `RabiaEngine.registerBatch` → `pendingBatches.put`;
   `RabiaEngine.commitChanges` → `pendingBatches.remove(id)` → `correlationMap.remove` per local id]
-- `registerBatch` now merges into an already-pending batch with the same id via `StateMachine.merge`,
-  exactly as `doHandleNewBatch` already does for a batch arriving from another node. Guarantee: every
-  caller's promise completes with its own command's outcome, two callers submitting identical commands
-  each complete, and the command is applied once. Retries, idempotent republishes and convergence loops —
-  the paths that run during recovery — are the ones that produce identical content.
+- `registerBatch` and `doHandleNewBatch` now share one `mergePending` that merges into an already-pending
+  batch with the same id via `StateMachine.merge` — the local path previously had its own copy of the
+  remote path's logic, and the copy is where the `put()` crept in. Guarantee: every caller's promise
+  completes with its own command's outcome, and two callers submitting identical commands each complete.
+  **"Applied once" holds per pending window only:** identical submissions that overlap in flight are
+  merged into one decided batch and applied once; an identical submission made after that batch has
+  committed is a new batch in a new phase and applies again. Rabia has no cross-phase idempotency and
+  none is claimed. Retries, idempotent republishes and convergence loops — the paths that run during
+  recovery — are the ones that produce identical content.
   [verified: `RabiaEngineTest.identical_concurrent_submissions_each_complete_and_the_command_applies_once`
   — two concurrent `apply()` calls, one V1 decision; RED on the unmodified base with
   `Failure(ApplyTimeout[timeoutMillis=2000])` on one caller while the other succeeded and the command
