@@ -27,6 +27,9 @@ separate cluster-supervision-spec; this batch supplies its topology and observat
 ## 2. Invariants
 
 H01. Workers and unknown peers contribute zero votes or synchronization quorum evidence.
+[limit: crash-fault-certificates] This assumes crash-fault participants and genuine certificate
+history. Certificates contain identity lists, not Byzantine signatures; fabricated history is
+outside this model.
 Workers may obtain state but never become voters through activation or a capacity deficit.
 
 H02. Applied consensus history is ordered and never applied twice, including after in-memory
@@ -74,7 +77,9 @@ H09. Recovery and migration have durable identities, guarded transitions and bou
 Timeouts do not prove provider failure or exclusive ownership. Destination readiness precedes
 source retirement; replica repair completes before retiring required copies.
 
-H10. Correctness traffic has bounded queues and priority over bulk telemetry and repair.
+H10. Correctness traffic has bounded queues isolated from bulk telemetry and repair.
+[limit: transport-lane-isolation] Independent lanes do not provide scheduler priority or prove
+freedom from connection-wide QUIC flow-control starvation.
 Steady-state operation and failure recovery must both fit the supported resource envelope.
 
 ## 3. Facts and owners
@@ -104,7 +109,7 @@ protocol traffic from committed state delivery to observers.
 
 Consensus application keeps an applied progress boundary independent of garbage-collected
 phase objects. Delayed decisions below progress are ignored. [limit: ahead-decision-buffer]
-Ahead decisions are buffered up to 256 entries per engine; overflow evicts the oldest buffered
+Unchanged from rc4, ahead decisions are buffered up to 256 entries per engine; overflow evicts the oldest buffered
 entry and requests authoritative synchronization rather than applying across the gap. Replay uses
 the same checks. Snapshot installation
 establishes the new boundary before replay. Observer activation follows the same installation
@@ -184,8 +189,10 @@ ownership is inferred from a cached allocation. Document the exact existing work
 at execution and storage boundaries; distinguish receiving requests from completing in-flight
 work and from shared durable writes.
 
-Core absence uses identified-core evidence. Missing history after leader change enters a bounded
-unknown grace period; it does not make a worker permanently present. Fresh observations may
+Core absence uses identified-core evidence. Assigned workers without accepted governor history are
+immediately unavailable for placement. Installed cores challenge governors every ping interval
+(default 1 second); governor replacement requires the separate community-absence window (default
+20 seconds). Leadership-age grace applies only to unassigned nodes. Fresh observations may
 restore availability but cannot undo terminal fencing or revive an evicted instance identity.
 On reconnection reconcile current authority and assignment before accepting new work.
 
@@ -222,7 +229,7 @@ The acceptance matrix must drive the live production path, not only invoke consu
 | H-T03 | Worker joins below core target; core joins above target | Roles unchanged |
 | H-T04 | Two governor candidates, restart, delayed refresh, partition/heal | One accepted authority; stale effects rejected |
 | H-T05 | Repeated activation and community reassignment | One active runtime; old listeners/tasks stopped |
-| H-T06 | New leader has no pong history for an isolated community | Bounded unknown grace then unavailable |
+| H-T06 | New leader has no governor history for an isolated community | Assigned workers immediately unavailable; recovery waits the community-absence window |
 | H-T07 | Worker and follower pings with lower/higher terms | Pong returned; no unauthorized control effects |
 | H-T08 | Repeated/forwarded metrics and overlapping summaries | No freshness renewal or double counting |
 | H-T09 | Multi-source, multi-zone policy and unavailable preferred capacity | Hard constraints preserved; deterministic fallback |

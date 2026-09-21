@@ -231,7 +231,8 @@ public interface ClusterSyncCollector {
     @Contract
     default void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {}
 
-    /// SWIM membership discriminator stamped independently onto `ClusterSyncPong.incarnation`.
+    /// Durable node-process discriminator stamped onto `ClusterSyncPong.incarnation`.
+    /// Independent of SWIM refutation counters; monotonic across process restart.
     default org.pragmatica.lang.Unit setMembershipIncarnationSupplier(LongSupplier supplier) {
         return org.pragmatica.lang.Unit.unit();
     }
@@ -338,7 +339,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// Fresh governor readiness evaluated on every read, without caching or renewing evidence age.
     private final AtomicReference<Supplier<Map<NodeId, NodeReportedState>>> communityReadiness = new AtomicReference<>(Map::of);
 
-    /// Membership incarnation is the live SWIM counter, independent of the durable metrics epoch.
+    /// Membership/health incarnation is the durable process epoch, independent of SWIM refutation.
     private final AtomicReference<LongSupplier> membershipIncarnationSupplier = new AtomicReference<>(() -> 0L);
 
     /// Durable process epoch for raw producer sample replay ordering; fixed throughout one process.
@@ -1023,6 +1024,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         metrics.put(prefix + "p95ns", (double) m.estimatePercentileNs(95));
     }
 
+    /// Legacy complete-roster compatibility only: production sends bounded partial batches and
+    /// never enables this flag. Freshness and committed producer eligibility govern normal pruning.
     /// Drop every node the accepted ping no longer carries, through the same [`#removeNode`] the
     /// leader itself ran for it (#588) — the follower forgets exactly what the leader forgot, and
     /// converges on the first ping after the leader's own prune whatever order the two verdicts

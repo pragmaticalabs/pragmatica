@@ -340,12 +340,14 @@ record PlacementReconciler(NodeId self,
 
         return switch (operation.phase()) {
             case RESERVED -> beginCreate(config, operation, leader);
-            case CREATE_REQUESTED -> observedTarget(operation).isPresent()
-                                     ? createAccepted(config, operation, leader)
-                                     : uncertain(operation,
-                                                 leader,
-                                                 PlacementOperationPhase.CREATE_UNCERTAIN,
-                                                 "Create outcome was not committed; reconcile provider inventory before resuming");
+            case CREATE_REQUESTED -> refusedTarget(operation)
+                                     ? capacityRefused(config, operation, leader)
+                                     : observedTarget(operation).isPresent()
+                                       ? createAccepted(config, operation, leader)
+                                       : uncertain(operation,
+                                                   leader,
+                                                   PlacementOperationPhase.CREATE_UNCERTAIN,
+                                                   "Create outcome was not committed; reconcile provider inventory before resuming");
             case AWAITING_READY -> targetReady(operation)
                                    ? beginDrain(operation, leader)
                                    : readinessExpired(config, operation)
@@ -364,11 +366,24 @@ record PlacementReconciler(NodeId self,
                                       : Promise.unitPromise();
             case DRAINED -> beginTerminate(operation, leader);
             case TERMINATING -> finishTermination(operation, leader);
-            case CREATE_UNCERTAIN -> observedTarget(operation).isPresent()
-                                     ? createAccepted(config, operation, leader)
-                                     : Promise.unitPromise();
+            case CREATE_UNCERTAIN -> refusedTarget(operation)
+                                     ? capacityRefused(config, operation, leader)
+                                     : observedTarget(operation).isPresent()
+                                       ? createAccepted(config, operation, leader)
+                                       : Promise.unitPromise();
             case COMPLETE, DRAIN_UNCERTAIN, BLOCKED, UNKNOWN -> Promise.unitPromise();
         };
+    }
+
+    private boolean refusedTarget(CommunityPlacementOperationValue operation) {
+        return store.getTyped(new AetherKey.CapacityReservationKey(operation.targetNode()),
+                              AetherValue.CapacityReservationValue.class)
+                    .filter(value -> value.phase() == AetherValue.CapacityReservationPhase.RELEASED
+                                     && value.sourceName()
+                                             .equals(operation.targetSource())
+                                     && value.sourceBinding()
+                                             .equals(operation.sourceBinding()))
+                    .isPresent();
     }
 
     private boolean readinessExpired(ClusterBootstrapConfig config, CommunityPlacementOperationValue operation) {

@@ -136,6 +136,9 @@ public interface GovernorAnnouncer {
 
                 request.apply(proposal)
                        .onSuccess(response -> accept(id, response))
+                       .onFailure(cause -> org.slf4j.LoggerFactory.getLogger(GovernorAnnouncer.class)
+                                                                  .debug("Governor nomination deferred: {}",
+                                                                         cause.message()))
                        .onResultRun(() -> pending.set(false));
             }
 

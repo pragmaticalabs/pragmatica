@@ -100,9 +100,16 @@ public final class CommunityHealthIndex {
                              });
     }
 
-    /// The transport must bind report.sender to the authenticated/admitted peer identity.
+    /// For adapters carrying the transport peer explicitly. Production routing enforces this
+    /// binding through InboundMessageAuthority before dispatching to acceptAuthenticated.
     public synchronized boolean accept(NodeId transportSender, Report report) {
-        if (!transportSender.equals(report.sender()) || report.members().size() > maximumMembers) {
+        return transportSender.equals(report.sender()) && acceptAuthenticated(report);
+    }
+
+    /// Accept a report whose sender was already bound by the transport. This method checks
+    /// governor authority and challenge provenance; it does not authenticate a sender field.
+    public synchronized boolean acceptAuthenticated(Report report) {
+        if (report.members().size() > maximumMembers) {
             return false;
         }
 
@@ -121,6 +128,9 @@ public final class CommunityHealthIndex {
         var members = new HashMap<NodeId, MemberHealth>();
 
         report.members()
+              .stream()
+              .filter(value -> value.incarnation() >= incarnations.getOrDefault(value.node(),
+                                                                                0L))
               .forEach(value -> {
                            members.put(value.node(),
                                        value);
@@ -182,8 +192,6 @@ public final class CommunityHealthIndex {
                      .allMatch(member -> member.incarnation() >= 0
                                          && member.observationAge()
                                                   .nanos() >= 0
-                                         && member.incarnation() >= incarnations.getOrDefault(member.node(),
-                                                                                              0L)
                                          && seen.add(member.node())
                                          && assignment.apply(member.node())
                                                       .filter(report.communityId()::equals)

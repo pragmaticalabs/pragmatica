@@ -112,6 +112,23 @@ class CommunityHealthIndexTest {
         assertThat(index.accept(governor, report(request, 100))).isTrue();
         assertThat(index.isReachable(worker)).isFalse();
     }
+    @Test void regressedMemberEpochExcludesOnlyThatMemberAndRecoversOnNewEpoch() {
+        var first = index.request("community").unwrap();
+        assertThat(index.accept(governor, report(first, 0))).isTrue();
+        var next = index.request("community").unwrap();
+        var zero = org.pragmatica.lang.io.TimeSpan.timeSpan(0).nanos();
+        assertThat(index.accept(governor, new Report(governor, "community", next.governorTerm(),
+            next.incarnation(), next.sequence(), List.of(new MemberHealth(worker, 1, true, true, zero),
+                new MemberHealth(governor, 4, true, true, zero))))).isTrue();
+        assertThat(index.isReady(worker)).isFalse();
+        assertThat(index.isReady(governor)).isTrue();
+        assertThat(index.hasFreshReport("community")).isTrue();
+        var recovered = index.request("community").unwrap();
+        assertThat(index.accept(governor, new Report(governor, "community", recovered.governorTerm(),
+            recovered.incarnation(), recovered.sequence(), List.of(new MemberHealth(worker, 3, true, true, zero))))).isTrue();
+        assertThat(index.isReady(worker)).isTrue();
+    }
+
     private static GovernorAnnouncementValue announcement(NodeId governor, long term) {
         return GovernorAnnouncementValue.governorAnnouncementValue(governor, List.of(governor), "", 0, term,
             org.pragmatica.aether.slice.generation.Epoch.ZERO, org.pragmatica.aether.slice.generation.Epoch.ZERO,

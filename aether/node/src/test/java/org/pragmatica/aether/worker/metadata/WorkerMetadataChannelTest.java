@@ -328,6 +328,79 @@ class WorkerMetadataChannelTest {
         assertThat(fixture.ready).hasValue(1);
     }
 
+    @Test
+    void bandwidthBudgetRefusesEvenAnOtherwiseValidManifest() {
+        var constrained = new Fixture(limits(64, 1, 32), LIMITS);
+        constrained.seed(1, "initial");
+        constrained.client.tick();
+        constrained.deliverRequest();
+        assertThat(constrained.server.manifestCount()).isEqualTo(1);
+        assertThat(constrained.responses).isEmpty();
+        assertThat(constrained.client.hasFreshProjection()).isFalse();
+        var permitted = new Fixture();
+        permitted.seed(1, "initial");
+        permitted.client.tick();
+        permitted.pump();
+        assertThat(permitted.client.hasFreshProjection()).isTrue();
+    }
+
+    @Test
+    void serverScopeLimitRefusesProjectionBeforeAllocatingManifest() {
+        var fixture = new Fixture(limits(64, LIMITS.bytesPerSecond(), 2), LIMITS);
+        fixture.seed(1, "initial");
+        fixture.client.tick();
+        fixture.deliverRequest();
+        var response = (WorkerMetadataMessage.Manifest) fixture.responses.remove();
+        assertThat(response.error()).isEqualTo("projection-unavailable-or-oversize");
+        assertThat(response.scopes()).isEmpty();
+        assertThat(fixture.server.manifestCount()).isZero();
+        fixture.client.onManifest(response);
+        assertThat(fixture.worker.snapshot()).isEmpty();
+        assertThat(fixture.client.hasFreshProjection()).isFalse();
+    }
+
+    @Test
+    void clientScopeLimitRejectsOtherwiseValidManifestWithoutRequestingChunks() {
+        var fixture = new Fixture(LIMITS, limits(64, LIMITS.bytesPerSecond(), 2));
+        fixture.seed(1, "initial");
+        fixture.client.tick();
+        fixture.deliverRequest();
+        var response = (WorkerMetadataMessage.Manifest) fixture.responses.remove();
+        assertThat(response.error()).isEmpty();
+        assertThat(response.scopes().size()).isGreaterThan(2);
+        fixture.client.onManifest(response);
+        assertThat(fixture.requests).isEmpty();
+        assertThat(fixture.errors).containsExactly("metadata manifest rejected or oversized");
+        assertThat(fixture.worker.snapshot()).isEmpty();
+        assertThat(fixture.client.hasFreshProjection()).isFalse();
+    }
+
+    @Test
+    void oversizedChunkIsRejectedBeforeConsumptionEvenWhenItFitsTheScope() {
+        var fixture = new Fixture(LIMITS, limits(1, LIMITS.bytesPerSecond(), 32));
+        fixture.seed(1, "initial");
+        fixture.client.tick();
+        fixture.deliverRequest();
+        var manifest = (WorkerMetadataMessage.Manifest) fixture.responses.remove();
+        fixture.client.onManifest(manifest);
+        fixture.deliverRequest();
+        var response = (WorkerMetadataMessage.Chunk) fixture.responses.remove();
+        var scope = manifest.scopes().stream().filter(value -> value.scope().equals(response.scope())).findFirst().orElseThrow();
+        assertThat(response.error()).isEmpty();
+        assertThat(response.bytes().length).isGreaterThan(1).isLessThanOrEqualTo(scope.length());
+        fixture.client.onChunk(response);
+        assertThat(fixture.errors).containsExactly("invalid metadata chunk size");
+        assertThat(fixture.requests).isEmpty();
+        assertThat(fixture.worker.snapshot()).isEmpty();
+        assertThat(fixture.ready).hasValue(0);
+        assertThat(fixture.client.hasFreshProjection()).isFalse();
+    }
+
+    private static WorkerMetadataLimits limits(int chunkBytes, long bandwidth, int scopes) {
+        return new WorkerMetadataLimits(chunkBytes, LIMITS.scopeBytes(), LIMITS.cacheBytes(), bandwidth,
+            LIMITS.manifests(), scopes, LIMITS.manifestTtl(), LIMITS.pollInterval());
+    }
+
     private static final class Fixture {
         final org.pragmatica.serialization.SliceCodec codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
 
@@ -344,17 +417,23 @@ class WorkerMetadataChannelTest {
         final List<String> coreRejections = new ArrayList<>();
         final AetherKey.ConfigKey configKey = new AetherKey.ConfigKey("test", Option.none());
 
-        final WorkerMetadataServer server = new WorkerMetadataServer(CORE,
+        final WorkerMetadataServer server;
+        final WorkerMetadataClient client;
+
+        Fixture() { this(LIMITS, LIMITS); }
+
+        Fixture(WorkerMetadataLimits serverLimits, WorkerMetadataLimits clientLimits) {
+        server = new WorkerMetadataServer(CORE,
                                                                      core,
                                                                      codec,
                                                                      (_, message) -> responses.add(message),
                                                                      WORKER::equals,
                                                                      () -> Set.of(CORE),
                                                                      _ -> List.of(),
-                                                                     LIMITS,
+                                                                     serverLimits,
                                                                      (_, reason) -> coreRejections.add(reason));
 
-        final WorkerMetadataClient client = new WorkerMetadataClient(WORKER,
+        client = new WorkerMetadataClient(WORKER,
                                                                      worker,
                                                                      codec,
                                                                      () -> Set.of(CORE),
@@ -367,7 +446,8 @@ class WorkerMetadataChannelTest {
                                                                      _ -> {},
                                                                      ready::incrementAndGet,
                                                                      errors::add,
-                                                                     LIMITS);
+                                                                     clientLimits);
+        }
 
         void seed(long revision, String value) {
             var activation = new AetherKey.ActivationDirectiveKey(WORKER);

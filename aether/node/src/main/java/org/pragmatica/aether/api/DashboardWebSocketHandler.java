@@ -7,6 +7,7 @@ package org.pragmatica.aether.api;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.management.route.ManagementRouteError;
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
@@ -42,11 +43,25 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
     }
 
     private void onOpen(WebSocketSession session) {
+        if (!metricsPublisher.hasCompleteClusterView()) {
+            refuseIncompleteView(session);
+
+            return;
+        }
+
         sessions.put(session.id(), session);
         log.info("Dashboard client connected: {}", session.id());
         if (authenticator.onOpen(session)) {
             session.send(metricsPublisher.buildInitialState());
         }
+    }
+
+    private static void refuseIncompleteView(WebSocketSession session) {
+        var cause = new ManagementRouteError.IncompleteClusterView();
+
+        session.send("{\"type\":\"ERROR\",\"code\":\"INCOMPLETE_CLUSTER_VIEW\",\"completeClusterView\":false,\"message\":\"" + cause.message()
+                    + "\"}");
+        session.close();
     }
 
     private void onText(WebSocketSession session, String message) {

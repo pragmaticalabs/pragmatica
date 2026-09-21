@@ -67,6 +67,10 @@ import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 public interface ManageableNode {
     NodeId self();
 
+    default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+        return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
+    }
+
     /// Workers retain a scoped committed projection and must forward cluster-wide reads.
     default boolean hasCompleteClusterView() {
         return coreNodeIds().contains(self());

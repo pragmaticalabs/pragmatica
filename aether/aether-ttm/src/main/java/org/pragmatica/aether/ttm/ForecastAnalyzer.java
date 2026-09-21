@@ -65,59 +65,31 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
             return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.INSUFFICIENT_DATA);
         }
 
-        var current = averageRecent(recentHistory, 5);
+        var currentCpu = averageRecentCpu(recentHistory, 5);
         float predictedCpu = predictions[FeatureIndex.CPU_USAGE];
         float predictedLatency = predictions[FeatureIndex.LATENCY_MS];
-        float predictedInvocations = predictions[FeatureIndex.INVOCATIONS];
-        var recommendation = determineRecommendation(current,
-                                                     predictedCpu,
-                                                     predictedLatency,
-                                                     predictedInvocations,
-                                                     currentConfig);
+        var recommendation = determineRecommendation(currentCpu, predictedCpu, predictedLatency, currentConfig);
 
         return new TTMForecast(timestamp, predictions, confidence, recommendation);
     }
 
-    private MinuteAggregate averageRecent(List<MinuteAggregate> history, int count) {
-        if (history.isEmpty()) {
-            return MinuteAggregate.EMPTY;
-        }
-
+    /// Only CPU drives this policy. Do not manufacture aggregate error rates or quantiles
+    /// from minute ratios and quantiles that the recommendation does not consume.
+    private float averageRecentCpu(List<MinuteAggregate> history, int count) {
         int start = Math.max(0, history.size() - count);
-        var recent = history.subList(start, history.size());
-        double avgCpu = recent.stream().mapToDouble(MinuteAggregate::avgCpuUsage).average().orElse(0);
-        double avgHeap = recent.stream().mapToDouble(MinuteAggregate::avgHeapUsage).average().orElse(0);
-        double avgLag = recent.stream().mapToDouble(MinuteAggregate::avgEventLoopLagMs).average().orElse(0);
-        double avgLatency = recent.stream().mapToDouble(MinuteAggregate::avgLatencyMs).average().orElse(0);
-        long totalInvocations = recent.stream().mapToLong(MinuteAggregate::totalInvocations).sum() / recent.size();
-        long totalGc = recent.stream().mapToLong(MinuteAggregate::totalGcPauseMs).sum() / recent.size();
-        double p50 = recent.stream().mapToDouble(MinuteAggregate::intervalMeanLatencyP50).average().orElse(0);
-        double p95 = recent.stream().mapToDouble(MinuteAggregate::intervalMeanLatencyP95).average().orElse(0);
-        double p99 = recent.stream().mapToDouble(MinuteAggregate::intervalMeanLatencyP99).average().orElse(0);
-        double errorRate = recent.stream().mapToDouble(MinuteAggregate::errorRate).average().orElse(0);
-        int events = recent.stream().mapToInt(MinuteAggregate::eventCount).sum() / recent.size();
 
-        return MinuteAggregate.minuteAggregate(System.currentTimeMillis(),
-                                               avgCpu,
-                                               avgHeap,
-                                               avgLag,
-                                               avgLatency,
-                                               totalInvocations,
-                                               totalGc,
-                                               p50,
-                                               p95,
-                                               p99,
-                                               errorRate,
-                                               events,
-                                               recent.size());
+        return (float) history.subList(start,
+                                       history.size())
+                              .stream()
+                              .mapToDouble(MinuteAggregate::avgCpuUsage)
+                              .average()
+                              .orElse(0);
     }
 
-    private ScalingRecommendation determineRecommendation(MinuteAggregate current,
+    private ScalingRecommendation determineRecommendation(float currentCpu,
                                                           float predictedCpu,
                                                           float predictedLatency,
-                                                          float predictedInvocations,
                                                           ControllerConfig currentConfig) {
-        float currentCpu = (float) current.avgCpuUsage();
         float cpuIncrease = predictedCpu - currentCpu;
 
         if (cpuIncrease > CPU_INCREASE_THRESHOLD || (predictedCpu > HIGH_CPU_THRESHOLD && cpuIncrease > HIGH_CPU_INCREASE_THRESHOLD)) {

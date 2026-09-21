@@ -35,20 +35,15 @@ public record CommunityMetricsSnapshot(String communityId,
                                                                     NodeId governorId,
                                                                     int memberCount,
                                                                     List<PerSliceMetrics> sliceMetrics,
-                                                                    long timestampMs) {
+                                                                    long timestampMs,
+                                                                    long incarnation,
+                                                                    long sequence) {
         return new CommunityMetricsSnapshot(communityId,
                                             governorId,
                                             memberCount,
                                             sliceMetrics,
                                             timestampMs,
-                                            0L,
-                                            System.nanoTime());
-    }
-
-    public static CommunityMetricsSnapshot communityMetricsSnapshot(String communityId,
-                                                                    NodeId governorId,
-                                                                    int memberCount,
-                                                                    List<PerSliceMetrics> sliceMetrics) {
-        return communityMetricsSnapshot(communityId, governorId, memberCount, sliceMetrics, System.currentTimeMillis());
+                                            incarnation,
+                                            sequence);
     }
 }

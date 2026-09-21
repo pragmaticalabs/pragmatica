@@ -952,15 +952,15 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "promote", description = "Promote a node to a new role (CORE or WORKER) via consensus")
+        @Command(name = "promote", description = "Acknowledge an existing immutable node role; role changes are refused")
         static class PromoteCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private NodesCommand nodesParent;
 
-            @Parameters(index = "0", description = "Node ID to promote")
+            @Parameters(index = "0", description = "Node ID to check")
             private String nodeId;
 
-            @CommandLine.Option(names = {"--role"}, required = true, description = "Target role: CORE or WORKER (case-insensitive)")
+            @CommandLine.Option(names = {"--role"}, required = true, description = "Existing role: CORE, WORKER or SPOT (case-insensitive)")
             private String role;
 
             @Override
@@ -977,7 +977,7 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    nodesParent.parent.outputOptions(),
-                                                   "promote node " + nodeId + " to " + role.trim().toUpperCase());
+                                                   "acknowledge node " + nodeId + " role " + role.trim().toUpperCase());
             }
         }
 

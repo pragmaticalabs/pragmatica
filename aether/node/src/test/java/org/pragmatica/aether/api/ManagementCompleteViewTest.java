@@ -16,6 +16,14 @@ class ManagementCompleteViewTest {
     }
 
     @Test
+    void globalMetricsReadsRequireCoreView() {
+        for (var path : java.util.List.of("/api/v1/metrics", "/api/v1/metrics/history", "/api/v1/nodes/metrics")) {
+            assertThat(ManagementServerImpl.checkCompleteView("GET", path, false).isFailure()).isTrue();
+            assertThat(ManagementServerImpl.checkCompleteView("GET", path, true).isSuccess()).isTrue();
+        }
+    }
+
+    @Test
     void localDiagnosticRemainsLocalOnWorker() {
         assertThat(ManagementServerImpl.checkCompleteView("GET", "/health/live", false).isSuccess()).isTrue();
         assertThat(ManagementServerImpl.checkCompleteView("GET", "/api/v1/cluster/membership", false).isSuccess()).isTrue();

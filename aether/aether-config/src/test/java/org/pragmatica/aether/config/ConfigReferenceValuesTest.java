@@ -33,8 +33,24 @@ class ConfigReferenceValuesTest {
     }
 
     @Test
-    void resolutionTreatsBindingAsLiteralAndRejectsUnresolvedNestedReferences() {
+    void resolutionTreatsBindingAsOpaqueLiteralWithoutRecursiveInterpolation() {
         assertThat(ConfigReferenceValues.resolve("prefix-${env:TOKEN}-suffix", _ -> Option.some("a$1\\b")).unwrap()).isEqualTo("prefix-a$1\\b-suffix");
-        assertThat(ConfigReferenceValues.resolve("${env:TOKEN}", _ -> Option.some("${env:OTHER}")).isFailure()).isTrue();
+        var lookups = new java.util.ArrayList<String>();
+        assertThat(ConfigReferenceValues.resolve("prefix-${secrets:token}-suffix", name -> {
+            lookups.add(name);
+            return Option.some("${env:OTHER}-${not-an-expression}");
+        }).unwrap()).isEqualTo("prefix-${env:OTHER}-${not-an-expression}-suffix");
+        assertThat(lookups).containsExactly("AETHER_TOKEN");
+    }
+    @Test
+    void malformedOriginalExpressionsFailBeforeReadingAnyBinding() {
+        var lookups = new java.util.ArrayList<String>();
+        for (var expression : java.util.List.of("${env:TOKEN}-${unknown:OTHER}", "${env:${env:OTHER}}", "${env:TOKEN")) {
+            assertThat(ConfigReferenceValues.resolve(expression, name -> {
+                lookups.add(name);
+                return Option.some("secret");
+            }).isFailure()).isTrue();
+        }
+        assertThat(lookups).isEmpty();
     }
 }

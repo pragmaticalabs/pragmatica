@@ -221,7 +221,7 @@ public interface SystemTags {
         pin(table, 120, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest");
         pin(table, 121, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationTransfer");
         pin(table, 122, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationInstalled");
-        // Tag 123 retired: uncorrelated LeaderPut. Do not reuse.
+        // Tag 123 is available: the removed uncorrelated LeaderPut never shipped before GA.
         pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
         pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
         pin(table, 126, "org.pragmatica.cluster.state.kvstore.KVCommand.Mutation");

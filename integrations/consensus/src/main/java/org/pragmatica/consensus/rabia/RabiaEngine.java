@@ -127,15 +127,61 @@ public class RabiaEngine<C extends Command> {
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
     private final Map<ClusterConfig, Promise<Unit>> reconfigurationPromises = new java.util.HashMap<>();
     private final Map<ClusterConfig, Long> reconfigurationEpochs = new java.util.HashMap<>();
-    private Option<ClusterConfig> requestedConfiguration = Option.none();
+    private volatile Option<ClusterConfig> requestedConfiguration = Option.none();
 
     private record BarrierKey(Phase phase, ClusterConfig target) {}
 
     private final Map<BarrierKey, ConfigurationHandoff<C>> preparedHandoffs = new java.util.HashMap<>();
     private volatile Option<Cause> stateTransferFailure = Option.none();
+    private volatile Option<Cause> handoffPersistenceFailure = Option.none();
 
     public Option<Cause> stateTransferFailure() {
         return stateTransferFailure;
+    }
+
+    /// Read one immutable authority value; never inspect executor-confined acknowledgement maps.
+    public VoterReconfigurationStatus voterReconfigurationStatus() {
+        var requested = requestedConfiguration;
+        var failure = authorityFailure.map(Cause::message)
+                                      .or(stateTransferFailure.map(Cause::message)
+                                                              .or(handoffPersistenceFailure.map(Cause::message).or("")));
+
+        return voters.map(VoterConfigurationState::authority)
+                     .map(authority -> describeReconfiguration(authority, requested, failure))
+                     .or(new VoterReconfigurationStatus("UNAVAILABLE", Option.none(), List.of(), List.of(), Option.none(), 0, 0, failure));
+    }
+
+    private VoterReconfigurationStatus describeReconfiguration(VoterAuthority<C> authority,
+                                                              Option<ClusterConfig> requested,
+                                                              String failure) {
+        var configuration = authority.configuration();
+        var target = requested.map(ClusterConfig::members)
+                              .or(authority.handoff().map(handoff -> handoff.next().members()).or(List.of()));
+        var checkpointWitnesses = authority.handoff()
+                                           .map(handoff -> authority.history().stream()
+                                               .filter(certificate -> certificate.next().equals(handoff.next())
+                                                   && certificate.nextSlot().equals(handoff.nextSlot()))
+                                               .mapToInt(certificate -> certificate.witnesses().size())
+                                               .max().orElse(0)).or(0);
+
+        return new VoterReconfigurationStatus(reconfigurationStage(authority, requested),
+                                             Option.some(configuration.epoch()),
+                                             configuration.members().stream().map(NodeId::id).toList(),
+                                             target.stream().map(NodeId::id).toList(),
+                                             authority.handoff().map(handoff -> handoff.nextSlot().value()),
+                                             checkpointWitnesses,
+                                             authority.installationWitnesses().size(),
+                                             failure);
+    }
+
+    private String reconfigurationStage(VoterAuthority<C> authority, Option<ClusterConfig> requested) {
+        if (requested.isPresent()) {
+            return "REQUESTED";
+        }
+        return authority.handoff().map(handoff -> handoff.previous().equals(authority.configuration())
+                                                 ? "CHECKPOINT_COLLECTION"
+                                                 : authority.retirementSafe() ? "COMPLETE" : "INSTALLATION_PENDING")
+                        .or("STABLE");
     }
 
     private Result<ConfigurationHandoff<C>> prepareHandoff(ClusterConfig target, Phase phase) {
@@ -163,6 +209,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private Option<ScheduledFuture<?>> handoffRetry = Option.none();
+    private Option<VoterAuthority<C>> persistedHandoffAuthority = Option.none();
     private final java.util.Set<NodeId> handoffSnapshotRequests = new java.util.HashSet<>();
 
     private void armHandoffRetry() {
@@ -292,20 +339,21 @@ public class RabiaEngine<C extends Command> {
                && epoch == voterEpoch();
     }
 
-    private void broadcastVoters(org.pragmatica.consensus.ProtocolMessage message) {
+    private boolean broadcastVoters(org.pragmatica.consensus.ProtocolMessage message) {
         if (passiveClient) {
-            return;
+            return false;
         }
 
         if (message instanceof RabiaProtocolMessage protocol && VotingJournal.supported(protocol) && protocol.sender()
                                                                                                              .equals(self) && !persistVotingMessage(protocol)) {
-            return;
+            return false;
         }
 
         voterConfiguration().onPresent(v -> v.members()
                                              .stream()
                                              .filter(node -> !node.equals(self))
                                              .forEach(node -> network.send(node, message)));
+        return true;
     }
 
     private void broadcastCoreObservers(org.pragmatica.consensus.ProtocolMessage message) {
@@ -1044,9 +1092,10 @@ public class RabiaEngine<C extends Command> {
                          certificate)
                    .onSuccess(_ -> {
                        state.install(certificate);
+                       handoffPersistenceFailure = Option.none();
                        completeReconfiguration(certificate.configuration());
                    })
-                   .onFailure(cause -> log.error("Node {} could not persist installation proof: {}", self, cause));
+                   .onFailure(this::recordHandoffPersistenceFailure);
     }
 
     private void completeReconfiguration(VoterConfiguration installed) {
@@ -1100,14 +1149,9 @@ public class RabiaEngine<C extends Command> {
                                        .handoff()
                                        .onPresent(handoff -> {
                                                       if (state.isAwaitingHandoff()) {
-                                                      persistence.save(stateMachine,
-                                                                       currentPhase.get(),
-                                                                       pendingBatches.values(),
-                                                                       state.authority())
-                                                                 .onSuccess(_ -> advertiseHandoff(handoff))
-                                                                 .onFailure(cause -> log.error("Node {} handoff persistence failed: {}",
-                                                                                               self,
-                                                                                               cause));
+                                                      persistHandoffAuthority(state.authority())
+                                                          .onSuccess(_ -> advertiseHandoff(handoff))
+                                                          .onFailure(this::recordHandoffPersistenceFailure);
                                                   } else {
                                                       var request = new ConfigurationInstalled(self,
                                                                                                handoff.next(),
@@ -1118,6 +1162,28 @@ public class RabiaEngine<C extends Command> {
                                                       configurationInstalled(request);
                                                   }
                                                   }));
+    }
+
+    /// The frozen handoff checkpoint is immutable; retries only repeat network advertisement.
+    /// Failed persistence is never cached, so no advertisement can precede a successful save.
+    private Result<Unit> persistHandoffAuthority(VoterAuthority<C> authority) {
+        if (persistedHandoffAuthority.filter(authority::equals).isPresent()) {
+            return Result.success(Unit.unit());
+        }
+        return persistence.save(stateMachine, currentPhase.get(), pendingBatches.values(), authority)
+                          .onSuccess(_ -> rememberPersistedHandoff(authority));
+    }
+
+    private Unit rememberPersistedHandoff(VoterAuthority<C> authority) {
+        persistedHandoffAuthority = Option.some(authority);
+        handoffPersistenceFailure = Option.none();
+        return Unit.unit();
+    }
+
+    private Unit recordHandoffPersistenceFailure(Cause cause) {
+        handoffPersistenceFailure = Option.some(cause);
+        log.error("Node {} handoff persistence failed: {}", self, cause);
+        return Unit.unit();
     }
 
     private void advertiseHandoff(ConfigurationHandoff<C> handoff) {
@@ -1172,6 +1238,7 @@ public class RabiaEngine<C extends Command> {
                                                                            authority))
                                             .onSuccess(_ -> {
                                                            state.install(authority);
+                                                           handoffPersistenceFailure = Option.none();
                                                            stateTransferFailure = Option.none();
                                                            requestedConfiguration = Option.none();
                                                            authorityFailure = Option.none();
@@ -1544,7 +1611,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private Result<Unit> recoverLocalState(Option<SavedState<C>> saved, List<RabiaProtocolMessage> journal) {
-        if (journal.isEmpty()) {
+        if (journal.isEmpty() && saved.isEmpty()) {
             return Result.success(Unit.unit());
         }
 
@@ -2530,7 +2597,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// #667 round 2: the adoption decision, computed ONCE from a single read of the response map and
-    /// a single read of `clusterSize()`. `Option.none()` means "keep collecting"; a present value is
+    /// a single read of the installed voter count. `Option.none()` means "keep collecting"; a present value is
     /// the exact set adoption may choose its candidate from.
     ///
     /// The first cut of #667 thresholded on LIVE responders (`clusterSize / 2 + 1` of them) and a live
@@ -2559,13 +2626,12 @@ public class RabiaEngine<C extends Command> {
     /// node installs, and it never lowers the number of answers required.
     ///
     /// The single read matters: the previous split between `adoptionThresholdMet()` and
-    /// `candidateResponses()` re-read both the response map and `clusterSize()`, so a topology change
+    /// `candidateResponses()` re-read both the response map and the voter count, so a topology change
     /// between the two could pass the gate on one rule and build the candidate set under the other.
     private Option<List<SyncResponse<C>>> adoptionCandidates() {
         var clusterSize = voterCount();
-        // `clusterSize()` is a derived cell fed from the KV `coreCount`; at 0 the cold requirement
-        // would be `0 / 2 == 0` and a node would meet its own threshold with ZERO responses and
-        // activate alone. Refused on purpose, with the periodic WARN reporting `clusterSize=0`.
+        // Only installed voter authority supplies this denominator. Configuration intent and
+        // discovery membership cannot lower the synchronization quorum.
         if (clusterSize < 1) {
             return Option.none();
         }
@@ -2628,10 +2694,9 @@ public class RabiaEngine<C extends Command> {
         // Adoption normally fires on the arrival that first meets the requirement, so the collected set
         // is exactly the requirement and "a live majority among them" reduces to "all of them are
         // LIVE", where filtering removes nothing. The filter only SELECTS when the collected set is
-        // LARGER than the requirement, which happens when `clusterSize()` falls mid-round: the
-        // KV-derived cell shrinks, the requirement drops below what is already collected, and the next
-        // evaluation chooses from a set that still holds COLD responses. Pinned by
-        // `RabiaSyncAdoptionResponseQuorumTest.AShrinkingClusterExercisesTheLiveFilter`.
+        // LARGER than the requirement, for example when a certified authority handoff changes
+        // the installed electorate while responses are collected. Desired core counts cannot
+        // directly change this denominator.
         return Option.some(liveResponses.size() >= clusterSize / 2 + 1
                            ? liveResponses
                            : responses);
@@ -2914,8 +2979,9 @@ public class RabiaEngine<C extends Command> {
         var vote = phaseData.evaluateInitialVote(self, quorumSize);
 
         log.trace("Node {} broadcasting R1 vote {} for phase {} after collecting quorum proposals", self, vote, phase);
-        broadcastVoters(vote);
-        phaseData.registerRound1Vote(self, vote.stateValue());
+        if (broadcastVoters(vote)) {
+            phaseData.registerRound1Vote(self, vote.stateValue());
+        }
     }
 
     private void logRound1VoteConditionsNotMet(Phase phase, PhaseData<C> phaseData, int quorumSize) {
@@ -3056,8 +3122,9 @@ public class RabiaEngine<C extends Command> {
         var round2Vote = phaseData.evaluateRound2Vote(quorumSize);
 
         log.trace("Node {} votes in round 2 {}", self, round2Vote);
-        broadcastVoters(new VoteRound2(self, voterEpoch(), phase, phaseData.round(), round2Vote));
-        phaseData.registerRound2Vote(self, round2Vote);
+        if (broadcastVoters(new VoteRound2(self, voterEpoch(), phase, phaseData.round(), round2Vote))) {
+            phaseData.registerRound2Vote(self, round2Vote);
+        }
     }
 
     /// Handles a round 2 vote from another node.

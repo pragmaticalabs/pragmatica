@@ -1165,6 +1165,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private synchronized Unit pollWorkerTopology(long epoch) {
         if (active.get() && activationEpoch.get() == epoch) {
             reconcileWorkerTopology();
+            lifecycleManager.reconcileRefusals()
+                            .onFailure(cause -> log.warn("Capacity refusal accounting deferred: {}",
+                                                         cause.message()));
         }
 
         return unit();

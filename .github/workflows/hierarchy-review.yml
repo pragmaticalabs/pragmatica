@@ -2,7 +2,26 @@ name: Hierarchy review acceptance
 
 on:
   pull_request:
-    branches: [release-*]
+    paths:
+      - 'aether/**'
+      - 'integrations/cluster/**'
+      - 'integrations/consensus/**'
+      - 'integrations/serialization/**'
+      - 'core/**'
+      - 'tools/check-hierarchy-foundation-mutations.py'
+      - '.github/workflows/hierarchy-review.yml'
+      - 'pom.xml'
+  push:
+    branches: [main, 'release-*']
+    paths:
+      - 'aether/**'
+      - 'integrations/cluster/**'
+      - 'integrations/consensus/**'
+      - 'integrations/serialization/**'
+      - 'core/**'
+      - 'tools/check-hierarchy-foundation-mutations.py'
+      - '.github/workflows/hierarchy-review.yml'
+      - 'pom.xml'
   workflow_dispatch:
 
 permissions:
@@ -10,7 +29,6 @@ permissions:
 
 jobs:
   foundation-mutations:
-    if: github.head_ref == 'feat/hierarchy-primitives-rc4'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -21,14 +39,14 @@ jobs:
           distribution: zulu
           cache: maven
       - name: Bootstrap processors
-        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+        run: env -u HCLOUD_TOKEN mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
       - name: Install foundation dependencies
-        run: mvn install -B -DskipTests -pl integrations/cluster -am
+        run: env -u HCLOUD_TOKEN mvn install -B -DskipTests -pl integrations/cluster -am
       - name: Prove regression sensitivity
         run: python3 tools/check-hierarchy-foundation-mutations.py
       - name: Verify restored implementation
         if: always()
-        run: mvn test -B -pl integrations/cluster -Dtest='KVStore*Test'
+        run: env -u HCLOUD_TOKEN mvn test -B -pl integrations/cluster -Dtest='KVStore*Test'
       - uses: actions/upload-artifact@v6
         if: always()
         with:
@@ -38,7 +56,6 @@ jobs:
             integrations/cluster/target/surefire-reports/**
 
   runtime-acceptance:
-    if: github.head_ref == 'feat/hierarchy-runtime-rc4'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

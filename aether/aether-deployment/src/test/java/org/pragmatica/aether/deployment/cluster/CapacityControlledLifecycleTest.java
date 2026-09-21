@@ -75,6 +75,18 @@ class CapacityControlledLifecycleTest {
     }
 
     @Test
+    void unresolvedIdentityCannotBeReusedEvenWithSpareFleetCapacity() {
+        initialize(0);
+        lifecycle.provisionNode(spec("first", "east")).await();
+        var recovered = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 10);
+        var failure = recovered.provisionNode(spec("first", "east")).await().fold(cause -> cause.message(), _ -> "success");
+        assertThat(failure).contains("Existing capacity reservation");
+        assertThat(creates.get()).isEqualTo(1);
+        assertThat(ledger().allocated()).isEqualTo(1);
+    }
+
+    @Test
     void ambiguousCreate_retainsGlobalCapacityAcrossSourcesAndLeaderInstances() {
         initialize(0);
         assertThat(lifecycle.provisionNode(spec("first", "east")).await().isFailure()).isTrue();

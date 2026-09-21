@@ -192,8 +192,8 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     /// A configured metric threshold was crossed upward on some node (#957).
     ///
     /// **This is a DERIVED fact, not a node-local observation, and that is what decides its gating.**
-    /// `ClusterSyncCollector.allMetrics()` returns every node's metrics on every node, so every node
-    /// evaluates the same input and reaches the same conclusion. An un-gated emit would therefore write
+    /// `ClusterSyncCollector.allMetrics()` returns fresh known observations. Core nodes receive the
+    /// cluster-wide feed; workers retain a scoped view and do not publish cluster dashboard metrics. An un-gated emit would therefore write
     /// the same breach once per node. It is emitted through the aggregator's owner-gated
     /// {@link ClusterEventAggregator#emit} path, which is exactly the shape that gate exists for —
     /// deduplication comes free and no per-node partitioning or routing hop is needed.

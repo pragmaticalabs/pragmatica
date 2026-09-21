@@ -227,7 +227,8 @@ public final class StatusRoutes implements RouteSource {
                                   node.isLeader(),
                                   leaderId,
                                   BuildInfo.buildInfo().buildTimestamp(),
-                                  BuildInfo.buildInfo().buildVersion());
+                                  BuildInfo.buildInfo().buildVersion(),
+                                  node.voterReconfigurationStatus());
     }
 
     private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader, String kvState) {

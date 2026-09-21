@@ -120,6 +120,21 @@ class CommunityPlacementReconcilerTest {
     }
 
     @Test
+    void readyDestinationCannotDrainBeforeEvacuationProof() {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        reconciler.reconcile().await().unwrap();
+        replacementReady();
+        safeToRetire = false;
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+        assertThat(effects).containsExactly("create");
+        safeToRetire = true;
+        reconciler.reconcile().await().unwrap();
+        assertThat(effects).containsExactly("create", "drain");
+    }
+
+    @Test
     void missingAssignmentEscalatesOnceWithoutProviderEffects() {
         initialize();
         var unknown = new NodeId("unassigned");

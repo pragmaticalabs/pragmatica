@@ -185,10 +185,8 @@ class RabiaSyncAdoptionQuorumTest {
         /// Here self holds phase 42 while both responders are at phase 0: adopting a response would
         /// silently discard a committed phase this node may be the sole surviving witness of.
         ///
-        /// Self is a FLOOR, not an adopted candidate — so the assertion is that NOTHING was installed.
-        /// Adopting self's own persisted snapshot would be its own bug: `persistence.save` never runs on
-        /// commit, so that snapshot lags the live state machine by an unbounded amount and installing it
-        /// would overwrite live state with a staler picture.
+        /// Boot restores self's durable checkpoint before collecting responses. Self remains a
+        /// floor: no older peer snapshot may overwrite that recovered committed prefix.
         ///
         /// The responders carry a NON-EMPTY snapshot on purpose. `restoreState` skips `restoreSnapshot`
         /// entirely when the adopted state's snapshot is empty, so stale-but-EMPTY responders would leave
@@ -209,7 +207,8 @@ class RabiaSyncAdoptionQuorumTest {
                 .isTrue();
             assertThat(stateMachine.lastRestored())
                 .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed")
-                .isNull();
+                .isEqualTo(SELF_SNAPSHOT);
+            assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(42));
         }
 
         /// The discriminator for the test above: when a RESPONSE is the most advanced state, it must be
@@ -306,10 +305,11 @@ class RabiaSyncAdoptionQuorumTest {
                 .isEqualTo("42/10");
 
             // HALF TWO — CHANGED by #660. D9 previously restored anyway, discarding the node's own
-            // committed history. It now holds that history and installs nothing.
+            // committed history. It now restores its own checkpoint and holds that history.
             assertThat(stateMachine.lastRestored())
                 .as("the node must NOT regress onto the cluster's older state — that is the ratified behaviour #660 supersedes")
-                .isNull();
+                .isEqualTo(SELF_SNAPSHOT);
+            assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(42));
         }
     }
 

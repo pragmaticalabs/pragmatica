@@ -86,6 +86,51 @@ class RabiaHierarchySafetyTest {
     }
 
     @Test
+    void workerProposalCannotSupplyTheMissingVoterProposal() {
+        activateAt(Phase.ZERO);
+        var batch = Batch.create(stateMachine.serializer(), List.of(new TestCommand("agreed")));
+        engine.processPropose(new Propose<>(SELF, Phase.ZERO, batch));
+        engine.processPropose(new Propose<>(WORKER, Phase.ZERO, batch));
+        engine.settleForTesting().await();
+        assertThat(network.getMessages()).noneMatch(VoteRound1.class::isInstance);
+        engine.processPropose(new Propose<>(CORE_2, Phase.ZERO, batch));
+        engine.settleForTesting().await();
+        assertThat(network.getMessages()).anyMatch(VoteRound1.class::isInstance);
+    }
+
+    @Test
+    void workerRoundOneBallotCannotSupplyTheMissingVoterBallot() {
+        activateAt(Phase.ZERO);
+        var batch = Batch.create(stateMachine.serializer(), List.of(new TestCommand("agreed")));
+        engine.processPropose(new Propose<>(SELF, Phase.ZERO, batch));
+        engine.processPropose(new Propose<>(CORE_2, Phase.ZERO, batch));
+        engine.processVoteRound1(new VoteRound1(WORKER, Phase.ZERO, StateValue.V1));
+        engine.settleForTesting().await();
+        assertThat(network.getMessages()).noneMatch(VoteRound2.class::isInstance);
+        engine.processVoteRound1(new VoteRound1(CORE_2, Phase.ZERO, StateValue.V1));
+        engine.settleForTesting().await();
+        assertThat(network.getMessages()).anyMatch(VoteRound2.class::isInstance);
+    }
+
+    @Test
+    void workerRoundTwoBallotCannotSupplyTheMissingDecisionEvidence() {
+        activateAt(Phase.ZERO);
+        var batch = Batch.create(stateMachine.serializer(), List.of(new TestCommand("agreed")));
+        engine.processPropose(new Propose<>(SELF, Phase.ZERO, batch));
+        engine.processPropose(new Propose<>(CORE_2, Phase.ZERO, batch));
+        engine.processVoteRound1(new VoteRound1(CORE_2, Phase.ZERO, StateValue.V1));
+        engine.processVoteRound2(new VoteRound2(WORKER, Phase.ZERO, StateValue.V1));
+        engine.settleForTesting().await();
+        assertThat(network.getMessages()).noneMatch(Decision.class::isInstance);
+        assertThat(stateMachine.getProcessedCommands()).isEmpty();
+        engine.processVoteRound2(new VoteRound2(CORE_2, Phase.ZERO, StateValue.V1));
+        engine.settleForTesting().await();
+        engine.settleForTesting().await();
+        assertThat(network.getMessages()).anyMatch(Decision.class::isInstance);
+        assertThat(stateMachine.getProcessedCommands()).extracting(TestCommand::value).containsExactly("agreed");
+    }
+
+    @Test
     void workerResponsesCannotCompleteCoreSynchronization() {
         createEngine(SELF, 5, false);
         startSync();

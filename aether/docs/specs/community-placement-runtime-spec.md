@@ -30,6 +30,7 @@ minimum = 3
 weight = 1
 ```
 
+A target of zero intentionally represents an empty community and permits draining its final members.
 Targets and minimums must be nonnegative; weights must be positive. Minimums sum to no more than
 the target. Sources must declare workers. Explicit zones must belong to the source's
 configured zone set. Duplicate locations, and unzoned locations overlapping a zoned

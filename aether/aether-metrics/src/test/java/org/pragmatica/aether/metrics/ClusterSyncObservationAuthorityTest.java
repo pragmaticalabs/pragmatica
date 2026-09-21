@@ -28,6 +28,24 @@ class ClusterSyncObservationAuthorityTest {
     private static final NodeId WORKER = new NodeId("worker");
 
     @Test
+    @SuppressWarnings("unchecked")
+    void rawViewDropsAnExpiredPreviouslyAcceptedObservation() {
+        var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new RecordingNetwork());
+        collector.setMetricsProducerEligibility(_ -> true);
+        collector.onClusterSyncPing(ping(WORKER, 0, Map.of(WORKER, sample(1, 1)), false));
+        assertThat(collector.allMetrics()).containsKey(WORKER);
+        // Age the stored observation deterministically, without a thirty-second wall-clock wait.
+        var observations = org.pragmatica.lang.Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable, () -> {
+            var field = collector.getClass().getDeclaredField("observations");
+            field.setAccessible(true);
+            return (Map<NodeId, MetricObservation>) field.get(collector);
+        }).unwrap();
+        observations.put(WORKER, new MetricObservation(1, 1, System.currentTimeMillis() - 60_000, Map.of("cpu", 0.5)));
+        assertThat(collector.allMetrics()).doesNotContainKey(WORKER);
+        assertThat(collector.allObservations()).doesNotContainKey(WORKER);
+    }
+
+    @Test
     void unknownAndRemovedProducersCannotPopulateViewsButAlwaysReceivePong() {
         var network = new RecordingNetwork();
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
