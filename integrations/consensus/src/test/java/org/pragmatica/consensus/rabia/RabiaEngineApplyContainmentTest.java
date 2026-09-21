@@ -146,6 +146,56 @@ class RabiaEngineApplyContainmentTest {
             .isSameAs(baselineWorker);
     }
 
+    @Test
+    void stop_waits_for_apply_before_saving_matching_snapshot_and_phase() throws InterruptedException {
+        engine.stop().await();
+        var persistence = RabiaPersistence.<TestCommand>inMemory();
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var snapshots = new AtomicInteger();
+        stateMachine = new PoisonStateMachine() {
+            @Override
+            public <R> List<R> process(Batch<TestCommand> batch) {
+                var result = super.<R>process(batch);
+                entered.countDown();
+                Result.lift(() -> release.await()).unwrap();
+                return result;
+            }
+
+            @Override
+            public Result<byte[]> makeSnapshot() {
+                snapshots.incrementAndGet();
+                return Result.success(new byte[] {(byte) appliedCommands.size()});
+            }
+        };
+        engine = new RabiaEngine<>(topologyManager, network, stateMachine, ProtocolConfig.testConfig(),
+                                   ConsensusMetrics.noop(), false, persistence);
+        activateEngine();
+        driveCommandToV1Decision(Phase.ZERO, new TestCommand("held-apply"));
+        assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        var beforeStop = snapshots.get();
+        var admitted = engine.apply(List.of(new TestCommand("before-stop")));
+        var stop = engine.stop();
+        var completed = new java.util.concurrent.atomic.AtomicBoolean();
+        stop.onResult(_ -> completed.set(true));
+        try {
+            assertThat(engine.stop()).isSameAs(stop);
+            assertThat(completed).isFalse();
+            assertThat(engine.apply(List.of(new TestCommand("after-stop"))).await().isFailure()).isTrue();
+            assertThat(snapshots.get()).isEqualTo(beforeStop);
+            assertThat(stateMachine.appliedCommands).hasSize(1);
+        } finally {
+            release.countDown();
+        }
+        stop.await().unwrap();
+        assertThat(admitted.await().isFailure()).isTrue();
+        var saved = persistence.load().unwrap();
+        assertThat(saved.lastCommittedPhase()).isEqualTo(new Phase(1));
+        assertThat(saved.snapshot()).containsExactly((byte) 1);
+        assertThat(snapshots.get()).isEqualTo(beforeStop + 1);
+        assertThat(stateMachine.appliedCommands).isEmpty();
+    }
+
     /// Drives a single command through proposals + round-1 + round-2 votes to a V1 decision in
     /// the given phase, mirroring the protocol-flow idiom from `RabiaEngineTest`. The local
     /// engine commits the decision and applies the batch on its executor thread.

@@ -26,6 +26,10 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ProvisioningDiagnostics;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -371,11 +375,29 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     }
 
     // ----- restart mechanics -----
+    /// Membership callbacks run inside a consensus apply, before its phase advances. A leader and
+    /// full observed membership therefore do not prove applied history is ready to checkpoint.
+    /// Commit an inert probe marker and observe it on every node before exercising the restart.
+    @TerminalOperation
+    private void awaitAppliedHistory() {
+        var key = ConfigKey.forKey("forge.slowjoin.applied-history");
+        var value = ConfigValue.configValue(key.key(), "ready");
+        KVCommand<AetherKey> marker = new KVCommand.Put<>(key, value);
+        cluster.allNodes().getFirst().<Object>apply(List.of(marker))
+               .await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failScenario);
+        await().alias("all nodes have applied the pre-restart history marker")
+               .atMost(FORM_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy)
+               .until(() -> cluster.allNodes().stream()
+                                   .allMatch(node -> node.kvStore().get(key).filter(value::equals).isPresent()));
+        recordMilestone("RESTART precondition: applied-history marker visible on every configured node");
+    }
+
     /// Full-cluster restart with [#HELD_BACK] deferred. Modelled on
     /// `MultiPartitionCrashDurabilityTest.restartCluster()`. Consensus state persists across restart:
     /// otherwise these PARTICIPATED identities are amnesiac and cannot count themselves toward recovery.
     @TerminalOperation
     private void restartWithHeldBackMembers() {
+        awaitAppliedHistory();
         LifecycleAwait.settled("cluster stop in restartWithHeldBackMembers()", cluster, cluster.stop());
         recordMilestone("RESTART: cluster stopped");
         // Nothing is expected alive between stop() and the restart completing.
