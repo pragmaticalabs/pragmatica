@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.controller.ScalingConfig;
@@ -19,6 +20,7 @@ import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
 
@@ -34,6 +36,45 @@ class ControlLoopCoverageRecoveryTest {
     private static final Artifact HOT = Artifact.artifact("org.test:hot:1.0.0").unwrap();
     private static final int WINDOW = 5; // ScalingConfig.forgeDefaults window
     private static final NodeId THIRD = NodeId.nodeId("worker-3").unwrap();
+
+    @Test
+    void expiredInactiveOriginIsExcludedFromTheControllerSourceView() {
+        var cluster = new ControlLoopContextAttributionTest.CapturingClusterNode();
+        var clock = new java.util.concurrent.atomic.AtomicLong(1_000_000);
+        var observed = new AtomicReference<ClusterController.ControlContext>();
+        ClusterController controller = view -> {
+            observed.set(view);
+            return Promise.success(ClusterController.ControlDecisions.none());
+        };
+        var ctx = buildContext(cluster, clock, controller);
+        var otherPlacement = new AetherKey.SliceNodeKey(HOT, OTHER);
+
+        ctx.putBlueprint(HOT, AetherValue.SliceTargetValue.sliceTargetValue(HOT.version(), 2, 1));
+        ctx.recordSliceState(new AetherKey.SliceNodeKey(HOT, WORKER), SliceState.ACTIVE);
+        ctx.recordSliceState(otherPlacement, SliceState.ACTIVE);
+        for (int i = 1; i <= WINDOW; i++) {
+            ctx.storeCommunitySnapshot(snapshot(WORKER, 100, clock.get(), i));
+            ctx.storeCommunitySnapshot(snapshot(OTHER, 100, clock.get(), i));
+            ctx.runEvaluationCycle();
+        }
+        assertThat(observed.get().artifactLoads().get(HOT).components())
+            .containsEntry(ScalingMetric.ACTIVE_INVOCATIONS, 1.0);
+
+        // The placement leaves ACTIVE without removing its cached metrics. Its last report then
+        // expires, while the remaining ACTIVE producer reports fresh load. Coverage stays complete,
+        // so the coverage guard cannot mask a stale origin leaking into collectSliceSources.
+        ctx.recordSliceState(otherPlacement, SliceState.LOADED);
+        clock.addAndGet(TimeSpan.timeSpan(31).seconds().millis());
+        ctx.storeCommunitySnapshot(snapshot(WORKER, 100, clock.get(), WINDOW + 1));
+        assertThat(ctx.hasMetricCoverage(HOT)).isTrue();
+        observed.set(null);
+        ctx.runEvaluationCycle();
+
+        var load = observed.get().artifactLoads().get(HOT);
+        assertThat(load.canScale()).isTrue();
+        // Current load is 100; the five-sample baseline is (4 * 200 + 100) / 5 = 180.
+        assertThat(load.components()).containsEntry(ScalingMetric.ACTIVE_INVOCATIONS, 100.0 / 180.0);
+    }
 
     @Test
     void steadyLoadAcrossACoverageGapMustNotScaleUpOnRecovery() {
@@ -92,6 +133,14 @@ class ControlLoopCoverageRecoveryTest {
     private static ControlLoopContext buildContext(ControlLoopContextAttributionTest.CapturingClusterNode cluster, java.util.concurrent.atomic.AtomicLong clock) {
         var config = ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig());
         var controller = DecisionTreeController.decisionTreeController(config);
+
+        return buildContext(cluster, clock, controller);
+    }
+
+    private static ControlLoopContext buildContext(ControlLoopContextAttributionTest.CapturingClusterNode cluster,
+                                                  java.util.concurrent.atomic.AtomicLong clock,
+                                                  ClusterController controller) {
+        var config = ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig());
         var holder = new AtomicReference<ControlLoopContext>();
         Function<Fsm<ControlLoopState, ClusterFsmEvent>, ControlLoopState> factory = fsm -> {
             var context = new ControlLoopContext(fsm,

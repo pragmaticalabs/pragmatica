@@ -164,8 +164,11 @@ Exact local checkpoint commands and the authoritative CI artifact contract are i
   or a measured bound against connection-wide QUIC window starvation.
 - [limit: ttm-positional-features] The eleven TTM features remain positional and unversioned. Renaming
   interval-mean percentile labels does not change input values or prove request-level percentiles.
-- The hierarchy workflow now runs for relevant paths on all PR bases (including stacked PRs), and on
-  main/release pushes. Its final-head results remain required evidence.
+- Foundation mutations run for relevant paths on all PR bases and main/release pushes. Runtime
+  acceptance is opt-in with the `run-hierarchy` PR label or manual dispatch, and runs automatically
+  after main/release pushes changing the hierarchy acceptance tests/checker/workflow. It requires
+  every selected class to exist and to report executed, passing cases; partial selections refuse.
+  Its final-head results remain required evidence for this hierarchy batch.
 
 ### Placement review dispositions
 
@@ -195,3 +198,13 @@ H01 directive-path evidence includes `CoreRuntimeActivationAndStatusTest` delive
 `ValuePut` through the assembled node's subscription. H06 runtime effects consult committed
 authority; announcer cancellation stops its timer. The announcer's local governor flag is not an
 authority source. `HierarchicalWorkerRuntimeReplayTest` pins actual runtime/task ownership.
+
+### Membership observation domains
+
+SWIM boot/refutation incarnation and durable producer process epoch are independent orderings.
+Membership stores separate high-water marks and terminal fences; governor and worker-admission
+evidence compare only process epochs. DEAD/DEPARTING require a strictly newer process epoch
+before healthy-event side effects, so a stale/equal report cannot cancel departure bookkeeping.
+`MembershipEvidenceDomainTest` drives the actual ingress, transitions and membership outputs
+through both domains, including suspect recovery, departure, death and restart. These are
+composed FSM tests; transport authentication and report nonce checks remain separate boundaries.

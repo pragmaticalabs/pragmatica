@@ -72,13 +72,21 @@ At `3f4c2239b`, the full three-case security class passed; replay still failed d
 ## Authoritative review artifacts
 
 Local `/private/tmp` logs are operator breadcrumbs, not reviewer-accessible merge evidence.
-The `.github/workflows/hierarchy-review.yml` runtime-acceptance job records the actual tested
+The `.github/workflows/hierarchy-runtime.yml` runtime-acceptance job records the actual tested
 merge SHA and PR head separately in uploaded `hierarchy-runtime-evidence`:
 
 - `target/hierarchy-evidence/merge-sha.txt`
 - `target/hierarchy-evidence/pr-head-sha.txt`
 - runner/CPU/memory/Java metadata alongside those revisions
 - Forge JUnit XML and `envelope.json` / `reconnect.txt`
+
+Foundation mutations remain path-triggered in `hierarchy-review.yml`. Runtime acceptance runs
+on PRs carrying `run-hierarchy` (on every push while labeled), by manual dispatch, and on
+main/release pushes that change the hierarchy acceptance tests, its strict selection checker,
+or its workflow. It does not run merely because an unrelated `aether/**` file changed.
+Before building, `check-hierarchy-selection.py` requires every selected source class. After
+Forge, it requires actual successful, non-skipped cases for every selected class, including
+nested cases; a partial or empty green report is refused.
 
 The workflow executes `env -u HCLOUD_TOKEN ./build.sh` and the explicit hierarchy Forge selector
 stored at that tested merge revision. Attach the passing workflow run/artifact URL to the PR;
