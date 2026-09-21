@@ -1839,6 +1839,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      .or(-1L);
     }
 
+    /// #1333: the consumer-visible span of a partition this node holds — ring tail through the VISIBLE
+    /// position — or [Option#none] when the ring is not materialised here. What a projection rebuild
+    /// captures, and what a forwarded read answers alongside its events.
+    public Option<VisibleBounds> visibleBounds(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition).map(buffer -> VisibleBounds.visibleBounds(buffer.tailOffset(),
+                                                                                                       buffer.visibleOffset()))
+                                     .option();
+    }
+
     /// Append into the partition's ordered section: `inOrder` runs with the assigned offset before any
     /// other append on this partition is assigned one (see [OffHeapRingBuffer#appendOrdered]). The epoch
     /// fence and `admission` are checked first, in that order (#1230: a deposed writer learns it is deposed,

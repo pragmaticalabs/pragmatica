@@ -114,7 +114,7 @@ The subscriber handler shape stays `Fn1<Promise<Unit>, T>` in both tiers: in the
 - **DLQ-append failure**: the source cursor does NOT advance past an event whose DLQ append hasn't succeeded (no silent loss); the append retries with backoff. Because DLQ inherits the source's min-sync, cluster states that cause dead-letters can also stall DLQ appends — therefore a **dedicated `DLQ_STALL` alarm** (partition blocked on DLQ append > threshold, default 60s) is part of the surface below, alongside lag and gap.
 - **Management triad (REST → CLI → docs), per project invariant:**
   - `GET /api/topics/{topic}/dlq` (list, paged) · `GET .../dlq/{offset}` (inspect) · `POST .../dlq/redrive` (all | offset range | by group) · `GET /api/topics/{topic}/groups` (cursor, lag, `CURSOR_GAP` events, `DLQ_STALL` state).
-  - CLI: `aether topics dlq list|show|redrive`, `aether topics lag`.
+  - CLI: `aether topics groups` and `aether topics rebuild` (landed with #1333 — the group surface with cursor + rewind epoch per partition and the hosted projection's replay state, and the rebuild); still planned: `topics dlq list|show|redrive` and `topics lag` subcommands.
   - Docs: `management-api.md` + `cli.md` sections.
 
 ## 10. Projection — pattern + thin facade

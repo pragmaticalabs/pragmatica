@@ -17,7 +17,9 @@ import java.util.function.LongConsumer;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -229,7 +231,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                         state.lastCursorCommitFailure(),
                                         state.isDeadLetterInFlight(),
                                         state.isRetryInFlight(),
-                                        state.isAwaitingCursorFetch());
+                                        state.isAwaitingCursorFetch(),
+                                        state.epoch());
     }
 
     @Override
@@ -516,22 +519,25 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                                                                                                          attempt));
     }
 
-    /// #1271: a fenced consumer resumes only from a cursor written under ITS assignment epoch.
-    private static Promise<Option<Long>> fetchCursor(ConsumerCursorStore store,
-                                                     ConsumerState state,
-                                                     String groupId,
-                                                     String streamName,
-                                                     int partition) {
+    /// #1271: a fenced consumer resumes only from a cursor written under ITS assignment epoch — and, #1333,
+    /// under the rewind epoch that cursor carries. An unfenced consumer has no assignment and cannot have
+    /// been rewound, so its cursor is [Cursor#unrewound].
+    private static Promise<Option<Cursor>> fetchCursor(ConsumerCursorStore store,
+                                                       ConsumerState state,
+                                                       String groupId,
+                                                       String streamName,
+                                                       int partition) {
         return state.fence()
-                    .fold(() -> store.fetch(groupId, streamName, partition),
-                          fence -> store.fetch(groupId,
-                                               streamName,
-                                               partition,
-                                               fence.epoch()));
+                    .fold(() -> store.fetch(groupId, streamName, partition)
+                                     .map(offset -> offset.map(Cursor::unrewound)),
+                          fence -> store.fetchCursor(groupId,
+                                                     streamName,
+                                                     partition,
+                                                     fence.epoch()));
     }
 
     @Contract
-    private void applyCursorAndStart(Result<Option<Long>> result,
+    private void applyCursorAndStart(Result<Option<Cursor>> result,
                                      ConsumerCursorStore store,
                                      ConsumerKey key,
                                      ConsumerState state,
@@ -540,10 +546,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
               .onFailure(cause -> retryCursorFetch(store, key, state, attempt, cause));
     }
 
+    /// #1333: the consumer runs — and commits — under the epoch its cursor was fetched with, so a report
+    /// derived from its commits is stamped with the rewind that positioned it, never with whatever epoch
+    /// is current when the commit happens to resolve.
     @Contract
-    private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Long> cursor) {
+    private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Cursor> cursor) {
         state.clearAwaitingCursorFetch();
-        cursor.onPresent(state::advanceCursor);
+        cursor.onPresent(state::resumeAt);
         startConsumer(key, state);
     }
 
@@ -805,7 +814,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     /// #1271: a fenced consumer commits under ITS assignment epoch, so the store can refuse it once the
-    /// assignment has moved.
+    /// assignment has moved — and, #1333, under the rewind epoch it resumed with, so a report derived from
+    /// the commit is stamped with the rewind that positioned it and the applier can refuse a zombie's
+    /// pre-rewind checkpoint. An unfenced consumer commits the plain offset.
     private static Promise<CommitOutcome> commitCursor(ConsumerCursorStore store,
                                                        ConsumerKey key,
                                                        ConsumerState state) {
@@ -818,7 +829,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                 key.streamName(),
                                                 key.partition(),
                                                 state.cursor(),
-                                                fence.epoch()));
+                                                fence.epoch(),
+                                                state.epoch()));
     }
 
     /// #654 round 2 / #1239: `commit(...)` settled successfully but its cluster checkpoint did not land —
@@ -1042,7 +1054,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                            List<OffHeapRingBuffer.RawEvent> events) {
         state.adjustPollInterval(!events.isEmpty());
 
-        return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH);
+        return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH)
+                            .onSuccess(batchFull -> commitRewoundCatchUp(key, state, batchFull));
+    }
+
+    /// #1333 (review MEDIUM): a consumer resumed under a REWOUND epoch replays to the head, and a clean
+    /// replay lands entirely inside the checkpoint cadence — so the committed cursor would sit at the
+    /// rewind offset until the next event, and the groups route would show the rebuilt projection LIVE
+    /// against a cursor that never moved. The first pass that returns a NON-full batch is the catch-up
+    /// (push mode never issues an empty read after the backlog); one checkpoint is requested then, through
+    /// the same single-flight request a dead letter uses. Not while a hold is set: a batch cut short by a
+    /// failed delivery is not caught up, and the dead-letter path requests its own.
+    @Contract
+    private void commitRewoundCatchUp(ConsumerKey key, ConsumerState state, boolean batchFull) {
+        if (!batchFull && !state.isDeliveryHeld() && state.consumeRewoundCatchUp()) {
+            requestCheckpoint(key, state);
+        }
     }
 
     /// Back off on failure too, not just on an empty successful read.
@@ -1293,8 +1320,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              attemptCount)).timeout(deadLetterAppendTimeout);
     }
 
+    /// #1333: the advance past a dead-lettered event REQUESTS a checkpoint at once, independent of the
+    /// 500ms/1000-event cadence. The committed cursor is the only signal that lets a rebuilding projection
+    /// skip a replay offset that never reached its fold. [#advanceCursor] already runs the cadence check,
+    /// and for a durable group the retry budget (≥1.5s over 5 attempts) always exceeds the interval, so
+    /// there the cadence commits the skip anyway (measured, `DurableProjectionRebuildTest`); a SKIP
+    /// strategy or a budget shorter than the interval would wait for the NEXT delivery's advance — whose
+    /// write the store refuses `Rebuilding` until then. The request also lands the acks that follow the
+    /// dead letter on a partition that then goes quiet: absorbed as PENDING into the in-flight commit, it
+    /// schedules the follow-up one interval later. One coalesced consensus round per dead letter, bounded
+    /// by the poison count (CTO ruling 3, 2026-09-20); [#requestCheckpoint] never overlaps a periodic
+    /// commit already in flight.
     private void completeDeadLetter(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         advanceCursor(key, state, event.offset());
+        requestCheckpoint(key, state);
         state.clearDeadLetterInFlight();
         resumeAfterDeadLetter(key, state);
     }
@@ -1391,6 +1430,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         /// #1239: the latest periodic commit, so a detach flush can chain behind it. #1355: assigned before
         /// that commit's store call is made, and settled on every path that assigned it.
         private volatile Promise<CommitOutcome> periodicCommitRef = NO_PREDECESSOR;
+        /// #1333: the rewind epoch the cursor was fetched under; every commit of this consumer carries it.
+        private volatile RewindEpoch epoch = RewindEpoch.NONE;
+        /// #1333: resumed under a rewound epoch and not yet checkpointed at the head — armed by
+        /// [#resumeAt], consumed once by [ConsumerRuntimeState#commitRewoundCatchUp].
+        private final AtomicBoolean rewoundCatchUp = new AtomicBoolean(false);
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
@@ -1480,6 +1524,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         @Contract
         void advanceCursor(long offset) {
             cursor.accumulateAndGet(offset, Math::max);
+        }
+
+        /// Position this consumer at a fetched cursor, epoch included. Runs once, before delivery
+        /// starts ([ConsumerRuntimeState#startFromCursor]), so the monotonic advance is not bypassed
+        /// by anything that could have moved the cursor first.
+        @Contract
+        void resumeAt(Cursor fetched) {
+            epoch = fetched.epoch();
+            rewoundCatchUp.set(!fetched.epoch().isNone());
+            advanceCursor(fetched.offset());
+        }
+
+        RewindEpoch epoch() {
+            return epoch;
+        }
+
+        boolean consumeRewoundCatchUp() {
+            return rewoundCatchUp.getAndSet(false);
         }
 
         @Contract

@@ -46,3 +46,15 @@ partitions = 1
 replicas = 2
 min_sync_replicas = 2
 retention = "7d"
+
+# #1333: the projection arm. ONE partition, so the projection's in-process store has exactly one
+# assignee and the rebuild proof (DurableProjectionRebuildForgeTest) is sharp: the fold is
+# order-sensitive, and a single partition makes offset order the only order there is. Same durable
+# tier as the two topics above.
+[projection-events]
+topic_name = "projection-events"
+durability = "durable"
+partitions = 1
+replicas = 2
+min_sync_replicas = 2
+retention = "7d"

@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
@@ -26,6 +27,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.A
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -103,6 +105,34 @@ class ClusterCursorStoreTest {
         void resumeOffset_isStable_whenBothAgree() {
             assertThat(ClusterCursorStore.resumeOffset(Option.some(7L), Option.some(7L)))
                     .isEqualTo(Option.some(7L));
+        }
+
+        /// #1333: the epoch ranks FIRST. A rewind puts `(epoch', fromOffset)` into KV; the local cursor
+        /// from before it is higher but older, and must lose — otherwise a node that crashed before
+        /// applying the rewind would resurrect its stale-high cursor and replay nothing.
+        @Test
+        void resumeCursor_prefersTheRewoundClusterCursor_overAHigherLocalOneAtAnOlderEpoch() {
+            var local = Cursor.cursor(900L, RewindEpoch.NONE);
+            var cluster = Cursor.cursor(0L, RewindEpoch.rewindEpoch(1L, 1L));
+
+            assertThat(ClusterCursorStore.resumeCursor(Option.some(local), Option.some(cluster)))
+                    .isEqualTo(Option.some(cluster));
+        }
+
+        /// And in the other direction: a local cursor committed under the NEWER epoch (this node applied
+        /// the rewind and progressed, the cluster checkpoint lags) is kept over a lower cluster cursor at
+        /// that same epoch, and over a higher cluster cursor at an older one.
+        @Test
+        void resumeCursor_prefersTheLocalCursor_whenItsEpochIsNewerOrEqualAndItIsAhead() {
+            var rewound = RewindEpoch.rewindEpoch(1L, 1L);
+
+            assertThat(ClusterCursorStore.resumeCursor(Option.some(Cursor.cursor(5L, rewound)),
+                                                       Option.some(Cursor.cursor(2L, rewound))))
+                    .isEqualTo(Option.some(Cursor.cursor(5L, rewound)));
+            assertThat(ClusterCursorStore.resumeCursor(Option.some(Cursor.cursor(5L, rewound)),
+                                                       Option.some(Cursor.cursor(900L, RewindEpoch.NONE))))
+                    .describedAs("a stale-epoch cluster cursor never outranks a rewound local one, however high")
+                    .isEqualTo(Option.some(Cursor.cursor(5L, rewound)));
         }
     }
 
@@ -219,6 +249,111 @@ class ClusterCursorStoreTest {
             publishA.fail(CheckpointRejected.INSTANCE);
             assertThat(commitA.await()).describedAs("A failed late and reports its own cause, not lost to B")
                                       .isEqualTo(Result.success(CommitOutcome.localOnly(CheckpointRejected.INSTANCE)));
+        }
+    }
+
+    /// #1333 against the REAL applier: the checkpoint key is `AssignmentGuarded` (#1271) AND its value is
+    /// `EpochBearing` on the rewind epoch (#1333). The applier ORs its fence arms, so a write lands only when
+    /// BOTH admit it — pinned as a conjunction, in both directions, rather than as an evaluation order
+    /// (the arms are pure predicates; which one runs first cannot change the verdict).
+    @Nested
+    class RewindAndAssignmentFencesCompose {
+        private static final RewindEpoch REWOUND = RewindEpoch.rewindEpoch(1L, 1L);
+        private KVStore<AetherKey, AetherValue> kv;
+
+        @BeforeEach
+        void setUp() {
+            kv = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        }
+
+        private ConsumerCursorStore storeFor(NodeId node) {
+            return ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                         node,
+                                                         key -> kv.getTyped(key, StreamCursorCheckpointValue.class),
+                                                         assignmentsIn(kv),
+                                                         commands -> {
+                                                             kv.process(kv.createBatch(commands));
+
+                                                             return Promise.unitPromise();
+                                                         },
+                                                         () -> false);
+        }
+
+        private void assign(NodeId assignee, Epoch epoch) {
+            kv.process(kv.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(ASSIGNMENT_KEY,
+                                                                                       ConsumerAssignmentValue.consumerAssignmentValue(assignee,
+                                                                                                                                       epoch,
+                                                                                                                                       epoch.localCounter(),
+                                                                                                                                       HlcTimestamp.ZERO)))));
+        }
+
+        private void put(StreamCursorCheckpointValue value) {
+            kv.process(kv.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(CHECKPOINT_KEY, value))));
+        }
+
+        private Option<StreamCursorCheckpointValue> committed() {
+            return kv.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class);
+        }
+
+        /// Correct token, stale rewind epoch → refused by the rewind arm, whatever the assignment says.
+        @Test
+        void checkpoint_withTheCommittedAssignmentToken_isRefused_whenItsRewindEpochIsStale() {
+            assign(SELF, EPOCH);
+            put(StreamCursorCheckpointValue.rewindRecord(0L, SELF_TOKEN, REWOUND));
+            var rewind = committed();
+
+            var outcome = storeFor(SELF).commit(GROUP, STREAM, PARTITION, 100L, EPOCH, RewindEpoch.NONE).await();
+
+            assertThat(committed()).describedAs("the rewind record stands; the pre-rewind checkpoint never landed")
+                                   .isEqualTo(rewind);
+            assertThat(outcome.map(o -> o instanceof CommitOutcome.LocalOnly local && local.cause()
+                                                                                          .message()
+                                                                                          .contains("rewound to epoch " + REWOUND)))
+                    .describedAs("reported as rewound past (retryable; the manager restarts the consumer), not as a lagging mirror")
+                    .isEqualTo(Result.success(true));
+        }
+
+        /// Strictly newer rewind epoch, wrong token → refused by the assignment guard, whatever the epoch says.
+        @Test
+        void rewindRecord_atAStrictlyNewerEpoch_isRefused_whenItsTokenIsNotTheCommittedAssignees() {
+            assign(SELF, EPOCH);
+            put(StreamCursorCheckpointValue.streamCursorCheckpointValue(7L, SELF_TOKEN));
+            var before = committed();
+
+            put(StreamCursorCheckpointValue.rewindRecord(0L, PEER_TOKEN, REWOUND));
+
+            assertThat(committed()).describedAs("a rebuild on a node the assignment does not name cannot rewind the group")
+                                   .isEqualTo(before);
+        }
+
+        /// Both admit: the committed assignee's checkpoint at the committed rewind epoch lands and is Persisted.
+        @Test
+        void checkpoint_withTheCommittedToken_atTheCommittedRewindEpoch_isPersisted() {
+            assign(SELF, EPOCH);
+            put(StreamCursorCheckpointValue.rewindRecord(0L, SELF_TOKEN, REWOUND));
+
+            assertThat(storeFor(SELF).commit(GROUP, STREAM, PARTITION, 5L, EPOCH, REWOUND).await())
+                    .isEqualTo(Result.success(CommitOutcome.persisted()));
+            assertThat(committed().map(value -> List.<Object>of(value.committedOffset(), value.token(), value.rewindEpoch(), value.rewind())))
+                    .isEqualTo(Option.some(List.<Object>of(5L, SELF_TOKEN, REWOUND, false)));
+        }
+
+        /// The fenced resume ranks local against cluster by `(rewind epoch, offset)`: a rewind record at
+        /// offset 0 outranks a local cursor at 10 written before the rewind.
+        @Test
+        void fetchCursor_underAnAssignment_prefersTheRewoundClusterCursor_overAHigherUnrewoundLocalOne() {
+            assign(SELF, EPOCH);
+            put(StreamCursorCheckpointValue.rewindRecord(0L, SELF_TOKEN, REWOUND));
+            var store = ClusterCursorStore.clusterCursorStore(fixedLocal(Option.some(10L)),
+                                                              SELF,
+                                                              key -> kv.getTyped(key, StreamCursorCheckpointValue.class),
+                                                              assignmentsIn(kv),
+                                                              _ -> Promise.unitPromise(),
+                                                              () -> false);
+
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, EPOCH).await())
+                    .isEqualTo(Result.success(Option.some(Cursor.cursor(0L, REWOUND))));
+            assertThat(store.fetch(GROUP, STREAM, PARTITION, EPOCH).await()).isEqualTo(Result.success(Option.some(0L)));
         }
     }
 
