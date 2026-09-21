@@ -35,12 +35,14 @@
     still hit the silent downgrade. It now returns the same `SharedLoaderVersionConflict` (same version
     again stays a success no-op). [verified: `SharedLibraryClassLoaderTest.addArtifact_refusesADifferentVersion_namingBothVersionsAndRequesters`]
   - `SharedDependencyLoader.addInfraToSharedLoader` / `addToSharedLoader` discarded `addArtifact`'s
-    `Result`; both now propagate it into the load `Promise`. [mechanism: `flatMap(… .async())` replaces
-    `map(… unit())`]
+    `Result`; both now propagate it into the load `Promise`. [verified: `SharedDependencyLoaderTest.infraConflictInsideTheCheckToAddWindow_stillFailsLoudly`
+    and `…sharedConflictInsideTheCheckToAddWindow_failsLoudly_ratherThanRegisteringRuntimeProvided`, which
+    interleave a competing load between `checkCompatibility` and `addArtifact` deterministically]
   - `[shared]`'s `loadIntoShared` chained `.orElse(registerAsRuntimeProvided)` AFTER the add, so an
     add refusal would have been re-routed into a runtime-provided registration — a no-op success on a
     key already held. The locate is now resolved to an `Option` before the add is chained, so only a
-    failed locate registers runtime-provided. [mechanism: `locateOptional` in `SharedDependencyLoader`]
+    failed locate registers runtime-provided. [verified: `…sharedConflictInsideTheCheckToAddWindow_failsLoudly_ratherThanRegisteringRuntimeProvided`
+    reddens when the `orElse` is put back after the add]
   - `registerRuntimeProvided` keeps its first-registration-wins guard (a duplicate cannot change the
     held version and `checkCompatibility` precedes it on the sequential path); it now records the
     requester so a later `[infra]` conflict against it is attributable.
