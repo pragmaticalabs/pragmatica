@@ -6,21 +6,22 @@
   replication message), and the publisher awaits one group commit and one replication ack on the group's
   last offset. The same 100 events send one message. A remote-owner group is still forwarded event by
   event, in order, because no batch forward exists.
-  `[mechanism: StreamPartitionManager.publishLocalBatch runs OffHeapRingBuffer.appendBatchOrdered, and
-  DefaultReplicationManager.replicateEvents sends one message per replica; pinned in one JVM by
-  DefaultStreamPublisherBatchTest]`
+  `[mechanism: StreamWriteRouter routes local groups to StreamPartitionManager.publishLocalBatchAtFloor,
+  which runs OffHeapRingBuffer.appendBatchOrdered; DefaultReplicationManager.replicateEvents sends
+  the run in byte-budgeted chunks to each replica; pinned in one JVM by DefaultStreamPublisherBatchTest]`
 - **Keyless batch events were published to partitions other than the ones they were grouped under.** The
   in-order chain resolved each event's partition a second time, advancing the round-robin counter again.
   Every partition could still receive the right *number* of events, but not the right events. Each group
   now publishes to the partition it was grouped by.
   `[mechanism: the group key is passed through and never re-resolved; pinned by DefaultStreamPublisherBatchTest,
   including an uneven-group case that catches a once-per-group re-resolution the ticket's 8-event case cannot]`
-- **A batch is never worse than the per-event publishes it replaced** (#1287 review). A run larger than
-  the ring can hold at once, up to beyond the whole data region, is appended event by event inside the
-  same ordered section, each event evicting as a sequential append would; it remains one contiguous run
-  with one WAL commit. A run containing an event the frozen ring can never hold is published event by
-  event through the single-publish path, so that event gets exactly a single publish's outcome (#1233).
-  Previously such a batch was dropped whole and acked as success.
+- **Oversized runs retain the sequential eviction path** (#1287 review). A run larger than the
+  ring's data region is appended event by event inside one ordered section. If every append succeeds,
+  the run is contiguous and awaits one WAL group commit. If the run is refused before appending because
+  an event cannot fit the frozen allocation, the router falls back to individual publishes (#1233).
+  Previously that case dropped the whole batch and acknowledged success. This does not promise
+  per-event outcome precision after a partial local append: sealing refusal can leave a prefix in the
+  ring while every input remains outcome-unknown, without automatic retry.
   `[mechanism: OffHeapRingBuffer.appendRunLocked plus RUN_DOES_NOT_FIT routing; pinned by
   DefaultStreamPublisherBatchTest's batch-versus-per-event comparisons]`
 - **Replication chunks use a byte accounting budget** of half the cluster transport frame limit
