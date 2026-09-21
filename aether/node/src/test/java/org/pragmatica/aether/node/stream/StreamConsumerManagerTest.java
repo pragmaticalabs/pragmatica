@@ -53,6 +53,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
@@ -1548,7 +1549,8 @@ class StreamConsumerManagerTest {
                                                                        Option.none(),
                                                                        deadLetterHold,
                                                                        retryHold,
-                                                                       awaitingCursorFetch))
+                                                                       awaitingCursorFetch,
+                                                                       RewindEpoch.NONE))
                                 .toList();
         }
 
@@ -1836,6 +1838,7 @@ class StreamConsumerManagerTest {
                                                    TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
                                                                                                            name -> ownership.partitionCount(name)
                                                                                                                             .isPresent()),
+                                                   StreamConsumerManager.CommittedEpochSource.none(),
                                                    org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis(),
                                                    authority(true)).reconcile();
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
@@ -1879,6 +1882,7 @@ class StreamConsumerManagerTest {
                                                    placement,
                                                    SELF,
                                                    TopicGroupDeclarationSource.none(),
+                                                   StreamConsumerManager.CommittedEpochSource.none(),
                                                    org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis(),
                                                    authority(true)).reconcile();
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));

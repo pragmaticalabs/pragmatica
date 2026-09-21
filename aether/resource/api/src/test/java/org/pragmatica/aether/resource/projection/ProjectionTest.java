@@ -83,7 +83,6 @@ class ProjectionTest {
         private final Map<Integer, Long> replayThrough = new ConcurrentHashMap<>();
         // The CURRENT rewind's token: cursor reports carrying any other are ignored, whenever they arrive.
         private Option<ProjectionStore.RewindToken> currentRewind = Option.none();
-        private long rewinds;
         // Runs at the first moment a new generation is visible to writers — after the reset returns.
         private volatile Runnable onNewGeneration = () -> {};
 
@@ -153,13 +152,12 @@ class ProjectionTest {
         }
 
         @Override
-        public synchronized Promise<ProjectionStore.RewindToken> beginRewind(long expectedGeneration) {
-            var minted = new ProjectionStore.RewindToken(expectedGeneration, ++rewinds);
-
+        public synchronized Promise<ProjectionStore.RewindToken> beginRewind(long expectedGeneration,
+                                                                             ProjectionStore.RewindToken token) {
             if (generation.get() == expectedGeneration) {
-                currentRewind = Option.some(minted);
+                currentRewind = Option.some(token);
             }
-            return Promise.success(minted);
+            return Promise.success(token);
         }
 
         @Override
@@ -227,6 +225,17 @@ class ProjectionTest {
 
             return Promise.success(generation.get());
         }
+
+        @Override
+        public synchronized Promise<ProjectionStore.ReplayStatus> replayStatus() {
+            var rebuilding = new java.util.HashMap<Integer, ProjectionStore.PartitionReplay>();
+
+            replayThrough.forEach((partition, through) -> rebuilding.put(partition,
+                                                                         new ProjectionStore.PartitionReplay(nextReplayOffset.get(partition),
+                                                                                                             through)));
+
+            return Promise.success(new ProjectionStore.ReplayStatus(generation.get(), Map.copyOf(rebuilding), currentRewind));
+        }
     }
 
     private static final ProjectionStore.ReplayRange NOTHING_TO_REPLAY = new ProjectionStore.ReplayRange(Map.of());
@@ -251,6 +260,16 @@ class ProjectionTest {
         }
 
         private volatile Option<ProjectionStore.RewindToken> token = Option.none();
+        // A test-local counter is fine HERE: the rule that the token derives from committed cursor state
+        // binds the runtime's cursor, and this one records what the facade hands it.
+        private final AtomicLong mints = new AtomicLong();
+
+        @Override
+        public Promise<ProjectionStore.RewindToken> mintRewindToken(long generation) {
+            calls.add("mint@gen" + store.generation.get() + "/resets" + store.resets.get());
+
+            return Promise.success(new ProjectionStore.RewindToken(generation, mints.incrementAndGet()));
+        }
 
         @Override
         public Promise<Unit> rewind(ProjectionStore.ReplayRange rewound, ProjectionStore.RewindToken rewindToken) {
@@ -1242,7 +1261,8 @@ class ProjectionTest {
 
         assertThat(store.generation.get()).isEqualTo(1L);
         assertThat(store.data).isEmpty();
-        assertThat(cursor.calls).containsExactly("capture@gen0/resets0", "rewind@gen1/resets1");
+        assertThat(cursor.calls).as("capture before the reset, mint and rewind after it — the token is minted AFTER the reset, from state, never before")
+                                .containsExactly("capture@gen0/resets0", "mint@gen1/resets1", "rewind@gen1/resets1");
     }
 
     /// #1298 — a single-argument fold in flight across [Projection#rebuild] read the PRE-reset model;

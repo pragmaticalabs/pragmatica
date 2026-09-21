@@ -126,6 +126,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// value pass through unchanged. Equal-or-newer epochs are accepted: governor reannouncement and
     /// dissolution legitimately re-write at the same epoch, and a stale-owner takeover rewrites
     /// ownership at the same epoch while bumping only its `ownershipTerm` — see [EpochBearing].
+    /// #1333: a write that MINTS its epoch ([EpochBearing#mintsEpoch]) is stale at an EQUAL epoch too —
+    /// the mint must be strictly newer than the committed record, so a second minter deriving the same
+    /// next epoch from the same committed state is refused rather than silently accepted.
     private boolean staleEpochWrite(K key, Object incoming) {
         return incoming instanceof EpochBearing<?> in
                && storage.get(key) instanceof EpochBearing<?> stored
@@ -138,8 +141,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     private static <E extends Comparable<E>> boolean incomingEpochIsStale(EpochBearing<E> incoming,
                                                                           EpochBearing<?> stored) {
-        return incoming.fenceEpoch()
-                       .compareTo((E) stored.fenceEpoch()) < 0;
+        var comparison = incoming.fenceEpoch().compareTo((E) stored.fenceEpoch());
+
+        return incoming.mintsEpoch()
+               ? comparison <= 0
+               : comparison < 0;
     }
 
     /// Lost-update fence (RFC-0018, #570): [VersionFenced] values are compare-and-put on their

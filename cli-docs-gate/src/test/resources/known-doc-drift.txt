@@ -187,9 +187,6 @@ aether/docs/specs/cluster-supervision-spec.md	command: aether supervision
 # --- aether/docs/specs/durable-entity-primitive-spec.md ---
 aether/docs/specs/durable-entity-primitive-spec.md	command: aether workflows
 
-# --- aether/docs/specs/durable-pubsub-spec.md ---
-aether/docs/specs/durable-pubsub-spec.md	command: aether topics
-
 # --- aether/docs/specs/event-stream-namespaces-spec.md ---
 aether/docs/specs/event-stream-namespaces-spec.md	command: aether stream peek
 
