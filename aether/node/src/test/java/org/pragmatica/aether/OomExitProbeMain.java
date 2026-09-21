@@ -7,6 +7,7 @@ package org.pragmatica.aether;
 import java.util.ArrayList;
 import java.util.List;
 
+
 /// Child process of `OomExitProbeTest`: exhausts the Java heap for real and swallows the error.
 ///
 /// The heap must be EXHAUSTED, never `throw new OutOfMemoryError()`: only an allocation the VM cannot

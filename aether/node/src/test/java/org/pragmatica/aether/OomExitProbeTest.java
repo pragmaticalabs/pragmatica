@@ -15,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// #966 — proves what `-XX:+ExitOnOutOfMemoryError` guarantees, on the JVM the tests run on, by
 /// running a child that exhausts its heap inside a `catch (Throwable)` loop (`OomExitProbeMain`).
 ///
@@ -39,17 +40,17 @@ class OomExitProbeTest {
     void heapExhaustion_withExitOnOom_exitsWithStatus3_beforeAnyCatchRuns(@TempDir Path dir) throws Exception {
         var out = dir.resolve("with-flag.out");
         var child = launch(out, List.of("-XX:+ExitOnOutOfMemoryError"));
-
         var exited = child.waitFor(EXIT_DEADLINE_SECONDS, TimeUnit.SECONDS);
         var output = drain(child, out);
 
         assertThat(exited).as("child must exit within %ds; output:\n%s", EXIT_DEADLINE_SECONDS, output).isTrue();
         assertThat(output).as("control: the child reached its allocation loop").contains(OomExitProbeMain.STARTED);
-        assertThat(child.exitValue()).as("HotSpot _exit(3) from report_java_out_of_memory; output:\n%s", output)
-                                     .isEqualTo(EXIT_ON_OOM_STATUS);
+        assertThat(child.exitValue()).as("HotSpot _exit(3) from report_java_out_of_memory; output:\n%s",
+                                         output)
+                  .isEqualTo(EXIT_ON_OOM_STATUS);
         assertThat(output).as("the VM's own termination line names the cause").contains(VM_TERMINATION_LINE);
         assertThat(output).as("the exit happens BEFORE the error reaches Java: no catch may run")
-                          .doesNotContain(OomExitProbeMain.CAUGHT);
+                  .doesNotContain(OomExitProbeMain.CAUGHT);
     }
 
     /// Same child, same heap, no flag: the OOM is caught and the process stays alive — the #966
@@ -58,15 +59,15 @@ class OomExitProbeTest {
     void heapExhaustion_withoutTheFlag_isCaughtAndTheProcessStaysAlive(@TempDir Path dir) throws Exception {
         var out = dir.resolve("control.out");
         var child = launch(out, List.of());
-
         var exited = child.waitFor(CONTROL_OBSERVATION_SECONDS, TimeUnit.SECONDS);
         var output = drain(child, out);
 
         assertThat(output).as("control: the child reached its allocation loop").contains(OomExitProbeMain.STARTED);
         assertThat(output).as("the heap WAS exhausted and the error WAS caught; output:\n%s", output)
-                          .contains(OomExitProbeMain.CAUGHT);
-        assertThat(exited).as("without the flag a heap-exhausted JVM keeps running (#966); output:\n%s", output)
-                          .isFalse();
+                  .contains(OomExitProbeMain.CAUGHT);
+        assertThat(exited).as("without the flag a heap-exhausted JVM keeps running (#966); output:\n%s",
+                              output)
+                  .isFalse();
         assertThat(output).doesNotContain(VM_TERMINATION_LINE);
     }
 

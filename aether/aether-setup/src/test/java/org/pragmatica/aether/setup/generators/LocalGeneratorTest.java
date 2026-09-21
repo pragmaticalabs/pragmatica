@@ -7,17 +7,18 @@ package org.pragmatica.aether.setup.generators;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.Environment;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.config.AetherConfig;
-import org.pragmatica.aether.config.Environment;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-class LocalGeneratorTest {
 
+class LocalGeneratorTest {
     /// #966 — the local `start.sh` launches real node JVMs, so it is a node launcher and carries
     /// `-XX:+ExitOnOutOfMemoryError` on the `java` token like every other one: a node that exhausts
     /// its heap must exit (code 3) rather than hang answering SWIM pings while holding its membership
@@ -30,19 +31,16 @@ class LocalGeneratorTest {
             var config = AetherConfig.aetherConfig(Environment.LOCAL);
             var nodes = config.cluster().nodes();
 
-            new LocalGenerator().generate(config, outputDir)
-                                .onFailure(cause -> fail(cause.message()));
+            new LocalGenerator().generate(config, outputDir).onFailure(cause -> fail(cause.message()));
             var startScript = read(outputDir.resolve("start.sh"));
 
-            assertThat(startScript)
-                .as("control: the generated start.sh launches the node jar")
-                .contains("-jar \"$AETHER_JAR\"");
+            assertThat(startScript).as("control: the generated start.sh launches the node jar")
+                      .contains("-jar \"$AETHER_JAR\"");
             assertThat(nodes).as("control: the LOCAL default cluster has nodes to launch").isPositive();
-            assertThat(occurrences(startScript, "java -XX:+ExitOnOutOfMemoryError -Xmx"))
-                .as("#966: every node launch in start.sh must put -XX:+ExitOnOutOfMemoryError on the java token, "
-                    + "before -Xmx, so an exhausted heap kills the node instead of leaving it answering SWIM "
-                    + "pings from a dead process (deployment-recovery.md §4.5). Got:\n" + startScript)
-                .isEqualTo(nodes);
+            assertThat(occurrences(startScript, "java -XX:+ExitOnOutOfMemoryError -Xmx")).as("#966: every node launch in start.sh must put -XX:+ExitOnOutOfMemoryError on the java token, "
+                                                                                            + "before -Xmx, so an exhausted heap kills the node instead of leaving it answering SWIM "
+                                                                                            + "pings from a dead process (deployment-recovery.md §4.5). Got:\n" + startScript)
+                      .isEqualTo(nodes);
         }
     }
 
@@ -54,7 +52,7 @@ class LocalGeneratorTest {
         try {
             return Files.readString(path);
         } catch (Exception e) {
-            throw new AssertionError("could not read " + path, e);
+            return fail("could not read " + path, e);
         }
     }
 }

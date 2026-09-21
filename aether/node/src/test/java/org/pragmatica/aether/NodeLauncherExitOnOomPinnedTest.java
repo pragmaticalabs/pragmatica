@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
 
 /// #966 — every launcher that starts a real aether-node JVM carries `-XX:+ExitOnOutOfMemoryError` on
 /// the `java` TOKEN. A node that exhausts its heap must die: without the flag the OOM is caught (a
@@ -34,7 +36,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Forge runs a whole simulated cluster in one JVM, and one OOM would kill every simulated node.
 class NodeLauncherExitOnOomPinnedTest {
     private static final String FLAG = "-XX:+ExitOnOutOfMemoryError";
-
     private static final String NODE_DOCKERFILE = "aether/docker/aether-node/Dockerfile";
     private static final String BUILD_AND_PUSH = "build-and-push.sh";
     private static final String INSTALL_SH = "aether/install.sh";
@@ -42,6 +43,7 @@ class NodeLauncherExitOnOomPinnedTest {
     private static final String AETHER_NODE_SH = "aether/script/aether-node.sh";
     private static final String DEMO_CLUSTER_SH = "aether/script/demo-cluster.sh";
     private static final String BUILD_DIST_SH = "aether/dist/build-dist.sh";
+
     private static final String CLOUD_NODE_JAVA = "aether/cloud-tests/src/test/java/org/pragmatica/aether/cloud/CloudNode.java";
 
     @Nested
@@ -53,10 +55,11 @@ class NodeLauncherExitOnOomPinnedTest {
             var dockerfile = read(NODE_DOCKERFILE);
 
             assertThat(dockerfile).as("control: the image entrypoint launches the node jar")
-                                  .contains("-jar /app/aether-node.jar");
-            assertThat(launcherLine(dockerfile, "$JAVA_OPTS"))
-                .as("#966: %s ENTRYPOINT must put %s on the java token, BEFORE $JAVA_OPTS", NODE_DOCKERFILE, FLAG)
-                .startsWith("java " + FLAG + " $JAVA_OPTS");
+                      .contains("-jar /app/aether-node.jar");
+            assertThat(launcherLine(dockerfile, "$JAVA_OPTS")).as("#966: %s ENTRYPOINT must put %s on the java token, BEFORE $JAVA_OPTS",
+                                                                  NODE_DOCKERFILE,
+                                                                  FLAG)
+                      .startsWith("java " + FLAG + " $JAVA_OPTS");
         }
 
         /// The remote-build path writes its own `Dockerfile.local`.
@@ -64,8 +67,10 @@ class NodeLauncherExitOnOomPinnedTest {
         void buildAndPush_generatedDockerfile_entrypointCarriesTheFlag() {
             var line = launcherLine(read(BUILD_AND_PUSH), "-jar /app/aether-node.jar");
 
-            assertThat(line).as("#966: %s ENTRYPOINT must put %s on the java token, BEFORE ${JAVA_OPTS}", BUILD_AND_PUSH, FLAG)
-                            .contains("exec java " + FLAG + " \\${JAVA_OPTS:-");
+            assertThat(line).as("#966: %s ENTRYPOINT must put %s on the java token, BEFORE ${JAVA_OPTS}",
+                                BUILD_AND_PUSH,
+                                FLAG)
+                      .contains("exec java " + FLAG + " \\${JAVA_OPTS:-");
         }
 
         @Test
@@ -83,7 +88,7 @@ class NodeLauncherExitOnOomPinnedTest {
             var line = launcherLine(read(AETHER_NODE_SH), "-jar \"$JAR_FILE\"");
 
             assertThat(line).as("#966: %s must exec java with %s on the java token", AETHER_NODE_SH, FLAG)
-                            .startsWith("exec java " + FLAG + " -jar");
+                      .startsWith("exec java " + FLAG + " -jar");
         }
 
         @Test
@@ -91,7 +96,7 @@ class NodeLauncherExitOnOomPinnedTest {
             var line = launcherLine(read(DEMO_CLUSTER_SH), "-jar \"$NODE_JAR\"");
 
             assertThat(line).as("#966: %s must launch each node with %s on the java token", DEMO_CLUSTER_SH, FLAG)
-                            .startsWith("java " + FLAG + " -jar");
+                      .startsWith("java " + FLAG + " -jar");
         }
 
         /// `create_launcher` is shared by the node, CLI and forge distributions, so the flag lives in
@@ -106,11 +111,11 @@ class NodeLauncherExitOnOomPinnedTest {
 
             assertThat(nodeJar).as("control: %s builds the node component", BUILD_DIST_SH).isNotNegative();
             assertThat(nodeOpts).as("#966: %s node component java_opts must start with %s", BUILD_DIST_SH, FLAG)
-                                .isGreaterThan(nodeJar)
-                                .isLessThan(cliBuild);
+                      .isGreaterThan(nodeJar)
+                      .isLessThan(cliBuild);
             assertThat(script).as("forge must never carry the flag: one OOM would kill an in-JVM simulated cluster")
-                              .contains("\"-XX:+UseZGC -Xmx1g\"")
-                              .doesNotContain(FLAG + " -XX:+UseZGC -Xmx1g");
+                      .contains("\"-XX:+UseZGC -Xmx1g\"")
+                      .doesNotContain(FLAG + " -XX:+UseZGC -Xmx1g");
         }
 
         /// The cloud test harness launches a real node on a real VM; it is a launcher like the others.
@@ -119,7 +124,7 @@ class NodeLauncherExitOnOomPinnedTest {
             var line = launcherLine(read(CLOUD_NODE_JAVA), "nohup java ");
 
             assertThat(line).as("#966: %s startNode must put %s on the java token", CLOUD_NODE_JAVA, FLAG)
-                            .contains("nohup java " + FLAG + " -Xmx");
+                      .contains("nohup java " + FLAG + " -Xmx");
         }
 
         private void assertShellNodeWrapper(String script) {
@@ -128,20 +133,18 @@ class NodeLauncherExitOnOomPinnedTest {
             var forgeLine = launcherLine(content, "-jar \"$INSTALL_DIR/lib/aether-forge.jar\"");
 
             assertThat(nodeLine).as("#966: %s aether-node wrapper must exec java with %s on the java token, "
-                                    + "BEFORE ${AETHER_JAVA_OPTS}", script, FLAG)
-                                .startsWith("exec java " + FLAG + " ");
-            assertThat(forgeLine).as("forge wrapper in %s must never carry the flag", script)
-                                 .doesNotContain(FLAG);
+                                   + "BEFORE ${AETHER_JAVA_OPTS}",
+                                    script,
+                                    FLAG)
+                      .startsWith("exec java " + FLAG + " ");
+            assertThat(forgeLine).as("forge wrapper in %s must never carry the flag", script).doesNotContain(FLAG);
         }
     }
 
     /// The first line of `content` containing `marker`, trimmed. Failing here is the "launcher line not
     /// found" case, which must read differently from "flag missing".
     private static String launcherLine(String content, String marker) {
-        List<String> hits = content.lines()
-                                   .filter(line -> line.contains(marker))
-                                   .map(String::strip)
-                                   .toList();
+        List<String> hits = content.lines().filter(line -> line.contains(marker)).map(String::strip).toList();
 
         assertThat(hits).as("control: a launcher line containing %s", marker).isNotEmpty();
 
@@ -152,7 +155,7 @@ class NodeLauncherExitOnOomPinnedTest {
         try {
             return Files.readString(repositoryRoot().resolve(relativePath));
         } catch (Exception e) {
-            throw new AssertionError("could not read " + relativePath, e);
+            return fail("could not read " + relativePath, e);
         }
     }
 
@@ -169,8 +172,9 @@ class NodeLauncherExitOnOomPinnedTest {
             current = current.getParent();
         }
 
-        throw new AssertionError("repository root not found above " + codeSourceLocation()
-                                 + " — no ancestor holds both " + NODE_DOCKERFILE + " and " + BUILD_AND_PUSH);
+        return fail("repository root not found above " + codeSourceLocation()
+                   + " — no ancestor holds both " + NODE_DOCKERFILE
+                   + " and " + BUILD_AND_PUSH);
     }
 
     private static Path codeSourceLocation() {
@@ -180,7 +184,7 @@ class NodeLauncherExitOnOomPinnedTest {
                                                                 .getLocation()
                                                                 .toURI());
         } catch (Exception e) {
-            throw new AssertionError("cannot locate the test's own code source", e);
+            return fail("cannot locate the test's own code source", e);
         }
     }
 }

@@ -2,20 +2,20 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.config.cluster;
+
+import java.util.List;
+
+import org.pragmatica.config.toml.TomlDocument;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.config.toml.TomlDocument;
-
-import java.util.List;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class NodeUserDataRendererTest {
 
+class NodeUserDataRendererTest {
     private static final String JVM_BASE = """
             config_version = "1.0.0"
 
@@ -77,9 +77,9 @@ class NodeUserDataRendererTest {
                        () -> "control: the rendered script must contain the node launcher line. Got:\n" + script);
             assertTrue(launcher >= 0 && launcher < jar,
                        () -> "#966: the JVM-mode launcher must exec java with -XX:+ExitOnOutOfMemoryError on the "
-                             + "java token, before -jar, so an exhausted heap kills the node instead of leaving it "
-                             + "answering SWIM pings from a dead process. See "
-                             + "aether/docs/operators/deployment-recovery.md §4.5. Got:\n" + script);
+                            + "java token, before -jar, so an exhausted heap kills the node instead of leaving it "
+                            + "answering SWIM pings from a dead process. See "
+                            + "aether/docs/operators/deployment-recovery.md §4.5. Got:\n" + script);
         }
     }
 
