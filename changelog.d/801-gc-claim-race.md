@@ -19,11 +19,22 @@
   write behind it, so GC's tier deletes cannot wipe the fresh bytes. *Dedup:* the credit counts only if
   `computeLifecycle` reports it landed; an empty result means the record was taken and the put goes round
   again (claim succeeds, write ordered behind the collection). *Failed tier delete:* the scanned record is
-  put back with `claimBlock` (only if no claimant took the slot) so the next cycle retries, as before.
-  [mechanism: `DefaultStorageInstance.deleteFromPrivateTiers`, `afterCollection`, `deduplicateBlock`]
+  put back with `claimBlock` (only if no claimant took the slot) so the next cycle retries, as before — and
+  INSIDE the resolution of the failed delete, before the claimant is released and before the returned promise
+  resolves, not as an `onFailure` on the promise chain (which the executor runs after the caller has already
+  seen the result; measured absent-on-return 19/200 with an async-failing tier, rev1411 P4).
+  [mechanism: `DefaultStorageInstance.deleteFromPrivateTiers`, `collected`, `afterCollection`, `deduplicateBlock`]
+  [verified: `claimantChainedBehindFailedTierDelete_keepsItsRecordAndIsReleased` — reds when the restore is
+  unconditional (`createLifecycle`) and when the claimant is released only on success;
+  `asyncTierDeleteFailure_restoresRecordBeforeTheCollectionResolves` — the test thread fails the held delete
+  and the restore must run on that thread; red with the restore on `onFailure` (ran on a virtual executor
+  thread)]
   [unverified: the happens-before between GC's `collecting.put` and a claimant's `collecting.get` rests on
   `ConcurrentHashMap`'s memory effects for a removal observed by a later `putIfAbsent` on the same key — the
   same assumption `claimBlock`/`releaseClaim` already make; not pinned by a test]
+- Recorded, not changed: explicit `delete(id)` keeps the delete-then-unconditional-remove shape and a deduplicating
+  put landing during its tier delete still gets an unreadable id (rev1411 P3, red at this head). That path is
+  #981's, which reuses the take-the-record-first shape from here.
 - Scope: the exclusion is node-local, matching the operation — GC deletes only this node's private tiers on
   this node's metadata (#250). A deduplicating put on ANOTHER node against a cluster-shared record is not in
   this ticket. `ContentStore.delete`'s own refcounting is untouched (#981).
