@@ -3,8 +3,6 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -21,6 +19,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
+import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -199,25 +198,23 @@ class StorageGarbageCollectorClaimRaceTest {
     /// seam holds the delete open and the TEST thread fails it, so "inside the resolution" has an
     /// exact observable: the restore ran on this thread, before `fail` returned.
     @Test
-    void asyncTierDeleteFailure_restoresRecordBeforeTheCollectionResolves() throws InterruptedException {
+    void asyncTierDeleteFailure_restoresRecordBeforeTheCollectionResolves() {
         var id = storeOrphanPastGrace();
         var heldDelete = tier.holdNextDelete();
         var presentOnReturn = new AtomicBoolean();
         var collected = new AtomicInteger(-1);
-        var collector = new Thread(() -> {
-                                       collected.set(gc.collectGarbage());
-                                       presentOnReturn.set(metadataStore.containsBlock(id));
-                                   },
-                                   "gc-801");
+        var collector = Promise.<Unit> promise(returned -> {
+            collected.set(gc.collectGarbage());
+            presentOnReturn.set(metadataStore.containsBlock(id));
+            returned.succeed(unit());
+        });
 
-        collector.start();
         assertThat(tier.awaitDeleteRequested(WAIT)).as("the collector must reach the tier delete").isTrue();
         assertThat(metadataStore.containsBlock(id)).as("the record was taken before the tier delete").isFalse();
         heldDelete.fail(StorageError.WriteError.writeError("induced async tier delete failure"));
         assertThat(metadataStore.restoreThread()).as("the restore must run inside the failed delete's resolution, on the resolving thread, before the collection's promise resolves -- not as an executor-dispatched onFailure")
                   .isSameAs(Thread.currentThread());
-        collector.join(WAIT.millis());
-        assertThat(collector.isAlive()).as("the collector must return").isFalse();
+        assertThat(collector.await(WAIT).isSuccess()).as("the collector must return").isTrue();
         assertThat(collected.get()).isZero();
         assertThat(presentOnReturn.get()).as("the record must be back the instant collectGarbage() returns").isTrue();
         assertThat(metadataStore.getLifecycle(id).map(BlockLifecycle::isOrphaned).or(false)).as("the restored record is the orphan the next cycle will scan")
@@ -230,7 +227,7 @@ class StorageGarbageCollectorClaimRaceTest {
         private final AtomicReference<Runnable> beforeDelete = new AtomicReference<>();
         private final AtomicInteger putCount = new AtomicInteger();
         private final AtomicReference<Promise<Unit>> heldDelete = new AtomicReference<>();
-        private final CountDownLatch deleteRequested = new CountDownLatch(1);
+        private final Promise<Unit> deleteRequested = Promise.promise();
         private volatile boolean failNextDelete;
 
         SeamTier(StorageTier backing) {
@@ -245,8 +242,8 @@ class StorageGarbageCollectorClaimRaceTest {
             failNextDelete = true;
         }
 
-        /// The next delete returns this unresolved promise and counts [#awaitDeleteRequested] down;
-        /// the test resolves it from its own thread.
+        /// The next delete returns this unresolved promise and resolves [#awaitDeleteRequested];
+        /// the test resolves the returned one from its own thread.
         Promise<Unit> holdNextDelete() {
             var held = Promise.<Unit> promise();
 
@@ -255,8 +252,9 @@ class StorageGarbageCollectorClaimRaceTest {
             return held;
         }
 
-        boolean awaitDeleteRequested(TimeSpan timeout) throws InterruptedException {
-            return deleteRequested.await(timeout.millis(), TimeUnit.MILLISECONDS);
+        boolean awaitDeleteRequested(TimeSpan timeout) {
+            return deleteRequested.await(timeout)
+                                  .isSuccess();
         }
 
         int putCount() {
@@ -287,7 +285,7 @@ class StorageGarbageCollectorClaimRaceTest {
             var held = heldDelete.getAndSet(null);
 
             if (held != null) {
-                deleteRequested.countDown();
+                deleteRequested.succeed(unit());
 
                 return held;
             }
