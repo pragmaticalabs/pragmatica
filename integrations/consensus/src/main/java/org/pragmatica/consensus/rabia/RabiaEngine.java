@@ -912,10 +912,15 @@ public class RabiaEngine<C extends Command> {
 
     /// Proposes a checkpoint handoff. Completion requires a majority of the new electorate
     /// to acknowledge durable installation; callers must retain old resources until success.
-    public Promise<Unit> reconfigure(ClusterConfig target) {
+    public synchronized Promise<Unit> reconfigure(ClusterConfig target) {
+        if (stopping.get()) {
+            return new ConsensusError.NodeInactive(self).promise();
+        }
+
         var promise = Promise.<Unit> promise();
 
-        safeExecute(() -> proposeReconfiguration(target, promise));
+        safeExecute(() -> proposeReconfiguration(target, promise),
+                    () -> promise.fail(new ConsensusError.NodeInactive(self)));
 
         return promise;
     }
@@ -1408,7 +1413,8 @@ public class RabiaEngine<C extends Command> {
 
         return submitCommands(commands,
                               batch -> correlationMap.put(batch.correlationIds().getFirst(),
-                                                          pendingAnswer)).async()
+                                                          pendingAnswer),
+                              pendingAnswer::fail).async()
                              .flatMap(_ -> pendingAnswer.timeout(config.applyTimeout())
                                                         .mapError(this::toApplyTimeout));
     }
@@ -1425,10 +1431,15 @@ public class RabiaEngine<C extends Command> {
     @MessageReceiver
     public void handleSubmit(SubmitCommands<C> submitCommands) {
         submitCommands(submitCommands.commands(),
+                       _ -> {},
                        _ -> {});
     }
 
-    private Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared) {
+    private synchronized Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared, Consumer<Cause> onRejected) {
+        if (stopping.get()) {
+            return new ConsensusError.NodeInactive(self).result();
+        }
+
         if (log.isDebugEnabled()) {
             var caller = Thread.currentThread().getStackTrace();
             var callerInfo = caller.length > 3
@@ -1439,7 +1450,8 @@ public class RabiaEngine<C extends Command> {
         }
 
         return validateSubmission(commands).map(_ -> prepareBatch(commands))
-                                 .onSuccess(batch -> safeExecute(() -> registerBatch(batch, onBatchPrepared)))
+                                 .onSuccess(batch -> safeExecute(() -> registerBatch(batch, onBatchPrepared),
+                                                                () -> onRejected.accept(new ConsensusError.NodeInactive(self))))
                                  .onSuccess(batch -> safeExecute(() -> broadcastBatch(batch)));
     }
 
@@ -1541,14 +1553,26 @@ public class RabiaEngine<C extends Command> {
     /// the swallow semantics the live KV dispatch already has (MessageRouter.dispatchOne): the worker
     /// survives to process subsequent rounds; the failed round is abandoned and re-driven by the
     /// sender's retry. Errors (non-RuntimeException Throwable) are intentionally left to propagate.
-    private synchronized void safeExecute(Runnable task) {
+    private void safeExecute(Runnable task) {
+        safeExecute(task, () -> {});
+    }
+
+    private synchronized void safeExecute(Runnable task, Runnable onStopped) {
         if (stopping.get()) {
+            onStopped.run();
+
             return;
         }
 
         participationStarted = true;
         executor.execute(() -> {
-            if (passiveClient || stopping.get()) {
+            if (stopping.get()) {
+                onStopped.run();
+
+                return;
+            }
+
+            if (passiveClient) {
                 return;
             }
 
