@@ -165,9 +165,11 @@ import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
+import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.node.stream.TopicGroupDeclarationSource;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
@@ -213,10 +215,12 @@ import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -914,7 +918,7 @@ public interface AetherNode extends ManageableNode {
     ///
     /// An UNWRITABLE dir is a BOOT ERROR by default (#634 item 2). The old behaviour — one startup WARN,
     /// then every publish acks with no fsync — silently converted "durable entity" into "in-memory
-    /// entity": the ack path (`durablyLog`) degrades to `success(offset)` when the WAL is absent, and
+    /// entity": the ack path (`awaitDurable`) passes an already-resolved barrier when the WAL is absent, and
     /// nothing downstream can tell. A node that cannot honour the durability its streams declare must
     /// say so at the moment an operator is looking at it, not in a log line nobody reads back.
     ///
@@ -1652,7 +1656,7 @@ public interface AetherNode extends ManageableNode {
                           QuorumLossDetector quorumLossDetector,
                           CoreAbsenceDetector coreAbsenceDetector,
                           TransitionJournal transitionJournal,
-                          Runnable startSwimTrigger,
+                          Consumer<Promise<Unit>> startSwimTrigger,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
@@ -1721,9 +1725,9 @@ public interface AetherNode extends ManageableNode {
                                        // resolves, because clusterNode.start() resolves only on consensus
                                        // quorum, which itself needs the peers SWIM discovers (the deadlock
                                        // §5.4 exposed once the static dial-set seed was removed).
-                                       .onSuccess(_ -> clusterNode.network()
-                                                                  .whenReady(startSwimTrigger))
-                                       .flatMap(_ -> startClusterAsync())
+                                       // #1308: the SWIM start's outcome is joined into this start —
+                                       // see startClusterUnlessSwimFails.
+                                       .flatMap(_ -> startClusterUnlessSwimFails())
                                        // #644: arm the deferred periodic tasks only now, once cluster
                                        // formation has resolved — a created-but-unstarted node performs
                                        // no periodic work, and none of the deferred tasks participates
@@ -1893,6 +1897,24 @@ public interface AetherNode extends ManageableNode {
                 } catch (RuntimeException e) {
                     log.warn("Storage instance '{}' failed to shut down cleanly: {}", name, e.getMessage());
                 }
+            }
+
+            /// #1308: register the SWIM start on transport-ready and JOIN its outcome into the node's
+            /// start. `startSwim` fails the node through `failNode` (production: `Runtime.halt(2)`),
+            /// but in a single-JVM host (Ember/Forge) `failNode` only stops this node, and a stopped
+            /// node's `clusterNode.start()` never resolves — so a start chain that only observed
+            /// formation hung forever on a SWIM bind failure (rev1343 BLOCKING-1: `EmberCluster.start()`
+            /// sat on a 90 s bound with node 1 stopped and the other two formed). The host's start
+            /// now settles with the SWIM failure itself, and takes its own abort path. The trigger fails
+            /// `outcome` INLINE, before `failNode` runs (rev1343 NIT-R2): in Ember `failNode` blocks for
+            /// the node's own stop, and peers' hellos can complete formation inside that window — a
+            /// formation success landing first would report a started node that is being stopped.
+            private Promise<Unit> startClusterUnlessSwimFails() {
+                var outcome = Promise.<Unit> promise();
+
+                clusterNode.network().whenReady(() -> startSwimTrigger.accept(outcome));
+
+                return formationUnlessSwimFails(startClusterAsync(), outcome);
             }
 
             private Promise<Unit> startClusterAsync() {
@@ -3156,13 +3178,16 @@ public interface AetherNode extends ManageableNode {
                                                                                swimConfig.clusterName(),
                                                                                bootIncarnation,
                                                                                swimSeeds);
-        // SWIM start is deferred to transport-ready (invoked from the boot chain after
+        // SWIM start is deferred to transport-ready (invoked from the boot chain alongside
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
-        // closes over the encryptor + announce trigger that are only in scope here.
-        Runnable startSwimTrigger = () -> startSwim(swimHealthDetector,
-                                                    clusterNode.network(),
-                                                    rotatingEncryptor,
-                                                    announceJoinTrigger);
+        // closes over the encryptor + announce trigger that are only in scope here. It fails the
+        // node's start outcome it is handed when SWIM cannot start (#1308).
+        Consumer<Promise<Unit>> startSwimTrigger = startOutcome -> startSwim(swimHealthDetector,
+                                                                             clusterNode.network(),
+                                                                             rotatingEncryptor,
+                                                                             announceJoinTrigger,
+                                                                             jvmExit,
+                                                                             startOutcome);
         // ---------------------------------------------------------------------
         // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
         // observation unconditional: NTT + QuorumLossDetector + LeaderReconciler are
@@ -3728,6 +3753,9 @@ public interface AetherNode extends ManageableNode {
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
         // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
+        // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
+        // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
+        // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
         // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex),
@@ -3739,7 +3767,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
                                                                                    resolveStreamWalDir(config),
-                                                                                   streamSegmentIndex::lastSealedOffset);
+                                                                                   streamSegmentIndex::lastSealedOffset,
+                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
 
         streamPartitionManagerRef.set(streamPartitionManager);
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
@@ -4103,11 +4132,13 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::synchronizeNow,
                                                                       config.timeouts().dht().antiEntropyInterval()));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
-        // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
-        // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
-        // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
-        // cheap when nothing new has sealed. Driven off the durable, CONTIGUOUS sealed bound (#1234: it
-        // never passes a segment that failed to seal) to avoid any truncated-before-durable window.
+        // last-sealed offset so the WAL does not grow unbounded. Records <= that offset are already in
+        // cold segments whose refs are in the metadata snapshot on disk (served post-restart by the tiered
+        // reader), so dropping them from the WAL loses nothing; the un-sealed tail stays in the WAL.
+        // truncate is threshold-lazy, so this tick is cheap when nothing new has sealed. Driven off the
+        // CONTIGUOUS sealed bound (#1234: it never passes a segment that failed to seal) as REBUILT from
+        // the latest snapshot file (#1345: never the live index, which runs ahead of disk until the next
+        // snapshot — a crash in that window used to lose the refs and renumber the survivors).
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed,
                                                                       WAL_TRUNCATE_INTERVAL));
         // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for
@@ -4179,12 +4210,25 @@ public interface AetherNode extends ManageableNode {
         //
         // No role-change callback is available (onBecameReplica / onReconcilePassComplete are
         // single-consumer seams already bound above), hence the poll.
+        // #1271: checkpoints carry this node's consumer-assignment token and are refused by the applier
+        // once the assignment moves; a forwarding (worker) node sends a Noop barrier before re-reading the
+        // verdict, since its publish resolves on the core's reply rather than its own apply.
+        // #1271: the committed consumer assignment is the one authority for which node delivers a
+        // (group, partition). The leader writes it from the same computation every node used to act on
+        // alone; every node attaches only where the committed record names it — and the cursor store's
+        // verdict re-reads it before calling a refused checkpoint Fenced (#1335 B1).
+        ConsumerAssignmentWriter.CommittedAssignments committedConsumerAssignments = (stream, partition, group) -> kvStore.getTyped(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                                partition,
+                                                                                                                                                                                group),
+                                                                                                                                    ConsumerAssignmentValue.class);
         var streamClusterCursorStore = ClusterCursorStore.clusterCursorStore(streamCursorStore,
+                                                                             config.self(),
                                                                              cursorKey -> kvStore.getTyped(cursorKey,
-                                                                                                           AetherValue.StreamCursorCheckpointValue.class)
-                                                                                                 .map(AetherValue.StreamCursorCheckpointValue::committedOffset),
-                                                                             command -> clusterNode.apply(List.of(command))
-                                                                                                   .mapToUnit());
+                                                                                                           AetherValue.StreamCursorCheckpointValue.class),
+                                                                             committedConsumerAssignments,
+                                                                             commands -> clusterNode.apply(commands)
+                                                                                                    .mapToUnit(),
+                                                                             () -> switchableCluster.current() instanceof ForwardingClusterNode);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
@@ -4202,7 +4246,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                               Option.none(),
                                                                                                                                                                               ConsistencyMode.EVENTUAL,
                                                                                                                                                                               Option.none(),
-                                                                                                                                                                              streamPartitionManager.minSyncReplicasFor(name),
                                                                                                                                                                               Option.some(streamForwardClient),
                                                                                                                                                                               Option.some(() -> taskGroupOwnerResolver.apply(TaskGroup.STREAMING)
                                                                                                                                                                                                                       .option()),
@@ -4219,6 +4262,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                     maxEvents,
                                                                                                                                                     ReadPreference.GOVERNOR));
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
+        var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
+                                                                                                        ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,
+                                                                                                                                                          rabiaTermSupplier,
+                                                                                                                                                          hlcClock,
+                                                                                                                                                          committedConsumerAssignments),
+                                                                                                        commands -> clusterNode.apply(commands)
+                                                                                                                               .mapToUnit());
         var streamConsumerManager = StreamConsumerManager.streamConsumerManager(streamConsumerRegistry,
                                                                                 streamConsumerRuntime,
                                                                                 sliceInvoker,
@@ -4230,7 +4280,14 @@ public interface AetherNode extends ManageableNode {
                                                                                 config.self(),
                                                                                 TopicGroupDeclarationSource.topicGroupDeclarationSource(topicSubscriptionRegistry,
                                                                                                                                         streamName -> streamConsumerOwnership.partitionCount(streamName)
-                                                                                                                                                                             .isPresent()));
+                                                                                                                                                                             .isPresent()),
+                                                                                consumerAssignmentAuthority);
+        // #1271: a node that loses quorum stops delivering at the self-fence's DETECTION, not at the drain's
+        // halt — the majority is free to reassign its partitions from that moment. Re-set here because the
+        // manager exists only now; the detector was armed with the same chain earlier and this replaces it
+        // with the chain plus the consumer abandon.
+        quorumLossDetector.setQuorumLossListener(StreamConsumerManager.abandoningOnQuorumLoss(quorumLossChain,
+                                                                                              streamConsumerManager));
         // #499: the handle is retained in `periodicTasks`, which stop() cancels wholesale. A declarative
         // consumer that outlived its node would deliver into a torn-down slice.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamConsumerManager::reconcile,
@@ -5584,15 +5641,56 @@ public interface AetherNode extends ManageableNode {
     /// target, so an applied rotation is picked up through the delegate and disarms the guard.
     /// `System.exit(1)` mirrors `Main`'s other boot gates: the failure surfaces at deployment time
     /// rather than as a silent, permanently unjoinable node.
-    private static void startSwim(CoreSwimHealthDetector swimHealthDetector,
-                                  ClusterNetwork network,
-                                  RotatingGossipEncryptor encryptor,
-                                  Runnable announceJoinTrigger) {
+    ///
+    /// #1308: the join is announced only once SWIM has STARTED, and a failed start (typically the
+    /// SWIM UDP port already bound) fails the node through `failNode`. A node without its SWIM
+    /// listener neither answers peers' probes nor probes them, so it must not keep running as a
+    /// cluster member. The caller passes the node's `jvmExit`: `Runtime.halt(2)` in production, a
+    /// graceful per-node stop in single-JVM hosts (Ember/Forge), where `System.exit` would take every
+    /// co-hosted node down. Skipping shutdown hooks is judged acceptable here because SWIM starts at
+    /// transport-ready, before this node has joined or consensus has formed, so it has acknowledged
+    /// no cluster write a hook would need to flush (design intent, not measured).
+    ///
+    /// `startOutcome` is the node's start outcome ([#formationUnlessSwimFails]): a failed start fails it
+    /// FIRST, inline on the resolved start promise, and only then runs `failNode`. Ordered so because
+    /// `failNode` may block (Ember awaits the node's stop) while formation can still resolve, and
+    /// the outcome is first-settlement-wins.
+    static Promise<Unit> startSwim(CoreSwimHealthDetector swimHealthDetector,
+                                   ClusterNetwork network,
+                                   RotatingGossipEncryptor encryptor,
+                                   Runnable announceJoinTrigger,
+                                   Runnable failNode,
+                                   Promise<Unit> startOutcome) {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, () -> System.exit(1));
 
-        swimHealthDetector.start(workerGroup, guarded);
-        announceJoinTrigger.run();
+        return swimHealthDetector.start(workerGroup, guarded)
+                                 .onFailure(startOutcome::fail)
+                                 .onSuccessRun(announceJoinTrigger)
+                                 .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
+                                                                            cause,
+                                                                            failNode));
+    }
+
+    /// #1308: the node's start outcome, given consensus formation and the outcome promise that
+    /// [#startSwim] fails inline when SWIM cannot start. Formation settles it either way — first
+    /// settlement wins (`resolve` is compare-and-set), so a SWIM failure that has already landed is
+    /// never overridden by a later formation success. A SWIM start SUCCESS settles nothing: the
+    /// node has started only once formation resolves. A SWIM failure that lands after formation is
+    /// moot for the outcome — in production `failNode` has already halted the JVM, in a single-JVM
+    /// host it has already stopped this node.
+    static Promise<Unit> formationUnlessSwimFails(Promise<Unit> formation, Promise<Unit> outcome) {
+        formation.onResult(outcome::resolve);
+
+        return outcome;
+    }
+
+    private static void refuseToRunWithoutSwim(int swimPort, Cause cause, Runnable failNode) {
+        LOG.error("SWIM failed to start on UDP port {}: {} — this node cannot answer or send failure-detection "
+                 + "probes, so it will not announce its join and is exiting instead of running without SWIM",
+                  swimPort,
+                  cause.message());
+        failNode.run();
     }
 
     @SuppressWarnings({"JBCT-RET-01"})

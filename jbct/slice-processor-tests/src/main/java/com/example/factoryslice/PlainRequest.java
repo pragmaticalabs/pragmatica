@@ -18,7 +18,6 @@ import org.pragmatica.lang.Verify;
 /// a return-type check.
 public record PlainRequest(String note) {
     public static Result<PlainRequest> fromParts(String note, String suffix) {
-        return Verify.ensure(note, Verify.Is::present)
-                     .map(valid -> new PlainRequest(valid + suffix));
+        return Verify.ensure(note, Verify.Is::present).map(valid -> new PlainRequest(valid + suffix));
     }
 }

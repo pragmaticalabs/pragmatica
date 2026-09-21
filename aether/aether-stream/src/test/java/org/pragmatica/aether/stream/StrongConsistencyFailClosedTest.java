@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
@@ -133,24 +134,34 @@ class StrongConsistencyFailClosedTest {
         assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
     }
 
-    /// #1262 B3: a batch on a STRONG stream is a batch of refusals. It must fail with the same typed cause a
-    /// single publish does — `Promise.allOf(...).mapToUnit()` had folded every per-event failure into a
-    /// SUCCESS that wrote nothing, a false acknowledgement.
+    /// #1262 B3 / #1342: a batch on a STRONG stream with no consensus path is a batch of NOT-ATTEMPTED events,
+    /// each carrying the same typed cause a single publish does — `Promise.allOf(...).mapToUnit()` had folded
+    /// every per-event failure into a SUCCESS that wrote nothing, a false acknowledgement.
     @Test
     void streamPublisherPublishBatch_refusesWithConsensusPathUnavailable_forStrongStream() {
-        publisher(STRONG_STREAM, ConsistencyMode.STRONG).publishBatch(List.of("e0".getBytes(), "e1".getBytes()))
-                                                        .await()
-                                                        .onSuccessRun(Assertions::fail)
-                                                        .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
+        var outcomes = publisher(STRONG_STREAM, ConsistencyMode.STRONG).publishBatch(List.of("e0".getBytes(), "e1".getBytes()))
+                                                                       .await()
+                                                                       .unwrap();
+
+        var notAttempted = new PublishOutcome.NotAttempted(StreamError.General.CONSENSUS_PATH_UNAVAILABLE);
+        assertThat(outcomes).containsExactly(notAttempted, notAttempted);
         assertThat(partitionManager.nextExpectedOffset(STRONG_STREAM, PARTITION)).isZero();
     }
 
+    /// The UNKNOWN-mode refusal comes from the write router, so the batch reports it as the first event's
+    /// outcome-unknown (the publisher cannot tell a pre-append refusal from a post-append one until #1236) and
+    /// stops the partition group there: the second event is not attempted.
     @Test
     void streamPublisherPublishBatch_refusesUnreadableConsistencyMode() {
-        publisher(UNKNOWN_STREAM, ConsistencyMode.UNKNOWN).publishBatch(List.of("e0".getBytes(), "e1".getBytes()))
-                                                          .await()
-                                                          .onSuccessRun(Assertions::fail)
-                                                          .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
+        var outcomes = publisher(UNKNOWN_STREAM, ConsistencyMode.UNKNOWN).publishBatch(List.of("e0".getBytes(), "e1".getBytes()))
+                                                                         .await()
+                                                                         .unwrap();
+
+        assertThat(outcomes).hasSize(2);
+        assertThat(outcomes.getFirst()).isInstanceOfSatisfying(PublishOutcome.OutcomeUnknown.class,
+                                                               unknown -> assertUnreadableMode(unknown.cause()));
+        assertThat(outcomes.getLast()).isInstanceOfSatisfying(PublishOutcome.NotAttempted.class,
+                                                              skipped -> assertUnreadableMode(skipped.cause()));
         assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
     }
 
@@ -219,8 +230,7 @@ class StrongConsistencyFailClosedTest {
                                                              Option.none(),
                                                              SELF,
                                                              Option.<Fn0<Option<NodeId>>> none(),
-                                                             Option.none(),
-                                                             0);
+                                                             Option.none());
     }
 
     private static StreamConfig config(String name, ConsistencyMode mode) {

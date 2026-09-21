@@ -65,7 +65,30 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                            ConsumerCallback callback,
                            IdlePolicy idlePolicy);
 
+    /// #1271: a subscription admitted under a committed consumer assignment. Every cursor commit and
+    /// fetch carries [ConsumerFence#epoch], delivery pauses whenever [ConsumerFence#admitted] reads false,
+    /// and a cursor commit the store refuses as `Fenced` stops delivery for good. The default ignores the
+    /// fence — correct only for a runtime that delivers nothing (test doubles); the real runtime
+    /// overrides it.
+    default Result<Unit> subscribe(String streamName,
+                                   int partition,
+                                   ConsumerConfig config,
+                                   ConsumerCallback callback,
+                                   IdlePolicy idlePolicy,
+                                   ConsumerFence fence) {
+        return subscribe(streamName, partition, config, callback, idlePolicy);
+    }
+
     Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup);
+
+    /// #1271: detach WITHOUT the final cursor flush — for a node that has lost the consumer assignment,
+    /// whose flush the store would refuse anyway (and which, if it were admitted by a stale view, could
+    /// only move the cursor of a partition this node no longer owns). The default is the graceful
+    /// [#unsubscribe]; the real runtime overrides it.
+    default Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
+        return unsubscribe(streamName, partition, consumerGroup);
+    }
+
     Option<Long> cursorPosition(String streamName, int partition, String consumerGroup);
     Option<TransactionalCursorCommit> transactionalCursorCommit();
     DeadLetterHandler deadLetterHandler();

@@ -1,6 +1,8 @@
 package org.pragmatica.storage;
 
+import java.nio.channels.FileChannel;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
@@ -11,6 +13,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Contract;
@@ -25,7 +29,9 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.FileOps.createDirectories;
 import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.list;
+import static org.pragmatica.lang.io.FileOps.moveAtomic;
 import static org.pragmatica.lang.io.FileOps.readString;
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.io.FileOps.writeString;
 
 
@@ -35,18 +41,47 @@ final class DefaultSnapshotManager implements SnapshotManager {
     private static final Logger LOG = LoggerFactory.getLogger(DefaultSnapshotManager.class);
     private static final String SNAPSHOT_PREFIX = "snapshot-";
     private static final String SNAPSHOT_SUFFIX = ".dat";
-    private static final String LATEST_LINK = "LATEST";
+    private static final String LATEST_POINTER = "LATEST";
+    /// #1353: every snapshot and every `LATEST` update is written HERE first, fsynced, and renamed
+    /// over its target in ONE rename (`FileOps.moveAtomic`; the partial is a sibling of its target,
+    /// so the rename never crosses a filesystem). Writes are serialised by [#writeLock], so exactly
+    /// one writer owns these names at a time; under that lock the target only ever holds a complete
+    /// file: an interrupted write, a crash during the rename or a failed rename leave the previous
+    /// snapshot and the previous `LATEST` in place. Fixed names, not per-epoch ones, so a partial
+    /// orphaned by a crash is overwritten by the next write instead of accumulating; neither name
+    /// ends in `.dat`, so [#isSnapshotFile] never lists them and pruning never counts them.
+    /// Without the lock two concurrent writers truncate each other's partial and rename each
+    /// other's bytes under their own epoch name (rev1365 measured 3 torn + 26 misnamed files from
+    /// 4 x 25 concurrent `forceSnapshot()` calls) -- the ticket's own defect, made by the fix.
+    private static final String SNAPSHOT_PARTIAL = "snapshot.partial";
+    private static final String LATEST_PARTIAL = "LATEST.partial";
     private static final HexFormat HEX = HexFormat.of();
 
     private final MetadataStore metadataStore;
     private final SnapshotConfig config;
+    private final Function<Path, Result<Unit>> fsync;
     private final AtomicLong lastSnapshotEpoch = new AtomicLong();
     private final AtomicBoolean snapshotInProgress = new AtomicBoolean();
+    /// Serialises [#forceSnapshot]. The `maybeSnapshot` CAS only coalesces TICKS; `forceSnapshot`
+    /// is also called from the HTTP route (`StorageRoutes.triggerSnapshot`) on another thread. A
+    /// loser WAITS rather than coalescing: a forced snapshot must reflect state at or after the
+    /// call (the route reports `lastSnapshotEpoch` right after it), and an in-flight snapshot may
+    /// have captured state before the caller's mutation.
+    private final ReentrantLock writeLock = new ReentrantLock();
     private volatile long lastSnapshotTimestamp;
 
     DefaultSnapshotManager(MetadataStore metadataStore, SnapshotConfig config) {
+        this(metadataStore, config, DefaultSnapshotManager::fsync);
+    }
+
+    /// Test seam: the sync step only, called once per written partial with its path, after
+    /// `FileOps.writeString` has written it in full. A fixture can tear the file it is handed (a
+    /// disk that fills or a process that dies mid-snapshot), replace it, count calls or measure
+    /// concurrent depth. The write itself, the rename and the cleanup are the production path.
+    DefaultSnapshotManager(MetadataStore metadataStore, SnapshotConfig config, Function<Path, Result<Unit>> fsync) {
         this.metadataStore = metadataStore;
         this.config = config;
+        this.fsync = fsync;
         this.lastSnapshotTimestamp = System.currentTimeMillis();
     }
 
@@ -65,6 +100,15 @@ final class DefaultSnapshotManager implements SnapshotManager {
     @Override
     @Contract
     public void forceSnapshot() {
+        writeLock.lock();
+        try {
+            takeSnapshot();
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    private void takeSnapshot() {
         var snapshot = captureSnapshot();
 
         writeSnapshotToDisk(snapshot).onSuccess(_ -> recordSnapshotTaken(snapshot))
@@ -72,9 +116,17 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                                         cause.message()));
     }
 
+    /// #1353: the file `LATEST` names is tried first; when it is missing, torn or fails its hash
+    /// check, the retained snapshots are tried newest-first instead, and the fallback is reported
+    /// at WARN naming both files. A torn snapshot is never restored -- [#readAndValidateSnapshot]
+    /// refuses it -- so the choice is between another complete snapshot (usually older) and none
+    /// at all, and an older one is strictly more of the acked state than none.
     @Override
     public Option<MetadataSnapshot> restoreFromLatest() {
-        return readLatestSnapshotPath().flatMap(this::readAndValidateSnapshot);
+        var latest = readLatestSnapshotPath();
+
+        return latest.flatMap(this::readAndValidateSnapshot)
+                     .orElse(() -> restoreFromPreviousRetained(latest));
     }
 
     @Override
@@ -128,21 +180,57 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var filePath = config.snapshotPath().resolve(fileName);
         var content = serializeSnapshot(snapshot);
 
-        return writeString(filePath, content).mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())))
-                          .flatMap(_ -> updateLatestLink(filePath))
-                          .map(_ -> filePath);
+        return writeAtomically(SNAPSHOT_PARTIAL, filePath, content).flatMap(_ -> replaceLatestPointer(filePath))
+                              .map(_ -> filePath);
     }
 
-    private Result<Unit> updateLatestLink(Path snapshotFile) {
-        var latestPath = config.snapshotPath().resolve(LATEST_LINK);
+    /// `LATEST` is a regular one-line file naming the current snapshot, replaced by rename -- not a
+    /// symlink, whatever the older name `updateLatestLink` suggested.
+    private Result<Unit> replaceLatestPointer(Path snapshotFile) {
+        var latestPath = config.snapshotPath().resolve(LATEST_POINTER);
 
-        return writeString(latestPath,
-                           snapshotFile.getFileName().toString()).mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
+        return writeAtomically(LATEST_PARTIAL,
+                               latestPath,
+                               snapshotFile.getFileName().toString());
+    }
+
+    /// Write to the named partial in the snapshot directory, then rename it over `target` as one
+    /// rename. A failure at either step removes the partial, so the directory never holds a torn
+    /// file under any name a later boot or prune could pick up.
+    private Result<Unit> writeAtomically(String partialName, Path target, String content) {
+        var partial = config.snapshotPath().resolve(partialName);
+
+        return writeDurably(partial, content).flatMap(_ -> moveAtomic(partial, target))
+                           .onFailure(_ -> deleteIfExists(partial))
+                           .mapToUnit()
+                           .mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
+    }
+
+    private Result<Unit> writeDurably(Path path, String content) {
+        return writeString(path, content).flatMap(_ -> fsync.apply(path));
+    }
+
+    private static Result<Unit> fsync(Path path) {
+        return Result.lift(e -> new SnapshotError.WriteFailed(new RuntimeException(e.getMessage())),
+                           () -> forceToDisk(path));
+    }
+
+    /// `force(true)` on the just-written partial: the bytes reach the device before the rename
+    /// publishes them, so the rename can never make a torn file the current one. [unverified: power
+    /// loss -- the rename's own directory entry is not fsynced, the same bound as #676's
+    /// `GitBackedPersistence`; the pinned property is torn-file behaviour, not platter state.]
+    @Contract
+    private static Unit forceToDisk(Path path) throws Exception {
+        try (var channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
+            channel.force(true);
+        }
+
+        return Unit.unit();
     }
 
     // --- Disk read ---
     private Option<Path> readLatestSnapshotPath() {
-        var latestPath = config.snapshotPath().resolve(LATEST_LINK);
+        var latestPath = config.snapshotPath().resolve(LATEST_POINTER);
 
         return readString(latestPath).mapError(e -> new SnapshotError.ReadFailed(new RuntimeException(e.message())))
                          .map(String::trim)
@@ -160,6 +248,63 @@ final class DefaultSnapshotManager implements SnapshotManager {
                          .onFailure(cause -> LOG.warn("Snapshot restore failed: {}",
                                                       cause.message()))
                          .option();
+    }
+
+    /// #1353: the retained snapshots other than the one `LATEST` names, newest epoch first, until
+    /// one restores. `LATEST` is deliberately NOT rewritten here: restore is a read path, and the
+    /// next snapshot write repoints it anyway. The unreadable file is left on disk as evidence for
+    /// the operator; it sorts newest, so ordinary retention removes it once enough snapshots follow.
+    private Option<MetadataSnapshot> restoreFromPreviousRetained(Option<Path> unreadableLatest) {
+        var candidates = previousRetained(unreadableLatest);
+
+        return candidates.stream()
+                         .map(candidate -> restoreCandidate(unreadableLatest, candidate))
+                         .filter(Option::isPresent)
+                         .findFirst()
+                         .orElseGet(() -> reportNothingRestorable(unreadableLatest, candidates));
+    }
+
+    private Option<MetadataSnapshot> restoreCandidate(Option<Path> unreadableLatest, Path candidate) {
+        return readAndValidateSnapshot(candidate).onPresent(snapshot -> reportFallback(unreadableLatest,
+                                                                                       candidate,
+                                                                                       snapshot));
+    }
+
+    private List<Path> previousRetained(Option<Path> unreadableLatest) {
+        return listSnapshotFiles().map(files -> excludingUnreadable(files, unreadableLatest))
+                                .map(List::reversed)
+                                .onFailure(cause -> LOG.debug("No retained snapshots to fall back to: {}",
+                                                              cause.message()))
+                                .or(List.of());
+    }
+
+    private static List<Path> excludingUnreadable(List<Path> files, Option<Path> unreadableLatest) {
+        return unreadableLatest.map(latest -> excludingLatest(files, latest))
+                               .or(files);
+    }
+
+    private static void reportFallback(Option<Path> unreadableLatest, Path candidate, MetadataSnapshot snapshot) {
+        LOG.warn("{}; restored another retained snapshot {} (epoch={}) instead. "
+                + "Metadata recorded only in the unreadable file is lost unless a WAL replays it. "
+                + "See docs/operators/runbooks/backup-recovery.md",
+                 describeLatest(unreadableLatest),
+                 candidate.getFileName(),
+                 snapshot.epoch());
+    }
+
+    private static Option<MetadataSnapshot> reportNothingRestorable(Option<Path> unreadableLatest,
+                                                                    List<Path> candidates) {
+        unreadableLatest.onPresent(latest -> LOG.warn("{} and none of the {} other retained snapshot(s) restores; "
+                                                     + "metadata starts EMPTY. See docs/operators/runbooks/backup-recovery.md",
+                                                      describeLatest(unreadableLatest),
+                                                      candidates.size()));
+
+        return none();
+    }
+
+    private static String describeLatest(Option<Path> unreadableLatest) {
+        return unreadableLatest.map(latest -> "Snapshot " + latest + " named by LATEST is unreadable")
+                               .or("LATEST is missing or unreadable");
     }
 
     // --- Pruning ---

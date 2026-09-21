@@ -6,6 +6,8 @@ package org.pragmatica.aether.deployment.validation;
 
 import java.util.List;
 
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 
 
@@ -15,7 +17,12 @@ import org.pragmatica.lang.Cause;
 ///
 /// Empty failures list is illegal — callers construct this only when at least one failure exists.
 /// For the success path warnings travel via [ValidatedStreamResources] instead.
-public record StreamValidationFailures(List<StreamValidationFailure> failures, List<StreamValidationWarning> warnings) implements Cause {
+///
+/// #1336: answers `422` — the blueprint is well-formed and the request is not malformed; what is
+/// wrong is the content of its `resources.toml`, which the artifact's author controls. Before this
+/// the composite was not [HttpStatusAware] and would have surfaced as `500` — moot while the deploy
+/// path swallowed it, load-bearing now that a gating rule refuses the publish.
+public record StreamValidationFailures(List<StreamValidationFailure> failures, List<StreamValidationWarning> warnings) implements Cause, HttpStatusAware {
     public StreamValidationFailures {
         failures = List.copyOf(failures);
         warnings = List.copyOf(warnings);
@@ -24,6 +31,11 @@ public record StreamValidationFailures(List<StreamValidationFailure> failures, L
     public static StreamValidationFailures streamValidationFailures(List<StreamValidationFailure> failures,
                                                                     List<StreamValidationWarning> warnings) {
         return new StreamValidationFailures(failures, warnings);
+    }
+
+    @Override
+    public HttpStatus httpStatus() {
+        return HttpStatus.UNPROCESSABLE_ENTITY;
     }
 
     @Override

@@ -6,12 +6,15 @@ package org.pragmatica.aether.stream.topic;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -267,6 +270,12 @@ class DlqStreamSinkTest {
             assertThat(delivered).describedAs("the good event behind the garbage is delivered").containsExactly("msg-good");
             assertThat(captured).describedAs("exactly one quarantine entry, carrying the garbage bytes").hasSize(1);
             assertThat(captured.getFirst().payload()).isEqualTo(garbage);
+            // #1388: the handler records into `delivered` inside `invokeHandler`; the runtime advances the
+            // cursor in `deliverySucceeded`, after the handler's promise settles — so the advance past the
+            // good event is not ordered before the delivery poll above. Await it under the same deadline.
+            while (runtime.cursorPosition(TOPIC_STREAM, 0, "group-a").or(-1L) != 2L && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
             assertThat(runtime.cursorPosition(TOPIC_STREAM, 0, "group-a").or(-1L)).describedAs("the cursor passes the garbage")
                                                                                      .isEqualTo(2L);
         } finally {
@@ -307,10 +316,22 @@ class DlqStreamSinkTest {
     }
 
     private static StreamPublisher<DlqEnvelope> capturing(List<DlqEnvelope> sink) {
-        return entry -> {
-            sink.add(entry);
+        return new StreamPublisher<>() {
+            @Override
+            public Promise<Unit> publish(DlqEnvelope entry) {
+                sink.add(entry);
 
-            return Promise.unitPromise();
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public Promise<List<PublishOutcome>> publishBatch(List<DlqEnvelope> entries) {
+                sink.addAll(entries);
+
+                return Promise.success(IntStream.range(0, entries.size())
+                                                .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                .toList());
+            }
         };
     }
 }

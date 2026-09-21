@@ -2809,7 +2809,10 @@ segment; `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest
 any local source; `violated` / `violation` — the tri-floor invariant verdict. `walTotalBytes` at the
 root is this node's total live WAL footprint; `walRecoveryHeadGapsAccepted` counts WAL recoveries that
 accepted a gap before a WAL file's first record as reclaimed history (non-zero without retention
-having reclaimed that partition means records were lost — the WARN log names the range). Full schema and the precise invariant in the
+having reclaimed that partition means records were lost — the WARN log names the range);
+`walReclamationHeldBackTicks` counts consecutive truncation ticks in which the on-disk sealed watermark
+sat below the live one without advancing (non-zero and climbing means the streams metadata snapshot
+cannot be written or read, and WAL reclamation is halted until it can). Full schema and the precise invariant in the
 Management API section linked above.
 
 **A `violated: true` row means this node cannot rebuild that partition from its checkpoint** — the
