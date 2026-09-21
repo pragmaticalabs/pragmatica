@@ -13,3 +13,16 @@
   not run commits the pre-delivery cursor, and the late advance's checkpoint bails on the cancelled consumer,
   so the event is redelivered on reattach — the runtime's at-least-once contract at detach, not a stale-read
   window. [design intent — unverified]
+- **`close_countsBothUnsettledCommits_whenPeriodicAndFinalCommitShareOneConsumer` rewritten on the #1393
+  seams (part of #1388).** With #1393's registration fix in place it still reddened once (run 35548028994,
+  `expected: 2L but was: 1L`, 5.063 s): the store returned a pending promise, so the periodic commit's own 5 s
+  timeout was armed before `close()` and raced the shutdown bound — it fired first, the bound rightly skipped
+  the already-settled periodic (one `unsettled at the bound` line, for the final), and the periodic's
+  increment arrived on an async Promise event handler 0.3 ms later (`(local) failed: timed out`), after
+  `close()` had returned and the test had read 1. The test now holds the periodic's store call open until
+  after `close()` returns (its timeout cannot be armed before the bound), asserts through
+  `inFlightCommitCount()` that the periodic was registered before its store call and that both commits are
+  in flight while `close()` waits, reads 2 as of `close()` returning, then releases and fails the periodic
+  and checks the count stays 2. The wall-clock arming race is not merely unlikely: the timeout does not exist
+  until the test lets the store return. [verified: red 2/14 with the bound reporting only the first
+  in-flight commit (this test and the #1393 held-store pin); green at head]
