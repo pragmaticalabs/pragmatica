@@ -27,6 +27,7 @@ import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.SwimConfig;
+import org.pragmatica.swim.SwimError;
 import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMember.MemberState;
@@ -35,6 +36,7 @@ import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -149,18 +151,46 @@ class SwimHealthFsmTest {
 
     @Nested
     class IgnoredEvents {
+        /// #1308: this event used to be IGNORED here, which is exactly the leak — a `stop()` that beat
+        /// an in-flight `start()` left the ready protocol and its BOUND transport with no owner. The
+        /// state stays Stopped, but the event is now HANDLED and both are closed.
+        ///
+        /// The protocol is STARTED before the dispatch, unlike every other fixture protocol here:
+        /// `SwimProtocol.stop()` on a never-started protocol returns `PROTOCOL_NOT_RUNNING` and
+        /// touches nothing, so with an unstarted protocol the `swim().stop()` half of the cleanup
+        /// could be deleted and this test stayed green (rev1343 M2). Started, the protocol owns a
+        /// `SharedScheduler` fixed-rate tick; the pin is that the orphan cleanup already cancelled it,
+        /// which a SECOND `stop()` reports as `PROTOCOL_NOT_RUNNING`. Without the cleanup that second
+        /// stop succeeds — and outside this test the tick would run for the life of the JVM against a
+        /// stopped transport.
         @Test
-        void protocolReady_inStopped_isIgnored() {
+        void protocolReady_inStopped_stopsTheOrphanedProtocolAndTransport() {
             buildHarness(true);
-            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(),
-                                                                 new StubTransport(),
-                                                                 GossipEncryptor.none()));
+            var transport = new StubTransport();
+            var swim = swimWithSeeds();
 
-            assertThat(harness.state()).isInstanceOf(SwimHealthState.Stopped.class);
-            assertThat(harness.transitions()).isEmpty();
-            assertThat(harness.ignored()).hasSize(1);
-            assertThat(harness.ignored().getFirst().event())
-                .isInstanceOf(SwimHealthEvents.ProtocolReady.class);
+            assertThat(swim.start().isSuccess()).as("fixture protocol must be running before the orphan lands").isTrue();
+
+            try {
+                harness.dispatch(new SwimHealthEvents.ProtocolReady(swim,
+                                                                     transport,
+                                                                     GossipEncryptor.none()));
+
+                assertThat(harness.state()).isInstanceOf(SwimHealthState.Stopped.class);
+                assertThat(harness.transitions()).isEmpty();
+                assertThat(harness.ignored()).isEmpty();
+                assertThat(harness.handled()).hasSize(1);
+                assertThat(harness.handled().getFirst().event())
+                    .isInstanceOf(SwimHealthEvents.ProtocolReady.class);
+                assertThat(transport.stopped())
+                    .as("the orphaned transport must be closed, or its port stays bound")
+                    .isTrue();
+                assertThat(swim.stop())
+                    .as("the orphaned protocol must already be stopped, or its fixed-rate tick leaks for the life of the JVM")
+                    .isEqualTo(SwimError.General.PROTOCOL_NOT_RUNNING.result());
+            } finally {
+                swim.stop();
+            }
         }
 
         @Test
@@ -455,8 +485,11 @@ class SwimHealthFsmTest {
         };
     }
 
-    /// Minimal SwimTransport stub — all operations return successful Promises; no I/O.
+    /// Minimal SwimTransport stub — all operations return successful Promises; no I/O. Records
+    /// whether it was stopped, which is what pins the #1308 orphaned-protocol close.
     private static final class StubTransport implements SwimTransport {
+        private final AtomicBoolean stopped = new AtomicBoolean();
+
         @Override
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
             return Promise.unitPromise();
@@ -469,7 +502,13 @@ class SwimHealthFsmTest {
 
         @Override
         public Promise<Unit> stop() {
+            stopped.set(true);
+
             return Promise.unitPromise();
+        }
+
+        boolean stopped() {
+            return stopped.get();
         }
     }
 
