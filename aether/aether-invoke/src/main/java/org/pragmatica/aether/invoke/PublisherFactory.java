@@ -98,7 +98,10 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
     /// on either side. The blueprint is now an explicit input, obtained from the node-supplied
     /// [OwningBlueprintResolver] over the same `SliceTargetValue.owningBlueprint` the subscriber
     /// reads, so the two ends agree by construction instead of by coincidence.
-    private static String resolveTopicAddress(TopicConfig config, ProvisioningContext context) {
+    ///
+    /// Public for #1333: `ProjectionRuntimeFactory` (aether-node) resolves the projection's topic
+    /// stream through this SAME rule, so the registry keys on exactly the stream the group consumes.
+    public static String resolveTopicAddress(TopicConfig config, ProvisioningContext context) {
         return context.extension(String.class)
                       .flatMap(sliceId -> Artifact.artifact(sliceId).flatMap(artifact -> TopicAddressResolver.resolve(owningBlueprintOf(context,
                                                                                                                                         sliceId),

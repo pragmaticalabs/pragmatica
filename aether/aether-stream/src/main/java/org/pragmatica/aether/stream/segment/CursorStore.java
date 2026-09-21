@@ -8,6 +8,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.storage.BlockId;
@@ -28,6 +29,10 @@ public final class CursorStore implements ConsumerCursorStore {
     private static final String CURSORS_PREFIX = "cursors/";
     /// #1271: offset + the assignment epoch it was written under (`rabiaTerm`, `localCounter`).
     private static final int FENCED_CURSOR_BYTES = 3 * Long.BYTES;
+    /// #1333: the fenced block + the rewind epoch (`generation`, `rewind`) the cursor was committed under.
+    /// A rewind epoch never travels without an assignment epoch — only a managed, fenced group can be
+    /// rewound — so there is no unfenced-rewound layout.
+    static final int REWOUND_CURSOR_BYTES = 5 * Long.BYTES;
 
     private final StorageInstance storage;
 
@@ -82,10 +87,26 @@ public final class CursorStore implements ConsumerCursorStore {
                                          Epoch assignmentEpoch) {
         var refName = buildRefName(consumerGroup, streamName, partition);
 
+        return commit(consumerGroup, streamName, partition, offset, assignmentEpoch, RewindEpoch.NONE);
+    }
+
+    /// #1333: the fenced upsert with the rewind epoch recorded as well, so a same-node restart resumes
+    /// under the epoch the consumer committed with and [#fetchCursor] can rank the local cursor against
+    /// the cluster one by `(epoch, offset)`. Every fenced commit writes this layout; `rewindEpoch` is
+    /// `0/0` for a group never rewound.
+    @Override
+    public Promise<CommitOutcome> commit(String consumerGroup,
+                                         String streamName,
+                                         int partition,
+                                         long offset,
+                                         Epoch assignmentEpoch,
+                                         RewindEpoch rewindEpoch) {
+        var refName = buildRefName(consumerGroup, streamName, partition);
+
         return storage.replaceRef(refName,
-                                  encodeFencedOffset(offset, assignmentEpoch))
+                                  encodeRewoundCursor(offset, assignmentEpoch, rewindEpoch))
                       .map(_ -> CommitOutcome.persisted())
-                      .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
+                      .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset, rewindEpoch));
     }
 
     /// Any recorded cursor, fenced or not — the pull API's view, which owns rewinds and has no assignment.
@@ -98,8 +119,18 @@ public final class CursorStore implements ConsumerCursorStore {
     /// tenure, answers [Option#empty] and the caller resumes from the cluster checkpoint instead.
     @Override
     public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
+        return fetchCursor(consumerGroup, streamName, partition, assignmentEpoch).map(cursor -> cursor.map(Cursor::offset));
+    }
+
+    /// #1333: the tenure rule of [#fetch(String, String, int, Epoch)], with the rewind epoch the cursor
+    /// was committed under — [RewindEpoch#NONE] for a fenced block written before a rewind was recorded.
+    @Override
+    public Promise<Option<Cursor>> fetchCursor(String consumerGroup,
+                                               String streamName,
+                                               int partition,
+                                               Epoch assignmentEpoch) {
         return readCursor(consumerGroup, streamName, partition).map(stored -> stored.filter(cursor -> cursor.writtenUnder(assignmentEpoch))
-                                                                                    .map(StoredCursor::offset));
+                                                                                    .map(StoredCursor::cursor));
     }
 
     private Promise<Option<StoredCursor>> readCursor(String consumerGroup, String streamName, int partition) {
@@ -116,11 +147,14 @@ public final class CursorStore implements ConsumerCursorStore {
     }
 
     /// An 8-byte block is an unfenced cursor (pull API, or written before #1271); a 24-byte block also
-    /// carries the assignment epoch. Anything else is unreadable and treated as absent, as before.
+    /// carries the assignment epoch (#1271, no rewind epoch recorded → [RewindEpoch#NONE]); a 40-byte
+    /// block carries the rewind epoch as well (#1333). Anything else is unreadable and treated as absent,
+    /// as before.
     static Option<StoredCursor> decodeCursor(byte[] bytes) {
         return switch (bytes.length) {
-            case Long.BYTES -> Option.some(new StoredCursor(decodeOffset(bytes), Option.none()));
+            case Long.BYTES -> Option.some(new StoredCursor(decodeOffset(bytes), Option.none(), RewindEpoch.NONE));
             case FENCED_CURSOR_BYTES -> Option.some(decodeFencedCursor(bytes));
+            case REWOUND_CURSOR_BYTES -> Option.some(decodeRewoundCursor(bytes));
             default -> Option.none();
         };
     }
@@ -132,7 +166,21 @@ public final class CursorStore implements ConsumerCursorStore {
         var localCounter = buffer.getLong();
 
         return new StoredCursor(offset,
-                                Option.some(Epoch.epoch(rabiaTerm, localCounter)));
+                                Option.some(Epoch.epoch(rabiaTerm, localCounter)),
+                                RewindEpoch.NONE);
+    }
+
+    private static StoredCursor decodeRewoundCursor(byte[] bytes) {
+        var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+        var offset = buffer.getLong();
+        var rabiaTerm = buffer.getLong();
+        var localCounter = buffer.getLong();
+        var generation = buffer.getLong();
+        var rewind = buffer.getLong();
+
+        return new StoredCursor(offset,
+                                Option.some(Epoch.epoch(rabiaTerm, localCounter)),
+                                RewindEpoch.rewindEpoch(generation, rewind));
     }
 
     static byte[] encodeFencedOffset(long offset, Epoch assignmentEpoch) {
@@ -144,11 +192,27 @@ public final class CursorStore implements ConsumerCursorStore {
                          .array();
     }
 
-    /// A decoded cursor block: the offset, and the assignment epoch it was written under when fenced.
-    record StoredCursor(long offset, Option<Epoch> assignmentEpoch) {
+    static byte[] encodeRewoundCursor(long offset, Epoch assignmentEpoch, RewindEpoch rewindEpoch) {
+        return ByteBuffer.allocate(REWOUND_CURSOR_BYTES)
+                         .order(ByteOrder.BIG_ENDIAN)
+                         .putLong(offset)
+                         .putLong(assignmentEpoch.rabiaTerm())
+                         .putLong(assignmentEpoch.localCounter())
+                         .putLong(rewindEpoch.generation())
+                         .putLong(rewindEpoch.rewind())
+                         .array();
+    }
+
+    /// A decoded cursor block: the offset, the assignment epoch it was written under when fenced, and the
+    /// rewind epoch it was committed under ([RewindEpoch#NONE] unless the block recorded one).
+    record StoredCursor(long offset, Option<Epoch> assignmentEpoch, RewindEpoch rewindEpoch) {
         boolean writtenUnder(Epoch epoch) {
             return assignmentEpoch.map(epoch::equals)
                                   .or(false);
+        }
+
+        Cursor cursor() {
+            return Cursor.cursor(offset, rewindEpoch);
         }
     }
 
@@ -158,6 +222,19 @@ public final class CursorStore implements ConsumerCursorStore {
                   streamName,
                   partition,
                   offset);
+    }
+
+    private static void logCommit(String consumerGroup,
+                                  String streamName,
+                                  int partition,
+                                  long offset,
+                                  RewindEpoch rewindEpoch) {
+        log.debug("Cursor committed: {}/{}/{} -> {} @ rewind epoch {}",
+                  consumerGroup,
+                  streamName,
+                  partition,
+                  offset,
+                  rewindEpoch);
     }
 
     static String buildRefName(String consumerGroup, String streamName, int partition) {

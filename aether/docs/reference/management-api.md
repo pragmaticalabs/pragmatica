@@ -4217,6 +4217,8 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/cluster/storage/{name}` | Storage (cluster-wide) |
 | GET | `/api/v1/entity/checkpoints` | Durable Entities (per-node) |
 | GET | `/api/v1/entity/keyspaces` | Durable Entities |
+| GET | `/api/v1/topics/{namespace}/{topic}/{version}/groups` | Durable Topics (per-node) |
+| POST | `/api/v1/topics/{namespace}/{topic}/{version}/rebuild/{group}` | Durable Topics (per-node) |
 | GET | `/api/v1/logging/levels` | Log Level Management |
 | POST | `/api/v1/logging/levels` | Log Level Management |
 | DELETE | `/api/v1/logging/levels/{logger}` | Log Level Management |
@@ -5371,6 +5373,92 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies — including a #545 cross-artifact group collision, which names every colliding artifact, the stream, and the group on BOTH entries; empty when the consumer is healthy and reading locally |
 
 An empty `consumers` list means no slice in the cluster declares a `[streams.X]` consumer — the honest answer; rows are never fabricated.
+
+### Durable Topic Groups
+
+```
+GET /api/v1/topics/{namespace}/{topic}/{version}/groups
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (per-node)
+
+**CLI:** `aether topics groups <namespace:topic:version>`
+
+The consumer groups over a durable topic's backing stream (`topic:<namespace:topic:version>`), one per durable subscriber method, identified the way the runtime identifies them: `artifactBase#method` (durable-pubsub-spec §6 — the version is stripped so a redeploy keeps its cursor). The projection facade's own `name` is NOT the group; only the runtime's identity appears here (#1333).
+
+Three kinds of fact sit in one row, with three different scopes, so read each column for what it is:
+
+- **Cluster facts, identical from every node:** `consumerNode` / `ownerNode` (the #535 assignment, computed locally and identically everywhere), and `committedCursor` / `committedEpoch` — the group's consensus-committed checkpoint read from KV. `committedEpoch` is the rewind epoch the checkpoint was committed under, `0/0` for a group never rewound; after a rebuild it equals the token the rebuild answered with.
+- **This node's facts:** `heldHere`, `liveCursor`, `liveEpoch`, `lastCursorCommitFailure` — the consumer THIS node runs for the partition. Present only where `heldHere` is `true`. `committedCursor` can LAG `liveCursor`, or be ABSENT while `liveCursor` is not: checkpoints are requested from an ack on the 500 ms / 1000-event cadence, so a partition that goes quiet keeps its committed cursor at the last cadence-triggered commit — or has none, when every event landed within 500 ms of the attach — until the next event or a graceful detach `[verified: DurableProjectionRebuildForgeTest measured 3 committed against 7 live, and none against 7, on a quiet single-partition topic]`. The lag bounds redelivery after an ungraceful move; it is not a stall.
+- **The hosted projection's facts:** `projection` (its name) and, per partition, `replayState` with `nextReplayOffset` / `replayThroughOffset` while `REBUILDING`. `replayState` is `UNKNOWN` on a node that hosts no projection for the group — the store's status lives inside the slice, and a node that does not run the slice cannot see it. Ask the node named in `consumerNode`.
+
+`cursorReportFailures` counts, node-wide since boot, the committed-cursor reports a hosted projection refused or threw on; a non-zero value with a projection stuck `REBUILDING` is the first thing to look at.
+
+**Response:**
+```json
+{
+  "topic": "com.example:projection-events:1.0.0",
+  "topicStream": "topic:com.example:projection-events:1.0.0",
+  "node": "node-2",
+  "cursorReportFailures": 0,
+  "groups": [
+    {
+      "consumerGroup": "com.example:orders-slice#onProjectionEvent",
+      "artifact": "com.example:orders-slice:1.0.0",
+      "method": "onProjectionEvent",
+      "sliceDeployedLocally": true,
+      "projection": "order-totals",
+      "partitions": [
+        {"partition": 0, "consumerNode": "node-2", "ownerNode": "node-2", "committedCursor": 6, "committedEpoch": "1/1",
+         "heldHere": true, "liveCursor": 6, "liveEpoch": "1/1", "lastCursorCommitFailure": "", "replayState": "LIVE"}
+      ],
+      "diagnostic": ""
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `groups[].consumerGroup` | The runtime's group id, `artifactBase#method` — what `rebuild` takes and what dead-letter entries are attributed to |
+| `groups[].projection` | Name of the projection attached for this group ON THIS NODE; empty when this node hosts none |
+| `groups[].partitions[].committedCursor` / `committedEpoch` | Consensus-committed checkpoint (next offset to read) and the rewind epoch it carries. Absent / `""` before the first checkpoint |
+| `groups[].partitions[].heldHere`, `liveCursor`, `liveEpoch`, `lastCursorCommitFailure` | This node's consumer for the partition, when it runs one; `lastCursorCommitFailure` as on [Declarative Stream Consumers](#declarative-stream-consumers) |
+| `groups[].partitions[].replayState` | `LIVE`, `REBUILDING`, or `UNKNOWN` (no projection for the group hosted here). While `REBUILDING`: `nextReplayOffset` (the next offset the store will admit) and `replayThroughOffset` (the captured head it goes LIVE past) |
+| `groups[].unassignedPartitions`, `diagnostic` | As on Declarative Stream Consumers |
+
+### Rebuild Projection
+
+```
+POST /api/v1/topics/{namespace}/{topic}/{version}/rebuild/{group}
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (per-node) — POST to the node that consumes the group's partitions (`consumerNode` above); any other node answers `409`
+
+**CLI:** `aether topics rebuild <namespace:topic:version> <group>`
+
+`{group}` is the runtime's group id, `artifactBase#method`, with the `#` percent-encoded (`%23`) — bare, an HTTP client treats it as a URI fragment and never sends it. The CLI encodes it.
+
+Rebuilds the read model behind one consumer group's projection (durable-pubsub-spec §10, #1333), in the facade's three ordered steps: **capture** what will be replayed (per partition, the earliest retained offset through the last visible one, read from the ring this node holds), **reset** the projection store to a new generation — model cleared, REBUILDING over the captured range, in one step — then **rewind** the group's committed cursor to the start of each partition's range under a fresh rewind epoch. The rewind token is minted from the group's COMMITTED checkpoints — strictly newer than every epoch found, never a store-local counter, so a fresh store after a restart or an assignee move still mints past what the cluster holds. The rewind is a fenced KV put: `StreamCursorCheckpointValue` carries the epoch, the rewind record MINTS it (refused by the applier unless strictly newer — two rebuilds racing on the same committed state cannot both succeed; the loser's request fails), and the applier refuses any later checkpoint stamped with an older one, so a consumer still committing its pre-rewind position cannot undo the rewind `[mechanism: EpochBearing fence in KVStore.staleEpochWrite; pinned by DurableProjectionRebuildTest zombieCheckpoint_atTheOldEpoch_isRefusedByTheApplier]`. The rewound consumer is restarted by the node that runs it (on the committed checkpoint's notification, and on every 5 s reconcile pass) and resumes at the rewound position under the new epoch; every cursor it commits from then on is reported to the projection stamped with that epoch, which is what lets the store skip a replay offset that was dead-lettered and take the partition LIVE once the cursor passes the captured head.
+
+**Response** — the new generation, the rewind token (equal to the `committedEpoch` the groups route will show) and the captured range per partition:
+```json
+{
+  "topicStream": "topic:com.example:projection-events:1.0.0",
+  "consumerGroup": "com.example:orders-slice#onProjectionEvent",
+  "projection": "order-totals",
+  "generation": 1,
+  "token": {"generation": 1, "rewind": 1},
+  "partitions": {"0": {"nextOffset": 0, "throughOffset": 5}},
+  "state": "REBUILDING"
+}
+```
+
+A partition with nothing visible is absent from `partitions` and LIVE from the start. `state` is `LIVE` when the captured range was empty everywhere. After a clean replay the rewound consumer checkpoints its catch-up at the head, so `committedCursor` reaches the rebuilt head without a further event.
+
+**Refusals.** `409` when no projection for the group is attached on this node, or when this node consumes none of the group's partitions (a slice-hosting node that is not the assignee holds a projection store that never sees deliveries; rebuilding it would rewind the consuming node into a store that is not rebuilding) — the message names the node consuming each partition; also `409` when a projection on the topic exists here but cannot be attributed to the group (the slice has two durable subscribers on the topic and attached without naming the method — name it with `ProjectionRuntime.attach(projection, "method")`). A capture that cannot be answered from this node's rings, and a rewind whose put the applier refused (the projection store's generation is behind the cluster's — an in-memory store after a node restart), surface as their own causes, and nothing is touched in the first case: the capture precedes the reset by construction.
+
+**What it does not do.** It does not redrive the dead-letter queue: a replay offset that dead-letters again is skipped on the committed cursor and stays absent from the rebuilt model until redriven (§9 redrive is a separate surface). It does not rebuild on more than one node: a projection whose store is per node (the in-memory backing) is coherent only for a single-assignee group `[design intent — unverified for a shared ProjectionStore backing, which does not exist yet]`.
 
 ### Create Stream
 
