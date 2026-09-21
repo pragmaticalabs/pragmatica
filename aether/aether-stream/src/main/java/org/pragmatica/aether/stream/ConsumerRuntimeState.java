@@ -782,11 +782,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// the call, a store that stalls (or a thread descheduled between the call and the `add`) left that
     /// commit out of the snapshot, so it was neither bound-awaited nor counted for this shutdown. The
     /// [TrackedCommit] therefore carries a handle minted before the chain exists, settled from the chain as
-    /// a regular completion (`withResult`, immediate on resolution). The outcome handlers stay on the chain
-    /// itself: attached to a chain that a synchronously-failing store has already settled they run inline,
-    /// so the failure is counted before [#close] returns
-    /// (`StreamConsumerRuntimeTest.close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound`) —
-    /// on a pending promise they would be dispatched asynchronously.
+    /// a regular completion (`withResult`, immediate on resolution).
+    ///
+    /// #1401: the outcome is counted with `with*()` too, attached BEFORE the handle's `withResult`.
+    /// Attachment order is execution order: `with*()` actions run inline in the resolver's frame, in the
+    /// order attached and before any dependent or join; `on*()` handlers are dispatched asynchronously.
+    /// With the count on an `onFailure`, a periodic commit whose own [#PERIODIC_COMMIT_BOUND] timeout
+    /// settled its handle just before [#close]'s bound was skipped there (correctly — settled) while its
+    /// increment landed after the caller had already read the count. Counted first, nothing that sees the
+    /// handle settled — the bound's `allOf` join above all — can see the count still short. A chain a
+    /// synchronously-failing store has already settled runs them inline at attachment, as before.
     private Promise<CommitOutcome> issueTrackedCommit(ConsumerKey key,
                                                       ConsumerState state,
                                                       ConsumerCursorStore store,
@@ -796,12 +801,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         inFlightCommits.add(tracked);
         var commit = predecessor.fold(_ -> lifted(() -> commitCursor(store, key, state)));
-
+        // Attachment order is execution order (Promise.processActions): count, then unregister, then settle
+        // the handle — all inline in the frame that resolves `commit`, none on an async event.
+        commit.withSuccess(outcome -> reportIfLocalOnly(tracked, outcome));
+        commit.withFailure(cause -> onCursorCommitFailure(tracked, cause));
+        commit.withResult(_ -> inFlightCommits.remove(tracked));
         commit.withResult(tracked.commit()::resolve);
 
-        return commit.onResult(_ -> inFlightCommits.remove(tracked))
-                     .onSuccess(outcome -> reportIfLocalOnly(tracked, outcome))
-                     .onFailure(cause -> onCursorCommitFailure(tracked, cause));
+        return commit;
     }
 
     /// #1271: a fenced consumer commits under ITS assignment epoch, so the store can refuse it once the

@@ -26,3 +26,19 @@
   and checks the count stays 2. The wall-clock arming race is not merely unlikely: the timeout does not exist
   until the test lets the store return. [verified: red 2/14 with the bound reporting only the first
   in-flight commit (this test and the #1393 held-store pin); green at head]
+- **Product change (part of #1388): a cursor commit's incident is counted in the same frame that settles its
+  handle, never on an async event.** `issueTrackedCommit` attached the outcome handlers with `onSuccess`/
+  `onFailure`, which `Promise.processActions` dispatches to the executor, while the handle settled inline via
+  `withResult` — so a commit that settled by its own timeout just before the shutdown bound had a settled
+  handle (correctly skipped by the bound) and an increment that landed after the caller had read the count.
+  The outcome is now recorded with `withSuccess`/`withFailure`, attached BEFORE the unregister and the
+  handle's `withResult`; attachment order is execution order for `with*()` actions, so nothing that sees the
+  handle settled — `close()`'s bound above all — can see the count short. [verified:
+  `commitFails_incidentIsCountedBeforeItsHandleSettles_observedFromTheSameResolveFrame` — the periodic's
+  store promise is failed on the test thread and the FINAL commit's store call, which the periodic slot issues
+  inline in that same frame, reads the count: 1 with no wait; with the increment back on `onFailure` it reads
+  0 in 10/10 runs of the pin alone (12/13 overall — the async handler is dispatched before the inline actions
+  run, so an inline observer can only race it, not exclude it); `close()` then returns inside the bound with
+  both counted] [unverified: the attachment ORDER (count before the handle) — its only observer past the
+  handle's settle is `close()`'s join waking a thread, a nanosecond window no test can close; stated at the
+  attachment site]

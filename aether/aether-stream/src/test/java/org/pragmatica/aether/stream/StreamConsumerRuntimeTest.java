@@ -2057,6 +2057,74 @@ class StreamConsumerRuntimeTest {
                       .isEqualTo(2L);
         }
 
+        /// #1401 product pin: a commit's incident is counted BEFORE its handle settles, in the same frame. The
+        /// periodic commit's store promise is failed on the test thread; the runtime's `with*()` actions run inline
+        /// in that frame in attachment order — count, unregister, settle the handle — and, through the periodic
+        /// slot, the FINAL commit's store call follows in the same frame. That store call is the observer: it
+        /// reads the count with no thread boundary and no wait. With the increment on an async `onFailure` it
+        /// reads 0, deterministically. The final fails synchronously so `close()` returns as soon as both
+        /// handles settle — inside the bound — with both counted.
+        @Test
+        void commitFails_incidentIsCountedBeforeItsHandleSettles_observedFromTheSameResolveFrame() throws InterruptedException {
+            createTestStream("orders");
+            Promise<CommitOutcome> periodicPending = Promise.promise();
+            var runtimeRef = new AtomicReference<ConsumerRuntimeState>();
+            var issued = new CountDownLatch(1);
+            var countAtFinalStoreCall = new AtomicLong(-1);
+            var inFlightAtFinalStoreCall = new AtomicInteger(-1);
+            var store = new ConsumerCursorStore() {
+                private final AtomicInteger calls = new AtomicInteger();
+
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (calls.getAndIncrement() == 0) {
+                        issued.countDown();
+
+                        return periodicPending;
+                    }
+                    // Inside the frame that resolves the periodic commit: its count must already be there.
+                    countAtFinalStoreCall.set(runtimeRef.get().cursorCommitFailureCount());
+                    inFlightAtFinalStoreCall.set(runtimeRef.get().inFlightCommitCount());
+
+                    return StreamError.General.BUFFER_EMPTY.promise();
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            runtimeRef.set(observedRuntime);
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            assertThat(issued.await(5, TimeUnit.SECONDS)).describedAs("the periodic commit was issued").isTrue();
+
+            var returned = new CountDownLatch(1);
+            var countAtClose = new AtomicLong(-1);
+
+            Thread.ofPlatform().start(() -> {
+                observedRuntime.close();
+                countAtClose.set(observedRuntime.cursorCommitFailureCount());
+                returned.countDown();
+            });
+            awaitUntil(() -> observedRuntime.inFlightCommitCount() == 2, "close() registered the final commit behind the pending periodic one");
+            assertThat(returned.getCount()).describedAs("close() is waiting on both").isEqualTo(1L);
+
+            periodicPending.fail(StreamError.General.BUFFER_EMPTY);
+
+            assertThat(countAtFinalStoreCall.get())
+                      .describedAs("the periodic commit's incident was counted before its handle settled — read from inside the same resolve frame, no wait")
+                      .isEqualTo(1L);
+            assertThat(inFlightAtFinalStoreCall.get()).describedAs("the periodic commit was unregistered before its handle settled; the final is the one left")
+                                                      .isEqualTo(1);
+            assertThat(returned.await(2, TimeUnit.SECONDS)).describedAs("close() returned once both handles settled, inside the bound").isTrue();
+            assertThat(countAtClose.get()).describedAs("both incidents were counted as of close() returning").isEqualTo(2L);
+        }
+
         /// The first `commit` runs `onEntry`, counts down `entered`, parks inside the call until `gate` opens, and
         /// then returns `first`; every later commit returns a fresh promise that never settles.
         private static ConsumerCursorStore heldThenPending(CountDownLatch entered,
