@@ -50,14 +50,7 @@ class StorageGarbageCollectorClaimRaceTest {
     }
 
     private BlockId storeOrphanPastGrace() {
-        var id = instance.put(CONTENT)
-                         .await()
-                         .fold(c -> {
-                                   fail("put failed: " + c.message());
-
-                                   return null;
-                               },
-                               blockId -> blockId);
+        var id = instance.put(CONTENT).await().onFailure(c -> fail("put failed: " + c.message())).unwrap();
         var expired = System.currentTimeMillis() - GRACE_PERIOD_MS - 100;
 
         metadataStore.computeLifecycle(id,
@@ -79,12 +72,8 @@ class StorageGarbageCollectorClaimRaceTest {
     private BlockId racedId() {
         return racingPut.get()
                         .await()
-                        .fold(c -> {
-                                  fail("racing put failed: " + c.message());
-
-                                  return null;
-                              },
-                              id -> id);
+                        .onFailure(c -> fail("racing put failed: " + c.message()))
+                        .unwrap();
     }
 
     private void assertReadable(BlockId id, String when) {
@@ -147,14 +136,7 @@ class StorageGarbageCollectorClaimRaceTest {
         var id = storeOrphanPastGrace();
 
         metadataStore.afterFailedClaim(() -> gc.collectGarbage());
-        var racedId = instance.put(CONTENT)
-                              .await()
-                              .fold(c -> {
-                                        fail("put failed: " + c.message());
-
-                                        return null;
-                                    },
-                                    blockId -> blockId);
+        var racedId = instance.put(CONTENT).await().onFailure(c -> fail("put failed: " + c.message())).unwrap();
 
         assertThat(racedId).isEqualTo(id);
         assertReadable(id, "collector ran between failed claim and credit");
