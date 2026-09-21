@@ -346,3 +346,43 @@ reconnect, ordered replay, projection rebuild, declarative consumers and invocat
 The only subsequent runtime change records this validation; executable sources are unchanged.
 New-head CI must independently validate its generated merge revision. Historical green
 checkpoints above are not substituted for that evidence.
+
+
+## Second review: independent membership evidence and shutdown admission
+
+Implementation `aca8c8864` includes independent SWIM-incarnation and durable-process-epoch
+fences, rejection of stale terminal health evidence before side effects, shutdown refusals
+for late and queued client requests, the stale-slice controller regression, and strict
+hierarchy acceptance selection. The final six-step build/JBCT passed with no formatting
+residue (`/private/tmp/review-r2-runtime-final-build.log`).
+
+The full consensus suite passed **859 cases, zero failures/errors/skips**. The latch-controlled
+shutdown test fails by assertion when either queued-request cancellation callback is removed;
+restored source passed. Ordinary protocol tasks retain cancellation during shutdown rather
+than being drained into activation. The existing checkpoint/recovery machinery is preserved.
+
+The membership selection passed **344 cases**, including 12 governor/admission evidence-domain
+cases. Comparing durable evidence against SWIM incarnation fails the initial ten mixed-domain
+cases; accepting equal terminal epochs fails both additional terminal-side-effect cases.
+The combined controller selection passed 13 cases, and removing the slice-source freshness
+filter failed its new actual-controller-view assertion. Restored sources passed their focused
+pins. These are FSM/controller tests, not transport-level evidence.
+
+After the final build, 43 selected node health, authority and assembly tests passed with zero
+failures/errors/skips (`/private/tmp/review-r2-runtime-node-tests.log`). The live selection below
+then passed **23 cases, zero failures/errors/skips**, in 531 seconds, with all 70 runtime
+dependencies fresh (`/private/tmp/review-r2-runtime-forge.log`). No build/install ran during
+Forge. This is a targeted final-head gate; the earlier 50-case matrix remains a distinct
+historical checkpoint.
+
+```sh
+env -u HCLOUD_TOKEN ./forge.sh HierarchyAuthorityAcceptanceTest,HierarchicalWorkerReconnectTest,HierarchicalGovernorReportLossTest,HierarchicalLeaderObservationGraceTest,HierarchicalWorkerFormationTest,HierarchicalWorkerDrainTest,HierarchicalCoreRestartTest,ClusterFormationTest,SliceInvocationTest,StreamOwnershipDriverFenceTest
+```
+
+The strict selection validator passed all seven regressions and verified the ten selected
+source classes before execution and their actual testcase records afterward. CI now separates
+foundation mutations from runtime acceptance: the latter uses the `run-hierarchy` PR label,
+manual dispatch, or main/release pushes changing hierarchy acceptance tests/checker/workflow.
+Both #1390 and #1405 carry the label. Missing, empty, failed, errored or skipped selected-class
+results refuse the gate. Generated-merge CI for the published revision remains independent
+evidence; no local result is represented as that CI run.
