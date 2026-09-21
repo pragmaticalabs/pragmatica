@@ -98,7 +98,7 @@
    Type=simple
    User=aether
    ExecStart=/usr/bin/java -XX:+ExitOnOutOfMemoryError -Xmx4g -jar /opt/aether/aether-node.jar \
-     --node-id=${HOSTNAME} \
+     --node-id=%H \
      --port=8090 \
      --peers=node1:8090,node2:8090,node3:8090
    # Restart must stay "no": a crashed node must not rejoin under the same id.
