@@ -45,6 +45,21 @@ public interface StorageInstance {
     Option<BlockId> resolveRef(String name);
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
+
+    /// Releases one reference credited by [#put] -- the debit for a block that carries no name of its
+    /// own. [DefaultContentStore] stores chunk blocks with plain `put` and names only the manifest, so
+    /// `put`'s credit is the only thing holding a chunk; this is how that credit is given back when the
+    /// manifest is superseded or deleted (#981). Decrements only: at zero the block reports
+    /// [BlockLifecycle#isOrphaned] and [StorageGarbageCollector] collects it through the same lifecycle
+    /// record it already reads -- there is no second delete path. Never removes anything from a tier,
+    /// so a block another reference still holds stays readable through it.
+    ///
+    /// The default releases nothing: an implementation without a lifecycle record has no credit to give
+    /// back. A double that delegates to a real instance must override this too, or its chunks leak.
+    default Promise<Unit> release(BlockId id) {
+        return Promise.success(unit());
+    }
+
     /// Writes (or deduplicates) `content` and points `name` at the resulting block -- the write-and-ref
     /// primitive, and the only correct way to store content under a name.
     ///
@@ -200,6 +215,13 @@ final class DefaultStorageInstance implements StorageInstance {
     public Promise<Unit> deleteRef(String refName) {
         metadataStore.removeRef(refName)
                      .onPresent(id -> metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented));
+
+        return Promise.success(unit());
+    }
+
+    @Override
+    public Promise<Unit> release(BlockId id) {
+        metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented);
 
         return Promise.success(unit());
     }

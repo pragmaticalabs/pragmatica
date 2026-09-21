@@ -32,8 +32,26 @@ final class DefaultContentStore implements ContentStore {
     }
 
     // --- Put flow ---
+    /// The chunks of the manifest `name` previously pointed at are read BEFORE the write and released
+    /// AFTER it. `putRef` decrements the manifest it displaces, never what that manifest points at, and
+    /// a chunk holds only `put`'s credit (see [#storeManifestUnderName]) -- so nothing but this gives
+    /// that credit back, and before #981 every superseded chunk stayed at refCount 1 forever. Releasing
+    /// after the write is load-bearing: a failed overwrite leaves the previous document untouched, and
+    /// re-storing the same content credits each chunk (dedup) before releasing it, netting to zero.
     @Override
     public Promise<String> put(String name, byte[] content) {
+        return previousChunkIds(name).flatMap(previous -> storeThenRelease(name, content, previous));
+    }
+
+    private Promise<String> storeThenRelease(String name, byte[] content, List<String> previous) {
+        return store(name, content).flatMap(id -> releaseThenReturn(previous, id));
+    }
+
+    private Promise<String> releaseThenReturn(List<String> previous, String id) {
+        return releaseAllChunks(previous, 0).map(_ -> id);
+    }
+
+    private Promise<String> store(String name, byte[] content) {
         return content.length <= config.chunkSizeBytes()
                ? putDirect(name, content)
                : putChunked(name, content);
@@ -56,7 +74,8 @@ final class DefaultContentStore implements ContentStore {
     /// One write-and-ref call, never [StorageInstance#put] followed by [StorageInstance#createRef]:
     /// the pair credits the block twice for one name, so it could never reach refCount 0 and the
     /// garbage collector could never collect it (#812). Chunk blocks below keep using plain `put` --
-    /// they carry no name, and `put`'s own credit is the only thing holding them against GC.
+    /// they carry no name, and `put`'s own credit is the only thing holding them against GC; it is
+    /// given back with [StorageInstance#release] when the manifest is superseded or deleted (#981).
     private Promise<String> storeManifestUnderName(String name, long totalSize, List<String> chunkIds) {
         var manifest = ContentManifest.contentManifest(name, totalSize, chunkIds);
 
@@ -191,51 +210,53 @@ final class DefaultContentStore implements ContentStore {
     }
 
     // --- Delete flow ---
+    /// Releases, never deletes. Dropping the name decrements the block it pointed at, and each chunk of
+    /// a manifest gives back `put`'s credit; whatever reaches zero is collected by
+    /// [StorageGarbageCollector] through the lifecycle record it already reads -- there is no second
+    /// delete path. A block another name still holds (two names deduplicating to one block) is
+    /// decremented, not destroyed, and stays readable through that name. Before #981 this called
+    /// [StorageInstance#delete], which removes the block from every tier regardless of who else holds it.
     @Override
     public Promise<Unit> delete(String name) {
+        return previousChunkIds(name).flatMap(chunkIds -> dropNameThenRelease(name, chunkIds));
+    }
+
+    private Promise<Unit> dropNameThenRelease(String name, List<String> chunkIds) {
+        return storage.deleteRef(name)
+                      .flatMap(_ -> releaseAllChunks(chunkIds, 0));
+    }
+
+    /// The chunk ids of the manifest `name` currently points at -- empty for an absent name, a block
+    /// no tier holds any more, or direct (unchunked) content.
+    private Promise<List<String>> previousChunkIds(String name) {
         return storage.resolveRef(name)
-                      .fold(() -> Promise.success(unit()),
-                            blockId -> deleteByBlockId(name, blockId));
+                      .fold(() -> Promise.success(List.of()),
+                            this::chunkIdsOf);
     }
 
-    private Promise<Unit> deleteByBlockId(String name, BlockId blockId) {
+    private Promise<List<String>> chunkIdsOf(BlockId blockId) {
         return storage.get(blockId)
-                      .flatMap(opt -> opt.fold(() -> deleteRefOnly(name),
-                                               data -> deleteContentAndRef(name, blockId, data)));
+                      .map(DefaultContentStore::chunkIdsIn);
     }
 
-    private Promise<Unit> deleteRefOnly(String name) {
-        return storage.deleteRef(name);
+    private static List<String> chunkIdsIn(Option<byte[]> block) {
+        return block.flatMap(ContentManifest::fromBytes)
+                    .map(ContentManifest::chunkBlockIds)
+                    .or(List.of());
     }
 
-    private Promise<Unit> deleteContentAndRef(String name, BlockId blockId, byte[] data) {
-        return ContentManifest.fromBytes(data).fold(() -> deleteBlockAndRef(name, blockId),
-                                                    manifest -> deleteManifestChunksAndRef(name, blockId, manifest));
-    }
-
-    private Promise<Unit> deleteBlockAndRef(String name, BlockId blockId) {
-        return storage.delete(blockId)
-                      .flatMap(_ -> storage.deleteRef(name));
-    }
-
-    private Promise<Unit> deleteManifestChunksAndRef(String name, BlockId manifestId, ContentManifest manifest) {
-        return deleteAllChunks(manifest.chunkBlockIds(),
-                               0).flatMap(_ -> storage.delete(manifestId))
-                              .flatMap(_ -> storage.deleteRef(name));
-    }
-
-    private Promise<Unit> deleteAllChunks(List<String> chunkIds, int index) {
+    private Promise<Unit> releaseAllChunks(List<String> chunkIds, int index) {
         if (index >= chunkIds.size()) {
             return Promise.success(unit());
         }
 
-        return deleteSingleChunk(chunkIds.get(index)).flatMap(_ -> deleteAllChunks(chunkIds, index + 1));
+        return releaseSingleChunk(chunkIds.get(index)).flatMap(_ -> releaseAllChunks(chunkIds, index + 1));
     }
 
-    private Promise<Unit> deleteSingleChunk(String hexId) {
+    private Promise<Unit> releaseSingleChunk(String hexId) {
         return BlockId.fromHex(hexId)
                       .async()
-                      .flatMap(storage::delete);
+                      .flatMap(storage::release);
     }
 
     // --- Chunking helpers ---

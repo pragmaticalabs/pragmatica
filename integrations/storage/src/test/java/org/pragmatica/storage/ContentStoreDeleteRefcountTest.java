@@ -7,10 +7,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #981 -- [DefaultContentStore] deleted by block id, around the reference counts: overwriting a
 /// chunked name released its manifest but never its chunks (each chunk holds only [StorageInstance#put]'s
@@ -23,9 +24,9 @@ import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageColle
 /// through the surviving name. Refcounts are read into locals as the run proceeds and asserted only
 /// after the consequence, as failure locators. Only elapsed time (the grace period) is hand-fed.
 class ContentStoreDeleteRefcountTest {
-
     private static final long ONE_MB = 1024 * 1024;
     private static final int CHUNK_SIZE = 128;
+    private static final long GRACE_ELAPSED_MS = 20;
     private static final String NAME = "doc.bin";
     private static final String OTHER_NAME = "copy-of-doc.bin";
     private static final byte[] SMALL = "content-store-refcount-small".getBytes(StandardCharsets.UTF_8);
@@ -55,16 +56,11 @@ class ContentStoreDeleteRefcountTest {
     }
 
     private BlockId putContent(String name, byte[] content) {
-        return BlockId.fromHex(store.put(name, content)
-                                    .await()
-                                    .unwrap())
-                      .unwrap();
+        return BlockId.fromHex(store.put(name, content).await().unwrap()).unwrap();
     }
 
     private void deleteContent(String name) {
-        store.delete(name)
-             .await()
-             .onFailure(c -> fail("delete of " + name + " failed: " + c.message()));
+        store.delete(name).await().onFailure(c -> fail("delete of " + name + " failed: " + c.message()));
     }
 
     private void assertReadable(String name, byte[] expected) {
@@ -72,9 +68,10 @@ class ContentStoreDeleteRefcountTest {
              .await()
              .onFailure(c -> fail("get of " + name + " failed: " + c.message()))
              .onSuccess(opt -> {
-                 assertThat(opt.isPresent()).as("%s must still be readable", name).isTrue();
-                 opt.onPresent(data -> assertThat(data).isEqualTo(expected));
-             });
+                            assertThat(opt.isPresent()).as("%s must still be readable", name)
+                                      .isTrue();
+                            opt.onPresent(data -> assertThat(data).isEqualTo(expected));
+                        });
     }
 
     private void assertGone(BlockId id) {
@@ -82,7 +79,8 @@ class ContentStoreDeleteRefcountTest {
         storage.get(id)
                .await()
                .onFailure(c -> fail("get failed: " + c.message()))
-               .onSuccess(opt -> assertThat(opt.isEmpty()).as("%s must be gone from the tier", id).isTrue());
+               .onSuccess(opt -> assertThat(opt.isEmpty()).as("%s must be gone from the tier", id)
+                                           .isTrue());
     }
 
     /// A missing lifecycle record reads as -1 rather than throwing: on the unfixed base, `delete`
@@ -101,10 +99,7 @@ class ContentStoreDeleteRefcountTest {
     }
 
     private List<BlockId> chunkIdsOf(BlockId manifestId) {
-        return ContentManifest.fromBytes(storage.get(manifestId)
-                                                .await()
-                                                .unwrap()
-                                                .unwrap())
+        return ContentManifest.fromBytes(storage.get(manifestId).await().unwrap().unwrap())
                               .unwrap()
                               .chunkBlockIds()
                               .stream()
@@ -112,8 +107,14 @@ class ContentStoreDeleteRefcountTest {
                               .toList();
     }
 
-    private static int collectAfterGrace(StorageGarbageCollector gc) throws InterruptedException {
-        Thread.sleep(20);
+    /// Lets the (1ms, floored) grace period elapse before the cycle. A deadline spin rather than
+    /// `Thread.sleep`: no checked exception to declare, and no early return to explain a flake with.
+    private static int collectAfterGrace(StorageGarbageCollector gc) {
+        var deadline = System.currentTimeMillis() + GRACE_ELAPSED_MS;
+
+        while (System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
 
         return gc.collectGarbage();
     }
@@ -123,7 +124,7 @@ class ContentStoreDeleteRefcountTest {
         var data = new byte[size];
 
         for (var i = 0; i < size; i++) {
-            data[i] = (byte) ((i + seed) % 251);
+            data[i] = (byte)((i + seed) % 251);
         }
 
         return data;
@@ -131,50 +132,42 @@ class ContentStoreDeleteRefcountTest {
 
     @Nested
     class OverwritingChunkedContent {
-
         /// Symptom 1. Red before the fix: `collectGarbage` returns 1 -- the superseded manifest, which
         /// `putRef` does decrement -- and every superseded chunk stays at refCount 1 with no name and no
         /// manifest left to reach it from.
         @Test
-        void put_overChunkedName_releasesEveryPreviousChunk_andCollectsThem() throws InterruptedException {
+        void put_overChunkedName_releasesEveryPreviousChunk_andCollectsThem() {
             var first = generateContent(CHUNK_SIZE * 3 + 15, 1);
             var second = generateContent(CHUNK_SIZE * 2 + 7, 2);
             var firstManifest = putContent(NAME, first);
             var firstChunks = chunkIdsOf(firstManifest);
 
             putContent(NAME, second);
-
             var firstChunkRefCountsAfterOverwrite = refCountsOf(firstChunks);
 
-            assertThat(collectAfterGrace(gc))
-                    .as("the superseded manifest AND every one of its chunks must be collected")
-                    .isEqualTo(firstChunks.size() + 1);
+            assertThat(collectAfterGrace(gc)).as("the superseded manifest AND every one of its chunks must be collected")
+                      .isEqualTo(firstChunks.size() + 1);
             firstChunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertGone(firstManifest);
             assertReadable(NAME, second);
-
             assertThat(firstChunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
-            assertThat(firstChunkRefCountsAfterOverwrite)
-                    .as("locator: a chunk reachable from no manifest must be at zero")
-                    .containsOnly(0);
+            assertThat(firstChunkRefCountsAfterOverwrite).as("locator: a chunk reachable from no manifest must be at zero")
+                      .containsOnly(0);
         }
 
         /// The other direction of the same overwrite: the new content is small enough to be stored
         /// directly, so no new chunk is written -- the old chunks still have to go.
         @Test
-        void put_directContentOverChunkedName_releasesEveryPreviousChunk() throws InterruptedException {
+        void put_directContentOverChunkedName_releasesEveryPreviousChunk() {
             var first = generateContent(CHUNK_SIZE * 3 + 15, 1);
             var firstManifest = putContent(NAME, first);
             var firstChunks = chunkIdsOf(firstManifest);
 
             putContent(NAME, SMALL);
-
-            assertThat(collectAfterGrace(gc))
-                    .as("the superseded manifest AND every one of its chunks must be collected")
-                    .isEqualTo(firstChunks.size() + 1);
+            assertThat(collectAfterGrace(gc)).as("the superseded manifest AND every one of its chunks must be collected")
+                      .isEqualTo(firstChunks.size() + 1);
             firstChunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertReadable(NAME, SMALL);
-
             assertThat(firstChunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
         }
 
@@ -184,18 +177,16 @@ class ContentStoreDeleteRefcountTest {
         /// halves net to zero -- and a fix that released without first crediting, or released twice,
         /// orphans the live document here.
         @Test
-        void put_sameChunkedContentAgain_keepsEveryChunkHeld() throws InterruptedException {
+        void put_sameChunkedContentAgain_keepsEveryChunkHeld() {
             var content = generateContent(CHUNK_SIZE * 3 + 15, 1);
             var manifest = putContent(NAME, content);
             var chunks = chunkIdsOf(manifest);
 
             putContent(NAME, content);
-
             var chunkRefCounts = refCountsOf(chunks);
 
             assertThat(collectAfterGrace(gc)).as("nothing here is orphaned -- the document is still named").isZero();
             assertReadable(NAME, content);
-
             assertThat(chunkRefCounts).as("locator: one name, one credit per chunk").containsOnly(1);
         }
 
@@ -204,54 +195,47 @@ class ContentStoreDeleteRefcountTest {
         /// construction (the base releases nothing); red under a release-first fix. The tier is sized to
         /// hold the first document and refuse the second's first chunk.
         @Test
-        void put_thatFailsOverChunkedName_leavesPreviousContentHeld() throws InterruptedException {
+        void put_thatFailsOverChunkedName_leavesPreviousContentHeld() {
             var first = generateContent(CHUNK_SIZE * 3 + 15, 1);
             var second = generateContent(CHUNK_SIZE * 2 + 7, 2);
 
             wire(750);
-
             var firstManifest = putContent(NAME, first);
             var firstChunks = chunkIdsOf(firstManifest);
             var usedByFirst = memoryTier.usedBytes();
-            var secondPut = store.put(NAME, second)
-                                 .await();
+            var secondPut = store.put(NAME, second).await();
 
-            assertThat(secondPut.isFailure()).as("the fixture must make the overwrite fail, or this proves nothing").isTrue();
+            assertThat(secondPut.isFailure()).as("the fixture must make the overwrite fail, or this proves nothing")
+                      .isTrue();
             assertThat(collectAfterGrace(gc)).as("a failed overwrite must orphan nothing").isZero();
             assertReadable(NAME, first);
-
-            assertThat(usedByFirst + CHUNK_SIZE)
-                    .as("locator: the tier must refuse the second document's first chunk")
-                    .isGreaterThan(750);
+            assertThat(usedByFirst + CHUNK_SIZE).as("locator: the tier must refuse the second document's first chunk")
+                      .isGreaterThan(750);
             assertThat(refCountsOf(firstChunks)).as("locator: the previous chunks keep their credit").containsOnly(1);
         }
     }
 
     @Nested
     class DeletingOneOfTwoNames {
-
         /// Symptom 2, direct content. Red before the fix: `get` of the surviving name fails with
         /// `Content not found` -- the name still resolves, but the block behind it was deleted from
         /// every tier by the OTHER name's delete.
         @Test
-        void delete_oneOfTwoNamesSharingABlock_keepsTheOtherReadable_andCollectsOnlyAtTheLastRelease() throws InterruptedException {
+        void delete_oneOfTwoNamesSharingABlock_keepsTheOtherReadable_andCollectsOnlyAtTheLastRelease() {
             var id = putContent(NAME, SMALL);
             var sameId = putContent(OTHER_NAME, SMALL);
             var refCountWhileShared = refCountOf(id);
 
             deleteContent(NAME);
-
             var refCountAfterFirstDelete = refCountOf(id);
 
             assertReadable(OTHER_NAME, SMALL);
             assertThat(collectAfterGrace(gc)).as("a block another name holds must not be collected").isZero();
-
             deleteContent(OTHER_NAME);
-
             assertThat(collectAfterGrace(gc)).as("the last name's release must make the block collectible").isEqualTo(1);
             assertGone(id);
-
-            assertThat(sameId).as("locator: both names must deduplicate to one block, or this proves nothing").isEqualTo(id);
+            assertThat(sameId).as("locator: both names must deduplicate to one block, or this proves nothing")
+                      .isEqualTo(id);
             assertThat(refCountWhileShared).as("locator: two names, two credits").isEqualTo(2);
             assertThat(refCountAfterFirstDelete).as("locator: deleting one name releases one credit").isEqualTo(1);
         }
@@ -260,7 +244,7 @@ class ContentStoreDeleteRefcountTest {
         /// chunks deduplicate. Red before the fix: `get` of the surviving name fails with
         /// `One or more content chunks are missing`.
         @Test
-        void delete_oneOfTwoNamesSharingChunks_keepsTheOtherReadable_andCollectsChunksOnlyAtTheLastRelease() throws InterruptedException {
+        void delete_oneOfTwoNamesSharingChunks_keepsTheOtherReadable_andCollectsChunksOnlyAtTheLastRelease() {
             var content = generateContent(CHUNK_SIZE * 3 + 15, 1);
             var manifest = putContent(NAME, content);
             var otherManifest = putContent(OTHER_NAME, content);
@@ -268,52 +252,43 @@ class ContentStoreDeleteRefcountTest {
             var chunkRefCountsWhileShared = refCountsOf(chunks);
 
             deleteContent(NAME);
-
             var chunkRefCountsAfterFirstDelete = refCountsOf(chunks);
 
             assertReadable(OTHER_NAME, content);
             assertThat(collectAfterGrace(gc)).as("only the deleted name's manifest is collectible").isEqualTo(1);
             assertGone(manifest);
-
             deleteContent(OTHER_NAME);
-
-            assertThat(collectAfterGrace(gc))
-                    .as("the last name's release must make its manifest and every chunk collectible")
-                    .isEqualTo(chunks.size() + 1);
+            assertThat(collectAfterGrace(gc)).as("the last name's release must make its manifest and every chunk collectible")
+                      .isEqualTo(chunks.size() + 1);
             chunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertGone(otherManifest);
-
             assertThat(chunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
-            assertThat(otherManifest).as("locator: a manifest carries its name, so the two differ").isNotEqualTo(manifest);
+            assertThat(otherManifest).as("locator: a manifest carries its name, so the two differ")
+                      .isNotEqualTo(manifest);
             assertThat(chunkRefCountsWhileShared).as("locator: two documents, two credits per chunk").containsOnly(2);
-            assertThat(chunkRefCountsAfterFirstDelete).as("locator: one document left, one credit per chunk").containsOnly(1);
+            assertThat(chunkRefCountsAfterFirstDelete).as("locator: one document left, one credit per chunk")
+                      .containsOnly(1);
         }
     }
 
     @Nested
     class DeletingTheLastName {
-
         /// The last release goes through the SAME lifecycle the collector already reads -- there is no
         /// second delete path. Red before the fix: `collectGarbage` returns 0, because `delete` had
         /// already removed the blocks and their lifecycle records itself.
         @Test
-        void delete_lastName_makesManifestAndChunksCollectible_ratherThanDeletingThemItself() throws InterruptedException {
+        void delete_lastName_makesManifestAndChunksCollectible_ratherThanDeletingThemItself() {
             var content = generateContent(CHUNK_SIZE * 3 + 15, 1);
             var manifest = putContent(NAME, content);
             var chunks = chunkIdsOf(manifest);
 
             deleteContent(NAME);
+            var existsAfterDelete = store.exists(NAME).await().unwrap();
 
-            var existsAfterDelete = store.exists(NAME)
-                                         .await()
-                                         .unwrap();
-
-            assertThat(collectAfterGrace(gc))
-                    .as("the manifest and every chunk must be collected by the collector, not by delete")
-                    .isEqualTo(chunks.size() + 1);
+            assertThat(collectAfterGrace(gc)).as("the manifest and every chunk must be collected by the collector, not by delete")
+                      .isEqualTo(chunks.size() + 1);
             chunks.forEach(ContentStoreDeleteRefcountTest.this::assertGone);
             assertGone(manifest);
-
             assertThat(chunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
             assertThat(existsAfterDelete).as("locator: the name is gone the moment delete returns").isFalse();
         }
