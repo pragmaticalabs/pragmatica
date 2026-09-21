@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
@@ -183,7 +185,7 @@ class ClusterTopologyManagerActuatorTest {
                                                      MembershipLiveness liveness) {
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), drainGrace).unwrap();
 
-        return ClusterTopologyManager.clusterTopologyManager(observer,
+        var manager = ClusterTopologyManager.clusterTopologyManager(observer,
                                                              lifecycleManager,
                                                              autoHeal,
                                                              DeploymentMap.deploymentMap(),
@@ -196,6 +198,14 @@ class ClusterTopologyManagerActuatorTest {
                                                              Option::none,
                                                              clusterStore::autoHealState,
                                                              liveness);
+        // This actuator fixture models a completed voter handoff. Tests below independently
+        // vary transport/SWIM/counting evidence; none may bypass those retirement checks.
+        manager.setRetirementAllowed(node -> !node.equals(SELF));
+        manager.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
+            () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
+            key -> key instanceof AutoHealStateKey ? clusterStore.autoHealState().map(value -> (AetherValue) value)
+                : clusterStore.current().map(value -> (AetherValue) value), clusterStore::apply));
+        return manager;
     }
 
     /// Lets scheduled work run for `window` before an ABSENCE is asserted. Used only where no positive signal
@@ -281,6 +291,111 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.lastSpec().context().role())
                 .as("ProvisionContext carries the caller's intended worker role")
                 .isEqualTo("worker");
+    }
+
+    @Test
+    void scheduledWorkerReconciliationRetriesFailureAndStopsAcrossDeactivation() {
+        var calls = new AtomicInteger();
+        var placement = new CommunityPlacementReconciler() {
+            public Promise<Unit> reconcile() {
+                return calls.incrementAndGet() == 1
+                    ? org.pragmatica.lang.utils.Causes.cause("transient provider observation").promise()
+                    : Promise.unitPromise();
+            }
+            public Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) { return Promise.unitPromise(); }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+        };
+        ctm.installCommunityPlacement(placement);
+        ctm.activate();
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        manager.startWorkerTopologyPolling(timeSpan(20).millis());
+        await().atMost(Duration.ofSeconds(5)).until(() -> calls.get() >= 3);
+        ctm.deactivate();
+        var stopped = calls.get();
+        settleFor(Duration.ofMillis(100));
+        assertThat(calls.get()).isEqualTo(stopped);
+        ctm.activate();
+        manager.startWorkerTopologyPolling(timeSpan(20).millis());
+        await().atMost(Duration.ofSeconds(5)).until(() -> calls.get() > stopped + 1);
+        ctm.deactivate();
+    }
+
+    @Test
+    void scheduledTicksCoalesceWhileProviderPassIsOutstanding() {
+        var calls = new AtomicInteger();
+        var held = Promise.<Unit>promise();
+        ctm.installCommunityPlacement(new CommunityPlacementReconciler() {
+            public Promise<Unit> reconcile() { return calls.incrementAndGet() == 1 ? held : Promise.unitPromise(); }
+            public Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) { return Promise.unitPromise(); }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+        });
+        ctm.activate();
+        ((ClusterTopologyManagerRecord) ctm).startWorkerTopologyPolling(timeSpan(20).millis());
+        settleFor(Duration.ofMillis(100));
+        assertThat(calls.get()).isEqualTo(1);
+        held.succeed(Unit.unit());
+        await().atMost(Duration.ofSeconds(5)).until(() -> calls.get() >= 2);
+        ctm.deactivate();
+    }
+
+    @Test
+    void stalePassCompletionCannotReleaseNewActivationPass() {
+        var calls = new AtomicInteger();
+        var oldPass = Promise.<Unit>promise();
+        var newPass = Promise.<Unit>promise();
+        ctm.installCommunityPlacement(new CommunityPlacementReconciler() {
+            public Promise<Unit> reconcile() { return calls.incrementAndGet() == 1 ? oldPass : newPass; }
+            public Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) { return Promise.unitPromise(); }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+        });
+        ctm.activate();
+        ctm.deactivate();
+        ctm.activate();
+        assertThat(calls.get()).isEqualTo(2);
+        oldPass.succeed(Unit.unit());
+        ctm.reconcileWorkerTopology();
+        assertThat(calls.get()).isEqualTo(2);
+        ctm.deactivate();
+        newPass.succeed(Unit.unit());
+    }
+
+    @Test
+    void duplicateDrainHasOneCommandAndOneGraceEffect() {
+        var manager = ctmWithDrainGrace(timeSpan(200).millis());
+        manager.activate();
+        for (int index = 0; index < 20; index++) {
+            assertThat(manager.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().isSuccess()).isTrue();
+        }
+        assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
+        await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.terminateCount.get() == 1);
+        settleFor(Duration.ofMillis(300));
+        assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
+        assertThat(drainCommandClearCalls).containsExactly(PEER_D);
+    }
+
+    @Test
+    void oldActivationTimerCannotReapOrClearNewDrain() {
+        var manager = ctmWithDrainGrace(timeSpan(200).millis());
+        manager.activate();
+        manager.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().unwrap();
+        manager.deactivate();
+        assertThat(drainCommandClearCalls).containsExactly(PEER_D);
+        manager.activate();
+        manager.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().unwrap();
+        await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.terminateCount.get() == 1);
+        settleFor(Duration.ofMillis(300));
+        assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
+        assertThat(drainCommandSinkCalls).containsExactly(PEER_D, PEER_D);
+        assertThat(drainCommandClearCalls).containsExactly(PEER_D, PEER_D);
+    }
+
+    @Test
+    void missingRetirementProofRefusesDrainEvenWhenLeaderIsActive() {
+        ctm.setRetirementAllowed(_ -> false);
+        ctm.activate();
+        assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
+        assertThat(drainCommandSinkCalls).isEmpty();
+        assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
     @Test
@@ -609,6 +724,7 @@ class ClusterTopologyManagerActuatorTest {
 
     @Test
     void setAutoHealEnabled_toggleReturnsPriorState() {
+        ctm.activate();
         assertThat(ctm.isAutoHealEnabled()).isTrue();
         assertThat(ctm.setAutoHealEnabled(false, "test-disable").await().unwrap()).isTrue();
         assertThat(ctm.isAutoHealEnabled()).isFalse();
@@ -881,7 +997,7 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         /// N4: the zombie path never reads membership, so no membership read can delay or break it. Driven on a
-        /// NON-activated CTM, because activation itself reads membership for the replay.
+        /// active leader; activation reads are excluded from the measured drain phase.
         @Test
         void joinGraceReapDrain_graceExpiry_neverReadsMembership() {
             var membershipReads = new AtomicInteger();
@@ -894,7 +1010,9 @@ class ClusterTopologyManagerActuatorTest {
                                                                          _ -> Option.none());
             var zombieCtm = ctmWithDrainGrace(timeSpan(150).millis(), drainCommandSinkCalls::add, countingLiveness);
 
-            zombieCtm.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await();
+            zombieCtm.activate();
+            membershipReads.set(0);
+            assertThat(zombieCtm.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().isSuccess()).isTrue();
             awaitClearedExactlyOnce(PEER_D);
 
             assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
@@ -1851,8 +1969,15 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
-            for (var command : commands) {applyOne(command);}
-            return Promise.success(List.of());
+            var outcomes = new java.util.ArrayList<Object>();
+            for (var command : commands) {
+                if (command instanceof KVCommand.LeaderTransaction<?, ?> transaction) {
+                    transaction.mutations().forEach(mutation -> mutation.replacement().onPresent(value ->
+                        applyOne(new KVCommand.Put<>((AetherKey) mutation.key(), value))));
+                    outcomes.add(new KVCommand.TransactionResult(transaction.transactionId(), true));
+                } else { applyOne(command); }
+            }
+            return Promise.success(outcomes);
         }
 
         private void applyOne(KVCommand<AetherKey> command) {

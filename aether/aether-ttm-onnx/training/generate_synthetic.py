@@ -8,9 +8,9 @@ Produces realistic MinuteAggregate data matching the Aether FeatureIndex schema:
   3: latency_ms
   4: invocations (count/min)
   5: gc_pause_ms
-  6: latency_p50
-  7: latency_p95
-  8: latency_p99
+  6: interval_mean_latency_p50
+  7: interval_mean_latency_p95
+  8: interval_mean_latency_p99
   9: error_rate (0.0-1.0)
  10: event_count
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 
 FEATURE_NAMES = [
     "cpu_usage", "heap_usage", "event_loop_lag_ms", "latency_ms", "invocations",
-    "gc_pause_ms", "latency_p50", "latency_p95", "latency_p99", "error_rate", "event_count"
+    "gc_pause_ms", "interval_mean_latency_p50", "interval_mean_latency_p95", "interval_mean_latency_p99", "error_rate", "event_count"
 ]
 
 
@@ -102,9 +102,9 @@ def generate_row(minute: int, pattern: str, base_load: float) -> dict:
         "latency_ms": round(latency, 3),
         "invocations": invocations,
         "gc_pause_ms": gc_pause,
-        "latency_p50": round(p50, 3),
-        "latency_p95": round(p95, 3),
-        "latency_p99": round(p99, 3),
+        "interval_mean_latency_p50": round(p50, 3),
+        "interval_mean_latency_p95": round(p95, 3),
+        "interval_mean_latency_p99": round(p99, 3),
         "error_rate": round(error_rate, 6),
         "event_count": event_count,
     }

@@ -23,10 +23,13 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.UUID;
 
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest;
 import org.pragmatica.cloud.gcp.api.Instance;
 import org.pragmatica.cloud.gcp.api.Instance.InstanceListResponse;
+import org.pragmatica.cloud.gcp.api.Instance.AggregatedInstanceListResponse;
 import org.pragmatica.cloud.gcp.api.NetworkEndpoint;
 import org.pragmatica.cloud.gcp.api.NetworkEndpoint.NetworkEndpointListResponse;
 import org.pragmatica.cloud.gcp.api.NetworkEndpoint.NetworkEndpointRequest;
@@ -46,7 +49,7 @@ import org.pragmatica.lang.Unit;
 /// GCP Cloud REST API client with Promise-based async operations.
 public interface GcpClient {
     /// Inserts a new Compute Engine instance.
-    Promise<Instance> insertInstance(InsertInstanceRequest request);
+    Promise<Operation> insertInstance(InsertInstanceRequest request);
     /// Deletes a Compute Engine instance by name.
     Promise<Unit> deleteInstance(String instanceName);
     /// Gets a Compute Engine instance by name.
@@ -55,6 +58,12 @@ public interface GcpClient {
     Promise<List<Instance>> listInstances();
     /// Lists Compute Engine instances matching a label filter.
     Promise<List<Instance>> listInstances(String labelFilter);
+
+    /// Complete project-wide inventory, preserving each instance's zone.
+    default Promise<List<Instance>> listAllInstances(String labelFilter) {
+        return listInstances(labelFilter);
+    }
+
     /// Resets (hard reboot) a Compute Engine instance.
     Promise<Operation> resetInstance(String instanceName);
     /// Sets labels on a Compute Engine instance.
@@ -89,24 +98,86 @@ record GcpClientRecord(GcpConfig config, HttpOperations http, JsonMapper mapper,
     private static final String SECRET_MANAGER_BASE_URL = "https://secretmanager.googleapis.com/v1";
 
     @Override
-    public Promise<Instance> insertInstance(InsertInstanceRequest request) {
+    public Promise<Operation> insertInstance(InsertInstanceRequest request) {
         var path = request.zoneOverride().map(zone -> overrideZonePath(zone, "/instances")).or(zonePath("/instances"));
+        var requestId = UUID.nameUUIDFromBytes(request.name().getBytes(StandardCharsets.UTF_8));
 
-        return postJson(path, request, Instance.class);
+        return postJson(path + "?requestId=" + requestId, request, Operation.class);
     }
 
     private String overrideZonePath(String zone, String suffix) {
         return "/projects/" + config.projectId() + "/zones/" + zone + suffix;
     }
 
+    private String instancePath(String reference) {
+        var separator = reference.indexOf('/');
+
+        return separator < 0
+               ? zonePath("/instances/" + reference)
+               : overrideZonePath(reference.substring(0, separator), "/instances/" + reference.substring(separator + 1));
+    }
+
+    @Override
+    public Promise<List<Instance>> listAllInstances(String labelFilter) {
+        return aggregatedPage(labelFilter, "", List.of());
+    }
+
+    private Promise<List<Instance>> aggregatedPage(String filter, String pageToken, List<Instance> accumulated) {
+        var path = "/projects/" + config.projectId()
+                 + "/aggregated/instances?returnPartialSuccess=false&maxResults=500&filter=" + encodeQueryParam(filter) + (pageToken.isEmpty()
+                                                                                                                           ? ""
+                                                                                                                           : "&pageToken=" + encodeQueryParam(pageToken));
+
+        return getJson(path, AggregatedInstanceListResponse.class).flatMap(page -> consumeAggregatedPage(filter,
+                                                                                                         pageToken,
+                                                                                                         accumulated,
+                                                                                                         page));
+    }
+
+    private Promise<List<Instance>> consumeAggregatedPage(String filter,
+                                                          String previousToken,
+                                                          List<Instance> accumulated,
+                                                          AggregatedInstanceListResponse page) {
+        if (!Option.option(page.unreachables()).or(List.of()).isEmpty()) {
+            return org.pragmatica.lang.utils.Causes.cause("Incomplete GCP inventory: some zones are unreachable")
+                                                   .promise();
+        }
+
+        var instances = new ArrayList<>(accumulated);
+
+        Option.option(page.items())
+              .or(java.util.Map.of())
+              .values()
+              .stream()
+              .flatMap(scope -> Option.option(scope.instances())
+                                      .or(List.of())
+                                      .stream())
+              .forEach(instances::add);
+
+        return Option.option(page.nextPageToken())
+                     .filter(token -> !token.isEmpty())
+                     .fold(() -> Promise.success(List.copyOf(instances)),
+                           token -> nextAggregatedPage(filter, previousToken, token, instances));
+    }
+
+    private Promise<List<Instance>> nextAggregatedPage(String filter,
+                                                       String previousToken,
+                                                       String token,
+                                                       List<Instance> instances) {
+        return token.equals(previousToken)
+               ? org.pragmatica.lang.utils.Causes.cause("GCP inventory repeated a page token")
+                                                 .promise()
+               : aggregatedPage(filter, token, instances);
+    }
+
     @Override
     public Promise<Unit> deleteInstance(String instanceName) {
-        return delete(zonePath("/instances/" + instanceName));
+        return delete(instancePath(instanceName));
     }
 
     @Override
     public Promise<Instance> getInstance(String instanceName) {
-        return getJson(zonePath("/instances/" + instanceName), Instance.class);
+        return getJson(instancePath(instanceName), Instance.class);
     }
 
     @Override
@@ -121,12 +192,12 @@ record GcpClientRecord(GcpConfig config, HttpOperations http, JsonMapper mapper,
 
     @Override
     public Promise<Operation> resetInstance(String instanceName) {
-        return postEmpty(zonePath("/instances/" + instanceName + "/reset"), Operation.class);
+        return postEmpty(instancePath(instanceName) + "/reset", Operation.class);
     }
 
     @Override
     public Promise<Operation> setLabels(String instanceName, SetLabelsRequest request) {
-        return postJson(zonePath("/instances/" + instanceName + "/setLabels"), request, Operation.class);
+        return postJson(instancePath(instanceName) + "/setLabels", request, Operation.class);
     }
 
     @Override

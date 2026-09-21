@@ -11,15 +11,15 @@ public sealed interface FeatureIndex {
     int LATENCY_MS = 3;
     int INVOCATIONS = 4;
     int GC_PAUSE_MS = 5;
-    int LATENCY_P50 = 6;
-    int LATENCY_P95 = 7;
-    int LATENCY_P99 = 8;
+    int INTERVAL_MEAN_LATENCY_P50 = 6;
+    int INTERVAL_MEAN_LATENCY_P95 = 7;
+    int INTERVAL_MEAN_LATENCY_P99 = 8;
     int ERROR_RATE = 9;
     int EVENT_COUNT = 10;
     int FEATURE_COUNT = 11;
 
     static String[] featureNames() {
-        return new String[]{"cpu_usage", "heap_usage", "event_loop_lag_ms", "latency_ms", "invocations", "gc_pause_ms", "latency_p50", "latency_p95", "latency_p99", "error_rate", "event_count"};
+        return new String[]{"cpu_usage", "heap_usage", "event_loop_lag_ms", "latency_ms", "invocations", "gc_pause_ms", "interval_mean_latency_p50", "interval_mean_latency_p95", "interval_mean_latency_p99", "error_rate", "event_count"};
     }
 
     record unused() implements FeatureIndex {}

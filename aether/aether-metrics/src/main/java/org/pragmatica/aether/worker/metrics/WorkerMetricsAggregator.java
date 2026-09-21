@@ -7,6 +7,9 @@ package org.pragmatica.aether.worker.metrics;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.LongSupplier;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.consensus.NodeId;
@@ -34,6 +37,9 @@ public interface WorkerMetricsAggregator {
     @Contract
     void stop();
 
+    @Contract
+    void setIncarnationSupplier(LongSupplier supplier);
+
     List<PerSliceMetrics> collectOwnMetrics();
     CommunityMetricsSnapshot buildSnapshot();
 
@@ -47,7 +53,15 @@ public interface WorkerMetricsAggregator {
                                        InvocationMetricsCollector invocationMetrics,
                                        Consumer<CommunityMetricsSnapshot> broadcaster,
                                        long aggregationIntervalMs,
-                                       CancellableTask task) implements WorkerMetricsAggregator {
+                                       CancellableTask task,
+                                       AtomicReference<LongSupplier> incarnationSupplier,
+                                       AtomicLong sequence) implements WorkerMetricsAggregator {
+            @Override
+            @Contract
+            public void setIncarnationSupplier(LongSupplier supplier) {
+                incarnationSupplier.set(supplier);
+            }
+
             @Override
             @Contract
             public void start() {
@@ -71,10 +85,13 @@ public interface WorkerMetricsAggregator {
 
             @Override
             public CommunityMetricsSnapshot buildSnapshot() {
-                return CommunityMetricsSnapshot.communityMetricsSnapshot(communityIdSupplier.get(),
-                                                                         self,
-                                                                         1,
-                                                                         collectOwnMetrics());
+                return new CommunityMetricsSnapshot(communityIdSupplier.get(),
+                                                    self,
+                                                    1,
+                                                    collectOwnMetrics(),
+                                                    System.currentTimeMillis(),
+                                                    incarnationSupplier.get().getAsLong(),
+                                                    sequence.incrementAndGet());
             }
 
             @Contract
@@ -88,6 +105,8 @@ public interface WorkerMetricsAggregator {
                                            invocationMetrics,
                                            broadcaster,
                                            aggregationIntervalMs,
-                                           CancellableTask.cancellableTask());
+                                           CancellableTask.cancellableTask(),
+                                           new AtomicReference<>(() -> 0L),
+                                           new AtomicLong());
     }
 }

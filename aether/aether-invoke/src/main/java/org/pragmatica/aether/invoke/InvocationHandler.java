@@ -61,6 +61,11 @@ public interface InvocationHandler {
     }
 
     Option<InvocationMetricsCollector> metricsCollector();
+
+    default Unit setInvocationAdmission(InvocationAdmission admission) {
+        return Unit.unit();
+    }
+
     TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(15).seconds();
 
     /// Bind the write-side registrar so a loaded slice's per-method observability cells (#277 increment
@@ -147,9 +152,17 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Option<Serializer> serializer;
     private final Option<Deserializer> deserializer;
     private final Option<HttpRoutePublisher> httpRoutePublisher;
-    private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
+    private final Map<Artifact, AdmittedSliceBridge> localSlices = new ConcurrentHashMap<>();
     private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
     private volatile ObservabilityCellRegistrar cellRegistrar = ObservabilityCellRegistrar.NOOP;
+    private volatile InvocationAdmission admission = InvocationAdmission.open();
+
+    @Override
+    public Unit setInvocationAdmission(InvocationAdmission admission) {
+        this.admission = admission;
+
+        return Unit.unit();
+    }
 
     InvocationHandlerImpl(NodeId self,
                           ClusterNetwork network,
@@ -178,8 +191,10 @@ class InvocationHandlerImpl implements InvocationHandler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
-        localSlices.put(artifact, bridge);
-        classLoaderBridges.put(bridge.classLoader(), bridge);
+        var admitted = new AdmittedSliceBridge(bridge, () -> admission);
+
+        localSlices.put(artifact, admitted);
+        classLoaderBridges.put(bridge.classLoader(), admitted);
         bridge.observabilityCells().forEach(cellRegistrar::register);
         log.debug("Registered slice for invocation: {}", artifact);
     }
@@ -214,6 +229,7 @@ class InvocationHandlerImpl implements InvocationHandler {
                                       .filter(bridge -> bridge.sliceCodec()
                                                               .map(codec -> codec.hasCodecFor(type))
                                                               .or(false))
+                                      .<SliceBridge> map(bridge -> bridge)
                                       .findFirst());
     }
 
@@ -263,22 +279,22 @@ class InvocationHandlerImpl implements InvocationHandler {
     /// pinned by test (a bound budget DOES cap when present); it engages for real once the budget
     /// travels on `InvokeRequest` — the recorded next step (`TimeoutsConfig` invocation-section
     /// docs). Kept rather than removed so the wire step lands against a ready consumer.
-    private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
+    private void invokeSliceMethod(InvokeRequest request, AdmittedSliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
 
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
-        ObservabilityCells.around(bridge,
-                                  request.method().name(),
-                                  () -> invokeWithHttpRouting(request, bridge))
-                          .timeout(Deadline.current().bounded(invocationTimeout))
-                          .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
-                          .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
-    }
-
-    private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {
-        return bridge.invoke(request.method().name(),
-                             request.payload());
+        bridge.invokeWithReply(request.method().name(),
+                               request.payload(),
+                               Deadline.current().bounded(invocationTimeout),
+                               result -> result.apply(cause -> handleInvocationFailure(request,
+                                                                                       cause,
+                                                                                       startTime,
+                                                                                       requestBytes),
+                                                      data -> handleInvocationSuccess(request,
+                                                                                      data,
+                                                                                      startTime,
+                                                                                      requestBytes)));
     }
 
     private void handleInvocationSuccess(InvokeRequest request, byte[] responseData, long startTime, int requestBytes) {

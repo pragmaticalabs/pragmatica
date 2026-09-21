@@ -590,7 +590,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                 collectAddresses(instance),
                                 InstanceType.ON_DEMAND,
                                 tags,
-                                Option.option(tags.get(NODE_ID_TAG)));
+                                Option.option(tags.get(NODE_ID_TAG)),
+                                Option.option(instance.placement()).flatMap(placement -> Option.option(placement.availabilityZone())));
     }
 
     private static Promise<InstanceInfo> firstInstance(DescribeInstancesResponse response, InstanceId instanceId) {

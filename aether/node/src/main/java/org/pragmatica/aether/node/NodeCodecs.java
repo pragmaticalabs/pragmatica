@@ -51,6 +51,9 @@ public sealed interface NodeCodecs {
         // codecs lived only in the orphaned WorkerCodecs registry (deleted in #503) — every broadcast from a core node
         // threw "No codec registered" in writeToStream (44x per forge failover run).
         all.addAll(org.pragmatica.aether.worker.metrics.MetricsCodecs.CODECS);
+        all.addAll(org.pragmatica.aether.worker.governor.GovernorCodecsNode.CODECS);
+        all.addAll(org.pragmatica.aether.worker.health.HealthCodecsNode.CODECS);
+        all.addAll(org.pragmatica.aether.worker.metadata.MetadataCodecsNode.CODECS);
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
         all.addAll(org.pragmatica.aether.artifact.ArtifactCodecsSlice.CODECS);
         // SliceCodecs registry in org.pragmatica.aether.slice is contributed by four modules; reference each suffixed sub-registry to avoid shade collision.

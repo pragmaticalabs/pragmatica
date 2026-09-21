@@ -6,8 +6,8 @@ package org.pragmatica.aether.metrics;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.RingBuffer;
@@ -15,132 +15,86 @@ import org.pragmatica.utility.RingBuffer;
 import static org.pragmatica.lang.Result.unitResult;
 
 
+/// Intervals belong to their closing sample's minute, including an interval crossing a boundary.
+/// A baseline survives flush/minute changes so cumulative totals are never counted twice.
 public final class MinuteAggregator {
-    private static final int DEFAULT_CAPACITY = 120;
-
     private final RingBuffer<MinuteAggregate> aggregates;
-    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private long currentMinute = 0;
-    private final List<ComprehensiveSnapshot> currentSamples = new ArrayList<>(60);
-    private final List<Double> currentLatencies = new ArrayList<>(60);
+    private long currentMinute;
+    private final List<ComprehensiveSnapshot> currentSamples = new ArrayList<>();
+    private final List<MetricInterval> currentIntervals = new ArrayList<>();
+    private Option<ComprehensiveSnapshot> previous = Option.none();
 
     private MinuteAggregator(int capacity) {
-        this.aggregates = RingBuffer.ringBuffer(capacity);
+        aggregates = RingBuffer.ringBuffer(capacity);
     }
 
     public static MinuteAggregator minuteAggregator() {
-        return new MinuteAggregator(DEFAULT_CAPACITY);
+        return minuteAggregator(120);
     }
 
     public static MinuteAggregator minuteAggregator(int capacity) {
         return new MinuteAggregator(capacity);
     }
 
-    public Result<Unit> addSample(ComprehensiveSnapshot snapshot) {
-        lock.writeLock().lock();
-        try {
-            long minute = MinuteAggregate.alignToMinute(snapshot.timestamp());
-
-            if (currentMinute != minute && !currentSamples.isEmpty()) {
-                finalizeCurrentMinute();
-            }
-
-            currentMinute = minute;
-            currentSamples.add(snapshot);
-            if (snapshot.avgLatencyMs() > 0) {
-                currentLatencies.add(snapshot.avgLatencyMs());
-            }
-        } finally {
-            lock.writeLock().unlock();
+    public synchronized Result<Unit> addSample(ComprehensiveSnapshot snapshot) {
+        if (previous.filter(old -> snapshot.timestamp() <= old.timestamp()).isPresent()) {
+            return unitResult();
         }
+
+        var minute = MinuteAggregate.alignToMinute(snapshot.timestamp());
+
+        if (currentMinute != minute) {
+            finalizeCurrentMinute();
+        }
+
+        currentMinute = minute;
+        currentSamples.add(snapshot);
+        previous.map(old -> MetricInterval.metricInterval(old, snapshot)).onPresent(currentIntervals::add);
+        previous = Option.some(snapshot);
 
         return unitResult();
     }
 
-    public Result<Unit> flush() {
-        lock.writeLock().lock();
-        try {
-            if (!currentSamples.isEmpty()) {
-                finalizeCurrentMinute();
-            }
-        } finally {
-            lock.writeLock().unlock();
-        }
+    public synchronized Result<Unit> flush() {
+        finalizeCurrentMinute();
 
         return unitResult();
     }
 
-    public List<MinuteAggregate> all() {
-        lock.readLock().lock();
-        try {
-            return aggregates.toList();
-        } finally {
-            lock.readLock().unlock();
-        }
+    public synchronized List<MinuteAggregate> all() {
+        return aggregates.toList();
     }
 
-    public List<MinuteAggregate> recent(int count) {
-        lock.readLock().lock();
-        try {
-            var all = aggregates.toList();
+    public synchronized List<MinuteAggregate> recent(int count) {
+        var all = aggregates.toList();
 
-            if (all.size() <= count) {
-                return all;
-            }
-
-            return all.subList(all.size() - count, all.size());
-        } finally {
-            lock.readLock().unlock();
-        }
+        return List.copyOf(all.subList(Math.max(0,
+                                                all.size() - Math.max(0, count)),
+                                       all.size()));
     }
 
-    public List<MinuteAggregate> since(long timestamp) {
-        lock.readLock().lock();
-        try {
-            return aggregates.filter(a -> a.minuteTimestamp() >= timestamp);
-        } finally {
-            lock.readLock().unlock();
-        }
+    public synchronized List<MinuteAggregate> since(long timestamp) {
+        return aggregates.filter(aggregate -> aggregate.minuteTimestamp() >= timestamp);
     }
 
-    public float[][] toTTMInput(int windowMinutes) {
-        lock.readLock().lock();
-        try {
-            var recentAggregates = recent(windowMinutes);
-            float[][] result = new float[windowMinutes][];
-
-            for (int i = 0; i < windowMinutes; i++) {
-                result[i] = new float[MinuteAggregate.featureNames().length];
-            }
-
-            int offset = windowMinutes - recentAggregates.size();
-
-            for (int i = 0; i < recentAggregates.size(); i++) {
-                result[offset + i] = recentAggregates.get(i).toFeatureArray();
-            }
-
-            return result;
-        } finally {
-            lock.readLock().unlock();
-        }
+    public synchronized int currentSampleCount() {
+        return currentSamples.size();
     }
 
-    public int currentSampleCount() {
-        lock.readLock().lock();
-        try {
-            return currentSamples.size();
-        } finally {
-            lock.readLock().unlock();
-        }
+    public synchronized int aggregateCount() {
+        return aggregates.size();
     }
 
-    public int aggregateCount() {
-        lock.readLock().lock();
-        try {
-            return aggregates.size();
-        } finally {
-            lock.readLock().unlock();
+    public synchronized float[][] toTTMInput(int windowMinutes) {
+        var recent = recent(windowMinutes);
+        var result = new float[windowMinutes][MinuteAggregate.featureNames().length];
+        var offset = windowMinutes - recent.size();
+
+        for (var index = 0; index < recent.size(); index++) {
+            result[offset + index] = recent.get(index).toFeatureArray();
         }
+
+        return result;
     }
 
     private void finalizeCurrentMinute() {
@@ -148,58 +102,50 @@ public final class MinuteAggregator {
             return;
         }
 
-        double sumCpu = 0, sumHeap = 0, sumLag = 0, sumLatency = 0;
-        long sumInvocations = 0, sumGcPause = 0;
-        double sumErrorRate = 0;
+        var calls = currentIntervals.stream().mapToLong(MetricInterval::invocations).sum();
+        var failures = currentIntervals.stream().mapToLong(MetricInterval::failures).sum();
+        var duration = currentIntervals.stream()
+                                       .mapToDouble(interval -> interval.invocationDuration()
+                                                                        .nanos() / 1_000_000.0)
+                                       .sum();
+        var means = currentIntervals.stream()
+                                    .filter(interval -> interval.invocations() > 0)
+                                    .mapToDouble(interval -> interval.meanLatency()
+                                                                     .nanos() / 1_000_000.0)
+                                    .sorted()
+                                    .toArray();
 
-        for (var sample : currentSamples) {
-            sumCpu += sample.cpuUsage();
-            sumHeap += sample.heapUsage();
-            sumLag += sample.eventLoop().lagMs();
-            sumLatency += sample.avgLatencyMs();
-            sumInvocations += sample.totalInvocations();
-            sumGcPause += sample.gc().totalPauseMs();
-            sumErrorRate += sample.errorRate();
-        }
-
-        int n = currentSamples.size();
-        double p50 = 0, p95 = 0, p99 = 0;
-
-        if (!currentLatencies.isEmpty()) {
-            double[] sorted = currentLatencies.stream().mapToDouble(Double::doubleValue).sorted().toArray();
-
-            p50 = percentile(sorted, 50);
-            p95 = percentile(sorted, 95);
-            p99 = percentile(sorted, 99);
-        }
-
-        int events = 0;
-        var aggregate = MinuteAggregate.minuteAggregate(currentMinute,
-                                                        sumCpu / n,
-                                                        sumHeap / n,
-                                                        sumLag / n,
-                                                        sumLatency / n,
-                                                        sumInvocations,
-                                                        sumGcPause,
-                                                        p50,
-                                                        p95,
-                                                        p99,
-                                                        sumErrorRate / n,
-                                                        events,
-                                                        n);
-
-        aggregates.add(aggregate);
+        aggregates.add(MinuteAggregate.minuteAggregate(currentMinute,
+                                                       currentSamples.stream()
+                                                                     .mapToDouble(ComprehensiveSnapshot::cpuUsage)
+                                                                     .average()
+                                                                     .orElse(0),
+                                                       currentSamples.stream()
+                                                                     .mapToDouble(ComprehensiveSnapshot::heapUsage)
+                                                                     .average()
+                                                                     .orElse(0),
+                                                       currentSamples.stream()
+                                                                     .mapToDouble(sample -> sample.eventLoop()
+                                                                                                  .lagMs())
+                                                                     .average()
+                                                                     .orElse(0),
+                                                       calls == 0
+                                                       ? 0
+                                                       : duration / calls,
+                                                       calls,
+                                                       currentIntervals.stream()
+                                                                       .mapToLong(interval -> interval.gcPause()
+                                                                                                      .millis())
+                                                                       .sum(),
+                                                       DerivedMetricsCalculator.percentile(means, 50),
+                                                       DerivedMetricsCalculator.percentile(means, 95),
+                                                       DerivedMetricsCalculator.percentile(means, 99),
+                                                       calls == 0
+                                                       ? 0
+                                                       : (double) failures / calls,
+                                                       0,
+                                                       currentSamples.size()));
         currentSamples.clear();
-        currentLatencies.clear();
-    }
-
-    private double percentile(double[] sorted, int percentile) {
-        if (sorted.length == 0) {
-            return 0;
-        }
-
-        int index = (int) Math.ceil(percentile / 100.0 * sorted.length) - 1;
-
-        return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+        currentIntervals.clear();
     }
 }

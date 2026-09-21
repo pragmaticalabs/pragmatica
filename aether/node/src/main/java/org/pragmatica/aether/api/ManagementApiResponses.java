@@ -259,9 +259,9 @@ public sealed interface ManagementApiResponses {
                                         double avgLatencyMs,
                                         long totalInvocations,
                                         long totalGcPauseMs,
-                                        double latencyP50,
-                                        double latencyP95,
-                                        double latencyP99,
+                                        double intervalMeanLatencyP50,
+                                        double intervalMeanLatencyP95,
+                                        double intervalMeanLatencyP99,
                                         double errorRate,
                                         long eventCount,
                                         long sampleCount,
@@ -288,9 +288,9 @@ public sealed interface ManagementApiResponses {
     record DerivedMetricsResponse(double requestRate,
                                   double errorRate,
                                   double gcRate,
-                                  double latencyP50,
-                                  double latencyP95,
-                                  double latencyP99,
+                                  double intervalMeanLatencyP50,
+                                  double intervalMeanLatencyP95,
+                                  double intervalMeanLatencyP99,
                                   double eventLoopSaturation,
                                   double heapSaturation,
                                   double cpuTrend,
@@ -741,7 +741,8 @@ public sealed interface ManagementApiResponses {
                                      boolean belowThreshold,
                                      boolean armed,
                                      CoreAbsenceSnapshot coreAbsence,
-                                     List<MembershipNodeDetail> members) {}
+                                     List<MembershipNodeDetail> members,
+                                     boolean completeClusterView) {}
 
     /// Per-peer membership detail as seen by the answering node's `MembershipFsm`: the lifecycle
     /// `state` (Observed/Member/Suspect/Departing/Dead), the incarnation high-water mark, the
@@ -763,7 +764,7 @@ public sealed interface ManagementApiResponses {
     /// the diagnostic that lets the cloud handover test verify the fence engaged. `entries` is sorted
     /// by `identity` for stable output; an empty list means no ownership of that domain is committed
     /// yet (the operator-meaningful answer, not an error).
-    record OwnershipResponse(String domain, List<OwnershipEntry> entries) {}
+    record OwnershipResponse(String domain, List<OwnershipEntry> entries, boolean completeClusterView) {}
 
     /// Per-partition/key committed-ownership + fence row: `identity` is the domain-specific
     /// partition/key (community id, DHT partition id, or `{stream}:{partition}`), `owner` the

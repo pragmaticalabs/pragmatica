@@ -59,6 +59,28 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     private final SwimHealthContext context;
     private final SwimConfig swimConfig;
+    private volatile Predicate<NodeId> membershipEligibility = _ -> true;
+    private volatile List<NodeInfo> peerDirectory = List.of();
+
+    public Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
+        membershipEligibility = eligibility;
+        protocol().onPresent(protocol -> protocol.setMembershipEligibility(eligibility));
+
+        return Unit.unit();
+    }
+
+    /// Address hints start OBSERVED and require ordinary SWIM evidence before admission.
+    public Unit observePeerDirectory(List<NodeInfo> directory) {
+        peerDirectory = List.copyOf(directory);
+        protocol().onPresent(this::seedPeerDirectory);
+
+        return Unit.unit();
+    }
+
+    private void seedPeerDirectory(SwimProtocol protocol) {
+        peerDirectory.forEach(node -> addSeedMember(protocol, node));
+    }
+
     private final List<Consumer<SwimObservation>> pendingObservationListeners = new CopyOnWriteArrayList<>();
 
     /// Transport-observation emitters pending wiring into the underlying [`SwimProtocol`]
@@ -478,9 +500,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         // observationListeners list and were lost — a last-joining node (which learns its peers only
         // from the static seed set, having missed peers' live ANNOUNCE window) then never populated its
         // dial set and, being the higher NodeId that must initiate, never dialed — wedging cold-start.
+        protocol.setMembershipEligibility(membershipEligibility);
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
         seedMembers(protocol);
+        seedPeerDirectory(protocol);
         pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),
                                                                     call.clusterName(),
                                                                     call.incarnation(),

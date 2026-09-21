@@ -90,6 +90,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface AppHttpServer {
+    Unit setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission admission);
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(CertificateBundle newBundle);
@@ -120,6 +121,8 @@ public interface AppHttpServer {
     @MessageReceiver
     @Contract
     void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved);
+
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
 
     @MessageReceiver
     @Contract
@@ -282,7 +285,18 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final Option<HttpForwarder> httpForwarder;
     private final AppHttpContext context;
     private final TimeSpan requestBudget;
+
+    private volatile org.pragmatica.aether.invoke.InvocationAdmission invocationAdmission = org.pragmatica.aether.invoke.InvocationAdmission.open();
+
     private volatile boolean quorumEstablished;
+
+    @Override
+    public Unit setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission admission) {
+        this.invocationAdmission = admission;
+
+        return Unit.unit();
+    }
+
     private final AtomicLong routeNotReadyRejections = new AtomicLong();
 
     AppHttpServerAdapter(AppHttpConfig config,
@@ -1261,20 +1275,31 @@ class AppHttpServerAdapter implements AppHttpServer {
         var startTime = System.nanoTime();
 
         routeInfo.onPresent(info -> recordMetricsStart(info));
-        router.handle(httpCtx)
-              .onSuccess(responseData -> handleLocalRouterSuccess(response,
-                                                                  responseData,
-                                                                  requestId,
-                                                                  routeInfo,
-                                                                  startTime,
-                                                                  httpCtx))
-              .onFailure(cause -> handleLocalRouterFailure(response,
-                                                           request.path(),
-                                                           requestId,
-                                                           cause,
-                                                           routeInfo,
-                                                           startTime,
-                                                           httpCtx));
+        invocationAdmission.execute(() -> router.handle(httpCtx),
+                                    result -> emitLocalResult(result,
+                                                              response,
+                                                              request,
+                                                              requestId,
+                                                              routeInfo,
+                                                              startTime,
+                                                              httpCtx));
+    }
+
+    private void emitLocalResult(Result<HttpResponseData> result,
+                                 ResponseWriter response,
+                                 HttpRequest request,
+                                 String requestId,
+                                 Option<ResolvedRoute> routeInfo,
+                                 long startTime,
+                                 HttpRequestContext httpCtx) {
+        result.apply(cause -> handleLocalRouterFailure(response,
+                                                       request.path(),
+                                                       requestId,
+                                                       cause,
+                                                       routeInfo,
+                                                       startTime,
+                                                       httpCtx),
+                     data -> handleLocalRouterSuccess(response, data, requestId, routeInfo, startTime, httpCtx));
     }
 
     private void handleLocalRouterSuccess(ResponseWriter response,
@@ -1303,6 +1328,11 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
         switch (cause) {
+            case org.pragmatica.aether.invoke.InvocationAdmission.Error ignored -> sendProblem(response,
+                                                                                               HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                               cause.message(),
+                                                                                               path,
+                                                                                               requestId);
             case RateGuardError.LimitExceeded exceeded -> sendRateLimitResponse(response, path, requestId, exceeded);
             default -> {
                 log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
@@ -1451,16 +1481,26 @@ class AppHttpServerAdapter implements AppHttpServer {
         var startTime = System.nanoTime();
 
         routeInfo.onPresent(this::recordMetricsStart);
-        routerOpt.unwrap()
-                 .handle(httpCtx)
-                 .onSuccess(responseData -> handleForwardSuccess(network,
-                                                                 request,
-                                                                 ser,
-                                                                 responseData,
-                                                                 routeInfo,
-                                                                 startTime,
-                                                                 httpCtx))
-                 .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, httpCtx));
+        invocationAdmission.execute(() -> routerOpt.unwrap()
+                                                   .handle(httpCtx),
+                                    result -> emitForwardResult(result,
+                                                                network,
+                                                                request,
+                                                                ser,
+                                                                routeInfo,
+                                                                startTime,
+                                                                httpCtx));
+    }
+
+    private void emitForwardResult(Result<HttpResponseData> result,
+                                   ClusterNetwork network,
+                                   HttpForwardRequest request,
+                                   Serializer ser,
+                                   Option<ResolvedRoute> routeInfo,
+                                   long startTime,
+                                   HttpRequestContext httpCtx) {
+        result.apply(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, httpCtx),
+                     data -> handleForwardSuccess(network, request, ser, data, routeInfo, startTime, httpCtx));
     }
 
     private void handleForwardSuccess(ClusterNetwork network,
@@ -1529,6 +1569,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     public void onHttpForwardResponse(HttpForwardResponse response) {
         httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
+    }
+
+    @Override
+    @Contract
+    public org.pragmatica.lang.Unit onNodeDeparture(NodeId node) {
+        httpForwarder.onPresent(forwarder -> forwarder.onNodeDeparture(node));
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     @Override

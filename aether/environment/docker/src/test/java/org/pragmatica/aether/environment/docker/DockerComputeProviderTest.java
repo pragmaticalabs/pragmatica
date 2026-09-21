@@ -188,7 +188,7 @@ class DockerComputeProviderTest {
         @Test
         void provision_withSpec_passesTagsToCommand() {
             testRunner.queuedResponses.add(Promise.success("container-id-1"));
-            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT + "\ttest-cluster\tworker\taether-node"));
             var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "worker", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "staging", ctx).unwrap();
@@ -645,11 +645,13 @@ class DockerComputeProviderTest {
 
         @Test
         void parseInspectOutput_validOutput_returnsInstanceInfo() {
-            var result = DockerComputeProvider.parseInspectOutput("running\t/aether-node-0\taether-node-0\tabc123",
+            var result = DockerComputeProvider.parseInspectOutput("running\t/aether-node-0\taether-node-0\tabc123\tobserved-cluster\tworker\taether-node-0",
                                                                   new InstanceId("abc123"));
 
             assertThat(result.status()).isEqualTo(InstanceStatus.RUNNING);
             assertThat(result.addresses()).contains("aether-node-0");
+            assertThat(result.tags()).containsEntry("aether.cluster", "observed-cluster").containsEntry("aether.role", "worker");
+            assertThat(result.nodeId().unwrap()).isEqualTo("aether-node-0");
         }
     }
 

@@ -4,16 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
-import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
-import org.pragmatica.consensus.NodeId;
-
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.pragmatica.cluster.metrics.MetricObservation;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.consensus.NodeId;
+
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #588 (round 2) — the leader's ping is the SOLE feed of a FOLLOWER's pong roster, so the follower
 /// must RETAIN that roster to the ping's key set rather than merge into it.
@@ -37,11 +40,25 @@ class ClusterSyncCollectorPingRosterRetentionTest {
     private static final NodeId PEER = NodeId.nodeId("peer-2").unwrap();
 
     private static ClusterSyncPing leaderPing(long term, NodeId... roster) {
-        return new ClusterSyncPing(LEADER, metricsFor(roster), term, term, 0L, Set.of(), Set.of(), Map.of(), Set.of());
+        return new ClusterSyncPing(LEADER,
+                                   metricsFor(roster),
+                                   term,
+                                   term,
+                                   0L,
+                                   Set.of(),
+                                   Set.of(),
+                                   Map.of(),
+                                   Set.of(),
+                                   true,
+                                   true);
     }
 
-    private static Map<NodeId, Map<String, Double>> metricsFor(NodeId... roster) {
-        return Arrays.stream(roster).collect(Collectors.toMap(id -> id, _ -> Map.of("cpu", 0.5)));
+    private static Map<NodeId, MetricObservation> metricsFor(NodeId... roster) {
+        return Arrays.stream(roster).collect(Collectors.toMap(id -> id,
+                                                              _ -> new MetricObservation(0L,
+                                                                                         System.nanoTime(),
+                                                                                         System.currentTimeMillis(),
+                                                                                         Map.of("cpu", 0.5))));
     }
 
     /// THE PIN. A worker the follower already pruned is re-installed by an in-flight ping from a
@@ -51,26 +68,24 @@ class ClusterSyncCollectorPingRosterRetentionTest {
     @Test
     void pingWithoutTheWorker_evictsAWorkerAnEarlierPingInstalled() {
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new NoopNetwork());
+        collector.setMetricsProducerEligibility(_ -> true);
 
+        collector.setPingAuthority(LEADER::equals, LEADER::equals);
         collector.onClusterSyncPing(leaderPing(1L, LEADER, WORKER, PEER));
         assertThat(collector.allMetrics()).as("positive control: the ping installs the worker").containsKey(WORKER);
-
         // t_F — this follower's own membership verdict prunes the departed worker first.
         collector.removeNode(WORKER);
         assertThat(collector.allMetrics()).doesNotContainKey(WORKER);
-
         // t_F < ping < t_L — the leader has not projected the death yet and pings the worker back.
         collector.onClusterSyncPing(leaderPing(1L, LEADER, WORKER, PEER));
         assertThat(collector.allMetrics()).as("an in-flight ping from a leader that still holds the worker re-installs it")
-                                          .containsKey(WORKER);
-
+                  .containsKey(WORKER);
         // t_L — the leader's own verdict landed; every later ping carries the smaller roster.
         collector.onClusterSyncPing(leaderPing(1L, LEADER, PEER));
-
         assertThat(collector.allMetrics()).as("#588: a ping that no longer carries the worker must evict the follower's ghost")
-                                          .doesNotContainKey(WORKER);
+                  .doesNotContainKey(WORKER);
         assertThat(collector.allMetrics()).as("and must not disturb the peers the ping still carries")
-                                          .containsKeys(LEADER, PEER);
+                  .containsKeys(LEADER, PEER);
     }
 
     /// The retain must never be a roster wipe: everything the ping carries survives it, and the
@@ -79,15 +94,14 @@ class ClusterSyncCollectorPingRosterRetentionTest {
     @Test
     void retention_keepsEveryNodeThePingCarries_andSelf() {
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new NoopNetwork());
+        collector.setMetricsProducerEligibility(_ -> true);
 
+        collector.setPingAuthority(LEADER::equals, LEADER::equals);
         collector.onClusterSyncPing(leaderPing(1L, LEADER, WORKER, PEER, SELF));
-
         assertThat(collector.allMetrics()).containsKeys(LEADER, WORKER, PEER, SELF);
-
         collector.onClusterSyncPing(leaderPing(1L, LEADER, WORKER, PEER));
-
         assertThat(collector.allMetrics()).as("self survives a ping that does not list it")
-                                          .containsKeys(LEADER, WORKER, PEER, SELF);
+                  .containsKeys(LEADER, WORKER, PEER, SELF);
     }
 
     /// The retain sits BEHIND the term fence, so a stale-term ping — which `acceptPingFencing`
@@ -96,12 +110,13 @@ class ClusterSyncCollectorPingRosterRetentionTest {
     @Test
     void staleTermPing_isRejectedBeforeTheRetain_andEvictsNothing() {
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new NoopNetwork());
+        collector.setMetricsProducerEligibility(_ -> true);
+
+        collector.setPingAuthority(LEADER::equals, LEADER::equals);
         collector.onClusterSyncPing(leaderPing(5L, LEADER, WORKER, PEER));
         assertThat(collector.allMetrics()).containsKeys(LEADER, WORKER, PEER);
-
         collector.onClusterSyncPing(leaderPing(4L, LEADER));
-
         assertThat(collector.allMetrics()).as("a fenced-out ping is not evidence about the roster")
-                                          .containsKeys(LEADER, WORKER, PEER);
+                  .containsKeys(LEADER, WORKER, PEER);
     }
 }

@@ -73,6 +73,8 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
     void setUp() {
         var router = MessageRouter.mutable();
         kvStore = new InMemoryKvStore(router);
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
         cluster = new RecordingClusterNode(SELF);
         countedMembersRef = new AtomicReference<>(Set.of());
         readyNodes = ConcurrentHashMap.newKeySet();
@@ -192,6 +194,10 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         for (var artifact : List.of(artifactA, artifactD, artifactE, artifactF)) {
             seedBlueprint(artifact, 1);
         }
+        for (var artifact : List.of(artifactA, artifactD)) {
+            kvStore.put(AetherKey.SliceTargetKey.sliceTargetKey(artifact.base()),
+                AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), 1, 1, "WORKERS_ONLY"));
+        }
         seedSliceActive(artifactA, worker);
         seedSliceActive(artifactD, worker);
         seedSliceActive(artifactE, NODE_A);
@@ -215,6 +221,42 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
                                                         && !nak.nodeId().equals(NODE_A)))
                 .as("control: the core imbalance itself was rebalanced (a core donor moved E or F), so the path was live")
                 .isTrue();
+    }
+
+    @Test
+    void workersOnlyRetriesPlacementWhenCommunityBecomesEligibleAndRetiresCoreAfterActivation() {
+        var worker = new NodeId("node-worker");
+        seedNodeOnDuty(SELF);
+        publishSnapshot(List.of(SELF));
+        harness.dispatch(new Activate());
+        seedBlueprint(ARTIFACT, 1);
+        seedSliceActive(ARTIFACT, SELF);
+        kvStore.put(AetherKey.SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+            AetherValue.SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1, 1, "WORKERS_ONLY"));
+        cluster.commands.clear();
+        activeState().reconcile();
+        assertThat(cluster.commands).as("unavailable worker audience must not fall back or retire serving core").isEmpty();
+
+        activeState().workerNodes().add(worker);
+        seedNodeOnDuty(worker);
+        kvStore.put(new AetherKey.CommunityKey("community"), new AetherValue.CommunityValue("source", "WORKER", 100,
+            org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE, 1L, Option.none()));
+        kvStore.put(AetherKey.GovernorAnnouncementKey.forCommunity("community"),
+            AetherValue.GovernorAnnouncementValue.governorAnnouncementValue(worker, 1, List.of(worker), "", 1L));
+        activeState().reconcile();
+        assertThat(activeState().sliceStates().get(SliceNodeKey.sliceNodeKey(ARTIFACT, worker))).isEqualTo(SliceState.LOAD);
+        assertThat(cluster.commands).noneMatch(command -> command instanceof KVCommand.Put<?, ?> put
+            && put.key().equals(new NodeArtifactKey(SELF, ARTIFACT))
+            && put.value() instanceof AetherValue.NodeArtifactValue value && value.state() == SliceState.UNLOAD);
+        activeState().sliceStates().put(SliceNodeKey.sliceNodeKey(ARTIFACT, worker), SliceState.ACTIVE);
+        cluster.commands.clear();
+        // Keep this committed eligibility fact stable while isolating placement reconciliation.
+        kvStore.put(new AetherKey.CommunityKey("community"), new AetherValue.CommunityValue("source", "WORKER", 100,
+            org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE, 1L, Option.none()));
+        activeState().reconcile();
+        assertThat(cluster.commands).anyMatch(command -> command instanceof KVCommand.Put<?, ?> put
+            && put.key().equals(new NodeArtifactKey(SELF, ARTIFACT))
+            && put.value() instanceof AetherValue.NodeArtifactValue value && value.state() == SliceState.UNLOAD);
     }
 
     /// Balanced spread: instances are evenly distributed across allocatable nodes —
@@ -395,7 +437,15 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         }
 
         void put(AetherKey key, AetherValue value) {
-            process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            if (value instanceof org.pragmatica.cluster.state.kvstore.LeaderAuthorized) {
+                var leader = getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                    org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+                process(createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                    java.util.UUID.randomUUID().toString(), leader, List.of(),
+                    List.of(new KVCommand.Mutation<>(key, get(key), Option.some(value)))))));
+            } else {
+                process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            }
         }
     }
 

@@ -29,6 +29,17 @@ import org.pragmatica.serialization.Serializer;
 
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
+    /// Serializes writers and notification delivery without blocking read-only store captures.
+    private final Object mutationLock = new Object();
+    private final java.util.ArrayDeque<PendingNotification> notifications = new java.util.ArrayDeque<>();
+
+    private record PendingNotification(org.pragmatica.messaging.Message message, boolean replay) {}
+
+    private boolean dispatching;
+    private boolean collectingReplay;
+    private int pendingNotifications;
+    private boolean recovering;
+    private long committedRevision;
     private final Map<K, V> storage = new ConcurrentHashMap<>();
     private final Serializer serializer;
     private final Deserializer deserializer;
@@ -51,9 +62,110 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         this.deserializer = deserializer;
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    /// Capture this value and the corresponding view under the same store monitor.
+    public synchronized long committedRevision() {
+        return committedRevision;
+    }
+
+    /// True until all notifications for the committed view have reached synchronous subscribers.
+    /// Read this with committedRevision and snapshot under the same store monitor when capturing
+    /// a projection maintained by subscribers. Never acquire the mutation guard from that reader.
+    public synchronized boolean hasPendingNotifications() {
+        return pendingNotifications != 0;
+    }
+
+    @Override
+    public <R> List<R> processCommitted(Batch<KVCommand<K>> batch, long nextSlot) {
+        return mutate(() -> {
+            List<R> results = processCommands(batch);
+
+            committedRevision = nextSlot;
+
+            return results;
+        });
+    }
+
+    @Override
+    public Result<Unit> recoverCommitted(Batch<KVCommand<K>> batch, long nextSlot) {
+        return mutate(() -> recoverSilently(batch).onSuccess(_ -> committedRevision = nextSlot));
+    }
+
+    @Override
+    public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
+        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> committedRevision = nextSlot));
+    }
+
+    private <T> T mutate(java.util.function.Supplier<T> mutation) {
+        synchronized (mutationLock) {
+            T result;
+
+            synchronized (this) {
+                result = mutation.get();
+            }
+
+            drainNotifications();
+
+            return result;
+        }
+    }
+
+    private <T extends org.pragmatica.messaging.Message> void publish(T message) {
+        if (!recovering) {
+            notifications.addLast(new PendingNotification(message, collectingReplay));
+            pendingNotifications++;
+        }
+    }
+
+    private void drainNotifications() {
+        if (dispatching) {
+            return;
+        }
+
+        dispatching = true;
+        try {
+            while (!notifications.isEmpty()) {
+                dispatchNotification(notifications.removeFirst());
+            }
+        } finally {
+            dispatching = false;
+        }
+    }
+
+    private void dispatchNotification(PendingNotification notification) {
+        var previous = replaying.get();
+
+        replaying.set(notification.replay());
+        try {
+            router.route(notification.message());
+        } finally {
+            replaying.set(previous);
+            synchronized (this) {
+                pendingNotifications--;
+            }
+        }
+    }
+
+    @Override
+    public Result<Unit> recover(Batch<KVCommand<K>> batch) {
+        return mutate(() -> recoverSilently(batch));
+    }
+
+    private Result<Unit> recoverSilently(Batch<KVCommand<K>> batch) {
+        recovering = true;
+        var recovered = Result.lift(Causes::fromThrowable, () -> processCommands(batch)).mapToUnit();
+
+        recovering = false;
+
+        return recovered;
+    }
+
     @Override
     public <R> List<R> process(Batch<KVCommand<K>> batch) {
+        return mutate(() -> processCommands(batch));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private <R> List<R> processCommands(Batch<KVCommand<K>> batch) {
         return batch.commands()
                     .stream()
                     .map(command -> (R) processCommand(command))
@@ -61,10 +173,13 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private Option<V> processCommand(KVCommand command) {
+    private Object processCommand(KVCommand command) {
         return switch (command) {
             case Get<?> get -> handleGet((Get<K>) get);
-            case Put<?, ?> put -> handlePut((Put<K, V>) put);
+            case Put<?, ?> put -> put.value() instanceof LeaderAuthorized || storage.get(put.key()) instanceof LeaderAuthorized
+                                  ? Option.option(storage.get(put.key()))
+                                  : handlePut((Put<K, V>) put);
+            case KVCommand.LeaderTransaction<?, ?> transaction -> handleLeaderTransaction((KVCommand.LeaderTransaction<K, V>) transaction);
             case Remove<?> remove -> handleRemove((Remove<K>) remove);
             case Noop<?> ignored -> Option.none();
         };
@@ -73,9 +188,70 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private Option<V> handleGet(Get<K> get) {
         var value = Option.option(storage.get(get.key()));
 
-        router.route(new ValueGet<>(get, value));
+        publish(new ValueGet<>(get, value));
 
         return value;
+    }
+
+    /// Validate the complete read/write set before changing storage. Notifications run only after
+    /// every change is visible, so a subscriber cannot act on a partially committed reservation.
+    private KVCommand.TransactionResult handleLeaderTransaction(KVCommand.LeaderTransaction<K, V> transaction) {
+        var accepted = transaction.leader().equals(storage.get(LeaderKey.INSTANCE)) && transaction.guards()
+                                                                                                  .stream()
+                                                                                                  .allMatch(this::matchesWitness) && transaction.mutations()
+                                                                                                                                                .stream()
+                                                                                                                                                .map(KVCommand.Mutation::key)
+                                                                                                                                                .distinct()
+                                                                                                                                                .count() == transaction.mutations()
+                                                                                                                                                                       .size() && transaction.mutations()
+                                                                                                                                                                                             .stream()
+                                                                                                                                                                                             .allMatch(this::validMutation);
+
+        if (accepted) {
+            transaction.mutations().forEach(this::applyMutation);
+            transaction.mutations().forEach(this::notifyMutation);
+        }
+
+        return new KVCommand.TransactionResult(transaction.transactionId(), accepted);
+    }
+
+    private boolean matchesWitness(KVCommand.ReadWitness<K> witness) {
+        return witness.expected()
+                      .equals(Option.option(storage.get(witness.key())));
+    }
+
+    private boolean validMutation(KVCommand.Mutation<K, V> mutation) {
+        return ! (mutation.key() instanceof LeaderKey)
+               && mutation.expected()
+                          .equals(Option.option(storage.get(mutation.key())))
+               && mutation.replacement()
+                          .fold(() -> !(storage.get(mutation.key()) instanceof OwnerFenced<?, ?>) && (storage.get(mutation.key()) instanceof LeaderAuthorized || !staleRemove(new Remove<>(mutation.key(),
+                                                                                                                                                                                           mutation.expected()
+                                                                                                                                                                                                   .map(value -> (Object) value)))),
+                                value -> !staleWrite(mutation.key(),
+                                                     value));
+    }
+
+    private void applyMutation(KVCommand.Mutation<K, V> mutation) {
+        mutation.replacement().fold(() -> storage.remove(mutation.key()),
+                                    value -> storage.put(mutation.key(), value));
+    }
+
+    private void notifyMutation(KVCommand.Mutation<K, V> mutation) {
+        mutation.replacement()
+                .fold(() -> {
+                          publish(new ValueRemove<>(new Remove<>(mutation.key()),
+                                                    mutation.expected()));
+
+                          return org.pragmatica.lang.Unit.unit();
+                      },
+                      value -> {
+                          publish(new ValuePut<>(new Put<>(mutation.key(),
+                                                           value),
+                                                 mutation.expected()));
+
+                          return org.pragmatica.lang.Unit.unit();
+                      });
     }
 
     private Option<V> handlePut(Put<K, V> put) {
@@ -85,7 +261,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
         var oldValue = Option.option(storage.put(put.key(), put.value()));
 
-        router.route(new ValuePut<>(put, oldValue));
+        publish(new ValuePut<>(put, oldValue));
 
         return oldValue;
     }
@@ -100,9 +276,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key, incoming) || regressiveWatermarkWrite(key,
-                                                                                                                                                   incoming) || unassignedWrite(key,
-                                                                                                                                                                                incoming);
+        return dropsOwnerFence(key, incoming) || staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key,
+                                                                                                                                          incoming) || regressiveWatermarkWrite(key,
+                                                                                                                                                                                incoming) || unassignedWrite(key,
+                                                                                                                                                                                                             incoming);
+    }
+
+    private boolean dropsOwnerFence(K key, Object incoming) {
+        return storage.get(key) instanceof OwnerFenced<?, ?> && !(incoming instanceof OwnerFenced<?, ?>);
     }
 
     /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
@@ -123,7 +304,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// and the currently-committed value under the key are `EpochBearing`, the write is rejected iff
     /// its epoch is STRICTLY older than the committed one — a deposed governor/owner cannot commit an
     /// OLD epoch over a newer one. A first write (no committed value) and any non-`EpochBearing`
-    /// value pass through unchanged. Equal-or-newer epochs are accepted: governor reannouncement and
+    /// value pass through unchanged unless it would erase an existing owner fence. Equal epochs additionally require matching owner identity for [OwnerFenced] values.
+    /// Equal-or-newer epochs otherwise permit refreshes: governor reannouncement and
     /// dissolution legitimately re-write at the same epoch, and a stale-owner takeover rewrites
     /// ownership at the same epoch while bumping only its `ownershipTerm` — see [EpochBearing].
     /// #1333: a write that MINTS its epoch ([EpochBearing#mintsEpoch]) is stale at an EQUAL epoch too —
@@ -143,9 +325,12 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                                           EpochBearing<?> stored) {
         var comparison = incoming.fenceEpoch().compareTo((E) stored.fenceEpoch());
 
-        return incoming.mintsEpoch()
-               ? comparison <= 0
-               : comparison < 0;
+        return comparison < 0 || comparison == 0 && (incoming.mintsEpoch() || differentOwner(incoming, stored));
+    }
+
+    private static boolean differentOwner(EpochBearing<?> incoming, EpochBearing<?> stored) {
+        return stored instanceof OwnerFenced<?, ?> owner && (!(incoming instanceof OwnerFenced<?, ?> candidate) || !owner.fenceOwner()
+                                                                                                                         .equals(candidate.fenceOwner()));
     }
 
     /// Lost-update fence (RFC-0018, #570): [VersionFenced] values are compare-and-put on their
@@ -203,7 +388,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
         var oldValue = Option.option(storage.remove(remove.key()));
 
-        router.route(new ValueRemove<>(remove, oldValue));
+        publish(new ValueRemove<>(remove, oldValue));
 
         return oldValue;
     }
@@ -213,7 +398,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// [LeaderValue]) is rejected — applied to nothing, NO `ValueRemove` emitted — UNLESS it carries a
     /// witness that is (a) present, (b) the SAME fenced kind as the committed value (an `EpochBearing`
     /// witness for an `EpochBearing`-valued key, a `LeaderValue` for the `LeaderKey`), and (c) current
-    /// (equal-or-newer epoch, or strictly-greater `viewSequence`). A missing, wrong-typed, or stale
+    /// (equal-or-newer ordinary epoch, strictly-newer OwnerFenced epoch, or strictly-greater `viewSequence`). A missing, wrong-typed, or stale
     /// witness fails, so a deposed owner cannot delete a fenced key even with a bare `Remove(key)` —
     /// closing the witnessless-delete gap. A non-fenced committed value, or an absent key, deletes
     /// freely — preserving every existing unfenced remover (locks, blueprints, registry entries; no
@@ -222,12 +407,24 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private boolean staleRemove(Remove<K> remove) {
         var key = remove.key();
 
+        if (storage.get(key) instanceof LeaderAuthorized) {
+            return true;
+        }
+
         return switch (storage.get(key)) {
             case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed,
                                                                                               remove.witness());
+            case OwnerFenced<?, ?> committed -> !newerOwnerWitness(committed, remove.witness());
             case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
             case null, default -> false;
         };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <E extends Comparable<E>> boolean newerOwnerWitness(OwnerFenced<E, ?> committed,
+                                                                       Option<Object> witness) {
+        return witness.map(value -> value instanceof OwnerFenced<?, ?> owner && ((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0)
+                      .or(false);
     }
 
     /// A witness authorizes deleting an `EpochBearing`-valued key iff it is present, itself
@@ -247,8 +444,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     @Override
-    public Result<byte[]> makeSnapshot() {
-        return Result.lift(Causes::fromThrowable, () -> serializer.encode(new HashMap<>(storage)));
+    public synchronized Result<byte[]> makeSnapshot() {
+        return Result.lift(Causes::fromThrowable,
+                           () -> serializer.canonical()
+                                           .encode(new HashMap<>(storage)));
     }
 
     /// The serializer used for snapshot serialization. [StateMachine#createBatch] reuses it to
@@ -265,6 +464,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     @Override
     public Result<Unit> restoreSnapshot(byte[] snapshot) {
+        return mutate(() -> restoreSilently(snapshot));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Result<Unit> restoreSilently(byte[] snapshot) {
         return Result.lift(Causes::fromThrowable,
                            () -> deserializer.decode(snapshot))
                      .map(map -> (Map<K, V>) map)
@@ -297,14 +501,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// diffs correctly.
     @Override
     public Unit replayNotifications() {
-        replaying.set(Boolean.TRUE);
-        try {
-            replayRemovedKeys();
-            replayPutKeys();
-        } finally {
-            replaying.set(Boolean.FALSE);
-        }
+        return mutate(this::queueReplay);
+    }
 
+    private Unit queueReplay() {
+        collectingReplay = true;
+        replayRemovedKeys();
+        replayPutKeys();
+        collectingReplay = false;
         lastReplayedView.clear();
         lastReplayedView.putAll(storage);
 
@@ -324,7 +528,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void replayRemovedKeys() {
         lastReplayedView.forEach((key, value) -> {
             if (!storage.containsKey(key)) {
-                router.route(new ValueRemove<>(new Remove<>(key), Option.some(value)));
+                publish(new ValueRemove<>(new Remove<>(key), Option.some(value)));
             }
         });
     }
@@ -335,14 +539,19 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void replayPutKeys() {
         storage.forEach((key, value) -> {
             if (!value.equals(lastReplayedView.get(key))) {
-                router.route(new ValuePut<>(new Put<>(key, value),
-                                            Option.option(lastReplayedView.get(key))));
+                publish(new ValuePut<>(new Put<>(key, value),
+                                       Option.option(lastReplayedView.get(key))));
             }
         });
     }
 
     @Override
     public Unit reset() {
+        return mutate(this::resetStorage);
+    }
+
+    private Unit resetStorage() {
+        committedRevision = 0;
         notifyRemoveAll();
         storage.clear();
         lastReplayedView.clear();
@@ -351,14 +560,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private void notifyRemoveAll() {
-        storage.forEach((key, value) -> router.route(new ValueRemove<>(new Remove<>(key), Option.some(value))));
+        storage.forEach((key, value) -> publish(new ValueRemove<>(new Remove<>(key), Option.some(value))));
     }
 
-    public Map<K, V> snapshot() {
+    public synchronized Map<K, V> snapshot() {
         return Map.copyOf(storage);
     }
 
-    public Option<V> get(K key) {
+    public synchronized Option<V> get(K key) {
         return Option.option(storage.get(key));
     }
 
@@ -369,7 +578,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Returns `Option.none()` when the key is absent OR the stored value isn't an instance of
     /// `valueClass`.
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
+    public synchronized <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
         var raw = ((Map) storage).get(key);
 
         if (raw == null || !valueClass.isInstance(raw)) {
@@ -390,7 +599,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     @Contract
     public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
-        storage.forEach((key, value) -> {
+        snapshot().forEach((key, value) -> {
             if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
                 consumer.accept((KK) key, (VV) value);
             }
@@ -400,6 +609,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @MessageReceiver
     @Contract
     public void find(Find find) {
-        router.routeAsync(() -> new FoundEntries<>(List.copyOf(storage.entrySet())));
+        router.routeAsync(() -> new FoundEntries<>(List.copyOf(snapshot().entrySet())));
     }
 }

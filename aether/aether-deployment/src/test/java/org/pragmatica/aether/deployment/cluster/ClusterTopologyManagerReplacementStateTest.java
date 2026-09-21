@@ -127,7 +127,7 @@ class ClusterTopologyManagerReplacementStateTest {
                                 List.of(),
                                 InstanceType.ON_DEMAND,
                                 Map.of(NODE_ID_TAG, nodeId.id()),
-                                Option.some(nodeId.id()));
+                                Option.some(nodeId.id()), org.pragmatica.lang.Option.none());
     }
 
     @Test

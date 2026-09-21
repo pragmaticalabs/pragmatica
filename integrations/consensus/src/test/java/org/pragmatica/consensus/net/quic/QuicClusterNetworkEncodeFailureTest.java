@@ -194,6 +194,9 @@ class QuicClusterNetworkEncodeFailureTest {
 
     private static TopologyObserver stubTopology(NodeInfo self) {
         return new TopologyObserver() {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {return id.equals(self.id()) ? Option.some(self) : Option.empty();}
             @Override public int clusterSize() {return 1;}

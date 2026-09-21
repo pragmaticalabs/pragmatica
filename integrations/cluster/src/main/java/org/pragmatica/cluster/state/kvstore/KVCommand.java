@@ -1,5 +1,7 @@
 package org.pragmatica.cluster.state.kvstore;
 
+import java.util.List;
+
 import org.pragmatica.consensus.Command;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
@@ -10,6 +12,30 @@ public sealed interface KVCommand<K extends StructuredKey> extends Command {
     K key();
 
     record Put<K extends StructuredKey, V>(K key, V value) implements KVCommand<K> {}
+
+    @Codec
+    record ReadWitness<K extends StructuredKey>(K key, Option<Object> expected) {}
+
+    /// One all-or-nothing mutation, authorized by the committed core leader and a complete read set.
+    record LeaderTransaction<K extends StructuredKey, V>(K key,
+                                                         String transactionId,
+                                                         LeaderValue leader,
+                                                         List<ReadWitness<K>> guards,
+                                                         List<Mutation<K, V>> mutations) implements KVCommand<K> {
+        public LeaderTransaction {
+            guards = List.copyOf(guards);
+            mutations = List.copyOf(mutations);
+        }
+    }
+
+    /// An absent replacement deletes the key. Every mutation carries its exact previous value.
+    @Codec
+    record Mutation<K extends StructuredKey, V>(K key, Option<V> expected, Option<V> replacement) {}
+
+    /// Correlation survives consensus batch merging; callers must select their own transaction ID.
+    /// Refusal identifies the transaction, not the conflicting key; callers may re-read to diagnose it.
+    @Codec
+    record TransactionResult(String transactionId, boolean accepted) {}
 
     record Get<K extends StructuredKey>(K key) implements KVCommand<K> {}
 
@@ -30,7 +56,8 @@ public sealed interface KVCommand<K extends StructuredKey> extends Command {
     /// applier ([KVStore]) rejects a delete of a key whose committed value is fenced UNLESS the
     /// witness is present, of the matching kind, and current (#379) — so a deposed owner cannot
     /// delete a fenced key, even with a bare `Remove(key)`. A legitimate deleter of a fenced key
-    /// reads the current committed value and passes it as the witness. Deleting a NON-fenced key
+    /// passes an appropriate authority witness; OwnerFenced deletion requires a strictly newer
+    /// owner epoch. Deleting a NON-fenced key
     /// (lock, blueprint, registry entry) needs no witness: use the convenience
     /// [#Remove(StructuredKey)] constructor.
     record Remove<K extends StructuredKey>(K key, Option<Object> witness) implements KVCommand<K> {

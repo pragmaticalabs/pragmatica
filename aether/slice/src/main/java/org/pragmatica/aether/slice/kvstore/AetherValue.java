@@ -26,6 +26,8 @@ import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.AssignmentTokenBearing;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
+import org.pragmatica.cluster.state.kvstore.OwnerFenced;
+import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
@@ -825,10 +827,16 @@ public sealed interface AetherValue {
                                      Epoch communityEpoch,
                                      Epoch observedCoreEpoch,
                                      HlcTimestamp transitionedAt,
-                                     boolean dissolved) implements AetherValue, EpochBearing<Epoch> {
+                                     boolean dissolved) implements AetherValue, OwnerFenced<Epoch, NodeId>, LeaderAuthorized {
+        @Override
+        public NodeId fenceOwner() {
+            return governorId;
+        }
+
         /// Ownership fence (#345 piece 1a): the governor's `communityEpoch` is the fencing token, so
         /// the Rabia applier rejects a deposed governor's strictly-older-epoch announcement. Same-epoch
-        /// re-writes (reannounce / dissolve) are accepted — only `withGovernorChange` bumps the epoch.
+        /// re-writes (reannounce / dissolve) require the same governor identity.
+        /// Only `withGovernorChange` bumps the epoch.
         @Override
         public Epoch fenceEpoch() {
             return communityEpoch;
@@ -949,7 +957,7 @@ public sealed interface AetherValue {
                                                  dissolved);
         }
 
-        public GovernorAnnouncementValue withMembers(List<NodeId> newMembers, String newTcpAddress) {
+        public GovernorAnnouncementValue withMembers(List<NodeId> newMembers, String newTcpAddress, Epoch coreEpoch) {
             return new GovernorAnnouncementValue(governorId,
                                                  newMembers.size(),
                                                  List.copyOf(newMembers),
@@ -957,7 +965,7 @@ public sealed interface AetherValue {
                                                  System.currentTimeMillis(),
                                                  communityTerm,
                                                  communityEpoch,
-                                                 observedCoreEpoch,
+                                                 coreEpoch,
                                                  transitionedAt,
                                                  dissolved);
         }
@@ -2052,6 +2060,104 @@ public sealed interface AetherValue {
     /// Mirrors [DhtPartitionOwnershipValue] for optional-field canonicalization: empty Option /
     /// empty string are the canonical "absent" forms, normalized in the compact constructor so a
     /// `null` from a wire/codec edge collapses to the same value (and the same `equals`).
+    /// One bounded, durable movement at a time per community. A created node retains its identity
+    /// across leader changes; an ambiguous create is never retried with a new identity.
+    record CapacityLedgerValue(int allocated, long version, boolean inventoryComplete) implements AetherValue, VersionFenced, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        @Override
+        public long fenceVersion() {
+            return version;
+        }
+    }
+
+    record CapacityReservationValue(String sourceName,
+                                    String sourceBinding,
+                                    String intendedRole,
+                                    CapacityReservationPhase phase) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
+    @Codec
+    enum CapacityReservationPhase {
+        DISPATCHED,
+        OBSERVED,
+        RELEASED,
+        UNKNOWN
+    }
+
+    /// A definitive no-create refusal. The operation itself is the exclusive recovery-probe token.
+    record CommunityPlacementAvailabilityValue(String policyIdentity,
+                                               String sourceBinding,
+                                               NodeId refusedNode,
+                                               long refusedAt,
+                                               int attempts) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
+    record CommunityPlacementOperationValue(String operationId,
+                                            String communityId,
+                                            NodeId targetNode,
+                                            String targetSource,
+                                            Option<String> targetZone,
+                                            String sourceBinding,
+                                            Option<NodeId> previousNode,
+                                            String previousSource,
+                                            PlacementOperationPhase phase,
+                                            org.pragmatica.cluster.state.kvstore.LeaderValue issuer,
+                                            long startedAt,
+                                            long phaseChangedAt,
+                                            String detail) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public CommunityPlacementOperationValue withPhase(PlacementOperationPhase next,
+                                                          org.pragmatica.cluster.state.kvstore.LeaderValue leader,
+                                                          String reason) {
+            return new CommunityPlacementOperationValue(operationId,
+                                                        communityId,
+                                                        targetNode,
+                                                        targetSource,
+                                                        targetZone,
+                                                        sourceBinding,
+                                                        previousNode,
+                                                        previousSource,
+                                                        next,
+                                                        leader,
+                                                        startedAt,
+                                                        System.currentTimeMillis(),
+                                                        reason);
+        }
+
+        public CommunityPlacementOperationValue withIssuer(org.pragmatica.cluster.state.kvstore.LeaderValue leader) {
+            return new CommunityPlacementOperationValue(operationId,
+                                                        communityId,
+                                                        targetNode,
+                                                        targetSource,
+                                                        targetZone,
+                                                        sourceBinding,
+                                                        previousNode,
+                                                        previousSource,
+                                                        phase,
+                                                        leader,
+                                                        startedAt,
+                                                        phaseChangedAt,
+                                                        detail);
+        }
+
+        public boolean active() {
+            return phase != PlacementOperationPhase.COMPLETE;
+        }
+    }
+
+    @Codec
+    enum PlacementOperationPhase {
+        RESERVED,
+        CREATE_REQUESTED,
+        AWAITING_READY,
+        DRAIN_REQUESTED,
+        DRAINED,
+        TERMINATING,
+        COMPLETE,
+        CREATE_UNCERTAIN,
+        DRAIN_UNCERTAIN,
+        BLOCKED,
+        UNKNOWN
+    }
+
+    record NodePlacementValue(String sourceName, Option<String> observedZone, String providerInstanceId) implements AetherValue {}
+
     record CommunityValue(String sourceName,
                           String role,
                           int targetSize,

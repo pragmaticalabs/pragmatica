@@ -150,8 +150,8 @@ class ClusterTopologyManagerRoleMismatchTest {
         appender.stop();
     }
 
-    /// (1): provisioned as WORKER, boots with no role label, joins on the CORE channel (blank is
-    /// core to `isCoreRole`). The WARN names the node, the intended role and what was advertised.
+    /// A provisioned WORKER with no role label remains UNKNOWN. The diagnostic names the node,
+    /// intended role and missing advertisement without inventing a core or worker admission.
     @Test
     void provisionedWorker_joiningWithNoRoleLabel_warnsNamingNodeIntendedAndAdvertised() {
         provision(PROVISIONED, NodeRole.WORKER);
@@ -169,7 +169,7 @@ class ClusterTopologyManagerRoleMismatchTest {
         assertThat(mismatchWarns.getFirst()).contains(PROVISIONED.id())
                                             .contains("intended role 'worker'")
                                             .contains("advertised role '' (absent)")
-                                            .contains("classified as CORE");
+                                            .contains("classified as UNKNOWN");
     }
 
     /// (4): a node nothing provisioned joins unlabelled. Absence of intent is not a mismatch —
@@ -264,16 +264,16 @@ class ClusterTopologyManagerRoleMismatchTest {
 
         join(PROVISIONED);
         assertThat(mismatchWarns()).hasSize(1);
-        assertThat(ctm.roleMismatches()).containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
+        assertThat(ctm.roleMismatches()).containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "UNKNOWN"));
 
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
         assertThat(ctm.roleMismatches()).as("the entry survives the node's departure — a restart may follow")
-                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
+                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "UNKNOWN"));
 
         join(PROVISIONED);
 
         assertThat(ctm.roleMismatches()).as("ledger-after-rejoin")
-                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
+                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "UNKNOWN"));
         assertThat(mismatchWarns()).as("total-mismatch-warns: the rejoin is compared again and re-reported")
                                    .hasSize(2);
     }
@@ -343,7 +343,7 @@ class ClusterTopologyManagerRoleMismatchTest {
         ctm.activate();
 
         assertThat(ctm.roleMismatches()).as("re-derived on activation: the relabelled node is cleared, the other stays")
-                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
+                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "UNKNOWN"));
         assertThat(mismatchWarns()).filteredOn(msg -> msg.contains(PROVISIONED.id()))
                                    .as("the still-mismatched node is re-reported on this activation")
                                    .hasSize(2);

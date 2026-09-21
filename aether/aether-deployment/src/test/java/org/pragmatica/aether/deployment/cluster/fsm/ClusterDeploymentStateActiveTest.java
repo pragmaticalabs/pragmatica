@@ -117,6 +117,38 @@ class ClusterDeploymentStateActiveTest {
                     NodeArtifactValue.nodeArtifactValue(state, transitionedAt));
     }
 
+    @Test
+    void placementChangeLoadsReplacementBeforeUnloadingDisplacedInstance() {
+        seedNodeArtifact(NODE_A, SliceState.ACTIVE, 0);
+        harness.dispatch(new Activate());
+        activeState().sliceStates().clear();
+        var oldKey = SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_A);
+        var newKey = SliceNodeKey.sliceNodeKey(ARTIFACT, SELF);
+        activeState().sliceStates().put(oldKey, SliceState.ACTIVE);
+        cluster.commands.clear();
+        var allocation = new SliceAllocationEngine(activeState(), List.of(SELF));
+
+        allocation.issueAllocationCommands(ARTIFACT, 1);
+        assertThat(statesWrittenForNode(SELF)).contains(SliceState.LOAD);
+        assertThat(statesWrittenForNode(NODE_A)).doesNotContain(SliceState.UNLOAD);
+        cluster.commands.clear();
+        activeState().sliceStates().put(newKey, SliceState.LOADING);
+        allocation.issueAllocationCommands(ARTIFACT, 1);
+        assertThat(statesWrittenForNode(NODE_A)).doesNotContain(SliceState.UNLOAD);
+
+        activeState().sliceStates().put(newKey, SliceState.ACTIVE);
+        allocation.issueAllocationCommands(ARTIFACT, 1);
+        assertThat(statesWrittenForNode(NODE_A)).contains(SliceState.UNLOAD);
+    }
+
+    private List<SliceState> statesWrittenForNode(NodeId node) {
+        return cluster.commands.stream()
+                      .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                          && put.key().equals(NodeArtifactKey.nodeArtifactKey(node, ARTIFACT)))
+                      .map(command -> ((NodeArtifactValue) ((KVCommand.Put<AetherKey, ?>) command).value()).state())
+                      .toList();
+    }
+
     @Nested
     class RederivationFromKvStore {
         @Test

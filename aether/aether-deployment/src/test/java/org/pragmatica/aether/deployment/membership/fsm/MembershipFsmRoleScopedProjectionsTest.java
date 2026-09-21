@@ -67,7 +67,7 @@ class MembershipFsmRoleScopedProjectionsTest {
     @Nested
     class CoreCountedMembers {
         @Test
-        void coreCountedMembers_excludesExplicitWorker_andIncludesUnknownRole() {
+        void coreCountedMembers_excludesWorkerAndUnknownRole() {
             var manager = activeManager();
 
             promoteCore(manager, CORE_A);
@@ -75,7 +75,7 @@ class MembershipFsmRoleScopedProjectionsTest {
             promoteToMember(manager, UNLABELED_D);
 
             assertThat(manager.countedMembers()).as("role-blind count includes everyone").containsExactlyInAnyOrder(CORE_A, WORKER_B, UNLABELED_D);
-            assertThat(manager.coreCountedMembers()).as("core-scoped count excludes the explicit worker, keeps the unknown-role member (conservative)").containsExactlyInAnyOrder(CORE_A, UNLABELED_D);
+            assertThat(manager.coreCountedMembers()).as("core-scoped count excludes workers and unknown roles").containsExactly(CORE_A);
         }
 
         @Test
@@ -120,14 +120,14 @@ class MembershipFsmRoleScopedProjectionsTest {
     @Nested
     class StrictCoreMemberCount {
         @Test
-        void strictCoreMemberCount_countsMemberStateCoreAndUnknownRole_excludesWorker() {
+        void strictCoreMemberCount_countsOnlyKnownCore() {
             var manager = activeManager();
 
             promoteCore(manager, CORE_A);
             promoteWorker(manager, WORKER_B);
             promoteToMember(manager, UNLABELED_D);
 
-            assertThat(manager.strictCoreMemberCount()).isEqualTo(2);
+            assertThat(manager.strictCoreMemberCount()).isEqualTo(1);
         }
 
         @Test

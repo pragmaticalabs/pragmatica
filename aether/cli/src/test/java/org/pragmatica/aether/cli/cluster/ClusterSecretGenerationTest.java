@@ -71,7 +71,7 @@ class ClusterSecretGenerationTest {
                                                              Map.of("eu-1", threeCoreCloudSource()),
                                                              Map.of("default", defaultRuntime()),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                             OperationsConfig.defaultOperationsConfig());
+                                                             OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
     @Test

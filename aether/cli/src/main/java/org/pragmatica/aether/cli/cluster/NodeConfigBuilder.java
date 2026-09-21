@@ -6,7 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
-import org.pragmatica.aether.config.cluster.CloudProviderName;
+import org.pragmatica.aether.config.cluster.SourceCloudBindings;
 import org.pragmatica.aether.config.cluster.DefaultNodeConfig;
 import org.pragmatica.aether.config.cluster.NodeConfigComposer;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -33,22 +33,18 @@ sealed interface NodeConfigBuilder {
                                                         dockerGid,
                                                         clusterSecret,
                                                         role,
-                                                        ctx.sshKeyIdsFor(providerName(source)));
+                                                        ctx.sshKeyIdsFor(source.name().value()));
+        var protectedOverlay = SourceCloudBindings.augment(overlay,
+                                                           ctx.config(),
+                                                           role,
+                                                           ctx.sshKeyIdsBySource(),
+                                                           ctx.firewallIdsBySource());
 
         return Result.all(DefaultNodeConfig.globalDefault(),
                           DefaultNodeConfig.sourceTypeDefault(source.type()))
                      .map((global, typeDefault) -> NodeConfigComposer.compose(global,
                                                                               typeDefault,
                                                                               source.nodeConfig(),
-                                                                              overlay));
-    }
-
-    /// #442 — the cloud provider key (`hetzner`, …) under which [BootstrapPhaseSshKey] stored the
-    /// resolved operator SSH key ids in the [BootstrapContext]. Empty for non-cloud sources, which
-    /// carry no keys, so `sshKeyIdsFor` returns an empty list and the overlay omits `ssh_key_ids`.
-    private static String providerName(SourceProfile source) {
-        return source.provider()
-                     .map(CloudProviderName::value)
-                     .or("");
+                                                                              protectedOverlay));
     }
 }

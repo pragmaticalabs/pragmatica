@@ -5,7 +5,7 @@
 package org.pragmatica.aether.metrics;
 
 import java.util.List;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.lang.Result;
@@ -16,181 +16,137 @@ import static org.pragmatica.lang.Result.unitResult;
 
 
 public final class DerivedMetricsCalculator {
-    private static final int DEFAULT_WINDOW_SIZE = 60;
-    private static final long EVENT_LOOP_THRESHOLD_NS = EventLoopMetrics.DEFAULT_HEALTH_THRESHOLD_NS;
-
     private final RingBuffer<ComprehensiveSnapshot> samples;
-    private final int windowSize;
-    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private DerivedMetrics current = DerivedMetrics.EMPTY;
 
     private DerivedMetricsCalculator(int windowSize) {
-        this.windowSize = windowSize;
-        this.samples = RingBuffer.ringBuffer(windowSize);
+        samples = RingBuffer.ringBuffer(windowSize);
     }
 
     public static DerivedMetricsCalculator derivedMetricsCalculator() {
-        return new DerivedMetricsCalculator(DEFAULT_WINDOW_SIZE);
+        return derivedMetricsCalculator(60);
     }
 
     public static DerivedMetricsCalculator derivedMetricsCalculator(int windowSize) {
         return new DerivedMetricsCalculator(windowSize);
     }
 
-    public Result<Unit> addSample(ComprehensiveSnapshot snapshot) {
-        lock.writeLock().lock();
-        try {
+    public synchronized Result<Unit> addSample(ComprehensiveSnapshot snapshot) {
+        var existing = samples.toList();
+
+        if (existing.isEmpty() || snapshot.timestamp() > existing.getLast().timestamp()) {
             samples.add(snapshot);
-            recalculate();
-        } finally {
-            lock.writeLock().unlock();
+            current = calculate(samples.toList());
         }
 
         return unitResult();
     }
 
-    public DerivedMetrics current() {
-        lock.readLock().lock();
-        try {
-            return current;
-        } finally {
-            lock.readLock().unlock();
-        }
+    public synchronized DerivedMetrics current() {
+        return current;
     }
 
-    private void recalculate() {
-        var sampleList = samples.toList();
+    private static DerivedMetrics calculate(List<ComprehensiveSnapshot> samples) {
+        var intervals = IntStream.range(1,
+                                        samples.size())
+                                 .mapToObj(i -> MetricInterval.metricInterval(samples.get(i - 1),
+                                                                              samples.get(i)))
+                                 .toList();
+        var seconds = intervals.stream().mapToDouble(interval -> interval.elapsed()
+                                                                         .nanos() / 1_000_000_000.0).sum();
+        var calls = intervals.stream().mapToLong(MetricInterval::invocations).sum();
+        var failures = intervals.stream().mapToLong(MetricInterval::failures).sum();
+        var gcCount = intervals.stream().mapToLong(MetricInterval::gcCount).sum();
+        var means = intervals.stream()
+                             .filter(interval -> interval.invocations() > 0)
+                             .mapToDouble(interval -> interval.meanLatency()
+                                                              .nanos() / 1_000_000.0)
+                             .sorted()
+                             .toArray();
+        var lag = samples.stream().mapToDouble(sample -> sample.eventLoop()
+                                                               .lagNanos()).average().orElse(0);
+        var heap = samples.stream().mapToDouble(ComprehensiveSnapshot::heapUsage).average().orElse(0);
 
-        if (sampleList.isEmpty()) {
-            current = DerivedMetrics.EMPTY;
-
-            return;
-        }
-
-        int n = sampleList.size();
-        double windowSeconds = calculateWindowSeconds(sampleList);
-        var totals = accumulateTotals(sampleList);
-        var rates = calculateRates(totals, windowSeconds, n);
-        var percentiles = calculatePercentiles(sampleList);
-        double eventLoopSaturation = Math.min(1.0, totals.sumEventLoopLag / n / EVENT_LOOP_THRESHOLD_NS);
-        var trends = calculateTrends(sampleList, n, windowSeconds);
-
-        current = new DerivedMetrics(rates.requestRate,
-                                     rates.errorRate,
-                                     rates.gcRate,
-                                     percentiles.p50,
-                                     percentiles.p95,
-                                     percentiles.p99,
-                                     eventLoopSaturation,
-                                     totals.sumHeapUsage / n,
-                                     trends.cpuTrend,
-                                     trends.latencyTrend,
-                                     trends.errorTrend);
+        return new DerivedMetrics(seconds == 0
+                                  ? 0
+                                  : calls / seconds,
+                                  calls == 0
+                                  ? 0
+                                  : (double) failures / calls,
+                                  seconds == 0
+                                  ? 0
+                                  : gcCount / seconds,
+                                  percentile(means, 50),
+                                  percentile(means, 95),
+                                  percentile(means, 99),
+                                  Math.min(1, lag / EventLoopMetrics.DEFAULT_HEALTH_THRESHOLD_NS),
+                                  heap,
+                                  cpuTrend(samples),
+                                  latencyTrend(intervals),
+                                  errorTrend(intervals));
     }
 
-    private double calculateWindowSeconds(List<ComprehensiveSnapshot> sampleList) {
-        long firstTs = sampleList.getFirst().timestamp();
-        long lastTs = sampleList.getLast().timestamp();
-
-        return Math.max(1.0, (lastTs - firstTs) / 1000.0);
-    }
-
-    private Totals accumulateTotals(List<ComprehensiveSnapshot> sampleList) {
-        long totalInvocations = 0, totalFailed = 0, totalGc = 0;
-        double sumLatency = 0, sumHeapUsage = 0, sumEventLoopLag = 0;
-
-        for (var sample : sampleList) {
-            totalInvocations += sample.totalInvocations();
-            totalFailed += sample.failedInvocations();
-            totalGc += sample.gc().totalGcCount();
-            sumLatency += sample.avgLatencyMs();
-            sumHeapUsage += sample.heapUsage();
-            sumEventLoopLag += sample.eventLoop().lagNanos();
-        }
-
-        return new Totals(totalInvocations, totalFailed, totalGc, sumLatency, sumHeapUsage, sumEventLoopLag);
-    }
-
-    private Rates calculateRates(Totals totals, double windowSeconds, int n) {
-        return new Rates(totals.totalInvocations / windowSeconds,
-                         totals.totalFailed / windowSeconds,
-                         totals.totalGc / windowSeconds);
-    }
-
-    private Percentiles calculatePercentiles(List<ComprehensiveSnapshot> sampleList) {
-        double[] latencies = sampleList.stream().mapToDouble(ComprehensiveSnapshot::avgLatencyMs).sorted().toArray();
-
-        return new Percentiles(percentile(latencies, 50), percentile(latencies, 95), percentile(latencies, 99));
-    }
-
-    private Trends calculateTrends(List<ComprehensiveSnapshot> sampleList, int n, double windowSeconds) {
-        if (n < 10) {
-            return new Trends(0, 0, 0);
-        }
-
-        int halfN = n / 2;
-        double firstHalfCpu = 0, secondHalfCpu = 0;
-        double firstHalfLatency = 0, secondHalfLatency = 0;
-        long firstHalfErrors = 0, secondHalfErrors = 0;
-
-        for (int i = 0; i < halfN; i++) {
-            var sample = sampleList.get(i);
-
-            firstHalfCpu += sample.cpuUsage();
-            firstHalfLatency += sample.avgLatencyMs();
-            firstHalfErrors += sample.failedInvocations();
-        }
-
-        for (int i = halfN; i < n; i++) {
-            var sample = sampleList.get(i);
-
-            secondHalfCpu += sample.cpuUsage();
-            secondHalfLatency += sample.avgLatencyMs();
-            secondHalfErrors += sample.failedInvocations();
-        }
-
-        double cpuTrend = (secondHalfCpu / (n - halfN)) - (firstHalfCpu / halfN);
-        double latencyTrend = (secondHalfLatency / (n - halfN)) - (firstHalfLatency / halfN);
-        double errorTrend = calculateErrorTrend(halfN, n, windowSeconds, firstHalfErrors, secondHalfErrors);
-
-        return new Trends(cpuTrend, latencyTrend, errorTrend);
-    }
-
-    private double calculateErrorTrend(int halfN,
-                                       int n,
-                                       double windowSeconds,
-                                       long firstHalfErrors,
-                                       long secondHalfErrors) {
-        double firstHalfWindow = halfN / windowSeconds * n;
-        double secondHalfWindow = (n - halfN) / windowSeconds * n;
-
-        if (firstHalfWindow > 0 && secondHalfWindow > 0) {
-            return (secondHalfErrors / secondHalfWindow) - (firstHalfErrors / firstHalfWindow);
-        }
-
-        return 0;
-    }
-
-    private double percentile(double[] sorted, int percentile) {
-        if (sorted.length == 0) {
+    private static double cpuTrend(List<ComprehensiveSnapshot> samples) {
+        if (samples.size() < 10) {
             return 0;
         }
 
-        int index = (int) Math.ceil(percentile / 100.0 * sorted.length) - 1;
+        var half = samples.size() / 2;
 
-        return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+        return averageCpu(samples.subList(half, samples.size())) - averageCpu(samples.subList(0, half));
     }
 
-    private record Totals(long totalInvocations,
-                          long totalFailed,
-                          long totalGc,
-                          double sumLatency,
-                          double sumHeapUsage,
-                          double sumEventLoopLag) {}
+    private static double averageCpu(List<ComprehensiveSnapshot> samples) {
+        return samples.stream()
+                      .mapToDouble(ComprehensiveSnapshot::cpuUsage)
+                      .average()
+                      .orElse(0);
+    }
 
-    private record Rates(double requestRate, double errorRate, double gcRate) {}
+    private static double latencyTrend(List<MetricInterval> intervals) {
+        if (intervals.size() < 9) {
+            return 0;
+        }
 
-    private record Percentiles(double p50, double p95, double p99) {}
+        var half = intervals.size() / 2;
 
-    private record Trends(double cpuTrend, double latencyTrend, double errorTrend) {}
+        return weightedLatency(intervals.subList(half, intervals.size())) - weightedLatency(intervals.subList(0, half));
+    }
+
+    private static double errorTrend(List<MetricInterval> intervals) {
+        if (intervals.size() < 9) {
+            return 0;
+        }
+
+        var half = intervals.size() / 2;
+
+        return failureRatio(intervals.subList(half, intervals.size())) - failureRatio(intervals.subList(0, half));
+    }
+
+    private static double weightedLatency(List<MetricInterval> intervals) {
+        var calls = intervals.stream().mapToLong(MetricInterval::invocations).sum();
+
+        return calls == 0
+               ? 0
+               : intervals.stream()
+                          .mapToDouble(interval -> interval.invocationDuration()
+                                                           .nanos() / 1_000_000.0)
+                          .sum() / calls;
+    }
+
+    private static double failureRatio(List<MetricInterval> intervals) {
+        var calls = intervals.stream().mapToLong(MetricInterval::invocations).sum();
+
+        return calls == 0
+               ? 0
+               : (double) intervals.stream()
+                                   .mapToLong(MetricInterval::failures)
+                                   .sum() / calls;
+    }
+
+    static double percentile(double[] sorted, int percentile) {
+        return sorted.length == 0
+               ? 0
+               : sorted[Math.max(0, (int) Math.ceil(percentile / 100.0 * sorted.length) - 1)];
+    }
 }

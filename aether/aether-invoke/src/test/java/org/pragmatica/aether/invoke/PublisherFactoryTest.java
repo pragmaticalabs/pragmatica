@@ -467,6 +467,9 @@ class PublisherFactoryTest {
         public void onInvokeResponse(InvocationMessage.InvokeResponse response) {}
 
         @Override
+        public org.pragmatica.lang.Unit onNodeDeparture(org.pragmatica.consensus.NodeId node) { return org.pragmatica.lang.Unit.unit(); }
+
+        @Override
         public void onNodeRemoved(org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved event) {}
 
         @Override

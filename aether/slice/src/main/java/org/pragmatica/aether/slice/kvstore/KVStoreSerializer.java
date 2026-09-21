@@ -179,6 +179,11 @@ public final class KVStoreSerializer {
             case GossipKeyRotationKey _ -> "gossip-key-rotation";
             case GovernorAnnouncementKey _ -> "governor-announcement";
             case CommunityKey _ -> "community";
+            case AetherKey.NodePlacementKey _ -> "node-placement";
+            case AetherKey.CapacityLedgerKey _ -> "capacity-ledger";
+            case AetherKey.CapacityReservationKey _ -> "capacity-reservation";
+            case AetherKey.CommunityPlacementAvailabilityKey _ -> "community-placement-availability";
+            case AetherKey.CommunityPlacementOperationKey _ -> "community-placement-operation";
             case NodeArtifactKey _ -> "node-artifact";
             case NodeRoutesKey _ -> "node-routes";
             case SchemaVersionKey _ -> "schema-version";
@@ -253,6 +258,10 @@ public final class KVStoreSerializer {
             case DrainDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
             case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);
             case CommunityValue v -> serializeCommunity(v);
+            case AetherValue.NodePlacementValue _ -> "";
+            case AetherValue.CapacityLedgerValue _, AetherValue.CapacityReservationValue _ -> "";
+            case AetherValue.CommunityPlacementAvailabilityValue _ -> "";
+            case AetherValue.CommunityPlacementOperationValue _ -> "";
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";

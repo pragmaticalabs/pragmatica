@@ -119,6 +119,18 @@ public sealed interface DiffAction {
         }
     }
 
+    record CommunityPlacementChange() implements DiffAction {
+        @Override
+        public String symbol() {
+            return "~";
+        }
+
+        @Override
+        public String description() {
+            return "community placement policy changed";
+        }
+    }
+
     record ImmutableFieldChange(String field) implements DiffAction {
         @Override
         public String symbol() {

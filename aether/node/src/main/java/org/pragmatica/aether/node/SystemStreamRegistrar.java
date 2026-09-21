@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.stream.StreamError;
@@ -62,6 +63,8 @@ public final class SystemStreamRegistrar {
     private final Supplier<Result<?>> createStreamLeg;
     private final Supplier<Result<?>> bootstrapLeg;
     private final RetryScheduler scheduler;
+    private final AtomicLong activationEpoch = new AtomicLong();
+    private final AtomicBoolean executing = new AtomicBoolean();
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean createStreamDone = new AtomicBoolean(false);
     private final AtomicBoolean bootstrapDone = new AtomicBoolean(false);
@@ -96,7 +99,7 @@ public final class SystemStreamRegistrar {
         return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, scheduler);
     }
 
-    /// `LeaderChange` route hook. On leader-gain arm the retry loop and run the first pass immediately;
+    /// `LeaderChange` route hook. On leader-gain arm the retry loop and schedule the first pass;
     /// on leader-loss disarm (cancel the pending retry) — only the leader can commit, so a deposed
     /// leader must stop attempting.
     @Contract
@@ -109,23 +112,27 @@ public final class SystemStreamRegistrar {
     }
 
     @Contract
-    void activate() {
+    synchronized void activate() {
         if (!leader.compareAndSet(false, true)) {
             return;
         }
+        // Never run a registration leg on the consensus notification thread: createStream waits
+        // for a commit that the same actor must process.
         // A fresh leader term re-arms the backoff; the DONE latches are intentionally NOT reset —
         // once the config is committed it stays committed across re-elections (idempotent), so a
         // re-elected leader only re-attempts a leg that never completed.
         nextBackoff.set(INITIAL_BACKOFF);
-        runPass();
+        schedulePass(activationEpoch.incrementAndGet(),
+                     TimeSpan.timeSpan(0).nanos());
     }
 
     @Contract
-    void deactivate() {
+    synchronized void deactivate() {
         if (!leader.compareAndSet(true, false)) {
             return;
         }
 
+        activationEpoch.incrementAndGet();
         cancelPendingRetry();
     }
 
@@ -142,25 +149,29 @@ public final class SystemStreamRegistrar {
     /// leader, schedule the next bounded-backoff retry (deduped to one outstanding future). Stops
     /// scheduling once both legs are DONE or leadership is lost.
     @Contract
-    private void runPass() {
-        if (!leader.get()) {
+    private void runPass(long epoch) {
+        if (!isCurrent(epoch)) {
+            finishPass();
+
             return;
         }
 
         attemptLeg("system:cluster-events createStream", createStreamLeg, createStreamDone);
-        if (!leader.get()) {
+        if (!isCurrent(epoch)) {
+            finishPass();
+
             return;
         }
 
         attemptLeg("system-stream bootstrap", bootstrapLeg, bootstrapDone);
         if (isComplete()) {
             LOG.info("SystemStreamRegistrar: all system streams registered");
-            cancelPendingRetry();
+            finishPass();
 
             return;
         }
 
-        scheduleRetry();
+        finishPass();
     }
 
     /// Attempt one leg if it is not already DONE. Latches DONE on success or a TERMINAL (config) cause;
@@ -210,37 +221,46 @@ public final class SystemStreamRegistrar {
         return cause == StreamError.General.STREAM_ALREADY_EXISTS || cause == StreamError.General.STREAM_MEMORY_EXCEEDED || cause == StreamError.General.AHSE_REQUIRED_FOR_STRONG;
     }
 
-    @Contract
-    private void scheduleRetry() {
-        if (pendingRetry.get() != null) {
-            return;
-        }
-
-        var delay = nextBackoff.get();
-        var future = scheduler.schedule(this::onRetryFire, delay);
-
-        if (!pendingRetry.compareAndSet(null, future)) {
-            future.cancel(false);
-
-            return;
-        }
-
-        if (!leader.get()) {
-            future.cancel(false);
-            pendingRetry.compareAndSet(future, null);
-
-            return;
-        }
-
-        nextBackoff.set(nextBackoffAfter(delay));
+    private boolean isCurrent(long epoch) {
+        return leader.get() && activationEpoch.get() == epoch;
     }
 
-    // JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
-    @SuppressWarnings("JBCT-RET-08")
     @Contract
-    private void onRetryFire() {
+    private synchronized void finishPass() {
+        executing.set(false);
+        if (leader.get() && !isComplete()) {
+            var delay = nextBackoff.get();
+
+            schedulePass(activationEpoch.get(), delay);
+            nextBackoff.set(nextBackoffAfter(delay));
+        }
+    }
+
+    /// Publication and callback claiming share this short monitor; registration never holds it.
+    @Contract
+    private synchronized void schedulePass(long epoch, TimeSpan delay) {
+        if (pendingRetry.get() == null && isCurrent(epoch)) {
+            pendingRetry.set(scheduler.schedule(() -> onRetryFire(epoch), delay));
+        }
+    }
+
+    @SuppressWarnings("JBCT-RET-08")
+    private synchronized boolean claimPass(long epoch) {
+        if (!isCurrent(epoch)) {
+            return false;
+        }
+
         pendingRetry.set(null);
-        runPass();
+        // An old term may still be finishing a bounded synchronous registration call.
+        // Its completion schedules the current term, without overlapping registration passes.
+        return executing.compareAndSet(false, true);
+    }
+
+    @Contract
+    private void onRetryFire(long epoch) {
+        if (claimPass(epoch)) {
+            runPass(epoch);
+        }
     }
 
     @Contract

@@ -345,6 +345,9 @@ class QuicClusterNetworkInboundReadmitTest {
     /// Topology stub with an explicit `coreNodes()` override so a tombstoned peer can be made
     /// absent from the FSM-membership set (forcing the readmit to ride the raw-SWIM liveness gate).
     private static final class OverridableTopology implements TopologyObserver {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
         private final NodeInfo selfInfo;
         private final Set<NodeId> coreNodes;
 

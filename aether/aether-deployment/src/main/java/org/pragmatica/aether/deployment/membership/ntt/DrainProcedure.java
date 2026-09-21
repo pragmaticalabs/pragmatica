@@ -13,6 +13,8 @@ import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -204,24 +206,23 @@ public final class DrainProcedure {
     }
 
     private Promise<Unit> runDeparturePushSafely() {
-        try {
-            return departurePush.get();
-        } catch (Throwable t) {
-            log.warn("DrainProcedure: departure push kickoff failed: {} — drain proceeds", t.getMessage());
+        return Result.lift(Causes::fromThrowable, departurePush::get).fold(cause -> {
+                                                                               log.warn("DrainProcedure: departure push kickoff failed: {} — drain proceeds",
+                                                                                        cause.message());
 
-            return Promise.success(Unit.unit());
-        }
+                                                                               return Promise.unitPromise();
+                                                                           },
+                                                                           promise -> promise);
     }
 
     /// Best-effort `SelfDrainInitiated` emit. A throwing emitter does not interrupt the drain — the
     /// emit is purely observability, not a correctness requirement (same philosophy as the SWIM
     /// LEAVE emit). Single-shot: only reached once, immediately after the CAS to DRAINING.
     private void emitDrainInitiatedSafely(DrainReason reason) {
-        try {
-            drainInitiatedEmitter.accept(reason);
-        } catch (Throwable t) {
-            log.warn("DrainProcedure: SelfDrainInitiated emit failed: {} — drain proceeds", t.getMessage());
-        }
+        Result.lift(Causes::fromThrowable,
+                    () -> drainInitiatedEmitter.accept(reason))
+              .onFailure(cause -> log.warn("DrainProcedure: SelfDrainInitiated emit failed: {} — drain proceeds",
+                                           cause.message()));
     }
 
     /// Current observability state. Exposed for `/api/status` projections and tests.
@@ -272,10 +273,7 @@ public final class DrainProcedure {
     /// aging, not a correctness requirement; suspect→DEAD aging will detect the
     /// halted node anyway).
     private void emitSwimLeaveSafely() {
-        try {
-            swimLeaveEmitter.run();
-        } catch (Throwable t) {
-            log.warn("DrainProcedure: SWIM LEAVE emit failed: {} — drain proceeds", t.getMessage());
-        }
+        Result.lift(Causes::fromThrowable, swimLeaveEmitter::run).onFailure(cause -> log.warn("DrainProcedure: SWIM LEAVE emit failed: {} — drain proceeds",
+                                                                                              cause.message()));
     }
 }

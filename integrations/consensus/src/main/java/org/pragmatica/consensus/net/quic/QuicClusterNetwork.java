@@ -251,6 +251,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// HealthSignal bus). See `aether/docs/specs/clustersync-refactor-spec.md` commit 2.
     private volatile PeerConnectivityReporter connectivityReporter;
     private volatile ObservedEpochSupplier observedEpochSupplier;
+
     /// SWIM health gate for the missing-peer reconciler. When present, the reconciler
     /// calls this predicate before dialling an EVICTED peer: `true` means SWIM considers
     /// the peer healthy enough to attempt reconnection (HEALTHY or SUSPECTED); `false`
@@ -258,6 +259,47 @@ public class QuicClusterNetwork implements ClusterNetwork {
     ///
     /// Defaults to empty (absent) → reconciler allows all reconnects, preserving existing
     /// behaviour until AetherNode wires the gate post-construction.
+    @Override
+    public Result<Unit> validateOutboundMessage(ProtocolMessage message) {
+        return org.pragmatica.consensus.net.OutboundMessageLimit.validate(serializer, message);
+    }
+
+    private volatile java.util.function.BiPredicate<NodeId, NodeId> connectionInitiator = ConnectionDirection::shouldInitiate;
+
+    @Override
+    public Unit setConnectionInitiator(java.util.function.BiPredicate<NodeId, NodeId> policy) {
+        connectionInitiator = policy;
+
+        return Unit.unit();
+    }
+
+    private volatile java.util.function.Predicate<NodeId> proposalRelayMembership = _ -> false;
+
+    private volatile java.util.function.BiPredicate<NodeId, Message.Wired> inboundFaultFilter = (_, _) -> true;
+
+    @Override
+    public Unit setInboundFaultFilter(java.util.function.BiPredicate<NodeId, Message.Wired> filter) {
+        inboundFaultFilter = filter;
+
+        return Unit.unit();
+    }
+
+    private volatile java.util.function.BiPredicate<NodeId, Message.Wired> inboundMessagePolicy = (_, _) -> true;
+
+    @Override
+    public Unit setInboundMessagePolicy(java.util.function.BiPredicate<NodeId, Message.Wired> policy) {
+        inboundMessagePolicy = policy;
+
+        return Unit.unit();
+    }
+
+    @Override
+    public Unit setProposalRelayMembership(java.util.function.Predicate<NodeId> membership) {
+        proposalRelayMembership = membership;
+
+        return Unit.unit();
+    }
+
     private volatile Option<Function<NodeId, Boolean>> swimHealthGate = Option.empty();
     /// RAW-SWIM proof-of-life predicate for the INBOUND tombstone-readmit path (Fix A,
     /// safety-critical split-brain root). Returns `true` when the SWIM protocol layer — NOT the
@@ -1051,7 +1093,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         quicMetrics.onMessageReceived();
-        if (message instanceof Message.Wired wired) {
+        if (message instanceof Message.Wired wired && org.pragmatica.consensus.net.InboundMessageAuthority.isBound(sender,
+                                                                                                                   wired,
+                                                                                                                   proposalRelayMembership) && inboundMessagePolicy.test(sender,
+                                                                                                                                                                         wired) && inboundFaultFilter.test(sender,
+                                                                                                                                                                                                           wired)) {
             router.route(wired);
         } else {
             log.trace("Non-routable message from {}: {}",
@@ -1151,16 +1197,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01")  // Netty future callback chain
     private void connectPeer(NodeInfo peer, boolean forceInitiate) {
         var peerId = peer.id();
-        // Strict ConnectionDirection: only the lower NodeId initiates. The higher NodeId
-        // accepts the inbound connection. Bypassing this caused both sides to dial
+        // Deterministic connection policy selects one initiator. The default uses NodeId
+        // ordering; directed hierarchy edges can select the worker as initiator. Bypassing this caused both sides to dial
         // concurrently at cold start — both Hellos completed, the second arrival closed
         // its own QuicChannel as duplicate, and that close cascaded a CONNECTION_CLOSE
         // to the OTHER side's peer link, silently killing reachability for cluster pairs.
         // `forceInitiate` overrides this ONLY on the reconciler's grace-elapsed path, where the
         // 60s window makes the cold-boot dual-Hello race irrelevant (both sides discovered each
         // other in <1s on cold boot; reaching grace means a real partition was attempted-and-failed).
-        if (!forceInitiate && !ConnectionDirection.shouldInitiate(self.id(), peerId)) {
-            log.info("Missing-peer reconciler: NOT dialing {} — higher NodeId waits for inbound "
+        if (!forceInitiate && !connectionInitiator.test(self.id(), peerId)) {
+            log.info("Missing-peer reconciler: NOT dialing {} — designated accepting peer waits for inbound "
                     + "(strict single-dialer); will force-dial once higher-id grace ({}ms) elapses",
                      peerId,
                      RECONCILE_BACKOFF_CAP_MS);
@@ -1168,8 +1214,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
 
-        if (forceInitiate && !ConnectionDirection.shouldInitiate(self.id(), peerId)) {
-            log.warn("Missing-peer reconciler: force-dialing {} as HIGHER NodeId — lower-id side "
+        if (forceInitiate && !connectionInitiator.test(self.id(), peerId)) {
+            log.warn("Missing-peer reconciler: force-dialing {} as non-designated initiator — selected dialer "
                     + "has not initiated within higher-id grace ({}ms) (FIX 3 partition-recovery override)",
                      peerId,
                      RECONCILE_BACKOFF_CAP_MS);
@@ -2263,7 +2309,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // dial — the topology path logged "will force-dial once grace elapses" forever
             // (the FSM-desired path at considerDesiredPeerForReconcile already threads it;
             // this restores the 2026-06-09 grace-bypass intent on the topology path too).
-            var shouldInitiate = ConnectionDirection.shouldInitiate(self.id(), peerId);
+            var shouldInitiate = connectionInitiator.test(self.id(), peerId);
             var graceElapsed = higherIdGracePeriodElapsed(peerId, nowMs);
 
             if (!shouldInitiate && !graceElapsed) {
@@ -2308,7 +2354,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // Higher-id node normally waits for inbound. Once the grace window elapses, it MUST
             // be allowed to force-dial (FIX 3) — otherwise an inc-0 / churned peer whose lower-id
             // counterpart never initiates stays in INIT forever.
-            var shouldInitiate = ConnectionDirection.shouldInitiate(self.id(), peerId);
+            var shouldInitiate = connectionInitiator.test(self.id(), peerId);
             var graceElapsed = higherIdGracePeriodElapsed(peerId, nowMs);
 
             if (!shouldInitiate && !graceElapsed) {

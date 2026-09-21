@@ -163,6 +163,6 @@ class AzureDiscoveryProviderTest {
 
     private static ResourceRow resourceRow(String name, Map<String, String> tags) {
         return new ResourceRow("/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/" + name,
-                                name, "microsoft.compute/virtualmachines", "eastus", tags, Map.of());
+                                name, "microsoft.compute/virtualmachines", "eastus", tags, Map.of(), java.util.List.of());
     }
 }

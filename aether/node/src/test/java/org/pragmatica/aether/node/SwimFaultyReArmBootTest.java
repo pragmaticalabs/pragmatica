@@ -186,14 +186,23 @@ class SwimFaultyReArmBootTest {
                    .anyMatch(line -> line.contains(CTM_ACTIVATED)));
 
         startGossipTransport();
+        // An unknown gossip identity is correctly excluded by hierarchical SWIM scoping. Model
+        // an already admitted CORE descriptor so this test reaches the registered FAULTY listener.
+        node.membershipFsm().onMemberDescriptor(NodeInfo.nodeInfo(PHANTOM,
+            nodeAddress("localhost", gossipAddress.getPort()).unwrap(),
+            java.util.Map.of(NodeInfo.LABEL_ROLE, "core")));
+        // Scope refresh runs periodically; keep sending the real UDP edge until it is admitted.
 
         // Step 1: raw SWIM learns the phantom as ALIVE. The node's own FSM tracking it is the proof the edge
         // was delivered through SwimProtocol's listeners, not assumed.
         gossip(MemberState.ALIVE, 1L);
         await().atMost(STEP_BOUND)
-               .untilAsserted(() -> assertThat(node.membershipFsm()
-                                                   .broadcastEligibleMembers()).as("the gossiped ALIVE reached the FSM through SWIM")
-                                                                               .contains(PHANTOM));
+               .untilAsserted(() -> {
+                   gossip(MemberState.ALIVE, 1L);
+                   assertThat(node.membershipFsm().memberStates().get(PHANTOM))
+                       .as("the gossiped ALIVE promoted the descriptor through the actual SWIM listener")
+                       .isEqualTo("Member");
+               });
 
         // Step 2: the reap defers on SWIM life and runs out of re-checks — parked.
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PHANTOM, List.of(node.self())));
@@ -264,7 +273,8 @@ class SwimFaultyReArmBootTest {
                                 .tls(Option.none())
                                 .quicTls(TlsConfig.selfSignedMutual())
                                 .certificateProvider(Option.none())
-                                .configProvider(Option.none())
+                                .configProvider(Option.some(HermeticStorage.withControlStorageIn(tempDir,
+                                    org.pragmatica.config.ConfigurationProvider.builder().build())))
                                 .environment(Option.none())
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(tempDir, false))

@@ -162,7 +162,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final long INITIAL_MAX_DATA = 64_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
-    private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
+
+    private static final int MAX_FRAME_LENGTH = org.pragmatica.consensus.net.OutboundMessageLimit.MAX_FRAME_BYTES;
 
     private final NodeId selfId;
     private final NodeAddress selfAddress;
@@ -507,7 +508,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
             var quicChannel = (QuicChannel) ctx.channel().parent();
-            var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
+            var peerConnection = quicPeerConnection(hello.sender(), hello.sender(), quicChannel);
             // The handshake stream is the CONTROL lane.
             peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
             // Install the lazy lane-opener so a write that races the data-lane preamble window can

@@ -114,6 +114,35 @@ class AppHttpServerForwardBudgetTest {
             .isTrue();
     }
 
+    @Test
+    void forwardedExecutionRetainsDrainAccountingUntilUnderlyingResult() {
+        var tracker = org.pragmatica.aether.deployment.drain.InFlightRequestTracker.inFlightRequestTracker();
+        server.setInvocationAdmission(tracker);
+        router.response = Promise.promise();
+        server.onHttpForwardRequest(forwardRequest("held", Deadline.NO_BUDGET));
+        assertThat(tracker.count()).isEqualTo(1);
+        tracker.setAcceptingNewWork(false);
+        server.onHttpForwardRequest(forwardRequest("refused", Deadline.NO_BUDGET));
+        assertThat(router.handleCount()).isEqualTo(1);
+        assertThat(tracker.count()).isEqualTo(1);
+        assertThat(network.sentMessages()).hasSize(1);
+        router.response.succeed(HttpResponseData.httpResponseData(200, "released"));
+        org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(tracker.count()).isZero());
+    }
+
+    @Test
+    void applicationDrainingFailureEmitsOnlyOneResponse() {
+        var tracker = org.pragmatica.aether.deployment.drain.InFlightRequestTracker.inFlightRequestTracker();
+        server.setInvocationAdmission(tracker);
+        router.response = org.pragmatica.aether.invoke.InvocationAdmission.Error.DRAINING.promise();
+        server.onHttpForwardRequest(forwardRequest("application-draining", Deadline.NO_BUDGET));
+        assertThat(router.handleCount()).isEqualTo(1);
+        assertThat(network.sentMessages()).hasSize(1);
+        assertThat(((HttpForwardResponse) network.sentMessages().getFirst()).success()).isFalse();
+        org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(tracker.count()).isZero());
+        assertThat(network.sentMessages()).hasSize(1);
+    }
+
     private static HttpForwardRequest forwardRequest(String correlationId, long remainingMillis) {
         return new HttpForwardRequest(SENDER_NODE,
                                       correlationId,
@@ -128,6 +157,7 @@ class AppHttpServerForwardBudgetTest {
     }
 
     private static final class CountingRouter implements SliceRouter {
+        private Promise<HttpResponseData> response = Promise.success(HttpResponseData.httpResponseData(200, "served"));
         private final AtomicInteger handleCount = new AtomicInteger();
         private final AtomicReference<Boolean> boundedAtHandle = new AtomicReference<>(false);
 
@@ -144,7 +174,7 @@ class AppHttpServerForwardBudgetTest {
             handleCount.incrementAndGet();
             boundedAtHandle.set(Deadline.current().isBounded());
 
-            return Promise.success(HttpResponseData.httpResponseData(200, "{\"result\":\"served\"}"));
+            return response;
         }
 
         @Override

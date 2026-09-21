@@ -140,7 +140,7 @@ class BootstrapPhasePostEndpointTest {
                                                              Map.of("eu-1", cloudSource()),
                                                              Map.of(),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                             ops);
+                                                             ops, java.util.Map.of());
     }
 
     private static SourceProfile cloudSource() {

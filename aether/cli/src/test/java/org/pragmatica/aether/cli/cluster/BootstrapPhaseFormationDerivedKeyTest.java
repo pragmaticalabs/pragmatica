@@ -111,7 +111,7 @@ class BootstrapPhaseFormationDerivedKeyTest {
                                                              Map.of("eu-1", cloudSource(nodeConfig)),
                                                              Map.of(),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                             ops);
+                                                             ops, java.util.Map.of());
     }
 
     private static SourceProfile cloudSource(Option<TomlDocument> nodeConfig) {

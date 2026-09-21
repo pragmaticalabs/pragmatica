@@ -40,7 +40,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -148,6 +148,7 @@ class ControlLoopPlacementPreservationTest {
             // The allocation pool's worker list is this set; a slice placed on workers can only be
             // distinguished from one on the core when a worker exists to place it on.
             active.workerNodes().add(WORKER);
+            ((InMemoryKvStore) active.ctx().kvStore()).seedWorkerCommunity();
             this.harness = harness;
         }
 
@@ -163,32 +164,29 @@ class ControlLoopPlacementPreservationTest {
 
             deliver(scaleUp());
 
-            assertThat(workerDirectives()).as("#937: a WORKERS_ONLY slice must reach the allocation engine as WORKERS_ONLY —"
-                                              + " under the reset placement the engine takes the core branch and writes"
-                                              + " no worker directive at all")
-                                          .isNotEmpty()
-                                          .allSatisfy(directive -> assertThat(directive.placement()).isEqualTo(OPERATOR_PLACEMENT));
+            assertThat(workerLoads()).as("autoscaler placement must produce worker LOAD commands")
+                                     .isNotEmpty();
+            assertThat(loadTargets()).allMatch(WORKER::equals);
         }
 
-        /// Opposite polarity, same path: a genuinely core-placed slice must produce no worker
-        /// directive. Without it the assertion above could be satisfied by an engine that wrote a
-        /// worker directive unconditionally, which is the shape the reset defect would hide behind.
         @Test
-        void coreOnlySlice_deliveredToTheLeader_writesNoWorkerDirective() {
+        void coreOnlySlice_deliveredToTheLeader_writesNoWorkerLoad() {
             deploy(DEFAULT_PLACEMENT);
-
             deliver(scaleUp());
-
-            assertThat(workerDirectives()).isEmpty();
+            assertThat(workerLoads()).isEmpty();
+            assertThat(loadTargets()).isNotEmpty().allMatch(SELF::equals);
         }
 
-        private List<WorkerSliceDirectiveValue> workerDirectives() {
+        private List<NodeId> workerLoads() {
+            return loadTargets().stream().filter(WORKER::equals).toList();
+        }
+
+        private List<NodeId> loadTargets() {
             return deploymentCluster.commands.stream()
-                                             .filter(KVCommand.Put.class::isInstance)
-                                             .map(command -> ((KVCommand.Put<?, ?>) command).value())
-                                             .filter(WorkerSliceDirectiveValue.class::isInstance)
-                                             .map(WorkerSliceDirectiveValue.class::cast)
-                                             .toList();
+                .filter(command -> command instanceof KVCommand.Put<?, ?> put
+                    && put.key() instanceof AetherKey.NodeArtifactKey
+                    && put.value() instanceof AetherValue.NodeArtifactValue value && value.state() == SliceState.LOAD)
+                .map(command -> ((AetherKey.NodeArtifactKey) command.key()).nodeId()).toList();
         }
 
         private void deliver(SliceTargetValue value) {
@@ -265,7 +263,7 @@ class ControlLoopPlacementPreservationTest {
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
                                                     () -> Set.of(SELF),
-                                                    () -> Set.of(SELF),
+                                                    () -> Set.of(SELF, WORKER),
                                                     Set::of,
                                                     Set.of(SELF),
                                                     DeploymentAtomicity.ALL_OR_NOTHING,
@@ -336,6 +334,21 @@ class ControlLoopPlacementPreservationTest {
     private static final class InMemoryKvStore extends KVStore<AetherKey, AetherValue> {
         InMemoryKvStore(MessageRouter router) {
             super(router, stubSerializer(), stubDeserializer());
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        void seedWorkerCommunity() {
+            var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1);
+            process(createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, leader))));
+            var community = new AetherKey.CommunityKey("workers");
+            process(createBatch(List.of(new KVCommand.Put<>(community, new AetherValue.CommunityValue("source", "WORKER", 100,
+                org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE, 1L, Option.none())))));
+            var key = AetherKey.GovernorAnnouncementKey.forCommunity("workers");
+            var value = AetherValue.GovernorAnnouncementValue.governorAnnouncementValue(WORKER, 1, List.of(WORKER), "", 1L);
+            var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, "fixture-governor", leader, List.of(),
+                List.of(new KVCommand.Mutation<>(key, Option.none(), Option.some(value))));
+            assertThat(process(createBatch(List.of(transaction))))
+                .anyMatch(result -> result instanceof KVCommand.TransactionResult accepted && accepted.accepted());
         }
     }
 

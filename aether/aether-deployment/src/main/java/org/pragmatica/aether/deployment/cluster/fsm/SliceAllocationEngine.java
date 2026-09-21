@@ -18,6 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,16 +28,29 @@ import org.slf4j.LoggerFactory;
 /// {@link AllocationPool}, resolves a {@link PlacementPolicy} to a target node set, and issues the
 /// scale-up/scale-down LOAD/UNLOAD commands that drive desired→current instance reconciliation.
 /// Truly-empty-node-first scale-up, round-robin spillover, and min-instance-budget scale-down are all
-/// preserved verbatim; community/worker-directive distribution is delegated to
-/// {@link CommunityPlacementPlanner}.
-record SliceAllocationEngine(Active active) {
+/// shared across core and worker execution. Placement selects one audience and one total
+/// instance target; all nodes execute the same committed NodeArtifact lifecycle.
+record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
+    SliceAllocationEngine(Active active) {
+        this(active, active.allocatableNodes());
+    }
+
     private static final Logger log = LoggerFactory.getLogger(SliceAllocationEngine.class);
 
     AllocationPool buildAllocationPool() {
         var communityWorkers = active.communityPlanner().buildCommunityWorkerMap();
 
         return AllocationPool.allocationPool(active.allocatableNodes(),
-                                             List.copyOf(active.workerNodes()),
+                                             communityWorkers.values()
+                                                             .stream()
+                                                             .flatMap(List::stream)
+                                                             .distinct()
+                                                             .filter(active.workerNodes()::contains)
+                                                             .filter(active.ctx().readyNodesSupplier().get()::contains)
+                                                             .filter(node -> !active.drainingNodes()
+                                                                                    .contains(node))
+                                                             .sorted()
+                                                             .toList(),
                                              communityWorkers);
     }
 
@@ -44,24 +58,60 @@ record SliceAllocationEngine(Active active) {
     // handled inline; callers (reconcile/scale paths) ignore the return. void is the contract.
     @Contract
     void issueAllocationCommandsWithPlacement(Artifact artifact, int desiredInstances, String placement) {
-        var policy = PlacementPolicy.valueOf(placement);
+        Result.lift(() -> PlacementPolicy.valueOf(placement))
+              .onSuccess(policy -> allocateWithPolicy(artifact, desiredInstances, policy))
+              .onFailure(cause -> log.error("Invalid placement {} for {}: {}",
+                                            placement,
+                                            artifact,
+                                            cause.message()));
+    }
+
+    Result<List<NodeId>> nodesForPlacement(String placement) {
+        return Result.lift(() -> PlacementPolicy.valueOf(placement)).map(buildAllocationPool()::nodesForPolicy);
+    }
+
+    /// Reconcile the desired audience even when the fleet-wide instance count already matches.
+    boolean reconcilePlacement(Artifact artifact, int desiredInstances, String placement) {
+        return Result.lift(() -> PlacementPolicy.valueOf(placement))
+                     .map(policy -> reconcilePolicy(artifact, desiredInstances, policy))
+                     .onFailure(cause -> log.error("Invalid placement {} for {}: {}",
+                                                   placement,
+                                                   artifact,
+                                                   cause.message()))
+                     .or(false);
+    }
+
+    private boolean reconcilePolicy(Artifact artifact, int desiredInstances, PlacementPolicy policy) {
+        var targets = buildAllocationPool().nodesForPolicy(policy);
+
+        if (targets.isEmpty()) {
+            return false;
+        }
+
+        var eligible = Set.copyOf(targets);
+        var current = active.getCurrentInstances(artifact);
+        var placed = current.stream().filter(key -> eligible.contains(key.nodeId())).count();
+
+        if (placed == desiredInstances && current.size() == desiredInstances) {
+            return false;
+        }
+
+        new SliceAllocationEngine(active, targets).issueAllocationCommands(artifact, desiredInstances);
+
+        return true;
+    }
+
+    private void allocateWithPolicy(Artifact artifact, int desiredInstances, PlacementPolicy policy) {
         var pool = buildAllocationPool();
         var targetNodes = pool.nodesForPolicy(policy);
 
         if (targetNodes.isEmpty()) {
-            log.warn("No nodes available for placement {} of {}, falling back to core", placement, artifact);
-            issueAllocationCommands(artifact, desiredInstances);
+            log.warn("No eligible nodes for placement {} of {}; retaining requested placement", policy, artifact);
 
             return;
         }
 
-        if (policy != PlacementPolicy.CORE_ONLY && pool.hasWorkers()) {
-            active.communityPlanner().distributeWorkerOrCommunity(artifact, desiredInstances, placement, pool);
-        }
-
-        if (policy == PlacementPolicy.CORE_ONLY || (policy == PlacementPolicy.WORKERS_PREFERRED && !pool.hasWorkers()) || policy == PlacementPolicy.ALL) {
-            issueAllocationCommands(artifact, desiredInstances);
-        }
+        new SliceAllocationEngine(active, targetNodes).issueAllocationCommands(artifact, desiredInstances);
     }
 
     // Fire-and-forget allocation orchestration (see issueAllocationCommandsWithPlacement).
@@ -72,13 +122,31 @@ record SliceAllocationEngine(Active active) {
         }
 
         var currentInstances = active.getCurrentInstances(artifact);
+        var eligible = Set.copyOf(eligibleNodes);
+        var placedInstances = currentInstances.stream().filter(key -> eligible.contains(key.nodeId())).toList();
 
-        logAllocationAttempt(artifact, desiredInstances, currentInstances);
-        issueAdjustmentCommands(artifact, desiredInstances, currentInstances);
+        logAllocationAttempt(artifact, desiredInstances, placedInstances);
+        issueAdjustmentCommands(artifact, desiredInstances, placedInstances);
+        retireDisplacedInstances(currentInstances, placedInstances, eligible, desiredInstances);
+    }
+
+    /// Keep displaced instances serving until the intended audience has enough active replicas.
+    private void retireDisplacedInstances(List<SliceNodeKey> current,
+                                          List<SliceNodeKey> placed,
+                                          Set<NodeId> eligible,
+                                          int desired) {
+        var activeCount = placed.stream().filter(key -> active.sliceStates()
+                                                              .get(key) == SliceState.ACTIVE).count();
+
+        if (activeCount < desired) {
+            return;
+        }
+
+        current.stream().filter(key -> !eligible.contains(key.nodeId())).forEach(active::issueUnloadCommand);
     }
 
     private boolean hasNoAllocatableNodes(Artifact artifact) {
-        if (active.allocatableNodes().isEmpty()) {
+        if (eligibleNodes.isEmpty()) {
             log.warn("No allocatable nodes available for allocation of {}", artifact);
 
             return true;
@@ -92,7 +160,7 @@ record SliceAllocationEngine(Active active) {
                   desiredInstances,
                   artifact,
                   currentInstances.size(),
-                  active.allocatableNodes().size());
+                  eligibleNodes.size());
     }
 
     private void issueAdjustmentCommands(Artifact artifact, int desiredInstances, List<SliceNodeKey> currentInstances) {
@@ -106,7 +174,7 @@ record SliceAllocationEngine(Active active) {
     }
 
     private void issueScaleUpCommands(Artifact artifact, int toAdd, List<SliceNodeKey> existingInstances) {
-        var nodes = active.allocatableNodes();
+        var nodes = eligibleNodes;
 
         log.debug("issueScaleUpCommands: artifact={}, toAdd={}, allocatableNodes={}, nodeIds={}",
                   artifact,
@@ -142,10 +210,9 @@ record SliceAllocationEngine(Active active) {
                                       .map(SliceNodeKey::nodeId)
                                       .collect(Collectors.toSet());
 
-        return active.allocatableNodes()
-                     .stream()
-                     .filter(node -> !nodesWithAnySlice.contains(node))
-                     .collect(Collectors.toSet());
+        return eligibleNodes.stream()
+                            .filter(node -> !nodesWithAnySlice.contains(node))
+                            .collect(Collectors.toSet());
     }
 
     int issueAllocationsForNodes(Artifact artifact, int toAdd, Set<NodeId> targetNodes) {
@@ -165,7 +232,7 @@ record SliceAllocationEngine(Active active) {
     }
 
     private int issueAllocationsForEmptyNodes(Artifact artifact, int toAdd, Set<NodeId> nodesWithInstances) {
-        var nodes = active.allocatableNodes();
+        var nodes = eligibleNodes;
         var nodeCount = nodes.size();
 
         if (nodeCount == 0) {
@@ -211,7 +278,7 @@ record SliceAllocationEngine(Active active) {
             return;
         }
 
-        var nodes = active.allocatableNodes();
+        var nodes = eligibleNodes;
 
         if (nodes.isEmpty()) {
             log.warn("No allocatable nodes for round-robin allocation of {}", artifact);

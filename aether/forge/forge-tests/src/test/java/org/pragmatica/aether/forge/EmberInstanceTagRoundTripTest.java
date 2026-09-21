@@ -37,8 +37,8 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// carried an empty tag map, matched no non-empty selector, and worker reconcile read `actual = 0`
 /// forever. The negative guards are the load-bearing half, in both directions: a selector differing
 /// in any ONE field must NOT find the instance (a match-everything stamp would hide scale-down
-/// victims in other sources' counts), and an UNTAGGED instance must keep not-matching non-empty
-/// selectors (the pre-#694 shape for nodes created outside the provider, preserved deliberately).
+/// victims in other sources' counts), and bootstrap/manual instances must retain their own harness identity
+/// rather than matching another cluster or source selector.
 ///
 /// Runs against a real 3-node Ember cluster because the provider provisions REAL in-JVM nodes —
 /// `createFrom` boots one — and the selector behavior under test composes the stamped map with the
@@ -133,26 +133,25 @@ class EmberInstanceTagRoundTripTest {
             .contains(defaultRoleInstanceId);
     }
 
-    /// The untagged-instance guard: nodes created OUTSIDE the provider (the initial cluster) keep
-    /// the pre-#694 shape — an empty tag map that matches no non-empty selector — while still being
-    /// visible to the unfiltered listing. Armed by the worker instance appearing under the same
-    /// selector in the positive test: emptiness here is the absence of tags, not a broken listing.
+    /// Bootstrap instances must be discoverable by the same source-scoped capacity inventory
+    /// used for provider-created instances. Harness identity is fixed before any config commit.
     @Test
-    void initialClusterNode_staysUntagged_andMatchesNoNonEmptySelector() {
+    void initialClusterNodeHasImmutableHarnessSourceIdentity() {
         var initialId = "tag-1";
-        var unfiltered = provider.listInstances()
-                                 .await()
-                                 .fold(cause -> {
-                                           throw new AssertionError("listInstances failed: " + cause.message());
-                                       },
-                                       instances -> instances);
+        assertThat(tagsOf(initialId)).containsExactlyInAnyOrderEntriesOf(Map.of(
+            "aether-cluster", "tag", "aether-source", "default", "aether-role", "core", "aether.node-id", initialId));
+        assertThat(listBy(ctmSelector("tag", "default", "core"))).extracting(info -> info.id().value()).contains(initialId);
+        assertThat(listBy(ctmSelector(CLUSTER, SOURCE, ROLE))).extracting(info -> info.id().value()).doesNotContain(initialId);
+    }
 
-        assertThat(unfiltered).extracting(info -> info.id().value())
-                              .contains(initialId);
-        assertThat(tagsOf(initialId)).isEmpty();
-        assertThat(listBy(ctmSelector(CLUSTER, SOURCE, ROLE)))
-            .extracting(info -> info.id().value())
-            .doesNotContain(initialId);
+    @Test
+    void manualWorkerRetainsExplicitSourceAndHarnessClusterIdentity() {
+        var worker = LifecycleAwait.nodeSettled("manual inventory worker", cluster, cluster.addNode(Map.of(
+            org.pragmatica.consensus.net.NodeInfo.LABEL_ROLE, "worker",
+            org.pragmatica.consensus.net.NodeInfo.LABEL_SOURCE, "manual")));
+        assertThat(tagsOf(worker.id())).containsExactlyInAnyOrderEntriesOf(Map.of(
+            "aether-cluster", "tag", "aether-source", "manual", "aether-role", "worker", "aether.node-id", worker.id()));
+        assertThat(listBy(ctmSelector("tag", "manual", "worker"))).extracting(info -> info.id().value()).contains(worker.id());
     }
 
     // ---- helpers -------------------------------------------------------------------------------
@@ -175,7 +174,7 @@ class EmberInstanceTagRoundTripTest {
                                            context);
 
         return provider.createFrom(request)
-                       .await()
+                       .await(org.pragmatica.lang.io.TimeSpan.timeSpan(60).seconds())
                        .fold(cause -> {
                                  throw new AssertionError("provision failed: " + cause.message());
                              },
@@ -188,7 +187,7 @@ class EmberInstanceTagRoundTripTest {
 
     private List<InstanceInfo> listBy(Map<String, String> selector) {
         return provider.listInstances(selector)
-                       .await()
+                       .await(org.pragmatica.lang.io.TimeSpan.timeSpan(60).seconds())
                        .fold(cause -> {
                                  throw new AssertionError("listInstances(filter) failed: " + cause.message());
                              },
@@ -197,7 +196,7 @@ class EmberInstanceTagRoundTripTest {
 
     private Map<String, String> tagsOf(String instanceId) {
         return provider.listInstances()
-                       .await()
+                       .await(org.pragmatica.lang.io.TimeSpan.timeSpan(60).seconds())
                        .fold(cause -> {
                                  throw new AssertionError("listInstances failed: " + cause.message());
                              },

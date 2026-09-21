@@ -5,10 +5,15 @@
 package org.pragmatica.aether.e2e.slice;
 
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.Set;
 
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -101,6 +106,15 @@ public interface EchoService {
         }
     }
 
+    /// Forge-only loopback barrier. Timeout bounds abandoned requests after a failed test.
+    record HoldRequest(int port) {
+        public static Result<HoldRequest> holdRequest(int port) {
+            return port >= 1024 && port <= 65535
+                   ? success(new HoldRequest(port))
+                   : Causes.cause("Invalid loopback barrier port").result();
+        }
+    }
+
     record CsvRequest(String label) {}
 
     record BinaryRequest(int seed) {}
@@ -177,6 +191,7 @@ public interface EchoService {
     Promise<PingResponse> ping(PingRequest request);
     Promise<TransformResponse> transform(TransformRequest request);
     Promise<EchoError.ControlledFailure> fail(FailRequest request);
+    Promise<String> hold(HoldRequest request);
     Promise<String> csv(CsvRequest request);
     Promise<byte[]> binary(BinaryRequest request);
 
@@ -208,6 +223,23 @@ public interface EchoService {
         @Override
         public Promise<EchoError.ControlledFailure> fail(FailRequest request) {
             return EchoError.toControlledFailure(request.code()).promise();
+        }
+
+        @Override
+        public Promise<String> hold(HoldRequest request) {
+            var bound = TimeSpan.timeSpan(30).seconds();
+
+            return Promise.lift(() -> {
+                var barrier = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + request.port() + "/release"))
+                                         .timeout(bound.duration())
+                                         .GET()
+                                         .build();
+
+                return HttpClient.newHttpClient()
+                                 .send(barrier,
+                                       HttpResponse.BodyHandlers.ofString())
+                                 .body();
+            });
         }
 
         @Override

@@ -74,6 +74,7 @@ class ClusterDeploymentStateDrainEvictionTest {
     /// `SharedScheduler`, and it re-parks itself every 3s while it proceeds; 6s covers two firings.
     private static final long PARKED_CHECK_WINDOW_MS = 6_000L;
 
+    private final Set<NodeId> ready = new java.util.HashSet<>(Set.of(SELF, NODE_A, NODE_D));
     private InMemoryKvStore kvStore;
     private RecordingClusterNode cluster;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
@@ -86,6 +87,8 @@ class ClusterDeploymentStateDrainEvictionTest {
     void setUp() {
         var router = MessageRouter.mutable();
         kvStore = new InMemoryKvStore(router);
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
         cluster = new RecordingClusterNode(SELF);
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
                 fsm -> new ClusterDeploymentContext(fsm,
@@ -96,7 +99,7 @@ class ClusterDeploymentStateDrainEvictionTest {
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
                                                     counted::get,
-                                                    () -> Set.of(SELF, NODE_A),
+                                                    () -> ready,
                                                     draining::get,
                                                     Set.of(SELF, NODE_A, NODE_D),
                                                     DeploymentAtomicity.ALL_OR_NOTHING,
@@ -148,6 +151,13 @@ class ClusterDeploymentStateDrainEvictionTest {
 
         draining.set(Set.of());
         activeState().reconcile();
+        // The withdrawn episode's pending replacement was cancelled/removed. Retaining its
+        // LOAD would correctly satisfy the next episode's planned deficit and require no new LOAD.
+        var cancelled = activeState().sliceStates().entrySet().stream()
+            .filter(entry -> entry.getKey().artifact().equals(ARTIFACT) && !entry.getKey().nodeId().equals(NODE_D))
+            .filter(entry -> entry.getValue() == SliceState.LOAD).map(java.util.Map.Entry::getKey).toList();
+        assertThat(cancelled).as("episode one still has an uncompleted replacement to cancel").hasSize(1);
+        cancelled.forEach(activeState().sliceStates()::remove);
         seedActiveSliceOn(NODE_D);
         activeState().sliceStates().put(org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_D), SliceState.ACTIVE);
         cluster.commands.clear();
@@ -198,6 +208,13 @@ class ClusterDeploymentStateDrainEvictionTest {
         draining.set(Set.of());
         Thread.sleep(PARKED_CHECK_WINDOW_MS);
 
+        // The withdrawn episode's pending replacement was cancelled/removed. Retaining its
+        // LOAD would correctly satisfy the next episode's planned deficit and require no new LOAD.
+        var cancelled = activeState().sliceStates().entrySet().stream()
+            .filter(entry -> entry.getKey().artifact().equals(ARTIFACT) && !entry.getKey().nodeId().equals(NODE_D))
+            .filter(entry -> entry.getValue() == SliceState.LOAD).map(java.util.Map.Entry::getKey).toList();
+        assertThat(cancelled).as("episode one still has an uncompleted replacement to cancel").hasSize(1);
+        cancelled.forEach(activeState().sliceStates()::remove);
         seedActiveSliceOn(NODE_D);
         activeState().sliceStates().put(org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_D), SliceState.ACTIVE);
         cluster.commands.clear();
@@ -256,6 +273,37 @@ class ClusterDeploymentStateDrainEvictionTest {
 
     private ClusterDeploymentState.Active activeState() {
         return (ClusterDeploymentState.Active) harness.state();
+    }
+
+    @Test
+    void workerDrainRequiresAllDesiredActiveReplicasInCurrentEligibleAudience() {
+        var first = new NodeId("worker-first");
+        var second = new NodeId("worker-second");
+        activeState().workerNodes().addAll(Set.of(NODE_D, first, second));
+        ready.addAll(Set.of(first, second));
+        draining.set(Set.of(NODE_D));
+        kvStore.put(SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+            AetherValue.SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 2, 1, "WORKERS_ONLY"));
+        assertThat(activeState().drainReplacementNodes(ARTIFACT)).isEmpty();
+        assertThat(activeState().hasDrainReplacement(ARTIFACT)).isFalse();
+        kvStore.put(new AetherKey.CommunityKey("workers"), new AetherValue.CommunityValue("source", "WORKER", 100,
+            org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE, 1L, Option.none()));
+        kvStore.put(AetherKey.GovernorAnnouncementKey.forCommunity("workers"),
+            AetherValue.GovernorAnnouncementValue.governorAnnouncementValue(first, 3, List.of(NODE_D, first, second), "", 1L));
+        assertThat(activeState().drainReplacementNodes(ARTIFACT)).containsExactlyInAnyOrder(first, second);
+        var firstKey = new AetherKey.SliceNodeKey(ARTIFACT, first);
+        var secondKey = new AetherKey.SliceNodeKey(ARTIFACT, second);
+        activeState().sliceStates().put(new AetherKey.SliceNodeKey(ARTIFACT, SELF), SliceState.ACTIVE);
+        activeState().sliceStates().put(firstKey, SliceState.ACTIVE);
+        activeState().sliceStates().put(secondKey, SliceState.LOADING);
+        assertThat(activeState().hasDrainReplacement(ARTIFACT)).as("one active worker plus an out-of-policy core is insufficient").isFalse();
+        activeState().sliceStates().put(secondKey, SliceState.ACTIVE);
+        assertThat(activeState().hasDrainReplacement(ARTIFACT)).isTrue();
+        ready.remove(second);
+        assertThat(activeState().hasDrainReplacement(ARTIFACT)).as("stale readiness is not a replacement").isFalse();
+        ready.add(second);
+        draining.set(Set.of(NODE_D, second));
+        assertThat(activeState().hasDrainReplacement(ARTIFACT)).as("another draining worker is not a replacement").isFalse();
     }
 
     private void seedActiveSliceOn(NodeId nodeId) {
@@ -376,7 +424,15 @@ class ClusterDeploymentStateDrainEvictionTest {
         }
 
         void put(AetherKey key, AetherValue value) {
-            process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            if (value instanceof org.pragmatica.cluster.state.kvstore.LeaderAuthorized) {
+                var leader = getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                    org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+                process(createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                    java.util.UUID.randomUUID().toString(), leader, List.of(),
+                    List.of(new KVCommand.Mutation<>(key, get(key), Option.some(value)))))));
+            } else {
+                process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            }
         }
     }
 

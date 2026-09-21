@@ -89,6 +89,17 @@ public interface TopologyManager {
         return false;
     }
 
+    /// Whether the sender belongs to the admitted consensus electorate. Unknown identities
+    /// and workers are excluded, independently of transport reachability.
+    default boolean isConsensusMember(NodeId nodeId) {
+        return coreNodes().contains(nodeId);
+    }
+
+    /// Trusted full-state transfer peers. This does not grant voting or candidate admission.
+    default boolean isStateTransferPeer(NodeId nodeId) {
+        return isConsensusMember(nodeId);
+    }
+
     /// Returns the count of active (non-passive) nodes in the topology.
     /// Passive nodes (load balancers, observers) are excluded from the count.
     default int activeNodeCount() {

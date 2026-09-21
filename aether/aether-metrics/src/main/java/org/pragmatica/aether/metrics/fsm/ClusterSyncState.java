@@ -162,7 +162,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             }
             // Broadcast recipients: every QUIC-connected peer (network.broadcast skips self).
             // The miss-tracking maps follow the same recipient set, excluding self.
-            var recipients = List.copyOf(ctx.connectedPeers());
+            var recipients = List.copyOf(ctx.pingRecipients());
 
             if (recipients.isEmpty()) {
                 tx.ignore();

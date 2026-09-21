@@ -709,7 +709,7 @@ class BootstrapCleanupTest {
     // --- RFC-0017 stage 6 / C3: cluster-scoped VM sweep ---
 
     private static Server vmServer(long id, String name) {
-        return new Server(id, name, "running", null, null, null, null, Map.of("aether-cluster", "prod"));
+        return new Server(id, name, "running", null, null, null, null, Map.of("aether-cluster", "prod"), null);
     }
 
     /// The selector is built from the cluster name — scoped BY CONSTRUCTION. The sweep deletes

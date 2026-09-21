@@ -224,9 +224,9 @@ public final class MetricsRoutes implements RouteSource {
                                                 agg.avgLatencyMs(),
                                                 agg.totalInvocations(),
                                                 agg.totalGcPauseMs(),
-                                                agg.latencyP50(),
-                                                agg.latencyP95(),
-                                                agg.latencyP99(),
+                                                agg.intervalMeanLatencyP50(),
+                                                agg.intervalMeanLatencyP95(),
+                                                agg.intervalMeanLatencyP99(),
                                                 agg.errorRate(),
                                                 agg.eventCount(),
                                                 agg.sampleCount(),
@@ -256,9 +256,9 @@ public final class MetricsRoutes implements RouteSource {
         return new DerivedMetricsResponse(derived.requestRate(),
                                           derived.errorRate(),
                                           derived.gcRate(),
-                                          derived.latencyP50(),
-                                          derived.latencyP95(),
-                                          derived.latencyP99(),
+                                          derived.intervalMeanLatencyP50(),
+                                          derived.intervalMeanLatencyP95(),
+                                          derived.intervalMeanLatencyP99(),
                                           derived.eventLoopSaturation(),
                                           derived.heapSaturation(),
                                           derived.cpuTrend(),
@@ -397,7 +397,12 @@ public final class MetricsRoutes implements RouteSource {
             }
         }
 
-        return Map.of("timeRange", range, "nodes", nodes);
+        return Map.of("timeRange",
+                      range,
+                      "resolutionMs",
+                      node.metricsCollector().historyResolution().millis(),
+                      "nodes",
+                      nodes);
     }
 
     private static long parseTimeRange(String range) {

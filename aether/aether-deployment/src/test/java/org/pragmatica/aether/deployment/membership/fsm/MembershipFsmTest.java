@@ -208,7 +208,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onDrainRequested(A);
             manager.onLivenessGone(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
@@ -260,7 +260,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onDrainRequested(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
             await().pollDelay(FIRING_TIMEOUT.millis() * 3,
@@ -282,7 +282,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onDrainRequested(A);
             manager.onDrainAcknowledged(A);
             awaitDead(manager, A);
@@ -301,7 +301,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onDrainRequested(A);
             manager.onDrainAcknowledged(A);
             awaitDead(manager, A);
@@ -317,7 +317,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onDrainRequested(A);
             manager.onDrainAcknowledged(A);
             manager.onSwimHealthy(A, 2L);
@@ -340,7 +340,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onDrainAcknowledged(A);
             manager.onDrainRequested(A);
             await().pollDelay(FIRING_TIMEOUT.millis() * 3,
@@ -369,7 +369,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onDrainRequested(A);
             await().atMost(2, TimeUnit.SECONDS)
                  .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
@@ -401,7 +401,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onDrainRequested(A);
             manager.onLivenessGone(A);
             manager.onPeerConnected(A);
@@ -434,7 +434,7 @@ class MembershipFsmTest {
             var deltas = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(deltas::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onSwimSuspect(A, 2L);
             manager.onDownHysteresisMet(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
@@ -1013,7 +1013,7 @@ class MembershipFsmTest {
             manager.onNeverJoinedDeath(pruned::add);
             manager.onMembershipDelta(deltas::add);
 
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onSwimDeparted(A, 5L);
 
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
@@ -1228,7 +1228,7 @@ class MembershipFsmTest {
             var edges = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(edges::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onSwimDeparted(A, 5L);
             assertThat(edges).hasSize(2);
             assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
@@ -1245,7 +1245,7 @@ class MembershipFsmTest {
             var edges = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(edges::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
             awaitDead(manager, A);
@@ -1278,7 +1278,7 @@ class MembershipFsmTest {
             var edges = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(edges::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onSwimHealthy(A, 2L);
             manager.onSwimSuspect(A, 3L);
             manager.onSwimHealthy(A, 4L);
@@ -1295,7 +1295,7 @@ class MembershipFsmTest {
             var edges = new ArrayList<MembershipDeltaEdge>();
 
             manager.onMembershipDelta(edges::add);
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             manager.onSwimDeparted(A, 5L);
             manager.onSwimHealthy(A, 6L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
@@ -1644,24 +1644,20 @@ class MembershipFsmTest {
         }
 
         @Test
-        void onMemberDescriptor_emptyAddressUpdate_stillAppliesRoleLastWins() {
-            // The guard retains only what the update LACKS; a non-blank incoming role still wins, so
-            // a worker re-label (which excludes the member from the core dial-set) takes effect even
-            // when the re-label observation carries no address.
+        void onMemberDescriptor_emptyAddressUpdate_preservesImmutableRole() {
+            // Neither an absent address nor a conflicting Hello label changes admitted identity.
             var manager = activeManager();
 
             promoteToMember(manager, A);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(addresslessWorkerInfo(A));
-            assertThat(manager.desiredConnections()).as("an address-less worker re-label still excludes the member from the core dial-set")
-                      .isEmpty();
+            assertThat(manager.desiredConnections()).containsExactly(new PeerTarget(A, address("10.0.0.1", 7000)));
         }
 
         @Test
         void onMemberDescriptor_blankIncomingRole_keepsKnownRole() {
             // Wave 2 / audit M9: a label-less observation (e.g. a gossip-rebuilt peer NodeInfo) must
-            // NOT wipe the member's self-asserted role to blank — blank role counts as core, so the
-            // erase would silently re-classify a worker as core.
+            // NOT wipe the member's established role to blank.
             var manager = activeManager();
 
             promoteToMember(manager, A);
@@ -1672,14 +1668,14 @@ class MembershipFsmTest {
         }
 
         @Test
-        void onMemberDescriptor_nonBlankIncomingRole_replacesRole() {
+        void onMemberDescriptor_conflictingRole_preservesAdmittedRole() {
             var manager = activeManager();
 
             promoteToMember(manager, A);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(workerInfo(A, "10.0.0.1", 7000));
-            assertThat(descriptorOf(manager, A).role()).as("a non-blank incoming role still wins (re-label works)")
-                      .isEqualTo("worker");
+            assertThat(descriptorOf(manager, A).role()).as("admitted identity cannot switch node types")
+                      .isEqualTo("core");
         }
 
         @Test
@@ -1694,14 +1690,14 @@ class MembershipFsmTest {
         }
 
         @Test
-        void onMemberDescriptor_nonBlankIncomingSource_replacesSource() {
+        void onMemberDescriptor_conflictingSource_preservesAdmittedSource() {
             var manager = activeManager();
 
             promoteToMember(manager, A);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "replacement"));
-            assertThat(descriptorOf(manager, A).source()).as("a non-blank incoming source still wins")
-                      .isEqualTo("replacement");
+            assertThat(descriptorOf(manager, A).source()).as("an observed label cannot replace source authority")
+                      .isEqualTo("seed");
         }
 
         @Test
@@ -1889,17 +1885,14 @@ class MembershipFsmTest {
         }
 
         @Test
-        void desiredConnections_includesUnknownRole_allCoreCluster() {
+        void desiredConnections_excludesUnknownRole() {
             var manager = activeManager();
 
             promoteToMember(manager, A);
             promoteToMember(manager, B);
             manager.onMemberDescriptor(unlabeledInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(unlabeledInfo(B, "10.0.0.2", 7000));
-            assertThat(manager.desiredConnections()).containsExactlyInAnyOrder(new PeerTarget(A,
-                                                                                              address("10.0.0.1", 7000)),
-                                                                               new PeerTarget(B,
-                                                                                              address("10.0.0.2", 7000)));
+            assertThat(manager.desiredConnections()).isEmpty();
         }
 
         @Test
@@ -1916,7 +1909,7 @@ class MembershipFsmTest {
     @Nested
     class CoreMembers {
         @Test
-        void coreMembers_includesCountedNonWorker_unknownRoleIncluded() {
+        void coreMembers_includesExplicitCore_excludesWorkerAndUnknown() {
             var manager = activeManager();
 
             promoteToMember(manager, A);
@@ -1924,14 +1917,14 @@ class MembershipFsmTest {
             promoteToMember(manager, C);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(workerInfo(B, "10.0.0.2", 7000));
-            assertThat(manager.coreMembers()).containsExactlyInAnyOrder(A, C);
+            assertThat(manager.coreMembers()).containsExactly(A);
         }
 
         @Test
         void coreMembers_excludesDeadMember() {
             var manager = activeManager();
 
-            promoteToMember(manager, A);
+            promoteCoreMember(manager, A);
             driveToDead(manager, B, 4L);
             assertThat(manager.coreMembers()).containsExactly(A);
         }
@@ -2149,7 +2142,7 @@ class MembershipFsmTest {
         return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), Map.of(NodeInfo.LABEL_ROLE, "core"), null);
     }
 
-    /// Address-less observation that ALSO re-labels the member as a worker (non-blank role wins).
+    /// Address-less observation carrying a conflicting worker label; admitted role remains immutable.
     private static NodeInfo addresslessWorkerInfo(NodeId id) {
         return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), Map.of(NodeInfo.LABEL_ROLE, "worker"), null);
     }
@@ -2158,6 +2151,11 @@ class MembershipFsmTest {
     /// NodeInfo. Exercises the combined per-field downgrade guard (Wave 2 / audit M9).
     private static NodeInfo addresslessUnlabeledInfo(NodeId id) {
         return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), Map.of(), null);
+    }
+
+    private static void promoteCoreMember(MembershipFsm manager, NodeId id) {
+        manager.onMemberDescriptor(coreNodeInfo(id));
+        promoteToMember(manager, id);
     }
 
     private static void promoteToMember(MembershipFsm manager, NodeId id) {

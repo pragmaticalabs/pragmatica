@@ -4,8 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.fsm;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.stream.IntStream;
+
 import org.pragmatica.aether.metrics.NoopClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NoopNetwork;
@@ -19,16 +26,11 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
-import java.util.stream.IntStream;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Direct FSM-level tests for the cluster-sync scheduler lifecycle. Exercises the sealed state
 /// hierarchy ([`ClusterSyncState`]) without depending on the public `ClusterSyncScheduler` adapter
@@ -44,11 +46,10 @@ class ClusterSyncFsmTest {
         void dormant_quorumEstablished_pinging_quorumDisappeared_dormant() {
             var harness = buildFsmHarness();
             var ctx = harness.context();
-            assertThat(harness.fsm().current()).isSameAs(ctx.dormant());
 
+            assertThat(harness.fsm().current()).isSameAs(ctx.dormant());
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
-
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumDisappeared());
             assertThat(harness.fsm().current()).isSameAs(ctx.dormant());
         }
@@ -60,7 +61,6 @@ class ClusterSyncFsmTest {
 
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
             harness.fsm().dispatch(new ClusterFsmEvent.Shutdown());
-
             assertThat(harness.fsm().current()).isSameAs(ctx.stopped());
             // Subsequent events are ignored — no transition.
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
@@ -76,20 +76,23 @@ class ClusterSyncFsmTest {
             var harness = buildFsmHarness(countingNetwork);
             // Seed topology so a PingTick would have a peer to send to.
             harness.context().setTopology(List.of(SELF, PEER_A));
-
             var events = IntStream.range(0, 8)
-                                  .<ClusterFsmEvent>mapToObj(_ -> new ClusterFsmEvent.QuorumEstablished())
+                                  .<ClusterFsmEvent> mapToObj(_ -> new ClusterFsmEvent.QuorumEstablished())
                                   .toList();
             var threads = new ArrayList<Thread>(events.size());
             var latch = new CountDownLatch(1);
+
             for (var ev : events) {
                 var t = new Thread(() -> awaitAndDispatch(latch, harness.fsm(), ev));
+
                 threads.add(t);
                 t.start();
             }
-            latch.countDown();
-            for (var t : threads) { t.join(); }
 
+            latch.countDown();
+            for (var t : threads) {
+                t.join();
+            }
             // Only one transition into Pinging should have committed — the others lost the CAS.
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
             // Exactly one Pinging instance was reached — the ping task was scheduled exactly once.
@@ -97,6 +100,7 @@ class ClusterSyncFsmTest {
             // instance is currently in place; redundant QuorumEstablished events in Pinging are
             // ignored (do not rebuild the record).
             var first = harness.fsm().current();
+
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
             assertThat(harness.fsm().current()).isSameAs(first);
         }
@@ -108,10 +112,9 @@ class ClusterSyncFsmTest {
         void pingTickInDormant_isIgnored_noNetworkActivity() {
             var countingNetwork = new CountingClusterNetwork();
             var harness = buildFsmHarness(countingNetwork);
+
             harness.context().setTopology(List.of(SELF, PEER_A));
-
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
-
             assertThat(harness.fsm().current()).isSameAs(harness.context().dormant());
             assertThat(countingNetwork.sent()).isEmpty();
         }
@@ -121,7 +124,6 @@ class ClusterSyncFsmTest {
             var harness = buildFsmHarness();
 
             harness.fsm().dispatch(new ClusterSyncEvents.PongReceived(PEER_A));
-
             assertThat(harness.fsm().current()).isSameAs(harness.context().dormant());
         }
     }
@@ -135,22 +137,19 @@ class ClusterSyncFsmTest {
             // Topology is never seeded (no MembershipDecision/NodeJoined deltas) — recipients
             // are the live transport peers; the leader BROADCASTS one uniform ping to all of them.
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
-
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
-            assertThat(network.broadcasts()).as("exactly one broadcast ping per tick").hasSize(1);
-            assertThat(network.sent()).as("no per-peer unicast in the broadcast model").isEmpty();
+            assertThat(network.sent()).containsExactlyInAnyOrder(PEER_A, PEER_B);
+            assertThat(network.broadcasts()).isEmpty();
         }
 
         @Test
         void pingTick_noConnectedPeers_isIgnored_noBroadcast() {
             var network = new ConfigurableConnectedNetwork(Set.of());
             var harness = buildFsmHarness(network);
+
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
-
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
             assertThat(network.broadcasts()).isEmpty();
         }
@@ -165,13 +164,10 @@ class ClusterSyncFsmTest {
             // Topology knows SELF and PEER_A only — PEER_B is transport-connected but absent.
             harness.context().setTopology(List.of(SELF, PEER_A));
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
-
-            assertThat(network.broadcasts()).as("single broadcast ping").hasSize(1);
-            assertThat(counterForPeer(harness, PEER_B))
-                .as("PEER_B miss-tracked despite missing topology edge — recipients are connectedPeers")
-                .isEqualTo(1);
+            assertThat(network.sent()).containsExactlyInAnyOrder(PEER_A, PEER_B);
+            assertThat(counterForPeer(harness, PEER_B)).as("PEER_B miss-tracked despite missing topology edge — recipients are connectedPeers")
+                      .isEqualTo(1);
         }
     }
 
@@ -181,13 +177,13 @@ class ClusterSyncFsmTest {
         void twoPingTicks_withoutPong_incrementCounterPastThreshold_reportsUnreachable() {
             var reported = new CopyOnWriteArrayList<NodeId>();
             var collector = new SwimAwareCollector(Set.of());
+
             collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(new ConfigurableConnectedNetwork(Set.of(PEER_A)), 2, collector);
+
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
-
             assertThat(reported).containsExactly(PEER_A);
             // The missed count itself is only observable here, on the counter the threshold reads.
             assertThat(counterForPeer(harness, PEER_A)).isEqualTo(2);
@@ -197,17 +193,16 @@ class ClusterSyncFsmTest {
         void pongReceived_resetsCounterForThatPeerToZero() {
             var reported = new CopyOnWriteArrayList<NodeId>();
             var collector = new SwimAwareCollector(Set.of());
+
             collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(new ConfigurableConnectedNetwork(Set.of(PEER_A, PEER_B)), 3, collector);
-            harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
 
+            harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
             assertThat(counterForPeer(harness, PEER_A)).isEqualTo(2);
             assertThat(counterForPeer(harness, PEER_B)).isEqualTo(2);
-
             harness.fsm().dispatch(new ClusterSyncEvents.PongReceived(PEER_A));
-
             assertThat(counterForPeer(harness, PEER_A)).isEqualTo(0);
             // PEER_B counter untouched by PEER_A's pong.
             assertThat(counterForPeer(harness, PEER_B)).isEqualTo(2);
@@ -228,28 +223,26 @@ class ClusterSyncFsmTest {
             var network = new RecordingNetwork();
             var collector = new SwimAwareCollector(Set.of(PEER_A));
             var reported = new CopyOnWriteArrayList<NodeId>();
+
             collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(network, 3, collector);
 
             harness.context().emitPingTimeoutIfExceeded(PEER_A, 5);
-
-            assertThat(network.disconnected())
-                .as("SWIM-ALIVE peer must not be disconnected by owner-side ping timeout")
-                .isEmpty();
-            assertThat(reported)
-                .as("no unreachable hint fed into SWIM for a SWIM-ALIVE peer")
-                .isEmpty();
+            assertThat(network.disconnected()).as("SWIM-ALIVE peer must not be disconnected by owner-side ping timeout")
+                      .isEmpty();
+            assertThat(reported).as("no unreachable hint fed into SWIM for a SWIM-ALIVE peer").isEmpty();
             // The inert eviction-hint wire path must also stay empty — the next outbound ping carries
             // no hint for any peer (emitPingTimeoutIfExceeded is the sole writer and no longer writes).
             harness.context().broadcastPing(Epoch.epoch(7L, 0L), 7L);
-            var pings = network.sent().stream()
+            var pings = network.sent()
+                               .stream()
                                .filter(m -> m instanceof org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing)
                                .map(m -> (org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing) m)
                                .toList();
+
             assertThat(pings).as("exactly one ping was sent").hasSize(1);
-            assertThat(pings.getFirst().evictionHints())
-                .as("no eviction hint broadcast for SWIM-ALIVE peer")
-                .doesNotContain(PEER_A);
+            assertThat(pings.getFirst().evictionHints()).as("no eviction hint broadcast for SWIM-ALIVE peer")
+                      .doesNotContain(PEER_A);
         }
 
         @Test
@@ -260,17 +253,15 @@ class ClusterSyncFsmTest {
             var network = new RecordingNetwork();
             var collector = new SwimAwareCollector(Set.of());
             var reported = new CopyOnWriteArrayList<NodeId>();
+
             collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(network, 3, collector);
 
             harness.context().emitPingTimeoutIfExceeded(PEER_A, 5);
-
-            assertThat(reported)
-                .as("non-ALIVE peer past threshold is reported to SWIM as unreachable")
-                .containsExactly(PEER_A);
-            assertThat(network.disconnected())
-                .as("option 1: ping-timeout no longer manufactures a destructive disconnect")
-                .isEmpty();
+            assertThat(reported).as("non-ALIVE peer past threshold is reported to SWIM as unreachable")
+                      .containsExactly(PEER_A);
+            assertThat(network.disconnected()).as("option 1: ping-timeout no longer manufactures a destructive disconnect")
+                      .isEmpty();
         }
 
         @Test
@@ -280,18 +271,15 @@ class ClusterSyncFsmTest {
             var network = new RecordingNetwork();
             var collector = new SwimAwareCollector(Set.of(PEER_A));
             var reported = new CopyOnWriteArrayList<NodeId>();
+
             collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(network, 3, collector);
 
             harness.context().emitPingTimeoutIfExceeded(PEER_A, 5);
             harness.context().emitPingTimeoutIfExceeded(PEER_B, 5);
-
-            assertThat(reported)
-                .as("only the SWIM-not-alive peer is reported unreachable, exactly once")
-                .containsExactly(PEER_B);
-            assertThat(network.disconnected())
-                .as("option 1 never manufactures a disconnect")
-                .isEmpty();
+            assertThat(reported).as("only the SWIM-not-alive peer is reported unreachable, exactly once")
+                      .containsExactly(PEER_B);
+            assertThat(network.disconnected()).as("option 1 never manufactures a disconnect").isEmpty();
         }
 
         @Test
@@ -300,23 +288,24 @@ class ClusterSyncFsmTest {
             var network = new RecordingNetwork();
             var collector = new SwimAwareCollector(Set.of());
             var reported = new CopyOnWriteArrayList<NodeId>();
+
             collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(network, 3, collector);
 
             harness.context().emitPingTimeoutIfExceeded(PEER_A, 1);
-
             assertThat(network.disconnected()).isEmpty();
             assertThat(reported).as("below threshold short-circuits before any SWIM hint").isEmpty();
         }
     }
 
     // --- harness plumbing ---
-
     private static int counterForPeer(FsmHarness harness, NodeId peer) {
-        if (!(harness.fsm().current() instanceof ClusterSyncState.Pinging pinging)) {
+        if (! (harness.fsm().current() instanceof ClusterSyncState.Pinging pinging)) {
             return -1;
         }
-        return pinging.missedPings().getOrDefault(peer, 0);
+
+        return pinging.missedPings()
+                      .getOrDefault(peer, 0);
     }
 
     private static FsmHarness buildFsmHarness() {
@@ -331,25 +320,25 @@ class ClusterSyncFsmTest {
         return buildFsmHarness(network, threshold, new NoopClusterSyncCollector());
     }
 
-    private static FsmHarness buildFsmHarness(ClusterNetwork network,
-                                              int threshold,
-                                              ClusterSyncCollector collector) {
+    private static FsmHarness buildFsmHarness(ClusterNetwork network, int threshold, ClusterSyncCollector collector) {
         var ctxRef = new AtomicReference<ClusterSyncContext>();
-        Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory =
-                fsm -> {
-                    var ctx = new ClusterSyncContext(fsm,
-                                                     SELF,
-                                                     network,
-                                                     collector,
-                                                     TimeSpan.timeSpan(1).hours(),
-                                                     () -> 7L,
-                                                     threshold,
-                                                     () -> Epoch.epoch(7L, 0L),
-                                                     org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore());
-                    ctxRef.set(ctx);
-                    return ctx.dormant();
-                };
+        Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory = fsm -> {
+            var ctx = new ClusterSyncContext(fsm,
+                                             SELF,
+                                             network,
+                                             collector,
+                                             TimeSpan.timeSpan(1).hours(),
+                                             () -> 7L,
+                                             threshold,
+                                             () -> Epoch.epoch(7L, 0L),
+                                             org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore());
+
+            ctxRef.set(ctx);
+
+            return ctx.dormant();
+        };
         var fsm = Fsm.fsm("cluster-sync-fsm-test", factory);
+
         return new FsmHarness(fsm, ctxRef.get());
     }
 
@@ -358,7 +347,12 @@ class ClusterSyncFsmTest {
     private static void awaitAndDispatch(CountDownLatch latch,
                                          Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
                                          ClusterFsmEvent ev) {
-        try { latch.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
         fsm.dispatch(ev);
     }
 
@@ -372,18 +366,24 @@ class ClusterSyncFsmTest {
         @Override
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
             sent.add(nodeId);
+
             return super.send(nodeId, message);
         }
 
         @Override
         public <M extends ProtocolMessage> Unit broadcast(M message) {
             broadcasts.add(message);
+
             return super.broadcast(message);
         }
 
-        List<NodeId> sent() { return List.copyOf(sent); }
+        List<NodeId> sent() {
+            return List.copyOf(sent);
+        }
 
-        List<ProtocolMessage> broadcasts() { return List.copyOf(broadcasts); }
+        List<ProtocolMessage> broadcasts() {
+            return List.copyOf(broadcasts);
+        }
     }
 
     /// `CountingClusterNetwork` variant with a fixed `connectedPeers()` set. Exercises the
@@ -396,7 +396,9 @@ class ClusterSyncFsmTest {
         }
 
         @Override
-        public Set<NodeId> connectedPeers() { return connected; }
+        public Set<NodeId> connectedPeers() {
+            return connected;
+        }
     }
 
     /// `ClusterNetwork` stub that records the targets of `disconnect(...)` and the outbound
@@ -408,6 +410,11 @@ class ClusterSyncFsmTest {
         private final CopyOnWriteArrayList<ProtocolMessage> sent = new CopyOnWriteArrayList<>();
 
         @Override
+        public Set<NodeId> connectedPeers() {
+            return Set.of(PEER_A);
+        }
+
+        @Override
         public void disconnect(org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode disconnectNode) {
             disconnected.add(disconnectNode.nodeId());
         }
@@ -415,17 +422,23 @@ class ClusterSyncFsmTest {
         @Override
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
             sent.add(message);
+
             return super.send(nodeId, message);
         }
 
         @Override
         public <M extends ProtocolMessage> Unit broadcast(M message) {
             sent.add(message);
+
             return super.broadcast(message);
         }
 
-        List<NodeId> disconnected() { return List.copyOf(disconnected); }
+        List<NodeId> disconnected() {
+            return List.copyOf(disconnected);
+        }
 
-        List<ProtocolMessage> sent() { return List.copyOf(sent); }
+        List<ProtocolMessage> sent() {
+            return List.copyOf(sent);
+        }
     }
 }

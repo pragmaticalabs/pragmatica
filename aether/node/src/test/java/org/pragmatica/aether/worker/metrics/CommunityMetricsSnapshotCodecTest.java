@@ -31,6 +31,14 @@ class CommunityMetricsSnapshotCodecTest {
     private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
 
     @Test
+    void sourceBatch_preservesProducerIdentityAndSequenceThroughNodeCodecs() {
+        var source = new CommunityMetricsSnapshot("community", new NodeId("worker"), 1, List.of(), 12345, 8, 19);
+        var batch = new SourceMetricsBatch(new NodeId("core"), List.of(source));
+        SourceMetricsBatch decoded = CODEC.decode(CODEC.encode(batch));
+        assertThat(decoded).isEqualTo(batch);
+    }
+
+    @Test
     void communityMetricsSnapshot_roundTripsThroughNodeCodecs() {
         var artifact = Artifact.artifact("org.test:slice:1.0.0").unwrap();
         var methods = List.of(perMethodMetrics("handle", 3L, 12.5, 0.01, 400L));

@@ -22,6 +22,15 @@ public sealed interface MembershipEvent {
     /// SWIM reports the member ALIVE at `incarnation`.
     record SwimHealthy(long incarnation) implements MembershipEvent {}
 
+    /// Fresh direct pong plus trusted worker provisioning or local controller intent.
+    record WorkerAdmissionHealthy(long incarnation) implements MembershipEvent {}
+
+    /// Fresh positive observation from a term-fenced committed governor, never a death signal.
+    record GovernorHealthy(long incarnation,
+                           String community,
+                           org.pragmatica.consensus.NodeId governor,
+                           long governorTerm) implements MembershipEvent {}
+
     /// SWIM reports the member SUSPECT at `incarnation` (transient doubt — debounced, not terminal).
     record SwimSuspect(long incarnation) implements MembershipEvent {}
 

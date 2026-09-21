@@ -154,7 +154,7 @@ class LeaderReconcilerTest {
         // POST-BACKSTOP terminal DEAD state (awaited), so reconciler scenarios observe the
         // settled count drop instead of asserting mid-window.
         membershipFsm = membershipFsm(FsmObserver.noop(), fsmWallClockMs::get, Long.MAX_VALUE, TEST_EVICTION_BACKSTOP);
-        membershipFsm.onSwimHealthy(SELF, fsmIncarnation.getAndIncrement());
+        observeCoreHealthy(SELF);
         reconciler = leaderReconciler(membershipConfig(),
                                       sampler,
                                       membershipFsm,
@@ -167,6 +167,116 @@ class LeaderReconcilerTest {
         reconciler.setReconcileListener(listener);
     }
 
+    @Test
+    void healthyUnknownIdentityDoesNotContributeToCoreCapacity() {
+        seedClusterWithPeers(PEER_A);
+        health.markHealthy(PEER_B);
+        membershipFsm.onSwimHealthy(PEER_B, fsmIncarnation.getAndIncrement());
+        sampler.sample();
+        assertThat(membershipFsm.countedMembers()).contains(PEER_B);
+        assertThat(membershipFsm.coreCountedMembers()).containsExactlyInAnyOrder(SELF, PEER_A);
+    }
+
+    @Test
+    void targetIncreaseBeforeSamplerCatchesUp_preservesVerifiedFormationAndProvisioningGates() {
+        configuredCoreCount.set(3);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        assertThat(sampler.peakMembershipCount()).isEqualTo(1);
+        assertThat(membershipFsm.coreCountedMembers()).hasSize(3);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        assertThat(reconciler.isReachedFullMembership()).isTrue();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+        configuredCoreCount.set(5);
+        reconciler.onConfigChange();
+        fireDebouncedReconcile();
+        assertThat(ctm.provisionReplacementCalls()).as("deficit still requires existing grace/debounce").isEmpty();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(sampler.peakMembershipCount()).isEqualTo(1);
+        assertThat(listener.events().getLast().provisionCount()).isEqualTo(2);
+        assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+    }
+
+    @Test
+    void targetRaisedBeforeFirstPass_usesVerifiedInstalledElectorateAsFormationEvidence() {
+        configuredCoreCount.set(3);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B));
+        reconciler.activate();
+        configuredCoreCount.set(5); // No reconcile or sampler pass ever observed the old target.
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        assertThat(sampler.peakMembershipCount()).isEqualTo(1);
+        assertThat(reconciler.isReachedFullMembership()).isTrue();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+    }
+
+    @Test
+    void partiallyObservedInstalledElectorate_doesNotProveFormation() {
+        configuredCoreCount.set(5);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(reconciler.isReachedFullMembership()).isFalse();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+    }
+
+    @Test
+    void desiredSevenUsesInstalledThreeQuorumAndProvisionsFourAfterDelay() {
+        configuredCoreCount.set(7);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        assertThat(reconciler.isArmedForProvisioning()).isTrue();
+        assertThat(reconciler.currentProvisioningSnapshot().quorumSafe()).isTrue();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementCalls()).hasSize(4);
+    }
+
+    @Test
+    void nonvotingCoreCandidatesCannotSupplyInstalledMajority() {
+        configuredCoreCount.set(7);
+        seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A,
+            new NodeId("absent-voter-1"), new NodeId("absent-voter-2"), new NodeId("absent-voter-3")));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(reconciler.isArmedForProvisioning()).isFalse();
+        assertThat(reconciler.currentProvisioningSnapshot().quorumSafe()).isFalse();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+    }
+
+    @Test
+    void wiredEmptyInstalledElectorateFailsClosedDespiteHealthyCoreCapacity() {
+        configuredCoreCount.set(3);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(Set::of);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        configuredCoreCount.set(5);
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(reconciler.isArmedForProvisioning()).isFalse();
+        assertThat(reconciler.currentProvisioningSnapshot().quorumSafe()).isFalse();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+    }
+
     /// Feed N healthy peers into the presence sampler health snapshot, then sample so the stable member
     /// set (which always includes `SELF`) absorbs them. Drive the FSM in lockstep: each peer is
     /// promoted to MEMBER (a single SWIM HealthyObserved edge, up-hysteresis = 1) so the
@@ -176,7 +286,7 @@ class LeaderReconcilerTest {
     private void seedClusterWithPeers(NodeId... peers) {
         for (var peer : peers) {
             health.markHealthy(peer);
-            membershipFsm.onSwimHealthy(peer, fsmIncarnation.getAndIncrement());
+            observeCoreHealthy(peer);
         }
         sampler.sample();
         // Mature every tracked member past the drain-safety grace, so helper-seeded members are
@@ -223,8 +333,8 @@ class LeaderReconcilerTest {
     private void seedWorkers(NodeId... workers) {
         for (var worker : workers) {
             health.markHealthy(worker);
-            membershipFsm.onSwimHealthy(worker, fsmIncarnation.getAndIncrement());
             membershipFsm.onMemberDescriptor(workerInfo(worker));
+            membershipFsm.onSwimHealthy(worker, fsmIncarnation.getAndIncrement());
         }
         sampler.sample();
         agePastDrainSafetyGrace();
@@ -236,6 +346,13 @@ class LeaderReconcilerTest {
     @Contract
     private void agePastDrainSafetyGrace() {
         fsmWallClockMs.addAndGet(EXPECTED_DRAIN_GRACE.millis() + 1);
+    }
+
+    /// Fixtures model an explicitly admitted core descriptor before its positive health edge.
+    private void observeCoreHealthy(NodeId node) {
+        membershipFsm.onMemberDescriptor(NodeInfo.nodeInfo(node, NodeAddress.nodeAddress("core-host", 6000).unwrap(),
+            Map.of(NodeInfo.LABEL_ROLE, "core")));
+        membershipFsm.onSwimHealthy(node, fsmIncarnation.getAndIncrement());
     }
 
     /// A NodeInfo carrying the explicit `role=worker` label. The transport ACTIVE/PASSIVE
@@ -739,7 +856,7 @@ class LeaderReconcilerTest {
         private void seedYoungPeers(NodeId... peers) {
             for (var peer : peers) {
                 health.markHealthy(peer);
-                membershipFsm.onSwimHealthy(peer, fsmIncarnation.getAndIncrement());
+                observeCoreHealthy(peer);
             }
             sampler.sample();
         }
@@ -982,7 +1099,7 @@ class LeaderReconcilerTest {
             // only eligible victim — proving the young ephemeral is selected despite its age.
             seedClusterWithPeers(seed1);
             health.markHealthy(ctm1);
-            membershipFsm.onSwimHealthy(ctm1, fsmIncarnation.getAndIncrement());
+            observeCoreHealthy(ctm1);
             sampler.sample();
             reconciler.setOwnsActiveSlices(id -> id.equals(SELF) || id.equals(seed1));
 
@@ -2721,6 +2838,12 @@ class LeaderReconcilerTest {
     /// Recording `ClusterTopologyManager` stub. Phase 1.5 verification surface for
     /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls.
     private static final class RecordingCtm implements ClusterTopologyManager {
+        @Override public boolean usesExplicitCommunities() { return false; }
+        @Override public void installCommunityPlacement(org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler reconciler) {}
+        @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation) {
+            return org.pragmatica.lang.Promise.unitPromise();
+        }
+
         private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();
         private final List<NodeId> provisionReplacementCalls = new CopyOnWriteArrayList<>();
         private final List<NodeRole> provisionReplacementRoles = new CopyOnWriteArrayList<>();

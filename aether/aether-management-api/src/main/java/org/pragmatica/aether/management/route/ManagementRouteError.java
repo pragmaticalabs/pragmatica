@@ -68,6 +68,13 @@ public sealed interface ManagementRouteError extends Cause {
         return new OwnerForwardLoop(routeName, previousHop);
     }
 
+    record IncompleteClusterView() implements ManagementRouteError {
+        @Override
+        public String message() {
+            return "This worker has a scoped metadata view; the requested cluster-wide read requires a core node";
+        }
+    }
+
     record NoMatch(HttpMethod method, String path) implements ManagementRouteError {
         @Override
         public String message() {

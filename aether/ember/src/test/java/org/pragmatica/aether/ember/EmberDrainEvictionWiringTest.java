@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import org.pragmatica.cluster.metrics.MetricObservation;
+
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -115,15 +117,20 @@ class EmberDrainEvictionWiringTest {
 
         var leader = awaitLeader();
         var drainee = NodeId.nodeId("drainee-evict-" + UUID.randomUUID()).unwrap();
-        var capture = EvictionLogCapture.attach();
+        var drainingAtEvictionEntry = new java.util.concurrent.atomic.AtomicBoolean();
+        var capture = EvictionLogCapture.attach(message -> {
+            if (message.contains("Starting drain eviction for node " + drainee)) {
+                drainingAtEvictionEntry.set(leader.metricsCollector().reportedStates().get(drainee) == NodeReportedState.DRAINING);
+            }
+        });
 
         try {
             leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
 
-            assertThat(leader.metricsCollector().reportedStates())
-                .describedAs("arming: the leader's own readiness view recorded the DRAINING report, so the "
-                             + "eviction loop's draining-set check can pass")
-                .containsEntry(drainee, NodeReportedState.DRAINING);
+            assertThat(drainingAtEvictionEntry.get())
+                .describedAs("the DRAINING report must be present when its synchronous eviction callback starts; "
+                             + "a later readiness sweep may expire it while that callback waits for the KV monitor")
+                .isTrue();
 
             var started = "Starting drain eviction for node " + drainee;
             var completed = "Drain complete for node " + drainee;
@@ -186,8 +193,8 @@ class EmberDrainEvictionWiringTest {
     }
 
     private static ClusterSyncPong drainingPong(NodeId sender) {
-        return new ClusterSyncPong(sender, Map.of(), 0L, 0L, 0L, NodeReportedState.DRAINING.name(),
-                                   List.of(), List.of(), List.of(), Option.none(), 1L);
+        return new ClusterSyncPong(sender, new MetricObservation(1L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+                                   1L, 0L, 0L, 0L, NodeReportedState.DRAINING.name(), List.of(), List.of(), List.of(), Option.none());
     }
 
     /// Log4j2 programmatic appender over the eviction loop's own logger, capturing INFO in arrival
@@ -196,19 +203,22 @@ class EmberDrainEvictionWiringTest {
         private final List<String> messages = new CopyOnWriteArrayList<>();
         private final LoggerConfig loggerConfig;
         private final Level originalLevel;
+        private final java.util.function.Consumer<String> observation;
 
-        private EvictionLogCapture(Layout<?> layout, LoggerConfig loggerConfig, Level originalLevel) {
+        private EvictionLogCapture(Layout<?> layout, LoggerConfig loggerConfig, Level originalLevel,
+                                   java.util.function.Consumer<String> observation) {
             super(ACTIVE_LOGGER + "-eviction-capture", (Filter) null, layout, true, Property.EMPTY_ARRAY);
             this.loggerConfig = loggerConfig;
             this.originalLevel = originalLevel;
+            this.observation = observation;
         }
 
-        static EvictionLogCapture attach() {
+        static EvictionLogCapture attach(java.util.function.Consumer<String> observation) {
             var ctx = (LoggerContext) LogManager.getContext(false);
             var loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
             var capture = new EvictionLogCapture(PatternLayout.createDefaultLayout(),
                                                  loggerConfig,
-                                                 loggerConfig.getLevel());
+                                                 loggerConfig.getLevel(), observation);
 
             capture.start();
             loggerConfig.addAppender(capture, Level.INFO, null);
@@ -253,7 +263,9 @@ class EmberDrainEvictionWiringTest {
         @Override
         public void append(LogEvent event) {
             if (event.getLevel().isMoreSpecificThan(Level.INFO)) {
-                messages.add(event.getMessage().getFormattedMessage());
+                var message = event.getMessage().getFormattedMessage();
+                observation.accept(message);
+                messages.add(message);
             }
         }
 

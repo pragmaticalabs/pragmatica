@@ -178,7 +178,8 @@ class ClusterTopologyManagerRenderUserDataTest {
     @Test
     void provisionReplacement_threadsLeaderSshKeyIdsIntoReplacementConfig() {
         clusterStore.seedToml(CLOUD_TOML);
-        var leaderResolved = TomlDocument.EMPTY.with("cloud.compute", "ssh_key_ids", "113681412");
+        var leaderResolved = TomlDocument.EMPTY.with("cloud.sources.eu-1", "provider", "hetzner")
+                                             .with("cloud.sources.eu-1.compute", "ssh_key_ids", "113681412");
         var ctmWithKeys = ClusterTopologyManager.clusterTopologyManager(observer,
                                                                         lifecycleManager,
                                                                         renderTestAutoHeal(),
@@ -205,6 +206,14 @@ class ClusterTopologyManagerRenderUserDataTest {
                 .as("replacement's composed aether.toml inherits the leader's ssh_key_ids so it "
                     + "provisions from config when it becomes leader")
                 .contains("ssh_key_ids = \"113681412\"");
+    }
+
+    private static TomlDocument withEmptyGenesisVoters(TomlDocument document) {
+        var sections = new java.util.HashMap<>(document.sections());
+        var cluster = new java.util.HashMap<>(sections.getOrDefault("cluster", java.util.Map.of()));
+        cluster.put("genesis_voters", "");
+        sections.put("cluster", java.util.Map.copyOf(cluster));
+        return new TomlDocument(sections, document.tableArrays());
     }
 
     private static AutoHealConfig renderTestAutoHeal() {
@@ -253,7 +262,10 @@ class ClusterTopologyManagerRenderUserDataTest {
         var config = ClusterBootstrapConfigParser.parse(CLOUD_TOML).unwrap();
         var source = config.sources().get("eu-1");
         var secret = Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank());
-        var composed = ReplacementNodeConfigComposer.compose(config, source, secret).unwrap();
+        var composed = ReplacementNodeConfigComposer.compose(config, source, secret)
+            .flatMap(document -> org.pragmatica.aether.config.cluster.SourceCloudBindings.resolveOverlayFromConfig(document,
+                config, source.name(), NodeRole.CORE))
+            .map(ClusterTopologyManagerRenderUserDataTest::withEmptyGenesisVoters).unwrap();
         var peers = lifecycleManager.lastSpec().context().peers().or("");
         var expected = NodeUserDataRenderer.render(config,
                                                    source,
