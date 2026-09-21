@@ -2091,7 +2091,9 @@ public final class MembershipFsm {
         }
 
         synchronized long processEpoch() {
-            return fsm.current().ctx().lastSeenProcessEpoch();
+            return fsm.current()
+                      .ctx()
+                      .lastSeenProcessEpoch();
         }
 
         /// FSM-state → quiescence health-hint projection. DEAD → FAULTY (unconditional); SUSPECT →

@@ -79,6 +79,7 @@ public final class MembershipContext {
 
     public MembershipState.Observed observedProcessRejoin(long processEpoch) {
         observeProcessEpoch(processEpoch);
+
         return observed;
     }
 

@@ -182,7 +182,9 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimDeparted e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
                 case SwimHealthy e -> recoverFromDepartingIfNewer(ctx, e.incarnation(), tx);
                 case MembershipEvent.GovernorHealthy e -> recoverProcessFromDepartingIfNewer(ctx, e.processEpoch(), tx);
-                case MembershipEvent.WorkerAdmissionHealthy e -> recoverProcessFromDepartingIfNewer(ctx, e.processEpoch(), tx);
+                case MembershipEvent.WorkerAdmissionHealthy e -> recoverProcessFromDepartingIfNewer(ctx,
+                                                                                                    e.processEpoch(),
+                                                                                                    tx);
                 case PeerConnected _, UpHysteresisMet _, SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _, DownHysteresisMet _, SwimUnknown _, DrainRequested _, JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
