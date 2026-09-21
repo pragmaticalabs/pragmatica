@@ -2,6 +2,11 @@ package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -32,6 +37,7 @@ class ContentStoreDeleteRefcountTest {
     private static final byte[] SMALL = "content-store-refcount-small".getBytes(StandardCharsets.UTF_8);
 
     private MemoryTier memoryTier;
+    private DeleteObservingTier tier;
     private MetadataStore metadataStore;
     private StorageInstance storage;
     private ContentStore store;
@@ -46,8 +52,9 @@ class ContentStoreDeleteRefcountTest {
     /// and refuses the first chunk of the second.
     private void wire(long tierCapacity) {
         memoryTier = MemoryTier.memoryTier(tierCapacity);
+        tier = new DeleteObservingTier(memoryTier);
         metadataStore = MetadataStore.inMemoryMetadataStore("content-delete-refcount");
-        storage = StorageInstance.storageInstance("content-delete-refcount", List.of(memoryTier), metadataStore);
+        storage = StorageInstance.storageInstance("content-delete-refcount", List.of(tier), metadataStore);
         store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
         // Grace 0 is floored to 1ms by GarbageCollectorConfig; the sleep before each cycle is what lets
         // collection proceed (see ContentStoreReclamationTest).
@@ -291,6 +298,88 @@ class ContentStoreDeleteRefcountTest {
             assertGone(manifest);
             assertThat(chunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
             assertThat(existsAfterDelete).as("locator: the name is gone the moment delete returns").isFalse();
+        }
+    }
+
+    @Nested
+    class NoTierDeleteFromTheContentStore {
+        /// rev1411's P3, on this side of the boundary. `StorageInstance.delete(id)` deletes the tier bytes and
+        /// then removes the record unconditionally, so a deduplicating `put` landing DURING its tier delete
+        /// is credited on a record that is wiped a moment later and handed an id nobody can read. The
+        /// content store must never open that window: its delete is a release (an atomic decrement, nothing
+        /// for a put to race), and the only remover is the collector, whose compare-and-remove (#801) refuses
+        /// a record a put has touched. What is pinned is that no tier delete happens at all. Red under a
+        /// `delete` that goes back to `StorageInstance.delete`: one tier delete for the block.
+        @Test
+        void delete_directContent_issuesNoTierDelete() {
+            var id = putContent(NAME, SMALL);
+
+            deleteContent(NAME);
+            assertThat(tier.deletes()).as("the content store's delete must not delete from any tier").isZero();
+            assertThat(metadataStore.containsBlock(id)).as("the record is left for the collector, not removed here")
+                      .isTrue();
+        }
+
+        @Test
+        void delete_chunkedContent_issuesNoTierDelete() {
+            var content = generateContent(CHUNK_SIZE * 3 + 15, 1);
+            var chunks = chunkIdsOf(putContent(NAME, content));
+
+            deleteContent(NAME);
+            assertThat(tier.deletes()).as("neither the manifest nor a chunk is deleted by the content store").isZero();
+            assertThat(chunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
+        }
+    }
+
+    /// Delegating tier that counts deletes -- the seam rev1411's P3 hooked on `StorageInstance.delete`,
+    /// here to show the content store never reaches it.
+    private static final class DeleteObservingTier implements StorageTier {
+        private final StorageTier backing;
+        private final AtomicInteger deletes = new AtomicInteger();
+
+        DeleteObservingTier(StorageTier backing) {
+            this.backing = backing;
+        }
+
+        int deletes() {
+            return deletes.get();
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            deletes.incrementAndGet();
+
+            return backing.delete(id);
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return backing.get(id);
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            return backing.put(id, content);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return backing.exists(id);
+        }
+
+        @Override
+        public TierLevel level() {
+            return backing.level();
+        }
+
+        @Override
+        public long usedBytes() {
+            return backing.usedBytes();
+        }
+
+        @Override
+        public long maxBytes() {
+            return backing.maxBytes();
         }
     }
 }
