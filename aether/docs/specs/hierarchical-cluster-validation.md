@@ -338,3 +338,38 @@ reconnect, ordered replay, projection rebuild, declarative consumers and invocat
 The only subsequent runtime change records this validation; executable sources are unchanged.
 New-head CI must independently validate its generated merge revision. Historical green
 checkpoints above are not substituted for that evidence.
+
+## Lifecycle review corrections and integrated acceptance
+
+Lifecycle corrections `b5f9b527c` preserve delayed-readiness retirement exclusion, escalate and
+resume delayed evacuation, retain definitive no-create evidence across accounting conflicts,
+and remove stale placement only with provider-confirmed absence. The runtime review was
+integrated at `4040d0e95`; the subsequent `b26b54c0e` merge adds only the upstream validation ledger.
+
+The isolated six-step build passed (`/private/tmp/lifecycle-review-integrated-build.log`).
+Merged-head focused regressions passed **333 cases, zero failures/errors/skips**: deployment
+292 and node 41 (`/private/tmp/lifecycle-review-integrated-tests.log`). This includes actual
+assembled wrong-role ValuePut delivery, status exposure, worker assembly, wire assignments,
+shared last-slot reservation, lost refusal callbacks, restart, and the retirement gates.
+
+Three targeted source mutations compiled and failed through assertions: removing delayed-
+readiness protection, bypassing disabled auto-heal on departed deletion, and bypassing the
+explicit existing-identity refusal. Sources were restored byte-for-byte and all 15 selected
+cases passed afterward. The identity test pins refusal classification; a downstream reservation
+CAS remains an independent duplicate-dispatch fence. Results are recorded in
+`/private/tmp/lifecycle-review-mutation-results.json` and
+`/private/tmp/lifecycle-review-mutations-restored.log`.
+
+On executable head `b26b54c0e`, the following selector passed **30 live cases, zero failures,
+errors or skips, in 620 seconds**. Freshness checked all 70 runtime dependencies: 70 fresh,
+none stale or missing. No build/install ran during the live tests.
+
+```sh
+env -u HCLOUD_TOKEN ./forge.sh 'ClusterFormationTest,SliceInvocationTest,DeclarativeStreamConsumerTest,HierarchicalCoreRestartTest,HierarchicalCoreResizeTest,HierarchicalWorkerFormationTest,HierarchicalCapacityFallbackTest,HierarchicalCommunityMovementTest,HierarchicalMovementTakeoverTest,HierarchicalWorkerDrainTest'
+```
+
+Log: `/private/tmp/lifecycle-review-forge-final.log`. This adds merged lifecycle evidence to
+the upstream 50-case runtime matrix; it is not another execution of that entire matrix.
+The subsequent change only records these results. CI must validate the submitted merge
+revision independently. These local multi-node tests do not establish physical-WAN or
+10,000-node operating limits.
