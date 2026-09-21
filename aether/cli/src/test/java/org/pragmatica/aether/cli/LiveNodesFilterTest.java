@@ -54,6 +54,17 @@ class LiveNodesFilterTest {
         assertEquals(garbage, LiveNodesFilter.onlyAlive(garbage));
     }
 
+    /// #1033: an error envelope (`AetherCli.fetch` folding a failed send) carries no `nodes`
+    /// array. Rebuilding it into `{"nodes":[],…}` erased the error and turned "could not ask"
+    /// into "zero alive nodes" for `nodes live --only-alive`. It must pass through untouched so
+    /// the formatter can refuse it.
+    @Test
+    void onlyAlive_errorEnvelope_returnsOriginalUnchanged() {
+        var envelope = "{\"error\":\"Connection failed: Connection refused\"}";
+
+        assertEquals(envelope, LiveNodesFilter.onlyAlive(envelope));
+    }
+
     @Test
     void isReachable_trueField_readsTrue() {
         assertTrue(LiveNodesFilter.isReachable("{\"nodeId\":\"node-1\",\"address\":\"10.0.0.7:7100\",\"reachable\":true}"));
