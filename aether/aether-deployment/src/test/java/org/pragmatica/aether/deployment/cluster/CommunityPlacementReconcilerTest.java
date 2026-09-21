@@ -120,6 +120,29 @@ class CommunityPlacementReconcilerTest {
     }
 
     @Test
+    void stalePlacementsDoNotConsumeFleetCapacityWhenLedgerExists() {
+        initialize();
+        var ledger = AetherKey.CapacityLedgerKey.INSTANCE;
+        seed(new KVCommand.LeaderTransaction<>(ledger, "initialize-ledger", new LeaderValue(CORE, 1), List.of(),
+            List.of(new KVCommand.Mutation<>(ledger, Option.none(), Option.some(new AetherValue.CapacityLedgerValue(2, 1, true))))));
+        for (var name : List.of("dead-one", "dead-two")) {
+            seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(new NodeId(name)),
+                new AetherValue.NodePlacementValue("pool", Option.some("old"), name)));
+        }
+        var bounded = controller(3, 60_000);
+        bounded.reconcile().await().unwrap();
+        assertThat(store.get(new AetherKey.CommunityPlacementOperationKey("stable")).isPresent())
+            .as("two stale placement keys must not consume the one available fleet slot")
+            .isTrue();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.RESERVED);
+        bounded.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+        assertThat(effects).containsExactly("create");
+        assertThat(store.get(new AetherKey.NodePlacementKey(new NodeId("dead-one"))).isPresent()).isTrue();
+        assertThat(store.get(new AetherKey.NodePlacementKey(new NodeId("dead-two"))).isPresent()).isTrue();
+    }
+
+    @Test
     void missingAssignmentEscalatesOnceWithoutProviderEffects() {
         initialize();
         var unknown = new NodeId("unassigned");

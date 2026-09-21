@@ -29,11 +29,17 @@ class ReconciliationBatchTest {
         var visited = new CopyOnWriteArrayList<Integer>();
         var failed = new CopyOnWriteArrayList<Integer>();
         var stalled = Promise.<Unit>promise();
+        var failureObserved = Promise.<Unit>promise();
         ReconciliationBatch.reconcile(List.of(0, 1, 2, 3), 2, TimeSpan.timeSpan(30).millis(),
             item -> {
                 visited.add(item);
                 return item == 0 ? stalled : Promise.unitPromise();
-            }, (item, cause) -> failed.add(item)).await(TimeSpan.timeSpan(2).seconds()).unwrap();
+            }, (item, cause) -> {
+                failed.add(item);
+                failureObserved.succeed(Unit.unit());
+            }).await(TimeSpan.timeSpan(2).seconds()).unwrap();
+        // Failure observers may run independently of the recovered lane completion.
+        failureObserved.await(TimeSpan.timeSpan(2).seconds()).unwrap();
         assertThat(visited).containsExactlyInAnyOrder(0, 1, 2, 3);
         assertThat(failed).containsExactly(0);
     }
