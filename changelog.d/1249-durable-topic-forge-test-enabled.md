@@ -25,9 +25,17 @@
   `topic:` engine key) advanced by exactly one across the attempt — with `attachedSubscriptions`
   reading 0 on every node afterwards. Warm-ups that neither resolved nor could be observed are
   excluded and retried under a fresh id; a retry delivered by the listener after the attach used to
-  satisfy the old `>= 1`. A run in which no warm-up can be placed in the log before the attach skips
-  the arm with the readings in the message, since nothing in that run can speak about the backlog
-  read. The deterministic form of this arm is #739.
+  satisfy the old `>= 1`, and the gate publishes nothing further once an id is established, because
+  the gate's own retry append is what would drain a stranded backlog. The arm claims the
+  subscribe-time backlog read only in push mode — the owner's instance ACTIVE when the id is
+  established, and the group attached on the partition owner afterwards — since a non-owner assignee
+  polls through forwarded reads and reads the backlog on every tick regardless. A run in which either
+  is not observed skips the arm with the readings in its message (a `SETUP SHAPE` log line carries
+  them too), since nothing in that run can speak about the backlog read. Observed rate: 0 skips in
+  the 6 established runs of the final round (4 unmutated green, 2 with the kick removed red), but the
+  shape is a race the test observes rather than forces, and the class dies in setUp when an instance
+  stays LOADED/ACTIVATING in the cluster map for 4 minutes (#1117, 4 of 22 launches in the last two
+  rounds). The deterministic form of this arm is #739.
 - `StreamConsumerManager`'s guarantee doc said replay after an ungraceful move is bounded by the
   checkpoint cadence "≤1s of progress — 500ms for durable-topic groups"; the cadence is evaluated only
   when a delivery advances the cursor, so a lone trailing event is not checkpointed until the next
