@@ -140,6 +140,57 @@ class SharedDependencyLoaderTest {
         assertThat(sharedLoader.getURLs()).isEmpty();
     }
 
+    /// The check-to-add window: `checkCompatibility` sees nothing, the asynchronous locate runs, and
+    /// by the time `addArtifact` is reached another slice has put a different version there. This
+    /// repository performs that interleaving deterministically. Before #1184 the add logged a WARN,
+    /// returned success and slice-b ran against 1.0.0 — the same silent downgrade by a second route.
+    @Test
+    void infraConflictInsideTheCheckToAddWindow_stillFailsLoudly() {
+        var second = SharedDependencyLoader.processInfraDependencies(List.of(dependency("org.example:lib:2.0.0")),
+                                                                     sharedLoader,
+                                                                     racingRepository("org.example:lib:1.0.0", "slice-a"),
+                                                                     "slice-b")
+                                           .await();
+
+        assertConflict(second,
+                       "slice slice-b requires org.example:lib:2.0.0 but org.example:lib:1.0.0 is already loaded by slice-a");
+        assertLoaderHoldsOnly("1.0.0", "slice-a");
+    }
+
+    /// Same window on the `[shared]` path. The designed `[shared]` fallback (load the conflicting
+    /// version into the slice's loader) is decided by `checkCompatibility`, which ran before the race;
+    /// inside the window the add's refusal is now propagated as a loud failure. Before #1184 it was
+    /// swallowed twice: once by the discarded `Result`, and once more by the `orElse` after the add,
+    /// which would have turned any refusal into a runtime-provided registration — a no-op success.
+    @Test
+    void sharedConflictInsideTheCheckToAddWindow_failsLoudly_ratherThanRegisteringRuntimeProvided() {
+        var second = SharedDependencyLoader.processSharedDependencies(List.of(dependency("org.example:lib:2.0.0")),
+                                                                      sharedLoader,
+                                                                      racingRepository("org.example:lib:1.0.0", "slice-a"),
+                                                                      jarUrl("org.example:slice-b:1.0.0"),
+                                                                      "slice-b")
+                                           .await();
+
+        second.onSuccessRun(() -> Assertions.fail("accepted although a different version won the window; loader holds "
+                                                  + sharedLoader.getLoadedArtifacts()))
+              .onFailure(cause -> assertThat(cause.message()).contains("slice slice-b requires org.example:lib:2.0.0 but org.example:lib:1.0.0 is already loaded by slice-a"));
+        assertLoaderHoldsOnly("1.0.0", "slice-a");
+    }
+
+    /// Resolves the located artifact normally, but first lets `competitor` win the shared loader
+    /// with `competing` — the interleaving a concurrent slice load produces.
+    private Repository racingRepository(String competing, String competitor) {
+        return artifact -> {
+            var dep = dependency(competing);
+            var version = ((VersionPattern.Exact) dep.versionPattern()).version();
+
+            sharedLoader.addArtifact(dep.groupId(), dep.artifactId(), version, jarUrl(competing), competitor)
+                        .onFailureRun(Assertions::fail);
+
+            return repository.locate(artifact);
+        };
+    }
+
     private void assertConflict(Result<Unit> outcome, String expectedNaming) {
         outcome.onSuccessRun(() -> Assertions.fail("accepted although a different version is loaded; loader holds "
                                                    + sharedLoader.getLoadedArtifacts()
