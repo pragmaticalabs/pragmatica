@@ -37,7 +37,11 @@ public sealed interface StreamError extends Cause {
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
         STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
         PARTITION_NOT_LOCAL("Stream partition is not owned by this node"),
-        SEALING_BEHIND("Pending-seal cap reached on a partition with no WAL: storage has not accepted enough sealed segments for the ring to hand over more; append refused until sealing catches up");
+        SEALING_BEHIND("Pending-seal cap reached on a partition with no WAL: storage has not accepted enough sealed segments for the ring to hand over more; append refused until sealing catches up"),
+        /// A batch run the ring cannot hold as one contiguous unit because one of its events is larger
+        /// than the frozen ring can ever allocate (#1287). Internal routing signal: the publish path then
+        /// publishes that run's events one by one, so each gets the single-publish outcome.
+        RUN_DOES_NOT_FIT("Batch run holds an event larger than the ring can allocate");
         private final String message;
         General(String message) {
             this.message = message;
