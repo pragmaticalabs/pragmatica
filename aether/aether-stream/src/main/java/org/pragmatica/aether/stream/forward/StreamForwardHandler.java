@@ -275,9 +275,12 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         return tieredReader.fold(expired::promise, reader -> readTierThenRing(request, reader, expired));
     }
 
-    /// The tier is asked for no more than `[fromOffset, appended head]`; nothing sealed at `fromOffset` means the
-    /// ring's refusal was right (a seal that failed for good, a ring released under the read) and it is returned
-    /// as-is — an empty success would let the backfill take the no-source path off a partition that has history.
+    /// The tier is asked for no more than `[fromOffset, appended head]`. The bound is load-bearing, not a belt: the
+    /// `SegmentIndex` is never purged when a stream is removed, so a stream re-created under the same name starts
+    /// a fresh ring over the old incarnation's refs, and the tier can be contiguous past the new head (rev1417 F3).
+    /// Nothing sealed at `fromOffset` means the ring's refusal was right (a seal that failed for good, a ring
+    /// released under the read) and it is returned as-is — an empty success would let the backfill take the
+    /// no-source path off a partition that has history.
     private Promise<List<OffHeapRingBuffer.RawEvent>> readTierThenRing(ReadForward request,
                                                                        TieredStreamReader reader,
                                                                        Cause expired) {
@@ -310,12 +313,13 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                .or(-1L);
     }
 
-    /// FER (degrade forward) for the ring's share of the page, which starts right after the sealed prefix: a
-    /// ring failure there returns the prefix alone, because under sustained eviction the ring can wrap past that
-    /// offset between the tier read and this one, and failing the whole page would redrive the backfill from the
-    /// same cursor into the same race. A short page is applied, stays SYNCING (`INCOMPLETE_BACKFILL`) and redrives
-    /// from the advanced watermark, where the failure — in-flight seal, wrapped ring, corrupted ring — surfaces at
-    /// the exact offset it occurs.
+    /// The ring's share of the page starts right after the sealed prefix, and it is NOT best-effort: the pull
+    /// ends on a short page (`ForwardCatchupTransport.continueOrFinish`) and the backfill then promotes at the
+    /// page's own last offset (`PartitionBackfill.applyOwnerResponse`), so a page that succeeds must reach the
+    /// appended head — the invariant the ring-only read always had. A ring refusal for the next offset
+    /// therefore fails the whole page (rev1417 F1: a prefix-alone page promoted a replica CAUGHT_UP below the
+    /// head), as [SegmentError.SealInFlight] when the sealer still holds that offset, else as the ring's own
+    /// cause; the backfill redrives, and a later redrive reads a longer sealed prefix.
     private Promise<List<OffHeapRingBuffer.RawEvent>> appendRingTail(ReadForward request,
                                                                      List<OffHeapRingBuffer.RawEvent> sealed) {
         var remaining = request.maxEvents() - sealed.size();
@@ -324,14 +328,22 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
             return Promise.success(sealed);
         }
 
+        var next = sealed.getLast().offset() + 1;
+
         return partitionManager.readAppended(request.streamName(),
                                              request.partition(),
-                                             sealed.getLast().offset() + 1,
+                                             next,
                                              remaining)
                                .map(ring -> List.copyOf(Stream.concat(sealed.stream(),
                                                                       ring.stream()).toList()))
-                               .recover(_ -> sealed)
-                               .async();
+                               .fold(cause -> ringTailRefused(request, next, cause),
+                                     Promise::success);
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> ringTailRefused(ReadForward request, long next, Cause cause) {
+        return partitionManager.sealInFlight(request.streamName(), request.partition(), next)
+               ? new SegmentError.SealInFlight(request.streamName(), request.partition(), next).promise()
+               : cause.promise();
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(ReadForward request) {

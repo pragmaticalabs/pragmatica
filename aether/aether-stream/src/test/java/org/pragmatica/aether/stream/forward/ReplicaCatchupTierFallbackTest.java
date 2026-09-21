@@ -13,15 +13,16 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
+import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
-import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSink;
@@ -31,6 +32,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
@@ -51,6 +53,8 @@ import static org.pragmatica.aether.stream.replication.PartitionBackfill.partiti
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
+import static org.pragmatica.aether.stream.replication.ReplicationState.CAUGHT_UP;
+import static org.pragmatica.aether.stream.replication.ReplicationState.SYNCING;
 import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler.replicationReceiveHandler;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
@@ -61,7 +65,10 @@ import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStre
 /// forward handler answered the catch-up read ring-only, so a replica whose catch-up started below the ring
 /// tail got `CursorExpired` on every redrive, never acked, and the partition's visible position never moved again.
 ///
-/// The wire is in-process: the replacement peer's production `PartitionBackfill` pulls through the production
+/// The wire is in-process: the replacement peer's production `PartitionBackfill` — production-shaped: the HRW
+/// owner known, self's watermark read from the replica's own ring, its acks delivered to the owner's replication
+/// manager as the wire would (never a hand-seated owner row: `backfillFromOwner` promotes at the page's own last
+/// offset, the path a registry-sourced fixture cannot see — rev1417 F1/F2) — pulls through the production
 /// `ForwardCatchupTransport` over a `StreamForwardClient` whose transport lands each `ReadForward` on the owner's
 /// `DefaultStreamForwardHandler`, whose response lands back on the client. The owner's tier is the real sealer
 /// over an in-memory storage tier and a `SegmentIndex`, the same fixture as `TieredReadVisibleBoundTest`.
@@ -90,6 +97,7 @@ class ReplicaCatchupTierFallbackTest {
     private StreamPartitionManager replica;
     private StreamForwardHandler handler;
     private StreamForwardClient client;
+    private final List<ReplicationMessage.ReplicateAck> acksToOwner = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -126,8 +134,9 @@ class ReplicaCatchupTierFallbackTest {
     }
 
     /// The ticket's scenario end to end. Today the backfill dies at `CursorExpired(0, 1)`; with the fix it applies
-    /// `[0, 2]`, the replacement peer's row reaches the owner's head, one ack now satisfies `min-sync`, the next
-    /// live batch lands contiguously and its ack moves the owner's visible position — which had been stuck at −1.
+    /// `[0, 2]`, promotes at the owner's head and acks it over the wire — one ack now satisfies `min-sync`, so the
+    /// owner's visible position, stuck at −1, moves to 2; the next live batch lands contiguously and its ack moves
+    /// it to 3.
     @Test
     void replacementReplica_catchesUpPastTheEvictedPrefix_fromTheOwnersTier() {
         publish(3);
@@ -135,8 +144,7 @@ class ReplicaCatchupTierFallbackTest {
         assertThat(ownerRing().tailOffset()).as("offset 0 left the owner's ring").isEqualTo(1L);
         assertThat(ownerRing().visibleOffset()).as("nothing acknowledged yet").isEqualTo(-1L);
 
-        registry.updateWatermark(STREAM, PARTITION, OWNER, ownerRing().headOffset(), ReplicationState.CAUGHT_UP);
-        var backfill = partitionBackfill(registry, replica::appendRecovered, forwardCatchupTransport(client, 100), NEW_PEER);
+        var backfill = productionShapedBackfill();
 
         var applied = backfill.backfill(STREAM, PARTITION)
                               .await()
@@ -148,8 +156,11 @@ class ReplicaCatchupTierFallbackTest {
         assertThat(replicaRingOffsets(1)).as("the replica's ring holds the owner's ring").containsExactly(1L, 2L);
         awaitCondition(() -> replicaIndex.lastSealedOffset(STREAM, PARTITION) >= 0);
         assertThat(replicaIndex.lastSealedOffset(STREAM, PARTITION)).as("the replica's own tier holds the evicted prefix").isEqualTo(0L);
-        assertThat(confirmed(NEW_PEER)).as("newPeerConfirmed").isEqualTo(2L);
+        assertThat(acksToOwner).as("the backfill acked the owner over the wire").extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(2L);
+        assertThat(row(NEW_PEER).state()).isEqualTo(CAUGHT_UP);
+        assertThat(row(NEW_PEER).confirmedOffset()).as("newPeerConfirmed").isEqualTo(2L);
         assertThat(replication.replicatedThrough(STREAM, PARTITION, 1)).as("replicatedThrough(minAcks = 1)").isEqualTo(2L);
+        assertThat(ownerRing().visibleOffset()).as("the partition's visible position advances on the backfill ack").isEqualTo(2L);
 
         var acks = new CopyOnWriteArrayList<ReplicationMessage>();
         var gaps = new CopyOnWriteArrayList<String>();
@@ -168,7 +179,7 @@ class ReplicaCatchupTierFallbackTest {
             .map(ReplicationMessage.ReplicateAck.class::cast)
             .forEach(replication::handleAck);
         assertThat(replication.replicatedThrough(STREAM, PARTITION, 1)).isEqualTo(3L);
-        assertThat(ownerRing().visibleOffset()).as("the partition's visible position advances again").isEqualTo(3L);
+        assertThat(ownerRing().visibleOffset()).as("and again on the live ack").isEqualTo(3L);
     }
 
     /// The bound: a catch-up read never returns past the owner's APPENDED head, whatever the tier holds. The tier is
@@ -210,12 +221,11 @@ class ReplicaCatchupTierFallbackTest {
         assertThat(catchupRead(0, 10)).containsExactly(0L, 1L, 2L);
     }
 
-    /// The ring's share of the page after the sealed prefix is best-effort: here offset 1's seal is still in
-    /// flight while offset 0 is sealed, so the tier serves `[0]` and the ring refuses 1 — the page is the prefix
-    /// alone, the backfill applies it and redrives from 1, where the in-flight seal is then reported. Failing the
-    /// whole page would redrive from 0 into the same state.
+    /// A page that succeeds is at the appended head: here offset 1's seal is still in flight while 0 is sealed, so the
+    /// tier serves `[0]` and the ring refuses 1 — the page FAILS (as `SealInFlight` for 1), never `[0]` alone. Once
+    /// the seal lands the same read is served whole.
     @Test
-    void catchupRead_returnsTheSealedPrefix_whenTheRingRefusesTheRest() {
+    void catchupRead_failsThePage_whenTheRingRefusesTheRest() {
         publish(3);
         awaitSealedThrough(0);
         sink.hold();
@@ -224,16 +234,52 @@ class ReplicaCatchupTierFallbackTest {
         assertThat(ownerRing().tailOffset()).isEqualTo(2L);
         assertThat(ownerRing().headOffset()).isEqualTo(3L);
 
-        assertThat(catchupRead(0, 10)).as("the sealed prefix alone").containsExactly(0L);
-
-        var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 1, 10).await();
+        var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Offset 1 of orders/0 is being sealed to storage; retry the read");
 
         sink.release();
         awaitSealedThrough(1);
 
-        assertThat(catchupRead(1, 10)).containsExactly(1L, 2L, 3L);
+        assertThat(catchupRead(0, 10)).containsExactly(0L, 1L, 2L, 3L);
+    }
+
+    /// Why the page must fail rather than shorten (rev1417 F1): on the production path the backfill promotes at
+    /// the page's own last offset (`backfillFromOwner` → `applyOwnerResponse` passes no source watermark), so a
+    /// prefix-alone page `[0]` would promote the replica CAUGHT_UP at 0 under an owner head of 3 and ack 0 — a
+    /// false-ready row, repaired only by a later live-batch gap or the reverify interval. With the refusal the
+    /// backfill fails, the row stays SYNCING at −1, nothing is acked, and the redrive after the seal lands catches
+    /// up whole.
+    @Test
+    void backfill_staysSyncing_whileTheRingRefusesTheRest_thenCatchesUpWhole() {
+        publish(3);
+        awaitSealedThrough(0);
+        sink.hold();
+        publish(1);
+        awaitCondition(() -> sink.held() == 1);
+        var backfill = productionShapedBackfill();
+
+        var refused = backfill.backfill(STREAM, PARTITION).await();
+
+        assertThat(failureMessage(refused)).contains("Offset 1 of orders/0 is being sealed to storage; retry the read");
+        assertThat(row(NEW_PEER).state()).as("no false-ready CAUGHT_UP below the head").isEqualTo(SYNCING);
+        assertThat(row(NEW_PEER).confirmedOffset()).isEqualTo(-1L);
+        assertThat(acksToOwner).isEmpty();
+        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("nothing applied from a failed page").isEqualTo(0L);
+
+        sink.release();
+        awaitSealedThrough(1);
+
+        var applied = backfill.backfill(STREAM, PARTITION)
+                              .await()
+                              .onFailure(cause -> fail("redrive failed: " + cause.message()))
+                              .or(-1L);
+
+        assertThat(applied).isEqualTo(4L);
+        assertThat(row(NEW_PEER).state()).isEqualTo(CAUGHT_UP);
+        assertThat(row(NEW_PEER).confirmedOffset()).isEqualTo(3L);
+        assertThat(acksToOwner).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(3L);
+        assertThat(replication.replicatedThrough(STREAM, PARTITION, 1)).isEqualTo(3L);
     }
 
     /// A prefix this owner's tier does not hold (a sink that lost it) is still `CursorExpired`: an empty success
@@ -270,6 +316,37 @@ class ReplicaCatchupTierFallbackTest {
         assertThat(failureMessage(refused)).contains("Cursor at offset 0 has expired, oldest available is 1");
     }
 
+    /// Production shape (`AetherNode.assembleNode`): the HRW owner is known (members = `[OWNER]`), the probe answers
+    /// the owner's real head, self's watermark is the replica's own ring head, and every ack the backfill sends to
+    /// the owner reaches the owner's replication manager — so the owner-side assertions come from the ack path.
+    private PartitionBackfill productionShapedBackfill() {
+        return partitionBackfill(registry,
+                                 replica::appendRecovered,
+                                 forwardCatchupTransport(client, 100),
+                                 this::deliverAckToOwner,
+                                 (_, _, _) -> Promise.success(ownerRing().headOffset()),
+                                 (stream, partition) -> replica.nextExpectedOffset(stream, partition) - 1,
+                                 NEW_PEER,
+                                 TimeSpan.timeSpan(0).millis(),
+                                 () -> List.of(OWNER),
+                                 CommittedStreamOwnerSource.none());
+    }
+
+    private void deliverAckToOwner(NodeId target, ReplicationMessage message) {
+        var ack = (ReplicationMessage.ReplicateAck) message;
+
+        acksToOwner.add(ack);
+        replication.handleAck(ack);
+    }
+
+    private ReplicaDescriptor row(NodeId node) {
+        return registry.replicasFor(STREAM, PARTITION)
+                       .stream()
+                       .filter(descriptor -> descriptor.nodeId().equals(node))
+                       .findFirst()
+                       .orElseThrow();
+    }
+
     private StreamForwardClient clientAgainst(StreamForwardHandler ownerHandler) {
         handler = ownerHandler;
 
@@ -303,15 +380,6 @@ class ReplicaCatchupTierFallbackTest {
                       .stream()
                       .map(OffHeapRingBuffer.RawEvent::offset)
                       .toList();
-    }
-
-    private long confirmed(NodeId node) {
-        return registry.replicasFor(STREAM, PARTITION)
-                       .stream()
-                       .filter(descriptor -> descriptor.nodeId().equals(node))
-                       .mapToLong(descriptor -> descriptor.confirmedOffset())
-                       .findFirst()
-                       .orElse(-99L);
     }
 
     private void publish(int count) {
