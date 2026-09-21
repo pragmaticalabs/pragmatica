@@ -27,6 +27,9 @@ separate cluster-supervision-spec; this batch supplies its topology and observat
 ## 2. Invariants
 
 H01. Workers and unknown peers contribute zero votes or synchronization quorum evidence.
+[limit: crash-fault-certificates] This assumes crash-fault participants and genuine certificate
+history. Certificates contain identity lists, not Byzantine signatures; fabricated history is
+outside this model.
 Workers may obtain state but never become voters through activation or a capacity deficit.
 
 H02. Applied consensus history is ordered and never applied twice, including after in-memory
@@ -104,7 +107,7 @@ protocol traffic from committed state delivery to observers.
 
 Consensus application keeps an applied progress boundary independent of garbage-collected
 phase objects. Delayed decisions below progress are ignored. [limit: ahead-decision-buffer]
-Ahead decisions are buffered up to 256 entries per engine; overflow evicts the oldest buffered
+Unchanged from rc4, ahead decisions are buffered up to 256 entries per engine; overflow evicts the oldest buffered
 entry and requests authoritative synchronization rather than applying across the gap. Replay uses
 the same checks. Snapshot installation
 establishes the new boundary before replay. Observer activation follows the same installation

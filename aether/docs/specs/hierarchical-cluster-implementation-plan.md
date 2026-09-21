@@ -21,7 +21,7 @@ provider adapters use recorded/native response fixtures and deterministic fake s
 
 ## Reviewable PR sequence
 
-The packages below describe implementation responsibilities, not independent merge boundaries.
+The packages below attribute work to packages, not independent merge boundaries.
 Deliver three PRs, each targeting `release-1.0.0-rc4`:
 
 1. **Contracts and acceptance plan.** The end-to-end hierarchy, Rabia, metrics, scoped metadata,

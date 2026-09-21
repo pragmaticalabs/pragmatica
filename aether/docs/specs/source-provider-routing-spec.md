@@ -58,8 +58,8 @@ that profile identity. The runtime operation digest also includes the resolved p
 credentials and provider configuration. Bound provision, lookup and termination resolve and verify
 that digest from one immutable configuration snapshot before selecting a provider, preventing a
 check/use account change. Digests contain no plaintext credentials. Runtime source identity
-changes must be refused while existing placements or operations reference the old binding; the
-current supported management route is stricter and rejects source mutation. Use a new source name
+changes must be refused while existing placements or operations reference the old binding; [unverified: source-mutation-management] the management route must enforce this constraint;
+its current source-mutation rejection has not been established by a named test. Use a new source name
 for account or provider movement. Secret rotation must preserve the account denoted by the source;
 changing the referenced environment's account behind the same name violates this contract.
 
