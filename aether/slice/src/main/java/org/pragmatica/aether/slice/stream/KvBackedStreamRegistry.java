@@ -19,6 +19,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +58,7 @@ import org.slf4j.LoggerFactory;
 /// consensus command instead of two — see [StreamRegistryValue] for the rationale.
 public final class KvBackedStreamRegistry implements StreamRegistry {
     private static final Logger log = LoggerFactory.getLogger(KvBackedStreamRegistry.class);
+    private static final TimeSpan REGISTER_TIMEOUT = TimeSpan.timeSpan(10).seconds();
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> kvStore;
@@ -99,18 +101,23 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
                                                                      StreamRegistryValue.streamRegistryValue(entry.decrementRef())));
     }
 
+    /// Awaits the consensus commit (#968): the entry is registered only once the put commits, so a
+    /// refused or timed-out apply is THIS call's failure, never a logged-and-dropped one that leaves
+    /// the caller reporting `"created"` for an entry no read ever finds. Bounded by
+    /// [#REGISTER_TIMEOUT], the same bound `StreamPartitionManager` puts on the sibling
+    /// `StreamConfigKey` commit that precedes this one on the create path.
     @Override
     public Result<StreamRegistryEntry> register(StreamRegistryEntry entry) {
         if (readEntry(entry.address()).isPresent()) {
             return StreamRegistryError.General.ALREADY_REGISTERED.result();
         }
 
-        cluster.apply(List.of(registerCommand(entry)))
-               .onFailure(cause -> log.warn("Stream registry register({}) consensus apply failed: {}",
-                                            entry.address().asString(),
-                                            cause.message()));
-
-        return Result.success(entry);
+        return cluster.apply(List.of(registerCommand(entry)))
+                      .await(REGISTER_TIMEOUT)
+                      .onFailure(cause -> log.warn("Stream registry register({}) consensus apply failed: {}",
+                                                   entry.address().asString(),
+                                                   cause.message()))
+                      .map(_ -> entry);
     }
 
     @Override

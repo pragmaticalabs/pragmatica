@@ -22,15 +22,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
-/// The engine keys a `system`-namespace stream by its BARE NAME — the shape the legacy flat
-/// `StreamRoutes#createStream` mints it under ([StreamManager#systemAddress]). `StreamApiRoutes`'s
-/// catalog-form publish and delete resolve their engine key via [StreamManager#engineKey], which
-/// reduces a `system`-namespace address back to that same bare name. This pins the property those
-/// two resolutions depend on: CREATE (legacy, bare-name mint) -> PUBLISH (catalog-form,
-/// engineKey-resolved) -> DELETE (catalog-form, engineKey-resolved) must all agree on ONE engine
-/// key, so a rename or addressing change on either side cannot silently split the cycle across two
-/// different keys — the defect `StreamApiRoutesDeleteStreamTest#deleteStream_systemNamespace_resolvesEngineKeyToBareName`
+/// The engine keys a `system`-namespace stream by its BARE NAME ([StreamManager#systemAddress]).
+/// `StreamApiRoutes`'s catalog-form create, publish and delete all resolve their engine key via
+/// [StreamManager#engineKey], which reduces a `system`-namespace address to that bare name. This
+/// pins the property those resolutions depend on: CREATE -> PUBLISH -> DELETE (all catalog-form,
+/// engineKey-resolved) must agree on ONE engine key, so a rename or addressing change on any side
+/// cannot silently split the cycle across two different keys — the defect
+/// `StreamApiRoutesDeleteStreamTest#deleteStream_systemNamespace_resolvesEngineKeyToBareName`
 /// already guards for DELETE alone, extended here across the full CREATE-PUBLISH-DELETE cycle.
+/// (#968: the CREATE leg used the legacy body-carried route with the bare name; that route now
+/// refuses bare names — and, by the #1282 order pinned in `StreamRoutesReservedPrefixTest`, the
+/// `system:` spelling — so the cycle is driven through the catalog-form create.)
 class StreamRoutesEngineKeyRoundTripTest {
     private static final String STREAM_NAME = "diagnostics";
     private static final String VERSION = "1.0.0";
@@ -59,16 +61,19 @@ class StreamRoutesEngineKeyRoundTripTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
         try {
             Supplier<ManageableNode> nodeSupplier = () -> nodeWith(manager);
-            var createRoutes = StreamRoutes.streamRoutes(nodeSupplier, null, null);
             var apiRoutes = StreamApiRoutes.streamApiRoutes(nodeSupplier,
                                                              StreamNamespacesService.inMemory(),
                                                              ConsumerGroupCoordinator.noOp(),
                                                              ConsumerGroupRegistry.consumerGroupRegistry());
 
-            // CREATE: legacy flat mint, keyed by the bare name.
-            createRoutes.createStream(new StreamRoutes.StreamCreateRequest(STREAM_NAME, 1))
-                        .onFailure(cause -> fail("stream create must succeed: " + cause))
-                        .onSuccess(response -> assertThat(response.status()).isEqualTo("created"));
+            // CREATE: catalog-form `system`-namespace address, minted under the bare-name engine key.
+            apiRoutes.createStream(StreamManager.SYSTEM_NAMESPACE,
+                                   STREAM_NAME,
+                                   VERSION,
+                                   new StreamApiRoutes.CreateRequest(1))
+                     .onFailure(cause -> fail("stream create must succeed: " + cause))
+                     .onSuccess(response -> assertThat(response.status()).isEqualTo("created"));
+            assertThat(manager.streamInfo(STREAM_NAME).isPresent()).as("minted under the bare-name engine key").isTrue();
 
             // PUBLISH: catalog-form `system`-namespace address must resolve to the SAME bare-name
             // engine key CREATE minted, not a shadow stream materialized under a different key.

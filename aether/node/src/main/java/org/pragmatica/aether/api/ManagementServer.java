@@ -1585,7 +1585,7 @@ class ManagementServerImpl implements ManagementServer {
     /// which condition 1 rules out (identity resolution must reuse the dispatch path's
     /// canonicalization, not grow a private one). The honest consequence: CREATE's protection is
     /// **not pre-auth**. It is a separate, handler-level guard —
-    /// `StreamRoutes#createFreshStream` — that runs unconditionally as the first statement of the
+    /// `StreamApiRoutes#createStream(StreamCreateRequest)` (moved from `StreamRoutes` by #968) — that runs unconditionally as the first statement of the
     /// sole method that ever mints a stream, before any state change, with no early-return path
     /// around it. That guard exists in addition to (not instead of) `createStreamWithConfig`'s
     /// idempotent create-if-absent behavior: idempotency alone only protects a name collision

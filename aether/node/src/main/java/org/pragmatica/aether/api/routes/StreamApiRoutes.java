@@ -35,6 +35,8 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
@@ -60,6 +62,17 @@ public final class StreamApiRoutes implements RouteSource {
     private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
     private static final Cause GROUP_NOT_FOUND = Causes.cause("Consumer group not found");
     private static final int DEFAULT_PARTITIONS = 4;
+
+    /// #968: the body-carried create's refusals all carry a status. `Missing stream name` used to be
+    /// a bare `Causes.cause`, which `ProblemResponses` renders as 500 — a client error reported as a
+    /// server failure. The system-name refusal carries the status the pre-auth path gate answers
+    /// with (405, see `ManagementServer.rejectSystemStreamWrite`) for the same reason (#742 review).
+    private static final Cause MISSING_STREAM_NAME = HttpError.httpError(HttpStatus.BAD_REQUEST,
+                                                                         Causes.cause("Missing stream name"));
+
+    private static final Cause SYSTEM_STREAM_NAME_FORBIDDEN = HttpError.httpError(HttpStatus.METHOD_NOT_ALLOWED,
+                                                                                  Causes.cause("Cannot create a stream using a reserved system stream name"));
+
     /// #524: pre-fix hardwired publish target, preserved as the explicit default for an omitted
     /// `partition` field so existing callers see unchanged behavior.
     private static final int DEFAULT_PUBLISH_PARTITION = 0;
@@ -174,6 +187,11 @@ public final class StreamApiRoutes implements RouteSource {
     /// #1224: `partitions` is optional (absent/`null` on the wire keeps [#DEFAULT_PARTITIONS], the
     /// same default `aether streams create`'s legacy body-carried form used).
     public record CreateRequest(Integer partitions) {}
+
+    /// Legacy body-carried `POST /streams` (#968): `name` is a catalog address `namespace:stream:version`.
+    public record StreamCreateRequest(String name, Integer partitions) {}
+
+    public record StreamCreateResponse(String name, int partitions, String status) {}
 
     public record CreateResponse(String address, String status) {}
 
@@ -326,6 +344,14 @@ public final class StreamApiRoutes implements RouteSource {
                         .asJson(),
 
         // ---------- Write routes (OPERATOR_AND_ABOVE for /api/streams) ----------
+        // #968: the legacy body-carried create, moved here from StreamRoutes so it shares the
+        // catalog-registering chain below (createAtAddress) instead of minting rings under a name no
+        // catalog read could ever find. Same 0-path-param POST bucket it always had.
+        ManagementRoutes.<StreamCreateResponse> route(ManagementRoute.STREAM_CREATE)
+                        .withBody(StreamCreateRequest.class)
+                        .toResult(this::createStream)
+                        .asJson(),
+
         // #1224: catalog-addressed create — registers the catalog entry AND materializes the rings,
         // the two writes the old body-carried STREAM_CREATE only did the second of (never appeared in
         // `streams list`, which reads the registry). Same bare 3-path-param shape as STREAMS_DELETE;
@@ -634,7 +660,7 @@ public final class StreamApiRoutes implements RouteSource {
     private static final int MAX_EVENTS_PER_PAGE = 1000;
 
     /// Package-visible for direct unit coverage of the [StreamManager#engineKey] round-trip
-    /// property alongside [StreamRoutes#createStream] and [#deleteStream] — the entry point a real
+    /// property alongside [#createStream(StreamCreateRequest)] and [#deleteStream] — the entry point a real
     /// `POST /streams/{namespace}/{stream}/{version}/events` request also goes through.
     Promise<PublishResponse> publishEvent(String namespace, String stream, String version, PublishRequest request) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
@@ -823,6 +849,65 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                            cause.message()));
     }
 
+    /// #968: `POST /streams` with a body-carried `name`. Before this the handler (in `StreamRoutes`)
+    /// only called [StreamPartitionManager#createStream] — rings materialized, `StreamConfigKey`
+    /// committed — and answered `"created"` while never writing the [StreamRegistry] catalog that
+    /// `GET /streams`, `/streams/namespaces` and every catalog-addressed read consult. #1229 fixed
+    /// that for the path-addressed [#createStream(String, String, String, CreateRequest)] only. Now
+    /// the body name is parsed as the catalog address `namespace:stream:version` and both routes run
+    /// the same [#createAtAddress] chain, so `"created"` means: config committed AND catalog entry
+    /// committed, both awaited. A bare name has no catalog address — nothing could list, read or
+    /// delete the ring it would mint — so it is refused with `400` naming the form to retype (the
+    /// #1044 CLI shape), never answered `"created"`.
+    ///
+    /// Guard order is unchanged from the `StreamRoutes` handler and pinned by
+    /// `StreamRoutesCreateSystemStreamTest` / `StreamRoutesReservedPrefixTest`: the enumerated
+    /// system-stream refusal (405) and the reserved-kind-prefix refusal (400) run on the RAW name,
+    /// before parsing and before the existence check (#1282: no existence oracle for internally
+    /// provisioned streams). Package-visible for direct unit coverage.
+    Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
+        return Option.option(request.name())
+                     .toResult(MISSING_STREAM_NAME)
+                     .flatMap(StreamApiRoutes::requireCreatableName)
+                     .flatMap(StreamApiRoutes::catalogAddressOf)
+                     .flatMap(addr -> createAtAddress(addr,
+                                                      new CreateRequest(request.partitions())).map(response -> legacyResponse(request,
+                                                                                                                              addr,
+                                                                                                                              response)));
+    }
+
+    private static Result<String> requireCreatableName(String name) {
+        return ReservedStreamNames.namesSystemStream(name)
+               ? Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN)
+               : ReservedStreamNames.requireUnreserved(name);
+    }
+
+    private static Result<ResourceAddress> catalogAddressOf(String name) {
+        return ResourceAddress.resourceAddress(name).mapError(_ -> unaddressableName(name));
+    }
+
+    private static Cause unaddressableName(String name) {
+        return HttpError.httpError(HttpStatus.BAD_REQUEST,
+                                   Causes.cause("'" + name
+                                               + "' is not a catalog address, so a stream created under it could never be "
+                                               + "listed, read or deleted. Use the full namespace:stream:version — e.g. "
+                                               + "'<your-namespace>:" + name
+                                               + ":1.0.0'."));
+    }
+
+    /// The legacy response shape: `partitions` reports the ring's ACTUAL count — on `"exists"` the
+    /// count the stream already has, not the one this request asked for (ticket acceptance); on
+    /// `"created"` the mint just ran, so the two agree.
+    private StreamCreateResponse legacyResponse(StreamCreateRequest request,
+                                                ResourceAddress addr,
+                                                CreateResponse response) {
+        var partitions = streamManager().streamInfo(StreamManager.engineKey(addr))
+                                      .map(StreamPartitionManager.StreamInfo::partitions)
+                                      .or(() -> Option.option(request.partitions()).or(DEFAULT_PARTITIONS));
+
+        return new StreamCreateResponse(request.name(), partitions, response.status());
+    }
+
     /// #1224: `aether stream create` / `POST /streams/{namespace}/{stream}/{version}` — the
     /// catalog-addressed replacement for the legacy body-carried `STREAM_CREATE`, which only
     /// materialized rings via [StreamPartitionManager#createStream] and never touched
@@ -836,9 +921,10 @@ public final class StreamApiRoutes implements RouteSource {
         return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> createAtAddress(addr, request));
     }
 
-    /// Idempotent on an already-registered address (mirrors [StreamRoutes#createStreamWithConfig]'s
-    /// check-exists-first shape): a repeat `create` for the same address reports `"exists"` rather
-    /// than re-attempting registration and hitting [StreamRegistry.StreamRegistryError.General#ALREADY_REGISTERED].
+    /// Idempotent on an already-registered address (check-exists-first; shared with the body-carried
+    /// [#createStream(StreamCreateRequest)] since #968): a repeat `create` for the same address reports
+    /// `"exists"` rather than re-attempting registration and hitting
+    /// [StreamRegistry.StreamRegistryError.General#ALREADY_REGISTERED].
     ///
     /// #1282: the reserved-kind refusal runs BEFORE the catalog lookup, so an existing reserved address is
     /// refused rather than reported `"exists"` — no existence oracle for internally provisioned streams.
