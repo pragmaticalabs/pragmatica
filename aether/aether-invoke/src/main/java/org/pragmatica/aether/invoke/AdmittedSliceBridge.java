@@ -11,6 +11,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -26,6 +27,12 @@ record AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> a
     public Promise<byte[]> invoke(String methodName, byte[] input) {
         return admission.get()
                         .execute(() -> delegate.invoke(methodName, input));
+    }
+
+    @Override
+    public Promise<byte[]> invokeWithContext(String methodName, byte[] input, MessageContext context) {
+        return admission.get()
+                        .execute(() -> delegate.invokeWithContext(methodName, input, context));
     }
 
     /// QUIC response deadlines bound the reply, not the application execution. Both execution

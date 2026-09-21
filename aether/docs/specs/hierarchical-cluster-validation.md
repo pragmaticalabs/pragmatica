@@ -181,3 +181,35 @@ env -u HCLOUD_TOKEN mvn -T1 -pl aether/environment/azure,aether/environment/aws,
 Log: `/private/tmp/hierarchy-review-all-compute-providers.log`. Because the provider dependency
 failure prevented the earlier CI run from reaching node tests, the complete node module is
 also exercised locally; its final result belongs to the PR and merge-head CI evidence.
+
+## Contextual admission and node-fixture integration
+
+The first complete node run reached 1,697 cases and exposed 22 failures: 19 boot cases whose
+shared data-tier fault injection also blocked the newly mandatory durable control directory,
+one alert test expecting immediate resampling inside the collector's one-second observation
+interval, and two durable-topic cases. The latter identified a production omission:
+`AdmittedSliceBridge` did not forward `invokeWithContext`, so legitimate contextual subscribers
+received `CONTEXT_NOT_SUPPORTED` and entered dead-letter handling. The wrapper now delegates
+contextual calls through the same admission gate. A dedicated regression preserves the exact
+context and bytes, rejects a second call during drain, and retains execution through caller
+cancellation. The existing real stream delivery/retry tests also pass.
+
+Boot fixtures now configure a writable per-test control directory while retaining their
+intentionally unwritable data-tier paths. The alert test polls for the next origin-preserving
+sample within a bounded `TimeSpan`; its breach and clear assertions are unchanged.
+
+The entire invocation module passed **311 tests with zero failures/errors/skips**:
+
+```sh
+env -u HCLOUD_TOKEN mvn -T1 -pl aether/aether-invoke test
+```
+
+Log: `/private/tmp/hierarchy-review-invoke-full2.log`. All affected node paths then passed
+**31 cases with zero failures/errors/skips**:
+
+```sh
+env -u HCLOUD_TOKEN mvn -T1 -pl aether/node test -Dtest='EntityCheckpointLagMetricTest,AetherNode*BootTest,AetherNodeStorageShutdownTest,DeferredStartRedriveWiringBootTest,ScheduledTaskDrainWiringBootTest,SwimFaultyReArmBootTest,SwimHintInstallBootTest,WorkerJoinCtmWiringBootTest,WorkerRosterPruneBootTest,DurableTopicContextDeliveryTest'
+```
+
+Log: `/private/tmp/hierarchy-review-node-corrections.log`. The complete node suite is rerun after
+these changes; its pre-existing disabled manual observability benchmark is not runtime evidence.

@@ -44,6 +44,44 @@ class AdmittedSliceBridgeTest {
     }
 
     @Test
+    void contextualInvocationPreservesContextAndRetainsAdmissionThroughCancellation() {
+        var execution = Promise.<byte[]>promise();
+        var gate = new Gate();
+        var calls = new AtomicInteger();
+        var context = org.pragmatica.aether.slice.topic.MessageContext.messageContext("message-id", "orders", 1, 7L);
+        var input = new byte[]{9};
+        var delegate = new SliceBridge() {
+            public Promise<byte[]> invoke(String method, byte[] bytes) { return BridgeError.CONTEXT_NOT_SUPPORTED.promise(); }
+            public Promise<byte[]> invokeWithContext(String method, byte[] bytes,
+                org.pragmatica.aether.slice.topic.MessageContext receivedContext) {
+                assertThat(method).isEqualTo("call");
+                assertThat(bytes).isSameAs(input);
+                assertThat(receivedContext).isSameAs(context);
+                calls.incrementAndGet();
+                return execution;
+            }
+            public Promise<Unit> start() { return Promise.unitPromise(); }
+            public Promise<Unit> stop() { return Promise.unitPromise(); }
+            public ClassLoader classLoader() { return getClass().getClassLoader(); }
+            public List<String> methodNames() { return List.of("call"); }
+        };
+        var bridge = new AdmittedSliceBridge(delegate, () -> gate);
+        var result = bridge.invokeWithContext("call", input, context);
+        assertThat(gate.count.get()).isEqualTo(1);
+        gate.open.set(false);
+        bridge.invokeWithContext("call", input, context).await(TimeSpan.timeSpan(1).seconds())
+            .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("closed admission must refuse context delivery"))
+            .onFailure(cause -> assertThat(cause).isEqualTo(InvocationAdmission.Error.DRAINING));
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(result.cancel().await(TimeSpan.timeSpan(1).seconds()).isFailure()).isTrue();
+        assertThat(execution.isResolved()).isFalse();
+        assertThat(gate.count.get()).isEqualTo(1);
+        execution.succeed(new byte[]{1});
+        assertThat(gate.drained.await(TimeSpan.timeSpan(1).seconds()).isSuccess()).isTrue();
+        assertThat(gate.count.get()).isZero();
+    }
+
+    @Test
     void callerTimeout_doesNotCompleteApplicationOrReleaseDrainCount() {
         assertCallerAbandonmentRetainsExecution(result -> result.timeout(TimeSpan.timeSpan(10).millis()));
     }
