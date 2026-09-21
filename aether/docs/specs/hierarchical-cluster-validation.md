@@ -213,3 +213,34 @@ env -u HCLOUD_TOKEN mvn -T1 -pl aether/node test -Dtest='EntityCheckpointLagMetr
 
 Log: `/private/tmp/hierarchy-review-node-corrections.log`. The complete node suite is rerun after
 these changes; its pre-existing disabled manual observability benchmark is not runtime evidence.
+
+## Protocol-emission synchronization in the consensus fixture
+
+At `bc0c6aa22`, repository CI exposed a test-only race: `handleNewBatch` queues phase start
+behind a single executor barrier, so the conflicting-proposal fixture sometimes inspected
+only two emitted proposals. The fixture now waits on bounded `Promise.await(TimeSpan)`
+signals from actual protocol sends before delivering peer traffic, and similarly waits for
+the initial votes. It requires three distinct local proposals and three distinct V0 voters
+in the initial slot/round, and repeats twenty times. No production behavior changes.
+
+```sh
+env -u HCLOUD_TOKEN mvn -T1 -pl integrations/consensus test -Dtest=RabiaConsensusIntegrationTest
+```
+
+The corrected fixture and its enclosing integration class passed with zero failures/errors/skips
+(log `/private/tmp/hierarchy-review-proposal-emission-test2.log`). An initial local attempt
+observed only the generic broadcast boundary; its timeouts exposed that voter messages use
+addressed sends. Both test-network paths now record emissions through the same helper.
+
+The complete node rerun at `bc0c6aa22` passed 1,697 cases, zero failures/errors and one existing
+manual benchmark skip (`/private/tmp/hierarchy-review-node-full2.log`). The full downstream
+gate passed 1,916 cases with zero failures/errors/skips: cluster 166, metrics 268, deployment
+1,363 and control 119 (`/private/tmp/hierarchy-review-downstream-full.log`).
+
+```sh
+env -u HCLOUD_TOKEN mvn -T1 -pl aether/node test
+env -u HCLOUD_TOKEN mvn -T1 -pl integrations/cluster,aether/aether-metrics,aether/aether-deployment,aether/aether-control test
+```
+
+The six-step build at `bc0c6aa22` also passed (`/private/tmp/hierarchy-review-runtime-build9.log`).
+Current-head CI and its published artifact remain the final merge evidence.
