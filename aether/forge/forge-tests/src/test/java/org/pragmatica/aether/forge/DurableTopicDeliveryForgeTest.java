@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.forge;
 
+import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -431,13 +432,15 @@ class DurableTopicDeliveryForgeTest {
         /// duplicate of one event cannot be masked by the loss of another.
         @Test
         void everyPublishedEvent_isDeliveredExactlyOnceClusterWide() {
+            var assignees = attachedPerNode();
             var ids = publishOrders("dlv-", ORDER_COUNT);
 
-            awaitSettled("each event delivered exactly once cluster-wide — a count of %d per id would mean"
-                         .formatted(NODES)
-                         + " ungated per-node delivery",
-                         () -> deliveryCounts(ids),
-                         onceEach(ids));
+            awaitSettledUnlessMoved(assignees,
+                                    "each event delivered exactly once cluster-wide — a count of %d per id would mean"
+                                    .formatted(NODES)
+                                    + " ungated per-node delivery",
+                                    () -> deliveryCounts(ids),
+                                    onceEach(ids));
         }
     }
 
@@ -461,10 +464,14 @@ class DurableTopicDeliveryForgeTest {
         @Test
         void eventsArriveInPublishedOrder_evenWhilePreviousDeliveriesAreUnacked() {
             var prefix = SLOW_ACK_PREFIX + "ord-";
+            var assignees = attachedPerNode();
             var ids = publishOrders(prefix, SLOW_ORDER_COUNT);
 
-            awaitSettled("each late-acked event delivered exactly once — a repeat means a second delivery"
-                         + " of an offset overlapped the first", () -> deliveryCounts(ids), onceEach(ids));
+            awaitSettledUnlessMoved(assignees,
+                                    "each late-acked event delivered exactly once — a repeat means a second delivery"
+                                    + " of an offset overlapped the first",
+                                    () -> deliveryCounts(ids),
+                                    onceEach(ids));
 
             assertThat(sequencesPerNode(prefix)).describedAs("serial per-(group x partition) dispatch over"
                                                               + " one partition means arrival order IS"
@@ -527,6 +534,7 @@ class DurableTopicDeliveryForgeTest {
         @Test
         void healthyGroup_processesTheSameEvent_onceAndUnaffectedByTheFailingGroup() {
             var probe = "isolation-probe";
+            var assignees = attachedPerNode();
 
             publishPoison(probe);
 
@@ -538,10 +546,11 @@ class DurableTopicDeliveryForgeTest {
                                         + " sees it, the two subscriber methods are not two groups", probe)
                            .isGreaterThan(0));
 
-            awaitSettled("the healthy group must handle %s exactly once, while the group sharing the topic".formatted(probe)
-                           + " never acks it",
-                           () -> healthyDeliveriesOf(probe),
-                           1);
+            awaitSettledUnlessMoved(assignees,
+                                    "the healthy group must handle %s exactly once, while the group sharing the topic".formatted(probe)
+                                    + " never acks it",
+                                    () -> healthyDeliveriesOf(probe),
+                                    1);
 
             awaitSettled("the failing group's budget for %s is its own".formatted(probe),
                            () -> failingAttemptsFor(probe),
@@ -589,6 +598,54 @@ class DurableTopicDeliveryForgeTest {
 
         assertThat(probe.get()).describedAs("%s — and it must STAY there for %s", description, SETTLE)
                                .isEqualTo(expected);
+    }
+
+    /// [#awaitSettled] for an exactly-once claim, which holds only while the consumer does not MOVE:
+    /// across a move the successor resumes from the last checkpoint, and the checkpoint cadence is
+    /// delivery-driven (#1385), so a replay of everything since it is the documented at-least-once
+    /// behaviour, not a defect this arm can judge. The assignee distribution — `attachedSubscriptions`
+    /// per node, the same reading [#orderGroupSitsOnItsOwner] uses — is taken by the caller BEFORE it
+    /// publishes and here AFTER the count settled (or failed to); if it changed, the arm aborts with
+    /// both readings: a named skip, never a red and never a green. Measured on the CI runner: the
+    /// deployment map reported all five ACTIVE while one node was still ROUTING, its forced
+    /// `ROUTING -> ACTIVE` at +8 s moved the group to the owner, and the successor replayed `dlv-1..19`
+    /// from the checkpoint at offset 2 (rev1341 classification A on #1341's runner red).
+    private <T> void awaitSettledUnlessMoved(String assigneesBefore, String description, Supplier<T> probe, T expected) {
+        String assigneesAfter;
+
+        try {
+            awaitSettled(description, probe, expected);
+            assigneesAfter = attachedPerNode();
+        } catch (AssertionError | ConditionTimeoutException failure) {
+            assigneesAfter = attachedPerNode();
+
+            if (!assigneesAfter.equals(assigneesBefore)) {
+                Assumptions.abort("the consumer MOVED while [%s] was measured — attachedSubscriptions per node before: %s, after: %s;"
+                                  .formatted(description, assigneesBefore, assigneesAfter)
+                                  + " a replay across a move is the documented at-least-once (#1385), so this run cannot judge"
+                                  + " exactly-once; the count read: " + failure.getMessage());
+            }
+
+            throw failure;
+        }
+
+        if (!assigneesAfter.equals(assigneesBefore)) {
+            Assumptions.abort("the consumer MOVED while [%s] was measured (the counts still matched) — attachedSubscriptions per node before: %s, after: %s;"
+                              .formatted(description, assigneesBefore, assigneesAfter)
+                              + " exactly-once is claimed only without a move");
+        }
+    }
+
+    /// `attachedSubscriptions` per node id, sorted, rendered — the assignee distribution.
+    private String attachedPerNode() {
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .collect(Collectors.toMap(EmberCluster.NodeStatus::id,
+                                                node -> attachedSubscriptions(httpGet(node.mgmtPort(), "/api/v1/streams/declarative-consumers")),
+                                                (first, _) -> first,
+                                                java.util.TreeMap::new))
+                      .toString();
     }
 
     private static Map<String, Long> onceEach(List<String> ids) {

@@ -40,5 +40,12 @@
   checkpoint cadence "≤1s of progress — 500ms for durable-topic groups"; the cadence is evaluated only
   when a delivery advances the cursor, so a lone trailing event is not checkpointed until the next
   delivery and a move in that window replays it (#1385). The line now says so.
+- The exactly-once arms (cluster-wide delivery, serial dispatch, the healthy group's single
+  handling) read the assignee distribution — `attachedSubscriptions` per node — before publishing
+  and after the count settles; if the consumer moved in between, the arm skips with both readings
+  instead of failing: a successor replays from the delivery-driven checkpoint (#1385), which is the
+  documented at-least-once across a move, not a defect. Measured once on the CI runner, where the
+  deployment map reported all five instances ACTIVE while one was still ROUTING and its forced
+  activation moved the group mid-arm (#1117).
 - Publish outcomes (#1236) and pre-durability visibility (#1235) have no arm. This harness cannot
   drive either without losing quorum or failing over the owner. [unverified: no arm reaches them]
