@@ -148,7 +148,9 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
                      + " so " + requester
                      + " would silently run against " + loadedVersion
                      + "; refusing to load it. Align the version across the slices that declare it,"
-                     + " or declare it [shared] so the conflicting version loads into the slice's own loader (#1184).";
+                     + " declare it [shared] so the conflicting version loads into the slice's own loader,"
+                     + " or restart the node — a same-node upgrade is refused against its own predecessor's load,"
+                     + " and only a restart releases what the shared classloader holds (#1184).";
             }
         }
 

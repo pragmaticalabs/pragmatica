@@ -88,6 +88,17 @@ class SharedLibraryClassLoaderTest {
         assertThat(loader.getURLs()).containsExactly(new URL("file:///lib-1.0.0.jar"));
     }
 
+    /// M2 (rev1416): the guard's equality includes the qualifier — `1.0.0-SNAPSHOT` is not `1.0.0`.
+    @Test
+    void addArtifact_refusesTheSameBaseVersionWithADifferentQualifier() throws Exception {
+        loader.addArtifact("org.example", "my-lib", Version.version("1.0.0").unwrap(), new URL("file:///lib-1.0.0.jar"), "slice-a");
+        var refused = loader.addArtifact("org.example", "my-lib", Version.version("1.0.0-SNAPSHOT").unwrap(), new URL("file:///lib-1.0.0-SNAPSHOT.jar"), "slice-b");
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause.message()).contains("requires org.example:my-lib:1.0.0-SNAPSHOT but org.example:my-lib:1.0.0 is already loaded by slice-a"));
+        assertThat(loader.getURLs()).containsExactly(new URL("file:///lib-1.0.0.jar"));
+    }
+
     @Test
     void addArtifact_acceptsTheSameVersionAgain_asANoOp() throws Exception {
         var version = Version.version("1.0.0").unwrap();

@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -100,7 +101,29 @@ public interface SharedDependencyLoader {
                          .flatMap(location -> addInfraToSharedLoader(dependency,
                                                                      sharedLibraryLoader,
                                                                      location.url(),
-                                                                     requester).async());
+                                                                     requester).fold(refusal -> reevaluateInfraWindow(dependency,
+                                                                                                                      sharedLibraryLoader,
+                                                                                                                      requester,
+                                                                                                                      refusal),
+                                                                                     _ -> Promise.success(unit())));
+    }
+
+    /// The add was refused because another slice's version landed between `checkCompatibility` and
+    /// `addArtifact`. The guard compares exact versions; the rule that decides `[infra]` loads is
+    /// `pattern.matches(loaded)`. Re-running the rule against what is now held routes a
+    /// rule-Compatible request (`^1.0.0` against a landed 1.2.0) to reuse, exactly as it would have
+    /// been had the competitor landed first, and a genuine conflict to the same refusal (#1184 rev
+    /// M1). `checkCompatibility` cannot be empty after a refusal; if it were, the refusal stands.
+    private static Promise<Unit> reevaluateInfraWindow(ArtifactDependency dependency,
+                                                       SharedLibraryClassLoader sharedLibraryLoader,
+                                                       String requester,
+                                                       Cause refusal) {
+        return sharedLibraryLoader.checkCompatibility(dependency)
+                                  .fold(refusal::promise,
+                                        result -> handleInfraCompatibilityResult(dependency,
+                                                                                 result,
+                                                                                 sharedLibraryLoader,
+                                                                                 requester));
     }
 
     private static Result<Unit> addInfraToSharedLoader(ArtifactDependency dependency,
@@ -196,7 +219,11 @@ public interface SharedDependencyLoader {
                                                          List<URL> conflictUrls,
                                                          String requester) {
         return sharedLibraryLoader.checkCompatibility(dependency)
-                                  .fold(() -> loadIntoShared(dependency, sharedLibraryLoader, repository, requester),
+                                  .fold(() -> loadIntoShared(dependency,
+                                                             sharedLibraryLoader,
+                                                             repository,
+                                                             conflictUrls,
+                                                             requester),
                                         result -> handleCompatibilityResult(dependency, result, repository, conflictUrls));
     }
 
@@ -240,14 +267,35 @@ public interface SharedDependencyLoader {
     private static Promise<Unit> loadIntoShared(ArtifactDependency dependency,
                                                 SharedLibraryClassLoader sharedLibraryLoader,
                                                 Repository repository,
+                                                List<URL> conflictUrls,
                                                 String requester) {
         return locateOptional(dependency, repository).flatMap(located -> located.fold(() -> registerAsRuntimeProvided(dependency,
                                                                                                                       sharedLibraryLoader,
                                                                                                                       requester),
-                                                                                      location -> addToSharedLoader(dependency,
-                                                                                                                    sharedLibraryLoader,
-                                                                                                                    location.url(),
-                                                                                                                    requester).async()));
+                                                                                      location -> addOrReevaluate(dependency,
+                                                                                                                  sharedLibraryLoader,
+                                                                                                                  repository,
+                                                                                                                  conflictUrls,
+                                                                                                                  location.url(),
+                                                                                                                  requester)));
+    }
+
+    /// Same window as [#reevaluateInfraWindow], routed through the `[shared]` rule: a refused add is
+    /// re-checked against what is now held, so a rule-Compatible request reuses it and a conflict
+    /// takes the designed per-slice fallback instead of a failure (#1184 rev M1).
+    private static Promise<Unit> addOrReevaluate(ArtifactDependency dependency,
+                                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                                 Repository repository,
+                                                 List<URL> conflictUrls,
+                                                 URL url,
+                                                 String requester) {
+        return addToSharedLoader(dependency, sharedLibraryLoader, url, requester).fold(refusal -> sharedLibraryLoader.checkCompatibility(dependency)
+                                                                                                                     .fold(refusal::promise,
+                                                                                                                           result -> handleCompatibilityResult(dependency,
+                                                                                                                                                               result,
+                                                                                                                                                               repository,
+                                                                                                                                                               conflictUrls)),
+                                                                                       _ -> Promise.success(unit()));
     }
 
     private static Promise<Option<Location>> locateOptional(ArtifactDependency dependency, Repository repository) {

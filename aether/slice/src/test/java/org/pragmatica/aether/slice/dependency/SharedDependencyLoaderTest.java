@@ -157,23 +157,67 @@ class SharedDependencyLoaderTest {
         assertLoaderHoldsOnly("1.0.0", "slice-a");
     }
 
-    /// Same window on the `[shared]` path. The designed `[shared]` fallback (load the conflicting
-    /// version into the slice's loader) is decided by `checkCompatibility`, which ran before the race;
-    /// inside the window the add's refusal is now propagated as a loud failure. Before #1184 it was
-    /// swallowed twice: once by the discarded `Result`, and once more by the `orElse` after the add,
-    /// which would have turned any refusal into a runtime-provided registration — a no-op success.
+    /// Same window on the `[shared]` path: the refused add is re-checked against what is now held
+    /// and a conflict takes the designed fallback — the requested jar goes to the slice's own loader.
+    /// Before #1184 the refusal was swallowed twice: by the discarded `Result`, and by the `orElse`
+    /// after the add, which turned it into a runtime-provided registration — a no-op success with
+    /// NO jar anywhere. The assertion on `conflictingJarUrls` is what separates the two: a
+    /// runtime-provided no-op leaves it empty.
     @Test
-    void sharedConflictInsideTheCheckToAddWindow_failsLoudly_ratherThanRegisteringRuntimeProvided() {
-        var second = SharedDependencyLoader.processSharedDependencies(List.of(dependency("org.example:lib:2.0.0")),
-                                                                      sharedLoader,
-                                                                      racingRepository("org.example:lib:1.0.0", "slice-a"),
-                                                                      jarUrl("org.example:slice-b:1.0.0"),
-                                                                      "slice-b")
-                                           .await();
+    void sharedConflictInsideTheCheckToAddWindow_takesThePerSliceFallback_notRuntimeProvided() {
+        SharedDependencyLoader.processSharedDependencies(List.of(dependency("org.example:lib:^2.0.0")),
+                                                         sharedLoader,
+                                                         racingRepository("org.example:lib:1.0.0", "slice-a"),
+                                                         jarUrl("org.example:slice-b:1.0.0"),
+                                                         "slice-b")
+                              .await()
+                              .onFailureRun(Assertions::fail)
+                              .onSuccess(result -> assertThat(result.conflictingJarUrls()).containsExactly(jarUrl("org.example:lib:2.0.0")));
+        assertLoaderHoldsOnly("1.0.0", "slice-a");
+    }
 
-        second.onSuccessRun(() -> Assertions.fail("accepted although a different version won the window; loader holds "
-                                                  + sharedLoader.getLoadedArtifacts()))
-              .onFailure(cause -> assertThat(cause.message()).contains("slice slice-b requires org.example:lib:2.0.0 but org.example:lib:1.0.0 is already loaded by slice-a"));
+    /// M1 (rev1416): the add guard compares exact versions, the rule is `pattern.matches(loaded)`.
+    /// A `^1.0.0` request whose competitor landed 1.2.0 during locate is Compatible by the rule and
+    /// must reuse 1.2.0 — the outcome it would have had if the competitor had landed first — not be
+    /// refused as Fatal.
+    @Test
+    void infraCompatibleRequestInsideTheCheckToAddWindow_reusesTheLandedVersion() {
+        SharedDependencyLoader.processInfraDependencies(List.of(dependency("org.example:lib:^1.0.0")),
+                                                        sharedLoader,
+                                                        racingRepository("org.example:lib:1.2.0", "slice-a"),
+                                                        "slice-b")
+                              .await()
+                              .onFailureRun(Assertions::fail);
+
+        assertLoaderHoldsOnly("1.2.0", "slice-a");
+    }
+
+    /// M1, `[shared]` side: a rule-Compatible request inside the window reuses the landed version
+    /// and adds nothing to the slice's own loader.
+    @Test
+    void sharedCompatibleRequestInsideTheCheckToAddWindow_reusesTheLandedVersion() {
+        SharedDependencyLoader.processSharedDependencies(List.of(dependency("org.example:lib:^1.0.0")),
+                                                         sharedLoader,
+                                                         racingRepository("org.example:lib:1.2.0", "slice-a"),
+                                                         jarUrl("org.example:slice-b:1.0.0"),
+                                                         "slice-b")
+                              .await()
+                              .onFailureRun(Assertions::fail)
+                              .onSuccess(result -> assertThat(result.conflictingJarUrls()).isEmpty());
+        assertLoaderHoldsOnly("1.2.0", "slice-a");
+    }
+
+    /// M2 (rev1416): the shape the Maven plugin emits is CARET (`PackageSlicesMojo.toArtifactInfo`
+    /// writes `^<version>`), so the ticket's scenario in production is `^2.0.0` against a held
+    /// 1.0.0 — a major bump, a Conflict under `Caret.matches`.
+    @Test
+    void infraVersionConflict_inTheCaretShapeThePluginEmits_fails() {
+        loadInfra("slice-a", "org.example:lib:^1.0.0").await().onFailureRun(Assertions::fail);
+
+        var second = loadInfra("slice-b", "org.example:lib:^2.0.0").await();
+
+        assertConflict(second,
+                       "slice slice-b requires org.example:lib:^2.0.0 but org.example:lib:1.0.0 is already loaded by slice-a");
         assertLoaderHoldsOnly("1.0.0", "slice-a");
     }
 
