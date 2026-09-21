@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.FileOps.createDirectories;
 import static org.pragmatica.lang.io.FileOps.deleteIfExists;
+import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.io.FileOps.list;
 import static org.pragmatica.lang.io.FileOps.moveAtomic;
 import static org.pragmatica.lang.io.FileOps.readString;
@@ -121,12 +122,15 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// at WARN naming both files. A torn snapshot is never restored -- [#readAndValidateSnapshot]
     /// refuses it -- so the choice is between another complete snapshot (usually older) and none
     /// at all, and an older one is strictly more of the acked state than none.
+    ///
+    /// #1013: "none at all" is itself two outcomes -- see [#nothingRestored].
     @Override
-    public Option<MetadataSnapshot> restoreFromLatest() {
+    public Result<Option<MetadataSnapshot>> restoreFromLatest() {
         var latest = readLatestSnapshotPath();
 
         return latest.flatMap(this::readAndValidateSnapshot)
-                     .orElse(() -> restoreFromPreviousRetained(latest));
+                     .map(snapshot -> Result.success(Option.some(snapshot)))
+                     .or(() -> restoreFromPreviousRetained(latest));
     }
 
     @Override
@@ -254,14 +258,19 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// one restores. `LATEST` is deliberately NOT rewritten here: restore is a read path, and the
     /// next snapshot write repoints it anyway. The unreadable file is left on disk as evidence for
     /// the operator; it sorts newest, so ordinary retention removes it once enough snapshots follow.
-    private Option<MetadataSnapshot> restoreFromPreviousRetained(Option<Path> unreadableLatest) {
-        var candidates = previousRetained(unreadableLatest);
+    private Result<Option<MetadataSnapshot>> restoreFromPreviousRetained(Option<Path> unreadableLatest) {
+        return previousRetained(unreadableLatest).flatMap(candidates -> restoreFirstComplete(unreadableLatest,
+                                                                                             candidates));
+    }
 
+    private Result<Option<MetadataSnapshot>> restoreFirstComplete(Option<Path> unreadableLatest,
+                                                                  List<Path> candidates) {
         return candidates.stream()
                          .map(candidate -> restoreCandidate(unreadableLatest, candidate))
                          .filter(Option::isPresent)
                          .findFirst()
-                         .orElseGet(() -> reportNothingRestorable(unreadableLatest, candidates));
+                         .map(Result::success)
+                         .orElseGet(() -> nothingRestored(unreadableLatest, candidates));
     }
 
     private Option<MetadataSnapshot> restoreCandidate(Option<Path> unreadableLatest, Path candidate) {
@@ -270,12 +279,16 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                                                                        snapshot));
     }
 
-    private List<Path> previousRetained(Option<Path> unreadableLatest) {
-        return listSnapshotFiles().map(files -> excludingUnreadable(files, unreadableLatest))
-                                .map(List::reversed)
-                                .onFailure(cause -> LOG.debug("No retained snapshots to fall back to: {}",
-                                                              cause.message()))
-                                .or(List.of());
+    /// #1013: a snapshot directory that does not exist holds nothing, by inspection. One that exists
+    /// and cannot be listed is a failure, not an empty list -- absence is established by looking,
+    /// never inferred from a read that failed.
+    private Result<List<Path>> previousRetained(Option<Path> unreadableLatest) {
+        if (!exists(config.snapshotPath())) {
+            return Result.success(List.of());
+        }
+
+        return listSnapshotFiles(SnapshotError.ReadFailed::new).map(files -> excludingUnreadable(files, unreadableLatest))
+                                .map(List::reversed);
     }
 
     private static List<Path> excludingUnreadable(List<Path> files, Option<Path> unreadableLatest) {
@@ -292,14 +305,18 @@ final class DefaultSnapshotManager implements SnapshotManager {
                  snapshot.epoch());
     }
 
-    private static Option<MetadataSnapshot> reportNothingRestorable(Option<Path> unreadableLatest,
-                                                                    List<Path> candidates) {
-        unreadableLatest.onPresent(latest -> LOG.warn("{} and none of the {} other retained snapshot(s) restores; "
-                                                     + "metadata starts EMPTY. See docs/operators/runbooks/backup-recovery.md",
-                                                      describeLatest(unreadableLatest),
-                                                      candidates.size()));
+    /// #1013: nothing restored is two outcomes the caller has to keep apart. No `LATEST` file and
+    /// no retained snapshot is a first boot: success with none, nothing to warn about. Anything
+    /// else on disk -- a `LATEST` that is torn or dangles, snapshot files that are all unreadable
+    /// -- is metadata that existed and is now lost; that is a failure, so the caller refuses to
+    /// start rather than signal readiness over an empty store. Before #1013 both were `none()`,
+    /// and the second was not even WARNed when `LATEST` was the missing part.
+    private Result<Option<MetadataSnapshot>> nothingRestored(Option<Path> unreadableLatest, List<Path> candidates) {
+        if (candidates.isEmpty() && !exists(config.snapshotPath().resolve(LATEST_POINTER))) {
+            return Result.success(none());
+        }
 
-        return none();
+        return new SnapshotError.NothingRestorable(describeLatest(unreadableLatest), candidates.size()).result();
     }
 
     private static String describeLatest(Option<Path> unreadableLatest) {
@@ -313,7 +330,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     private Result<Unit> performPrune() {
-        return listSnapshotFiles().flatMap(this::deleteExcessSnapshots);
+        return listSnapshotFiles(SnapshotError.PruneFailed::new).flatMap(this::deleteExcessSnapshots);
     }
 
     private Result<Unit> deleteExcessSnapshots(List<Path> snapshots) {
@@ -355,8 +372,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
         return deleteIfExists(file).mapError(e -> new SnapshotError.PruneFailed(new RuntimeException(e.message())));
     }
 
-    private Result<List<Path>> listSnapshotFiles() {
-        return list(config.snapshotPath()).mapError(e -> new SnapshotError.PruneFailed(new RuntimeException(e.message())))
+    private Result<List<Path>> listSnapshotFiles(Function<Throwable, SnapshotError> onFailure) {
+        return list(config.snapshotPath()).mapError(e -> onFailure.apply(new RuntimeException(e.message())))
                    .map(DefaultSnapshotManager::sortedSnapshotFiles);
     }
 

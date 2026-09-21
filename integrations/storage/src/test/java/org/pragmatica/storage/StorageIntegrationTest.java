@@ -120,7 +120,7 @@ class StorageIntegrationTest {
 
             var freshStore = inMemoryMetadataStore("restored");
             var freshManager = snapshotManager(freshStore, config);
-            var snapshot = freshManager.restoreFromLatest().unwrap();
+            var snapshot = freshManager.restoreFromLatest().unwrap().unwrap();
 
             freshStore.restoreLifecycles(snapshot.lifecycles());
             freshStore.restoreRefs(snapshot.refs());
@@ -267,7 +267,7 @@ class StorageIntegrationTest {
 
             var freshStore = inMemoryMetadataStore("ref-restored");
             var freshManager = snapshotManager(freshStore, config);
-            var snapshot = freshManager.restoreFromLatest().unwrap();
+            var snapshot = freshManager.restoreFromLatest().unwrap().unwrap();
 
             freshStore.restoreLifecycles(snapshot.lifecycles());
             freshStore.restoreRefs(snapshot.refs());

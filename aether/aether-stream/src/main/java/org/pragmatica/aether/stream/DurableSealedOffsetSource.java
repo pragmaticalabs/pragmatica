@@ -40,14 +40,19 @@ public interface DurableSealedOffsetSource {
     /// yet, or an unreadable one, means nothing is durable and nothing is truncated — the direction that keeps
     /// the WAL. `[unverified: power loss]` — the snapshot file is written without fsync, so "on disk" here
     /// means process-crash-durable.
+    ///
+    /// #1013 made "unreadable" a failure distinct from "none yet" at the manager; here both still mean "keep
+    /// the WAL". This is a truncation tick, not the boot path -- the boot that could have refused already ran
+    /// -- and the manager WARNs the read failure itself.
     static DurableSealedOffsetSource fromLatestSnapshot(SnapshotManager snapshotManager) {
         return () -> onDisk(snapshotManager);
     }
 
     private static LastSealedOffsetSource onDisk(SnapshotManager snapshotManager) {
         return snapshotManager.restoreFromLatest()
-                              .map(DurableSealedOffsetSource::indexOf)
-                              .or(LastSealedOffsetSource.none());
+                              .fold(_ -> LastSealedOffsetSource.none(),
+                                    restored -> restored.map(DurableSealedOffsetSource::indexOf)
+                                                        .or(LastSealedOffsetSource.none()));
     }
 
     private static LastSealedOffsetSource indexOf(MetadataSnapshot snapshot) {
