@@ -141,7 +141,7 @@ an untrusted slice**: someone who can reach your cluster's ports but does not ho
 | Surface | Mechanism | Evidence |
 |---|---|---|
 | Node-to-node TCP (consensus, invocation, DHT) | mutual TLS, certs derived from a shared `cluster_secret` via HKDF | [mechanism: `aether/docs/operators/tls-certificates.md`; `SelfSignedCertificateProvider`] |
-| SWIM gossip (UDP) | AES-256-GCM, daily key rotation with overlap | [mechanism: `AesGcmGossipEncryptor`, per `aether/docs/architecture/10-security.md`] |
+| SWIM gossip (UDP) | AES-256-GCM under a key HKDF-derived from `cluster_secret` and the current calendar day, re-derived on day change for the life of the process; datagrams under the previous and next day's keys are accepted, so nodes whose clocks agree to within one day always decrypt each other regardless of uptime (#256, #1164) | [mechanism: `SelfSignedCertificateProvider.keysForToday` derives; `SwimGossipEncryptors.ProviderKeyedGossipEncryptor` follows it; `AesGcmGossipEncryptor` encrypts — per `aether/docs/architecture/10-security.md`] |
 | Management API | API-key authentication + role-based authorization (ADMIN / OPERATOR / VIEWER) | [mechanism: see "Default posture" below] |
 | Cluster secret at rest (file) | `aether.toml` and the CLI's persisted `api-key` file are written `chmod 600` | [mechanism: `aether/aether-config/.../SecureFiles.java` — `writeSecure`/`restrictToOwner`, owner-read/write only, POSIX systems] |
 
