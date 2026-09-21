@@ -10,8 +10,11 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 
 
 @SuppressWarnings("JBCT-UTIL-02")
+/// Live observations and operation state excluded from portable TOML configuration backups.
+/// These records remain replicated and durable in binary consensus snapshots.
 public sealed interface EphemeralKeys {
-    Set<Class<? extends AetherKey>> EPHEMERAL_KEY_TYPES = Set.of(CapacityLedgerKey.class,
+    Set<Class<? extends AetherKey>> EPHEMERAL_KEY_TYPES = Set.of(CommunityPlacementAvailabilityKey.class,
+                                                                 CapacityLedgerKey.class,
                                                                  CapacityReservationKey.class,
                                                                  CommunityPlacementOperationKey.class,
                                                                  NodePlacementKey.class,
@@ -33,7 +36,8 @@ public sealed interface EphemeralKeys {
                                                                  ProvisioningSlotKey.class,
                                                                  ClusterPhaseKey.class);
 
-    Set<String> EPHEMERAL_SECTIONS = Set.of("capacity-ledger",
+    Set<String> EPHEMERAL_SECTIONS = Set.of("community-placement-availability",
+                                            "capacity-ledger",
                                             "capacity-reservation",
                                             "community-placement-operation",
                                             "node-placement",

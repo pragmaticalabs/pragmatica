@@ -903,6 +903,21 @@ class KVStoreSerializerTest {
     @Nested
     class EphemeralKeyFiltering {
         @Test
+        void roundTrip_sourceAvailabilityRefusal_doesNotPoisonPortableBackup() {
+            var refusalKey = new CommunityPlacementAvailabilityKey("workers", "primary", Option.some("zone-a"));
+            var refusal = new CommunityPlacementAvailabilityValue("policy", "binding",
+                                                                  NodeId.nodeId("node-1").unwrap(), 1000L, 2);
+            var configKey = ConfigKey.forKey("timeout");
+            var config = new ConfigValue("timeout", "30s", 1000L);
+            var entries = Map.<AetherKey, AetherValue>of(refusalKey, refusal, configKey, config);
+            var serialized = KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP).unwrap();
+
+            assertThat(serialized).doesNotContain("community-placement-availability");
+            assertThat(KVStoreSerializer.fromToml(serialized).unwrap())
+                .containsExactly(Map.entry(configKey, config));
+        }
+
+        @Test
         void isEphemeral_nodeArtifactKey_true() {
             var nodeId = NodeId.nodeId("node-1").unwrap();
             var artifact = org.pragmatica.aether.artifact.Artifact.artifact("com.example:svc:1.0.0").unwrap();

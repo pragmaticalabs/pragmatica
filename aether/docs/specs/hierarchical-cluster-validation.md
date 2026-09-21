@@ -244,3 +244,27 @@ env -u HCLOUD_TOKEN mvn -T1 -pl integrations/cluster,aether/aether-metrics,aethe
 
 The six-step build at `bc0c6aa22` also passed (`/private/tmp/hierarchy-review-runtime-build9.log`).
 Current-head CI and its published artifact remain the final merge evidence.
+
+## Portable backup filtering and current rc4 integration
+
+The rc4 `93a5e3089` integration at `25fb3f4a4` passed all six local build steps, 27 targeted
+node/Ember SWIM startup and cleanup cases, and 16 rebuilt Forge smoke cases. Logs are
+`/private/tmp/hierarchy-review-runtime-build10.log`,
+`/private/tmp/hierarchy-review-rc4-swim-integration.log`, and
+`/private/tmp/hierarchy-review-rc4-final-smoke.log`.
+
+Repository CI then exposed one missing portable-backup classification: a committed
+`CommunityPlacementAvailabilityValue` (source refusal observation) serialized as an empty
+TOML value but had no restore parser. Like capacity reservations and placement operations,
+this live observation is now excluded from portable configuration backup. This classification
+is used only by `KVStoreSerializer`; binary consensus snapshots retain the record for recovery.
+The regression exports a refusal beside durable configuration and restores that configuration
+without carrying the stale refusal or failing the entire backup. The exhaustive section
+symmetry check remains unchanged.
+
+```sh
+env -u HCLOUD_TOKEN mvn -T1 -pl aether/slice test
+```
+
+All **829 cases passed, zero failures/errors/skips**
+(`/private/tmp/hierarchy-review-slice-full2.log`).
