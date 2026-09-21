@@ -235,21 +235,26 @@ class CacheTierPartialWriteTest {
         assertThat(tier.usedBytes()).isZero();
     }
 
-    /// The rename replaces an EMPTY directory squatting on the block path (the JDK removes it
-    /// before the rename), and the count then reflects the block alone — a directory was never a
-    /// previous copy to correct for.
+    /// An EMPTY directory squatting on the block path fails the put exactly as a non-empty one
+    /// does: the atomic rename (#1169) never removes anything at the target, so `rename(file,
+    /// dir)` is refused and the squatter is left in place. The reservation is released and no
+    /// partial is left. (Until #1169 this test pinned the opposite -- "the JDK removes it before
+    /// the rename" -- which specified the non-atomic move's unlink step as a feature; that step
+    /// is the one that left the block path observably ABSENT during every real replace.)
     @Test
     @SuppressWarnings("JBCT-EX-01")
-    void localDiskTier_emptyDirectorySquattingTheBlockPath_isReplacedByTheBlock() throws Exception {
+    void localDiskTier_emptyDirectorySquattingTheBlockPath_failsThePut_andIsLeftInPlace() throws Exception {
         var dir = tempDir.resolve("empty-squat");
         var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024).unwrap();
         var content = block(2048);
         var id = BlockId.blockId(content).unwrap();
+        var squat = blockPath(dir, id);
 
-        Files.createDirectories(blockPath(dir, id));
-        tier.put(id, content).await().onFailure(cause -> fail("an empty directory is replaced: " + cause.message()));
-        assertThat(tier.get(id).await().unwrap().unwrap()).isEqualTo(content);
-        assertThat(tier.usedBytes()).isEqualTo(2048);
+        Files.createDirectories(squat);
+        tier.put(id, content).await().onSuccess(_ -> fail("the atomic rename must not replace a directory"));
+        assertThat(Files.isDirectory(squat)).as("nothing at the block path was removed").isTrue();
+        assertThat(tier.usedBytes()).as("a failed write keeps no reservation").isZero();
+        assertThat(partialFiles(dir)).isEmpty();
     }
 
     /// A partial file left by a write the process did not survive is removed at startup and never
