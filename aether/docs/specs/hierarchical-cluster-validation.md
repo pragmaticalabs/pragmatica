@@ -160,3 +160,24 @@ Log: `/private/tmp/hierarchy-review-consensus-full2.log` (approximately five min
 The two new request-outcome tests subsequently use bounded `Promise.await(TimeSpan)` for
 terminal results, avoiding a race with asynchronous callback dispatch. Their focused rerun
 is recorded in `/private/tmp/hierarchy-review-recovery-pending-final.log`.
+
+The final production rebuild at `77f74b403` passed all six build steps. The following live
+selector passed **12 tests with zero failures/errors/skips** (log
+`/private/tmp/hierarchy-review-snapshot-recovery-forge.log`):
+
+```sh
+env -u HCLOUD_TOKEN ./forge.sh 'HierarchicalDecisionReplayTest,HierarchicalMovementTakeoverTest,HierarchicalCoreResizeTest,DeclarativeStreamConsumerTest'
+```
+
+The subsequent broad CI run found a Hetzner fixture that created server 42 but returned
+server 1 from its readiness lookup. The fixture now returns server 42 and asserts the queried
+identifier; no provider production behavior changed. All five compute-provider suites passed
+**233 cases, zero failures/errors/skips**:
+
+```sh
+env -u HCLOUD_TOKEN mvn -T1 -pl aether/environment/azure,aether/environment/aws,aether/environment/gcp,aether/environment/hetzner,aether/environment/docker -am test -Dtest='*ComputeProviderTest' -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Log: `/private/tmp/hierarchy-review-all-compute-providers.log`. Because the provider dependency
+failure prevented the earlier CI run from reaching node tests, the complete node module is
+also exercised locally; its final result belongs to the PR and merge-head CI evidence.

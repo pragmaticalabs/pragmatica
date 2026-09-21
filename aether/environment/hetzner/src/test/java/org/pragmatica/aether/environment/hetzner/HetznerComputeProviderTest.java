@@ -104,11 +104,13 @@ class HetznerComputeProviderTest {
         @Test
         void provision_success_returnsInstanceInfo() {
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.getServerResponse = Promise.success(runningServer(42, "aether-test"));
 
             seededProvider().provision(InstanceType.ON_DEMAND)
                             .await()
                             .onFailure(cause -> assertThat(cause).isNull())
                             .onSuccess(HetznerComputeProviderTest::assertProvisionedInstanceInfo);
+            assertThat(testClient.lastGetServerId).isEqualTo(42);
         }
 
         @Test
