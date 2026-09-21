@@ -141,6 +141,55 @@ class OutputFormatterErrorTest {
         assertThat(errCapture.toString(StandardCharsets.UTF_8)).isEmpty();
     }
 
+    /// Round 2: `printAction` had the inverse defect — the success line over the envelope, exit 0.
+    @Test
+    void printAction_errorEnvelope_tableFormat_exitsError_andNeverPrintsSuccess() {
+        var exit = OutputFormatter.printAction(ENVELOPE, parseOptions("--format", "table"), "Scaled foo to 3 instances");
+
+        assertThat(exit).isEqualTo(ExitCode.ERROR);
+        assertThat(errCapture.toString(StandardCharsets.UTF_8)).contains("Error: Connection failed: Connection refused");
+        assertThat(outCapture.toString(StandardCharsets.UTF_8)).isEmpty();
+    }
+
+    @Test
+    void printAction_errorEnvelope_jsonFormat_exitsError_withEnvelopeOnStderr() {
+        var exit = OutputFormatter.printAction(ENVELOPE, parseOptions("--format", "json"), "Scaled foo to 3 instances");
+
+        assertThat(exit).isEqualTo(ExitCode.ERROR);
+        assertThat(errCapture.toString(StandardCharsets.UTF_8)).contains("{\"error\":\"Connection failed: Connection refused\"}");
+        assertThat(outCapture.toString(StandardCharsets.UTF_8)).isEmpty();
+    }
+
+    @Test
+    void printAction_errorEnvelope_quiet_stillExitsError() {
+        var exit = OutputFormatter.printAction(ENVELOPE, parseOptions("--quiet"), "Scaled foo to 3 instances");
+
+        assertThat(exit).as("--quiet suppresses output, never the exit code").isEqualTo(ExitCode.ERROR);
+        assertThat(outCapture.toString(StandardCharsets.UTF_8)).isEmpty();
+    }
+
+    @Test
+    void printAction_notFoundProblemDetail_exitsNotFound() {
+        var problem = "{\"type\":\"about:blank\",\"title\":\"Not Found\",\"status\":404,\"detail\":\"no such slice\"}";
+        var exit = OutputFormatter.printAction(problem, parseOptions("--format", "table"), "Scaled foo to 3 instances");
+
+        assertThat(exit).isEqualTo(ExitCode.NOT_FOUND);
+        assertThat(errCapture.toString(StandardCharsets.UTF_8)).contains("Error: no such slice");
+        assertThat(outCapture.toString(StandardCharsets.UTF_8)).isEmpty();
+    }
+
+    /// The control: a 2xx body still prints the success line and exits 0.
+    @Test
+    void printAction_okDocument_printsSuccessLine_andExitsSuccess() {
+        var exit = OutputFormatter.printAction("{\"status\":\"ok\"}",
+                                               parseOptions("--format", "table"),
+                                               "Scaled foo to 3 instances");
+
+        assertThat(exit).isEqualTo(ExitCode.SUCCESS);
+        assertThat(outCapture.toString(StandardCharsets.UTF_8)).contains("Scaled foo to 3 instances");
+        assertThat(errCapture.toString(StandardCharsets.UTF_8)).isEmpty();
+    }
+
     private static OutputOptions parseOptions(String... args) {
         var options = new OutputOptions();
 
