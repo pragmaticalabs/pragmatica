@@ -117,6 +117,11 @@ class ApiKeyFullRestartForgeTest {
         awaitMembers(NODES - 1);
         mint("second", SECOND_KEY);
         assertAccepted(SECOND_KEY, NODE_2, NODE_3);
+        // The documented hardening step: retire the bootstrap key once operator keys exist. The minted keys
+        // are OPERATOR on purpose — with no ACTIVE ADMIN key on record after the restart, the leg's only
+        // reason not to mint a fresh bootstrap-admin over the tombstone is the #1020 guard.
+        revokeBootstrapAdmin();
+        assertThat(listKeys(NODE_2)).contains("\"keyId\":\"bootstrap-admin\",\"status\":\"REVOKED\"");
         LifecycleAwait.settled("cluster stop", cluster, cluster.stop());
         // Restart with node 3 held back: node 2's only responder is node 1, whose snapshot is BEHIND node 2's.
         LifecycleAwait.settled("cluster restart with " + NODE_3 + " held back",
@@ -127,6 +132,13 @@ class ApiKeyFullRestartForgeTest {
         assertAccepted(FIRST_KEY, NODE_2);
         assertThat(listKeys(NODE_2)).as("node 2 must list both cluster-held keys it activated on — its own persisted snapshot")
                   .contains("\"keyId\":\"first\"", "\"keyId\":\"second\"", "\"source\":\"cluster\"");
+        // The revocation survives the restart: the restored tombstone is honoured, not minted over.
+        await().alias("bootstrap-admin stays REVOKED after the restart")
+             .atMost(Duration.ofSeconds(30))
+             .pollInterval(POLL_INTERVAL)
+             .untilAsserted(() -> assertThat(listKeys(NODE_2)).as("a revoked bootstrap key must not be resurrected by the fresh leader")
+                                            .contains("\"keyId\":\"bootstrap-admin\",\"status\":\"REVOKED\"")
+                                            .doesNotContain("\"keyId\":\"bootstrap-admin\",\"status\":\"ACTIVE\""));
         // The control: node 1 restarted BEHIND and adopted node 2's response — the peer-restore path.
         assertAccepted(SECOND_KEY, NODE_1);
         assertAccepted(FIRST_KEY, NODE_1);
@@ -138,12 +150,22 @@ class ApiKeyFullRestartForgeTest {
 
     // --- mint / accept ------------------------------------------------------
     /// Mint through the leader with the CONFIG key. The request carries the SHA-256 hex of the plaintext,
-    /// byte-for-byte what `KvStoreApiKeyValidator` compares against.
+    /// byte-for-byte what `KvStoreApiKeyValidator` compares against. Retried: right after a leader change
+    /// the consensus apply thread stalls for ~10 s (`SLOW-APPLY ms=100xx` in every run, pre-existing), and
+    /// a mint that lands inside that window outlives one HTTP bound. The `Put` is idempotent per keyId.
     private void mint(String keyId, String plaintext) {
         var body = "{\"keyId\":\"" + keyId
                  + "\",\"keyHash\":\"" + sha256Hex(plaintext)
                  + "\",\"gracePeriodMs\":0,"
-                 + "\"auditAction\":\"CREATED\",\"operatorHint\":\"forge-1020\",\"authorizationRole\":\"ADMIN\"}";
+                 + "\"auditAction\":\"CREATED\",\"operatorHint\":\"forge-1020\",\"authorizationRole\":\"OPERATOR\"}";
+
+        await().alias("mint " + keyId + " through the leader")
+             .atMost(Duration.ofSeconds(90))
+             .pollInterval(Duration.ofSeconds(1))
+             .until(() -> minted(keyId, body));
+    }
+
+    private boolean minted(String keyId, String body) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + leaderMgmtPort() + KEYS_PATH))
                                  .header("Content-Type", "application/json")
@@ -151,13 +173,12 @@ class ApiKeyFullRestartForgeTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(15))
                                  .build();
-        var response = send(request, "mint " + keyId);
 
-        assertThat(response.statusCode()).as("mint %s through the leader with the config key: %s",
-                                             keyId,
-                                             response.body())
-                  .isEqualTo(200);
-        assertThat(response.body()).contains("\"status\":\"ACTIVE\"");
+        return http.sendString(request)
+                   .await(HTTP_BOUND)
+                   .map(response -> response.statusCode() == 200 && response.body()
+                                                                            .contains("\"status\":\"ACTIVE\""))
+                   .or(false);
     }
 
     /// The acceptance assertion: `GET /api/v1/cluster/keys` on the NAMED node, presenting only the minted
@@ -173,6 +194,20 @@ class ApiKeyFullRestartForgeTest {
                                                                                       nodeId)
                                                 .isEqualTo(200));
         }
+    }
+
+    private void revokeBootstrapAdmin() {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderMgmtPort() + KEYS_PATH
+                                                + "/revoke/bootstrap-admin"))
+                                 .header("Content-Type", "application/json")
+                                 .header(API_KEY_HEADER, CONFIG_API_KEY)
+                                 .POST(HttpRequest.BodyPublishers.ofString("{\"immediate\":true,\"gracePeriodMs\":0,\"operatorHint\":\"forge-1020\"}"))
+                                 .timeout(Duration.ofSeconds(15))
+                                 .build();
+        var response = send(request, "revoke bootstrap-admin");
+
+        assertThat(response.statusCode()).as("revoke bootstrap-admin: %s", response.body()).isEqualTo(200);
     }
 
     private int statusWithKey(String nodeId, String plaintext) {
