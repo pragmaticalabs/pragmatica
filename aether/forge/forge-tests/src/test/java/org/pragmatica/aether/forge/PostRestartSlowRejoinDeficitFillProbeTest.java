@@ -201,8 +201,14 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
 
     @BeforeAll
     @TerminalOperation
-    void setUp() {
+    void setUp(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
+        var consensusDirectory = directory.resolve("consensus");
+        // The production backup adapter expects provisioned directories, including the scale-up control's new node.
+        org.pragmatica.lang.Result.allOf(java.util.stream.IntStream.rangeClosed(1, RAISED_CORES)
+            .mapToObj(index -> org.pragmatica.lang.io.FileOps.createDirectories(consensusDirectory.resolve(NODE_PREFIX + "-" + index))))
+            .unwrap();
+        cluster.withConsensusBaseDir(consensusDirectory);
         cluster.withComputeProviderDecorator(recorder::wrap);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         expectStarted(allConfiguredIds(), "FORMATION-1 start");
@@ -366,8 +372,8 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
 
     // ----- restart mechanics -----
     /// Full-cluster restart with [#HELD_BACK] deferred. Modelled on
-    /// `MultiPartitionCrashDurabilityTest.restartCluster()`, minus the stream/slice/data-dir concerns
-    /// this probe has none of: membership, not durability, is the question here.
+    /// `MultiPartitionCrashDurabilityTest.restartCluster()`. Consensus state persists across restart:
+    /// otherwise these PARTICIPATED identities are amnesiac and cannot count themselves toward recovery.
     @TerminalOperation
     private void restartWithHeldBackMembers() {
         LifecycleAwait.settled("cluster stop in restartWithHeldBackMembers()", cluster, cluster.stop());
