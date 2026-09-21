@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -109,7 +110,10 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// a dead-letter append outstanding, or a retry scheduled — so a HELD partition never reads as an
     /// idle one (both are `false` with the cursor frozen when the partition is merely quiet).
     /// `awaitingCursorFetch` (rev1272 F7 follow-up) is the third non-delivering state: this subscription
-    /// has not STARTED, because its cursor fetch keeps failing and is being retried.
+    /// has not STARTED, because its cursor fetch keeps failing and is being retried. `rewindEpoch`
+    /// (#1333) is the epoch the consumer resumed under and stamps on every commit — `RewindEpoch.NONE`
+    /// for a group never rewound; the node compares it with the committed epoch to detect a rewind it
+    /// must restart the consumer for.
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,
@@ -119,7 +123,8 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                 Option<String> lastCursorCommitFailure,
                                 boolean deadLetterInFlight,
                                 boolean retryInFlight,
-                                boolean awaitingCursorFetch) {}
+                                boolean awaitingCursorFetch,
+                                RewindEpoch rewindEpoch) {}
 
     /// Whether the idle reaper may unsubscribe a consumer that has not polled recently.
     ///
