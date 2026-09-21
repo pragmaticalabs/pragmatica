@@ -628,8 +628,10 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     /// #1086: the #289 fence on the scale path. [#checkVersionAsync] treats `expectedVersion=0` as the
-    /// fresh-cluster bypass, so a scale body carrying the zero default (or omitting the field) rewrote a
-    /// populated config's desired count with no fence at all. Every stored config a scale can reach is
+    /// fresh-cluster bypass, so a scale body carrying an explicit `expectedVersion:0` rewrote a populated
+    /// config's desired count with no fence at all. (An omitted or `null` field never reaches here: the
+    /// record field is a primitive `long`, the wired codec refuses it at decode time and
+    /// `RequestContext.jsonBody` answers 400.) Every stored config a scale can reach is
     /// populated (`INITIAL_CONFIG_VERSION`, and the bootstrap seed is stamped 1), so 0 here is never a
     /// first write — it is a mismatch, refused like any other. Placed where #289 placed it on
     /// apply-config: at the write, after the validator, so a request the validator refuses anyway still

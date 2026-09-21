@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,9 +25,11 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
 
 import org.junit.jupiter.api.Test;
 
@@ -35,8 +38,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1086: `POST /api/v1/cluster/scale` honoured `expectedVersion=0` as a wildcard. `checkVersionAsync`
 /// treats 0 as the "fresh cluster" bypass sentinel, and the #289 `isUnfencedOverwrite` refusal sat on
-/// the apply-config path only — so a scale body carrying the zero default (or omitting the field, which
-/// Jackson reads as 0) rewrote a populated config's desired count with no fence at all. Probed live on
+/// the apply-config path only — so a scale body carrying an explicit `expectedVersion:0` rewrote a
+/// populated config's desired count with no fence at all. An omitted or `null` field is NOT the same
+/// case: the record field is a primitive `long`, the wired codec refuses it at decode time and
+/// `RequestContext.jsonBody` answers 400 before the route runs — pinned below so the docs cannot drift
+/// back to "omitted reads as 0". Probed live on
 /// PR #1070's review: 5→7 with `expectedVersion:0` against `storedVersion=1` answered
 /// `HTTP 200 … configVersion:2`.
 ///
@@ -65,10 +71,12 @@ class ClusterConfigRoutesScaleFenceTest {
         assertUnchanged(store, 1, 3);
     }
 
-    /// The fence is keyed on the STORED version, exactly as `isUnfencedOverwrite` states it: 0 against
-    /// 0 is the fresh-cluster case and stays allowed.
+    /// A stored `configVersion=0` is UNREACHABLE on this route — every committed config carries at least
+    /// 1 (`INITIAL_CONFIG_VERSION`; the bootstrap seed is stamped 1) — so this is not an operator case.
+    /// It is kept because it is the only pin of the predicate's STORED-version operand: with the fence
+    /// reduced to `expectedVersion == 0`, this is the test that goes red.
     @Test
-    void handleScale_unversionedConfigWithZeroExpectedVersion_isAllowed() {
+    void handleScale_storedVersionZero_unreachableHere_pinsThePredicatesStoredOperand() {
         var store = storeWith(committedConfig(0));
         var response = scaleSucceeds(store, new ScaleRequest("eu", "core", 5, 0));
 
@@ -113,6 +121,42 @@ class ClusterConfigRoutesScaleFenceTest {
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterConfigError.QuorumSafetyViolation.class));
         assertUnchanged(store, 1, 3);
+    }
+
+    /// An OMITTED `expectedVersion` is not 0. `ScaleRequest.expectedVersion` is a primitive `long`; the
+    /// codec `ManagementRouter` wires refuses the body at decode time (`Type mismatch: expected long`)
+    /// and `RequestContext.jsonBody` maps that to HTTP 400 — the fence is never reached. Pinned so the
+    /// reference doc cannot drift back to "omitted reads as 0 → 409" (rev1412 M-1).
+    @Test
+    void scaleRequest_omittedExpectedVersion_isRefusedAtDecode_neverReadAsZero() {
+        var decoded = decodeThroughWiredCodec("{\"source\":\"eu\",\"role\":\"core\",\"count\":5}");
+
+        assertThat(decoded.isFailure()).as("an omitted expectedVersion must not decode: " + decoded).isTrue();
+    }
+
+    @Test
+    void scaleRequest_nullExpectedVersion_isRefusedAtDecode_neverReadAsZero() {
+        var decoded = decodeThroughWiredCodec("{\"source\":\"eu\",\"role\":\"core\",\"count\":5,\"expectedVersion\":null}");
+
+        assertThat(decoded.isFailure()).as("a null expectedVersion must not decode: " + decoded).isTrue();
+    }
+
+    /// Positive control for the two above: an explicit 0 DOES decode, and it is what the fence refuses.
+    @Test
+    void scaleRequest_explicitZeroExpectedVersion_decodes_andIsWhatTheFenceRefuses() {
+        var decoded = decodeThroughWiredCodec("{\"source\":\"eu\",\"role\":\"core\",\"count\":5,\"expectedVersion\":0}");
+
+        assertThat(decoded.isSuccess()).as(decoded.toString()).isTrue();
+        assertThat(decoded.unwrap().expectedVersion()).isEqualTo(0L);
+        var result = scale(storeWith(committedConfig(1)), decoded.unwrap());
+
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterConfigError.UnfencedOverwrite.class));
+        assertThat(result.isFailure()).isTrue();
+    }
+
+    private static Result<ScaleRequest> decodeThroughWiredCodec(String json) {
+        return JsonCodecAdapter.defaultCodec().deserialize(json.getBytes(StandardCharsets.UTF_8),
+                                                           TypeToken.typeToken(ScaleRequest.class));
     }
 
     private static void assertUnchanged(TestKVStore store, long configVersion, int coreCount) {

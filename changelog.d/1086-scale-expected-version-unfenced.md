@@ -1,8 +1,10 @@
 ### Fixed (2026-09-21 — #1086: `POST /api/v1/cluster/scale` accepted `expectedVersion:0` as an unfenced overwrite of a populated config)
 - **`ClusterConfigRoutes.applyScale` fenced only through `checkVersionAsync`, whose `expectedVersion != 0 && …`
   treats 0 as the fresh-cluster bypass; the #289 `isUnfencedOverwrite` refusal sat on the apply-config path only.**
-  A scale body carrying the zero default — or omitting the field, which Jackson reads as 0 — rewrote a populated
-  config's desired count with no fence at all: probed live on PR #1070's review, 5→7 with `expectedVersion:0`
+  A scale body carrying an explicit `expectedVersion:0` rewrote a populated config's desired count with no fence
+  at all (an omitted or `null` field is a different case: the record field is a primitive `long`, the wired codec
+  refuses it at decode time and `RequestContext.jsonBody` answers 400 — it never reached the bypass, and the ticket's
+  "a client that omits the version" wording was wrong on that half): probed live on PR #1070's review, 5→7 with `expectedVersion:0`
   against `storedVersion=1` answered `HTTP 200 … configVersion:2`. The fence exists so two operators, or an
   operator and the reconciler, cannot clobber each other's desired count; a client that sent no version bypassed it
   silently. Reproduced through the real route handler: on the unmodified base
