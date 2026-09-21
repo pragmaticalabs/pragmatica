@@ -24,6 +24,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.SnapshotConfig;
@@ -300,6 +301,29 @@ class StreamPartitionManagerRestartAfterCompactionTest {
 
         snapshots.forceSnapshot();
         assertThat(durable.current().lastSealedOffset(STREAM, PARTITION)).as("both refs on disk").isEqualTo(199L);
+    }
+
+    /// #1013 made "something on disk that does not restore" a FAILURE at the manager. For the truncation bound
+    /// it still means nothing is durable: `-1`, truncate nothing -- the direction that keeps the WAL. The boot
+    /// that could have refused this directory already ran; a truncation tick must not widen the bound on it.
+    @Test
+    void fromLatestSnapshot_snapshotOnDiskUnreadable_reportsNothingDurable() {
+        var store = MetadataStore.inMemoryMetadataStore("streams");
+        var snapshotDir = walDir.resolve("snapshots");
+        var snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(snapshotDir, "node-1"));
+        var durable = DurableSealedOffsetSource.fromLatestSnapshot(snapshots);
+
+        store.putRef("streams/" + STREAM + "/" + PARTITION + "/0-99", blockId(1));
+        snapshots.forceSnapshot();
+        assertThat(durable.current().lastSealedOffset(STREAM, PARTITION)).as("fixture control: the snapshot restores").isEqualTo(99L);
+
+        var latest = snapshotDir.resolve(FileOps.readString(snapshotDir.resolve("LATEST")).unwrap().trim());
+        var bytes = FileOps.readBytes(latest).unwrap();
+
+        FileOps.writeBytes(latest, Arrays.copyOf(bytes, bytes.length / 2)).unwrap();
+        // Fixture control: the manager now FAILS (not "none"), which is the arm this test pins.
+        assertThat(snapshots.restoreFromLatest().isFailure()).isTrue();
+        assertThat(durable.current().lastSealedOffset(STREAM, PARTITION)).as("unreadable snapshot: nothing durable").isEqualTo(-1L);
     }
 
     /// Publish [#EVENTS], let the sealer drain to the in-memory `index`, truncate the WALs off that index and
