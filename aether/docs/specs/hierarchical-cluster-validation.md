@@ -381,3 +381,71 @@ the upstream 50-case runtime matrix; it is not another execution of that entire 
 The subsequent change only records these results. CI must validate the submitted merge
 revision independently. These local multi-node tests do not establish physical-WAN or
 10,000-node operating limits.
+
+## Second review: independent membership evidence and shutdown admission
+
+Implementation `aca8c8864` includes independent SWIM-incarnation and durable-process-epoch
+fences, rejection of stale terminal health evidence before side effects, shutdown refusals
+for late and queued client requests, the stale-slice controller regression, and strict
+hierarchy acceptance selection. The final six-step build/JBCT passed with no formatting
+residue (`/private/tmp/review-r2-runtime-final-build.log`).
+
+The full consensus suite passed **859 cases, zero failures/errors/skips**. The latch-controlled
+shutdown test fails by assertion when either queued-request cancellation callback is removed;
+restored source passed. Ordinary protocol tasks retain cancellation during shutdown rather
+than being drained into activation. The existing checkpoint/recovery machinery is preserved.
+
+The membership selection passed **344 cases**, including 12 governor/admission evidence-domain
+cases. Comparing durable evidence against SWIM incarnation fails the initial ten mixed-domain
+cases; accepting equal terminal epochs fails both additional terminal-side-effect cases.
+The combined controller selection passed 13 cases, and removing the slice-source freshness
+filter failed its new actual-controller-view assertion. Restored sources passed their focused
+pins. These are FSM/controller tests, not transport-level evidence.
+
+After the final build, 43 selected node health, authority and assembly tests passed with zero
+failures/errors/skips (`/private/tmp/review-r2-runtime-node-tests.log`). The live selection below
+then passed **23 cases, zero failures/errors/skips**, in 531 seconds, with all 70 runtime
+dependencies fresh (`/private/tmp/review-r2-runtime-forge.log`). No build/install ran during
+Forge. This is a targeted final-head gate; the earlier 50-case matrix remains a distinct
+historical checkpoint.
+
+```sh
+env -u HCLOUD_TOKEN ./forge.sh HierarchyAuthorityAcceptanceTest,HierarchicalWorkerReconnectTest,HierarchicalGovernorReportLossTest,HierarchicalLeaderObservationGraceTest,HierarchicalWorkerFormationTest,HierarchicalWorkerDrainTest,HierarchicalCoreRestartTest,ClusterFormationTest,SliceInvocationTest,StreamOwnershipDriverFenceTest
+```
+
+The strict selection validator passed all seven regressions and verified the ten selected
+source classes before execution and their actual testcase records afterward. CI now separates
+foundation mutations from runtime acceptance: the latter uses the `run-hierarchy` PR label,
+manual dispatch, or main/release pushes changing hierarchy acceptance tests/checker/workflow.
+Both #1390 and #1405 carry the label. Missing, empty, failed, errored or skipped selected-class
+results refuse the gate. Generated-merge CI for the published revision remains independent
+evidence; no local result is represented as that CI run.
+
+## Second lifecycle review and final integrated acceptance
+
+Executable head `be02ea807` integrates runtime membership-domain and shutdown-admission
+corrections. The lifecycle follow-up explicitly waits for the asynchronous failure observer
+in the bounded-lane test and pins fleet admission in the presence of two stale placement
+records and an initialized capacity ledger. The reviewed predecessor already used a
+concurrent list; the new synchronization establishes callback completion, not merely visibility.
+
+The final six-step isolated build passed (`/private/tmp/lifecycle-round2-final-build.log`).
+Integrated focused tests passed **57 cases, zero failures/errors/skips**: consensus 1,
+deployment 48, control 2, node 6. Earlier broad integration on `3a9f96589` passed 679 cases
+before the subsequent consensus-only change and lifecycle test corrections.
+
+Removing the ledger-presence filter in `hasCapacity` made
+`stalePlacementsDoNotConsumeFleetCapacityWhenLedgerExists` fail its named admission assertion
+(1 case, 1 failure, zero errors). Source bytes were restored, and both affected lifecycle
+classes then passed 36 cases. The mutation restored source timestamps, so the first Forge
+freshness check correctly refused the stale deployment artifact before launching any cluster.
+The unchanged deployment module was reinstalled before restarting the gate.
+
+The same ten-class lifecycle selector recorded above passed **30 live cases, zero failures,
+errors or skips, in 619 seconds** on `be02ea807`. All 70 runtime dependencies were fresh.
+The strict report checker verified execution of all ten selected classes. No build/install
+ran during the live gate. Log: `/private/tmp/lifecycle-round2-forge.log`.
+
+The subsequent merge of runtime `74830210b` and this evidence update change documentation
+only. Historical 50-case runtime and 30-case lifecycle results retain their original tested
+revisions; they are not substitutes for this run or for CI on the published merge revision.
