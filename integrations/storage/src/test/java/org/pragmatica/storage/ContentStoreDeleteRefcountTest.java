@@ -18,6 +18,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -445,7 +447,7 @@ class ContentStoreDeleteRefcountTest {
                       .containsOnly(1);
             assertThat(collected).as("locator: X's manifest, and Z's manifest with its chunks")
                       .isEqualTo(chunksX.size() + 2);
-            assertThat(storage.resolveRef(NAME)).as("locator: the name ends at Y").isEqualTo(Option.some(manifestY));
+            assertThat(storage.resolveRef(NAME)).as("locator: the name ends at Y").isEqualTo(some(manifestY));
         }
 
         /// Same for `dropRef`: the id must come from `MetadataStore.removeRef` itself. The competing delete
@@ -502,12 +504,12 @@ class ContentStoreDeleteRefcountTest {
         }
 
         private static void fireOnce(AtomicReference<Runnable> hook, AtomicBoolean fired) {
-            var once = hook.getAndSet(null);
+            option(hook.getAndSet(null)).onPresent(once -> fire(once, fired));
+        }
 
-            if (once != null) {
-                fired.set(true);
-                once.run();
-            }
+        private static void fire(Runnable once, AtomicBoolean fired) {
+            fired.set(true);
+            once.run();
         }
 
         @Override
