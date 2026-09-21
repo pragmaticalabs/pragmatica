@@ -15,8 +15,12 @@
  */
 package org.pragmatica.consensus.rabia;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import java.nio.charset.StandardCharsets;
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BooleanSupplier;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -34,16 +38,14 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.BooleanSupplier;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #1020 — a node that restarts from disk must install its OWN persisted snapshot when it
 /// activates on its own state.
@@ -76,7 +78,8 @@ class RabiaSyncAdoptionOwnSnapshotTest {
 
     @AfterEach
     void stopEngines() {
-        engines.forEach(engine -> engine.stop().await());
+        engines.forEach(engine -> engine.stop()
+                                        .await());
     }
 
     /// n=3, self durable at phase 5, the one responder needed by the cold rule is BEHIND at phase 4.
@@ -88,14 +91,11 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         var engine = coldStarted(3, stateMachine, durableAt(OWN_PHASE, OWN_SNAPSHOT));
 
         engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
-
         assertThat(awaitActive(engine)).as("the cold rule is met and self is the floor").isTrue();
-        assertThat(stateMachine.lastRestored())
-            .as("activating on own state must install the persisted snapshot, not leave the state machine empty")
-            .isEqualTo(OWN_SNAPSHOT);
-        assertThat(engine.currentPhaseForTesting())
-            .as("the live phase must advance to the persisted phase, or the node sits at 0 behind its own commits")
-            .isEqualTo(OWN_PHASE);
+        assertThat(stateMachine.lastRestored()).as("activating on own state must install the persisted snapshot, not leave the state machine empty")
+                  .isEqualTo(OWN_SNAPSHOT);
+        assertThat(engine.currentPhaseForTesting()).as("the live phase must advance to the persisted phase, or the node sits at 0 behind its own commits")
+                  .isEqualTo(OWN_PHASE);
     }
 
     /// n=1: no peer can ever answer, so activation rides the sync retry tick with zero responses.
@@ -118,9 +118,9 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         var engine = coldStarted(3, stateMachine, durableAt(OWN_PHASE, OWN_SNAPSHOT));
 
         engine.processSyncResponse(cold(NODE_2, Phase.phase(10), PEER_SNAPSHOT));
-
         assertThat(awaitActive(engine)).isTrue();
-        assertThat(stateMachine.lastRestored()).as("a response ahead of self remains the source").isEqualTo(PEER_SNAPSHOT);
+        assertThat(stateMachine.lastRestored()).as("a response ahead of self remains the source")
+                  .isEqualTo(PEER_SNAPSHOT);
         assertThat(stateMachine.restoreCount()).as("exactly one install — the peer's").isEqualTo(1);
         assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(10));
     }
@@ -133,7 +133,6 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         var engine = coldStarted(3, stateMachine, durableAt(OWN_PHASE, new byte[0]));
 
         engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
-
         assertThat(awaitActive(engine)).isTrue();
         assertThat(stateMachine.lastRestored()).as("zero bytes are not a snapshot to install").isNull();
         assertThat(engine.currentPhaseForTesting()).isEqualTo(OWN_PHASE);
@@ -154,24 +153,21 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         engine.processSyncResponse(live(NODE_2, Phase.phase(99), PEER_SNAPSHOT));
         engine.processSyncResponse(live(NODE_3, Phase.phase(99), PEER_SNAPSHOT));
         engine.processSyncResponse(live(NODE_4, Phase.phase(99), PEER_SNAPSHOT));
-
         assertThat(awaitActive(engine)).isTrue();
         assertThat(stateMachine.lastRestored()).isEqualTo(PEER_SNAPSHOT);
         assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(99));
         stateMachine.forgetRestored();
         // Far-future Propose: `MAX_PHASE_AHEAD` past the live phase → triggerResync → Syncing.
         engine.processPropose(new Propose<>(NODE_2, Phase.phase(99 + 200), farFutureBatch()));
-
         assertThat(awaitCondition(() -> !engine.isActive())).as("far-future Propose forces a resync").isTrue();
         engine.processSyncResponse(live(NODE_2, Phase.phase(50), PEER_SNAPSHOT));
         engine.processSyncResponse(live(NODE_3, Phase.phase(50), PEER_SNAPSHOT));
         engine.processSyncResponse(live(NODE_4, Phase.phase(50), PEER_SNAPSHOT));
-
         assertThat(awaitActive(engine)).as("the node re-activates on its own state").isTrue();
-        assertThat(stateMachine.lastRestored())
-            .as("live phase 99 outranks both the responders' 50 and the disk's 5 — nothing may be installed")
-            .isNull();
-        assertThat(engine.currentPhaseForTesting()).as("the live phase is kept, not regressed to the disk's").isEqualTo(Phase.phase(99));
+        assertThat(stateMachine.lastRestored()).as("live phase 99 outranks both the responders' 50 and the disk's 5 — nothing may be installed")
+                  .isNull();
+        assertThat(engine.currentPhaseForTesting()).as("the live phase is kept, not regressed to the disk's")
+                  .isEqualTo(Phase.phase(99));
     }
 
     /// CONTROL — an amnesiac self (in-memory persistence, nothing on disk) behaves exactly as before:
@@ -182,7 +178,6 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         var engine = coldStarted(3, stateMachine, RabiaPersistence.inMemory());
 
         engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
-
         assertThat(awaitActive(engine)).isTrue();
         assertThat(stateMachine.lastRestored()).isEqualTo(PEER_SNAPSHOT);
     }
@@ -207,7 +202,9 @@ class RabiaSyncAdoptionOwnSnapshotTest {
     }
 
     private static SyncResponse<TestCommand> live(NodeId sender, Phase phase, byte[] snapshot) {
-        return new SyncResponse<>(sender, SavedState.savedState(snapshot, phase, List.of()), ResponderState.LIVE);
+        return new SyncResponse<>(sender,
+                                  SavedState.savedState(snapshot, phase, List.of()),
+                                  ResponderState.LIVE);
     }
 
     private static Batch<TestCommand> farFutureBatch() {
@@ -218,7 +215,9 @@ class RabiaSyncAdoptionOwnSnapshotTest {
     }
 
     private static SyncResponse<TestCommand> cold(NodeId sender, Phase phase, byte[] snapshot) {
-        return new SyncResponse<>(sender, SavedState.savedState(snapshot, phase, List.of()), ResponderState.COLD);
+        return new SyncResponse<>(sender,
+                                  SavedState.savedState(snapshot, phase, List.of()),
+                                  ResponderState.COLD);
     }
 
     private RabiaEngine<TestCommand> coldStarted(int clusterSize,
@@ -243,13 +242,11 @@ class RabiaSyncAdoptionOwnSnapshotTest {
 
         engines.add(engine);
         engine.clusterState(ClusterStateNotification.active());
-
         if (clusterSize > 1) {
             assertThat(awaitCondition(() -> network.getMessages()
                                                    .stream()
-                                                   .anyMatch(SyncRequest.class::isInstance)))
-                .as("engine must have started its sync round before responses are delivered")
-                .isTrue();
+                                                   .anyMatch(SyncRequest.class::isInstance))).as("engine must have started its sync round before responses are delivered")
+                      .isTrue();
         }
 
         return engine;
@@ -291,6 +288,7 @@ class RabiaSyncAdoptionOwnSnapshotTest {
             if (condition.getAsBoolean()) {
                 return true;
             }
+
             Thread.onSpinWait();
         }
 

@@ -1192,7 +1192,8 @@ public class RabiaEngine<C extends Command> {
     /// replay, notify). A live phase at or past the persisted one means the history is already in
     /// the process — a resync from ACTIVE — and installing the older snapshot would regress it.
     private void activateWithoutAdoption(Option<SavedState<C>> persisted, String reason) {
-        persisted.filter(state -> state.lastCommittedPhase().compareTo(currentPhase.get()) > 0)
+        persisted.filter(state -> state.lastCommittedPhase()
+                                       .compareTo(currentPhase.get()) > 0)
                  .onPresent(state -> restoreOwnState(state, reason))
                  .onEmpty(() -> activateOnLiveState(reason));
     }
