@@ -24,3 +24,5 @@
 - Refusal recovery and shared last-slot admission are pinned by `CapacityRefusalRecoveryTest` and identity retention by `CapacityControlledLifecycleTest`; bounded refusal delay is pinned by `CommunityPlacementAvailabilityTest.retryDelayIsBoundedExponential`. These claims are separate from the fallback-policy fixture.
 
 - Membership now keeps SWIM incarnation and durable process-epoch high-water marks and terminal fences separate. Stale/equal process evidence cannot cancel departure/death bookkeeping. Mixed-domain governor/admission and terminal-state behavior is pinned by `MembershipEvidenceDomainTest`; stale slice contributors are excluded by `ControlLoopCoverageRecoveryTest`.
+
+- Consensus shutdown refuses late submissions and completes canceled queued apply/reconfiguration requests with `NodeInactive`, retaining protocol-task shutdown cancellation. [verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaStopAdmissionTest.java]
