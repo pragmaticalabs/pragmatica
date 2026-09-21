@@ -211,7 +211,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// served stale. Every other forward is a replica-class read served by a plain local read. When no
     /// owner-serve pipeline is wired (base handler / NOOP) even a linearizable forward degrades to the
     /// local read. A `catchup` forward (#1235) from a registered replica of the partition is a replication
-    /// read, answered up to the APPENDED head. Every other forward — including a `catchup` flag from a node
+    /// read, answered up to the APPENDED head from the ring or, for an evicted prefix, this node's tier
+    /// (#1383, [#readAppended]). Every other forward — including a `catchup` flag from a node
     /// outside the replica set — is a consumer read, answered up to the VISIBLE position: a bare flag must
     /// not let an arbitrary reader opt out of visibility (CTO ruling, #1235 Fork A).
     private Promise<List<OffHeapRingBuffer.RawEvent>> serveRead(ReadForward request) {
