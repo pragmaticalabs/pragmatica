@@ -16,6 +16,18 @@
 [cluster]
 tls = false
 
+# #1020 — consensus persistence ON. Every cluster-held record (API keys minted through
+# `/api/v1/cluster/keys`, revocations, deployments, membership) lives in the replicated KV
+# store, which is durable ONLY through `[backup]`: without it a full (all-nodes) restart
+# comes back EMPTY, every minted key is gone and every revocation is undone. `path` must be
+# on a volume that outlives the container — `docker/docker-compose.yml` mounts one per node
+# at `/data`. A save happens on graceful stop (SIGTERM), quorum-loss pause and membership
+# reconfigure, never per commit: a key minted after the last save is lost to a SIGKILL.
+# See docs/operators/runbooks/backup-recovery.md.
+[backup]
+enabled = true
+path = "/data/backups"
+
 [slice]
 # "builtin" resolves artifacts from the distributed DHT (quorum reads, replicated across nodes).
 # "local" falls back to ~/.m2/repository — useful for dev, not needed in production.

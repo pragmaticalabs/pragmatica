@@ -12,6 +12,11 @@ version: "3.9"
 #   docker-compose up -d --build                  # Build from source instead of pulling
 #   docker-compose --profile forge up --build     # Start with Forge simulator (always built)
 #
+# Persistence: each node keeps its consensus checkpoint on its own named volume (see the
+# `volumes:` section at the bottom). `docker compose stop` sends SIGTERM, which is a graceful
+# stop and saves the checkpoint; `docker compose kill` does not, and loses everything committed
+# since the last save.
+#
 # NOTE — do NOT add `restart: unless-stopped`/`always` to aether-node services.
 # Aether uses a TERMINAL-REMOVAL membership model: a dead NodeId never returns under
 # the same identity; crash recovery is a brand-new node with a new ULID NodeId minted
@@ -28,6 +33,11 @@ services:
       dockerfile: docker/aether-node/Dockerfile
     container_name: aether-node-1
     hostname: aether-node-1
+    volumes:
+      - aether-node-1-data:/data
+    # Longer than the node's own 30 s shutdown bound (Main.SHUTDOWN_TIMEOUT): Compose's default 10 s
+    # would SIGKILL a slow stop before the consensus checkpoint is saved.
+    stop_grace_period: 45s
     environment:
       NODE_ID: "node-1"
       CLUSTER_PORT: "8090"
@@ -55,6 +65,11 @@ services:
       dockerfile: docker/aether-node/Dockerfile
     container_name: aether-node-2
     hostname: aether-node-2
+    volumes:
+      - aether-node-2-data:/data
+    # Longer than the node's own 30 s shutdown bound (Main.SHUTDOWN_TIMEOUT): Compose's default 10 s
+    # would SIGKILL a slow stop before the consensus checkpoint is saved.
+    stop_grace_period: 45s
     environment:
       NODE_ID: "node-2"
       CLUSTER_PORT: "8090"
@@ -85,6 +100,11 @@ services:
       dockerfile: docker/aether-node/Dockerfile
     container_name: aether-node-3
     hostname: aether-node-3
+    volumes:
+      - aether-node-3-data:/data
+    # Longer than the node's own 30 s shutdown bound (Main.SHUTDOWN_TIMEOUT): Compose's default 10 s
+    # would SIGKILL a slow stop before the consensus checkpoint is saved.
+    stop_grace_period: 45s
     environment:
       NODE_ID: "node-3"
       CLUSTER_PORT: "8090"
@@ -128,3 +148,13 @@ services:
 networks:
   aether-network:
     driver: bridge
+
+# #1020 — one named volume per node, mounted at /data, where the image's aether.toml keeps
+# consensus persistence (`[backup] path = "/data/backups"`). It is what makes cluster-minted API
+# keys, revocations and deployments survive `docker compose stop` / `down` + `up`. `down -v`
+# deletes them: that is a deliberate cluster reset, and every node's volume must go together —
+# see docs/operators/runbooks/backup-recovery.md, "Intentionally resetting a cluster".
+volumes:
+  aether-node-1-data:
+  aether-node-2-data:
+  aether-node-3-data:

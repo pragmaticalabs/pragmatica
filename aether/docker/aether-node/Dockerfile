@@ -11,8 +11,10 @@ ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmatica"
 
-# Install iptables for network partition testing (E2E tests)
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends iptables wget && rm -rf /var/lib/apt/lists/*
+# Install iptables for network partition testing (E2E tests), and git for consensus persistence:
+# `GitBackedPersistence` (`[backup]` in aether.toml, #1020) commits every checkpoint with the git
+# CLI. Without it the checkpoint file is still written and restored, but every save logs an error.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends iptables wget git && rm -rf /var/lib/apt/lists/*
 
 # Copy Docker CLI binary for scaling operations (used with mounted Docker socket)
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
