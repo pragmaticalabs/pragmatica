@@ -26,6 +26,7 @@ import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
@@ -64,6 +65,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RabiaSyncAdoptionOwnSnapshotTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
+    private static final NodeId NODE_3 = nodeId("node-3").unwrap();
+    private static final NodeId NODE_4 = nodeId("node-4").unwrap();
     private static final long ACTIVATION_TIMEOUT_MILLIS = 5_000;
     private static final byte[] OWN_SNAPSHOT = "own".getBytes(StandardCharsets.UTF_8);
     private static final byte[] PEER_SNAPSHOT = "peer".getBytes(StandardCharsets.UTF_8);
@@ -136,6 +139,41 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         assertThat(engine.currentPhaseForTesting()).isEqualTo(OWN_PHASE);
     }
 
+    /// CONTROL for the guard — a resync from ACTIVE must NOT regress onto a STALE disk snapshot. The
+    /// live phase reaches 99 by adopting a live majority; a far-future Propose forces a resync; a live
+    /// majority behind at 50 is refused by the floor, and the node re-activates on its own state. Its
+    /// own PERSISTED state sits at phase 5 — `persistence.save` never runs on commit, so the disk lags
+    /// the process — and installing it would overwrite phase 99 with phase 5. The persisted snapshot is
+    /// installed only when it is AHEAD of the live phase; here it is behind, so nothing is installed.
+    /// The persistence fixture ignores `save`, which keeps the disk arm stale through the first adoption.
+    @Test
+    void resyncFromActive_ownStaleDiskSnapshotIsNotInstalledOverTheLivePhase() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = coldStarted(5, stateMachine, durableAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        engine.processSyncResponse(live(NODE_2, Phase.phase(99), PEER_SNAPSHOT));
+        engine.processSyncResponse(live(NODE_3, Phase.phase(99), PEER_SNAPSHOT));
+        engine.processSyncResponse(live(NODE_4, Phase.phase(99), PEER_SNAPSHOT));
+
+        assertThat(awaitActive(engine)).isTrue();
+        assertThat(stateMachine.lastRestored()).isEqualTo(PEER_SNAPSHOT);
+        assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(99));
+        stateMachine.forgetRestored();
+        // Far-future Propose: `MAX_PHASE_AHEAD` past the live phase → triggerResync → Syncing.
+        engine.processPropose(new Propose<>(NODE_2, Phase.phase(99 + 200), farFutureBatch()));
+
+        assertThat(awaitCondition(() -> !engine.isActive())).as("far-future Propose forces a resync").isTrue();
+        engine.processSyncResponse(live(NODE_2, Phase.phase(50), PEER_SNAPSHOT));
+        engine.processSyncResponse(live(NODE_3, Phase.phase(50), PEER_SNAPSHOT));
+        engine.processSyncResponse(live(NODE_4, Phase.phase(50), PEER_SNAPSHOT));
+
+        assertThat(awaitActive(engine)).as("the node re-activates on its own state").isTrue();
+        assertThat(stateMachine.lastRestored())
+            .as("live phase 99 outranks both the responders' 50 and the disk's 5 — nothing may be installed")
+            .isNull();
+        assertThat(engine.currentPhaseForTesting()).as("the live phase is kept, not regressed to the disk's").isEqualTo(Phase.phase(99));
+    }
+
     /// CONTROL — an amnesiac self (in-memory persistence, nothing on disk) behaves exactly as before:
     /// the cold rule adopts the response, whatever its phase.
     @Test
@@ -166,6 +204,17 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         }
 
         return new durable(phase, snapshot);
+    }
+
+    private static SyncResponse<TestCommand> live(NodeId sender, Phase phase, byte[] snapshot) {
+        return new SyncResponse<>(sender, SavedState.savedState(snapshot, phase, List.of()), ResponderState.LIVE);
+    }
+
+    private static Batch<TestCommand> farFutureBatch() {
+        return new Batch<>(Batch.Id.randomId(),
+                           List.of(CorrelationId.randomCorrelationId()),
+                           System.nanoTime(),
+                           List.of(new TestCommand("resync")));
     }
 
     private static SyncResponse<TestCommand> cold(NodeId sender, Phase phase, byte[] snapshot) {
@@ -220,6 +269,10 @@ class RabiaSyncAdoptionOwnSnapshotTest {
 
         byte[] lastRestored() {
             return lastRestored;
+        }
+
+        void forgetRestored() {
+            lastRestored = null;
         }
 
         int restoreCount() {
