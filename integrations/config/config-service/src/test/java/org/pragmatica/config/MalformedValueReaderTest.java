@@ -118,4 +118,32 @@ class MalformedValueReaderTest {
             assertThat(service(Map.of("server.secure", "false")).getBoolean("server.secure")).isEqualTo(Result.success(Option.some(false)));
         }
     }
+
+    /// The TOML-backed `ConfigService` (no production caller, kept honest all the same): a quoted
+    /// value that is not a number or a boolean is refused, not read as absent.
+    @Nested
+    class TomlConfigServiceReaders {
+        private ConfigService toml(String content) {
+            return TomlConfigService.tomlConfigService(content).unwrap();
+        }
+
+        @Test
+        void getInt_malformedValue_isRefusedNamingKeyAndValue() {
+            assertRefusedNamingKeyAndValue(toml("[server]\nport = \"80x\"\n").getInt("server.port"), "server.port", "80x");
+        }
+
+        @Test
+        void getBoolean_malformedValue_isRefusedNamingKeyAndValue() {
+            assertRefusedNamingKeyAndValue(toml("[server]\nsecure = \"yes\"\n").getBoolean("server.secure"),
+                                           "server.secure",
+                                           "yes");
+        }
+
+        @Test
+        void absentKey_isSuccessNone_wellFormed_isSuccessSome() {
+            assertThat(toml("[server]\nport = 80\nsecure = true\n").getInt("server.nope")).isEqualTo(Result.success(Option.none()));
+            assertThat(toml("[server]\nport = 80\nsecure = true\n").getInt("server.port")).isEqualTo(Result.success(Option.some(80)));
+            assertThat(toml("[server]\nport = 80\nsecure = true\n").getBoolean("server.secure")).isEqualTo(Result.success(Option.some(true)));
+        }
+    }
 }
