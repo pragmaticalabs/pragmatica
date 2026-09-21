@@ -20,6 +20,6 @@
   segment disk tier unavailable, so the DHT holds the only durable copy; then a plain reboot), the
   forward-direction marker write (including that sealed segments still reach the DHT with the disk
   tier available), the unmarked-plain control, and the never-ready pin through `dhtAdmission`;
-  `AetherNodeStreamsDhtMarkerBootTest` drives a real single-node `start()` in both directions plus the
+  `AetherNodeDhtMarkerPostFormationBootTest` gains streams siblings that drive a real single-node `start()` in both directions plus the
   plain control. The `known-limitations.md` and `configuration.md` lines that declared the gap are
   updated.

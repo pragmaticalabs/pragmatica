@@ -993,14 +993,14 @@ class StorageFactoryEncryptionTest {
     }
 
     /// #849 ruling (2026-09-21, "never-ready pin"): the node-level consequence of the refusal above,
-    /// through `StorageFactory`'s two admission functions rather than a single check --
-    /// [StorageFactory#verifyDhtMarkers] over every setup's check and [StorageFactory#dhtAdmission]
-    /// over every read gate. Those are what `AetherNode.start()` calls (`verifyDhtMarkers`, then the
-    /// NDM self-ready signal deferred on `dhtAdmission` in `markSubsystemsReadyOnceDhtAdmitted`), but
-    /// the check LIST here is built by [#checksOf], a test mirror of `AetherNode`'s private loop --
-    /// this test cannot see that loop diverge. The real-boundary pin, through a real `start()`, is
-    /// `AetherNodeStreamsDhtMarkerBootTest`; what this one adds is the refusal's exact identity
-    /// (`containsExactly` on the record) and that `artifacts`/`content` admit alongside. Over a marked
+    /// through the same two `StorageFactory` steps `AetherNode.start()` runs --
+    /// [StorageFactory#verifyDhtMarkers], then [StorageFactory#dhtAdmission] (the promise the NDM
+    /// self-ready signal is deferred on) -- over a TEST-BUILT check list ([#checksOf]). A divergence in
+    /// `AetherNode`'s own list-building loop (a hard-coded instance list, a filter) is invisible here;
+    /// that is pinned on a real `start()` by `AetherNodeDhtMarkerPostFormationBootTest`'s streams
+    /// cases (claim 6). What this one uniquely pins is the refusal's exact identity (`containsExactly`
+    /// on the record: instance name AND key id) and the composite-cause shape readiness is withheld
+    /// with, while `artifacts`/`content` admit alongside. Over a marked
     /// `stream-segments` namespace with `streams_encrypted = false`, readiness must be WITHHELD with
     /// `EncryptedTierRequiresKeyring("streams", "key-1")` while the unmarked `artifacts`/`content`
     /// namespaces in the same boot are admitted -- so the withheld readiness is streams' alone. Before
