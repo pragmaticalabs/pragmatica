@@ -60,6 +60,39 @@ public interface StorageInstance {
         return Promise.success(unit());
     }
 
+    /// [#putRef] that also reports which block the swap DISPLACED -- the id `name` pointed at until this
+    /// call, taken from the same atomic pointer swap that installs the new one, so each displaced id is
+    /// handed out exactly once however many writers race on `name`. [DefaultContentStore] releases the
+    /// displaced manifest's chunks from this, never from a pre-read of the name: two overwrites of one
+    /// name that both pre-read the same manifest would both release its chunks, and a third name
+    /// deduplicating to them would lose them (#981 round 2). Counting is [#putRef]'s: the displaced
+    /// block is already decremented when this resolves.
+    ///
+    /// The default composes a pre-read with [#putRef] -- correct for one writer per name, NOT under
+    /// contention; an implementation with an atomic swap (`DefaultStorageInstance`) overrides it, and a
+    /// double that delegates to one must delegate this too or it re-opens the race.
+    default Promise<RefSwap> swapRef(String name, byte[] content) {
+        var displaced = resolveRef(name);
+
+        return putRef(name, content).map(current -> RefSwap.refSwap(current, displaced));
+    }
+
+    /// [#deleteRef] that reports which block `name` pointed at, from the same atomic removal --
+    /// exactly once per removal, so two deletes of one name release its manifest's chunks once. Same
+    /// default caveat as [#swapRef].
+    default Promise<Option<BlockId>> dropRef(String name) {
+        var displaced = resolveRef(name);
+
+        return deleteRef(name).map(_ -> displaced);
+    }
+
+    /// What a ref swap did: the block `name` now points at, and the one it displaced, if any.
+    record RefSwap(BlockId current, Option<BlockId> displaced) {
+        static RefSwap refSwap(BlockId current, Option<BlockId> displaced) {
+            return new RefSwap(current, displaced);
+        }
+    }
+
     /// Writes (or deduplicates) `content` and points `name` at the resulting block -- the write-and-ref
     /// primitive, and the only correct way to store content under a name.
     ///
@@ -98,8 +131,8 @@ public interface StorageInstance {
     /// A tier reporting [StorageTier#isShared] is skipped -- this node's local refcount
     /// belief is not authoritative for a cluster-shared tier, so orphan-driven garbage
     /// collection must never issue a delete against it. Used by [StorageGarbageCollector];
-    /// callers that legitimately need "delete everywhere" (explicit content/manifest
-    /// deletion, stream retention) must keep using [#delete].
+    /// a caller that legitimately needs "delete everywhere" (stream retention) must keep
+    /// using [#delete] -- content/manifest deletion no longer does; it releases (#981).
     ///
     /// Default falls back to [#delete] -- correct for any implementation with no
     /// tier-sharing concept (e.g. test doubles). Only [DefaultStorageInstance], where the
@@ -213,10 +246,16 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Unit> deleteRef(String refName) {
-        metadataStore.removeRef(refName)
-                     .onPresent(id -> metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented));
+        return dropRef(refName).mapToUnit();
+    }
 
-        return Promise.success(unit());
+    @Override
+    public Promise<Option<BlockId>> dropRef(String refName) {
+        var displaced = metadataStore.removeRef(refName);
+
+        displaced.onPresent(id -> metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented));
+
+        return Promise.success(displaced);
     }
 
     @Override
@@ -228,6 +267,11 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<BlockId> putRef(String refName, byte[] content) {
+        return swapRef(refName, content).map(RefSwap::current);
+    }
+
+    @Override
+    public Promise<RefSwap> swapRef(String refName, byte[] content) {
         return BlockId.blockId(content)
                       .async()
                       .flatMap(id -> handlePut(id, content))
@@ -282,11 +326,12 @@ final class DefaultStorageInstance implements StorageInstance {
     /// displaced block (never decremented, stays live). The swap-then-decrement order is still load-
     /// bearing for a different hazard: a concurrent GC scan can never observe a floor-clamped
     /// transient zero on a block that is, at that same instant, still genuinely live (#737).
-    private BlockId repointRef(String refName, BlockId newId) {
-        metadataStore.replaceRef(refName, newId)
-                     .onPresent(oldId -> metadataStore.computeLifecycle(oldId, BlockLifecycle::withRefCountDecremented));
+    private RefSwap repointRef(String refName, BlockId newId) {
+        var displaced = metadataStore.replaceRef(refName, newId);
 
-        return newId;
+        displaced.onPresent(oldId -> metadataStore.computeLifecycle(oldId, BlockLifecycle::withRefCountDecremented));
+
+        return RefSwap.refSwap(newId, displaced);
     }
 
     /// The claim IS the block's lifecycle record -- there is no second one. It names the tier the

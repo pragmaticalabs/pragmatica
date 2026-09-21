@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.lang.Option;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
+import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -39,7 +41,7 @@ class ContentStoreDeleteRefcountTest {
     private MemoryTier memoryTier;
     private DeleteObservingTier tier;
     private MetadataStore metadataStore;
-    private StorageInstance storage;
+    private GatedStorage storage;
     private ContentStore store;
     private StorageGarbageCollector gc;
 
@@ -54,11 +56,14 @@ class ContentStoreDeleteRefcountTest {
         memoryTier = MemoryTier.memoryTier(tierCapacity);
         tier = new DeleteObservingTier(memoryTier);
         metadataStore = MetadataStore.inMemoryMetadataStore("content-delete-refcount");
-        storage = StorageInstance.storageInstance("content-delete-refcount", List.of(tier), metadataStore);
+        var instance = StorageInstance.storageInstance("content-delete-refcount", List.of(tier), metadataStore);
+
+        storage = new GatedStorage(instance);
         store = ContentStore.contentStore(storage, ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
         // Grace 0 is floored to 1ms by GarbageCollectorConfig; the sleep before each cycle is what lets
-        // collection proceed (see ContentStoreReclamationTest).
-        gc = storageGarbageCollector(storage, metadataStore, garbageCollectorConfig(0, 500));
+        // collection proceed (see ContentStoreReclamationTest). The collector runs on the real instance:
+        // the gate is for the content store's calls only.
+        gc = storageGarbageCollector(instance, metadataStore, garbageCollectorConfig(0, 500));
         gc.activate();
     }
 
@@ -328,6 +333,195 @@ class ContentStoreDeleteRefcountTest {
             deleteContent(NAME);
             assertThat(tier.deletes()).as("neither the manifest nor a chunk is deleted by the content store").isZero();
             assertThat(chunks).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
+        }
+    }
+
+    @Nested
+    class SameNameConcurrency {
+        /// rev1420's P1, the round-1 regression: two overwrites of the SAME name interleave so both pre-read
+        /// the same previous manifest; a fix that released the PRE-READ chunks released them twice, and a
+        /// third name deduplicating to those chunks went 2 -> 1 -> 0 and was collected. The base only leaked
+        /// the loser's chunks (symptom 1); the round-1 head lost B's data (symptom 2 on the concurrent path).
+        /// Interleaving: put1(A, Y) pre-reads X and is parked at its FIRST chunk write; put2(A, Z) runs to
+        /// completion (displaces X, releases X's chunks); the gate opens; put1 finishes and displaces Z --
+        /// so it must release Z's chunks, never X's again. Red under a pre-read release: B unreadable,
+        /// `One or more content chunks are missing`.
+        @Test
+        void put_sameNameInterleaved_releasesEachDisplacedManifestOnce_andKeepsAThirdNameReadable() {
+            var x = generateContent(CHUNK_SIZE * 3 + 15, 1);
+            var y = generateContent(CHUNK_SIZE * 3 + 15, 2);
+            var z = generateContent(CHUNK_SIZE * 3 + 15, 3);
+
+            putContent(OTHER_NAME, x);
+            var chunksX = chunkIdsOf(putContent(NAME, x));
+            var sharedBefore = refCountsOf(chunksX);
+
+            storage.holdNextPut();
+            var put1 = store.put(NAME, y);
+            var put1Parked = !put1.isResolved();
+            var put2 = store.put(NAME, z).await();
+            var chunksZ = chunkIdsOf(BlockId.fromHex(put2.unwrap()).unwrap());
+            var xAfterPut2 = refCountsOf(chunksX);
+
+            storage.openPutGate();
+            var put1Result = put1.await();
+            var xAfterBoth = refCountsOf(chunksX);
+            var zAfterBoth = refCountsOf(chunksZ);
+            var collected = collectAfterGrace(gc);
+
+            assertReadable(OTHER_NAME, x);
+            assertReadable(NAME, y);
+            assertThat(collected).as("Z's manifest and chunks, X's manifest: the two displaced documents, once each")
+                      .isEqualTo(chunksZ.size() + 2);
+            assertThat(put1Parked).as("locator: put1 must be parked at its first chunk write").isTrue();
+            assertThat(put2.isSuccess()).as("locator: put2 must complete while put1 is parked").isTrue();
+            assertThat(put1Result.isSuccess()).as("locator: put1 must complete once released").isTrue();
+            assertThat(sharedBefore).as("locator: both names share X's chunks").containsOnly(2);
+            assertThat(xAfterPut2).as("locator: put2 released X's chunks once").containsOnly(1);
+            assertThat(xAfterBoth).as("locator: put1 must not release X's chunks again -- B still holds them")
+                      .containsOnly(1);
+            assertThat(zAfterBoth).as("locator: put1 displaced Z, so Z's chunks are the ones it releases")
+                      .containsOnly(0);
+        }
+
+        /// rev1420's P3: two deletes of the SAME name interleave (both pre-read the manifest, the first is
+        /// parked at its ref drop); a third name holds the chunks. Only the delete whose drop actually
+        /// removed the name releases; the other drops nothing and releases nothing. Not a regression
+        /// against the base (which destroyed the chunks outright) -- pinned to bound the same-name hazard.
+        @Test
+        void delete_sameNameInterleaved_releasesTheManifestOnce_andKeepsAThirdNameReadable() {
+            var content = generateContent(CHUNK_SIZE * 3 + 15, 1);
+
+            putContent(OTHER_NAME, content);
+            var chunks = chunkIdsOf(putContent(NAME, content));
+
+            storage.holdNextDropRef();
+            var delete1 = store.delete(NAME);
+            var delete1Parked = !delete1.isResolved();
+            var delete2 = store.delete(NAME).await();
+            var afterDelete2 = refCountsOf(chunks);
+
+            storage.openDropRefGate();
+            var delete1Result = delete1.await();
+            var afterBoth = refCountsOf(chunks);
+            var collected = collectAfterGrace(gc);
+
+            assertReadable(OTHER_NAME, content);
+            assertThat(collected).as("only the deleted name's manifest is collectible").isEqualTo(1);
+            assertThat(delete1Parked).as("locator: delete1 must be parked at its ref drop").isTrue();
+            assertThat(delete2.isSuccess()).as("locator: delete2 must complete while delete1 is parked").isTrue();
+            assertThat(delete1Result.isSuccess()).as("locator: delete1 must complete once released").isTrue();
+            assertThat(afterDelete2).as("locator: the delete that removed the name released once").containsOnly(1);
+            assertThat(afterBoth).as("locator: the delete that removed nothing released nothing").containsOnly(1);
+        }
+    }
+
+    /// Delegates everything -- INCLUDING `release`, `swapRef` and `dropRef`, whose interface defaults would
+    /// re-open the race -- and can park one chunk `put` or one `dropRef` behind a gate.
+    private static final class GatedStorage implements StorageInstance {
+        private final StorageInstance delegate;
+        private final AtomicBoolean holdPut = new AtomicBoolean();
+        private final AtomicBoolean holdDropRef = new AtomicBoolean();
+        private final Promise<Unit> putGate = Promise.promise();
+        private final Promise<Unit> dropRefGate = Promise.promise();
+
+        GatedStorage(StorageInstance delegate) {
+            this.delegate = delegate;
+        }
+
+        void holdNextPut() {
+            holdPut.set(true);
+        }
+
+        void openPutGate() {
+            putGate.succeed(unit());
+        }
+
+        void holdNextDropRef() {
+            holdDropRef.set(true);
+        }
+
+        void openDropRefGate() {
+            dropRefGate.succeed(unit());
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content) {
+            return holdPut.compareAndSet(true, false)
+                   ? putGate.flatMap(_ -> delegate.put(content))
+                   : delegate.put(content);
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
+            return delegate.put(content, metadata);
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return delegate.get(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return delegate.exists(id);
+        }
+
+        @Override
+        public Promise<Unit> createRef(String name, BlockId id) {
+            return delegate.createRef(name, id);
+        }
+
+        @Override
+        public Option<BlockId> resolveRef(String name) {
+            return delegate.resolveRef(name);
+        }
+
+        @Override
+        public Promise<Unit> deleteRef(String name) {
+            return delegate.deleteRef(name);
+        }
+
+        @Override
+        public Promise<Option<BlockId>> dropRef(String name) {
+            return holdDropRef.compareAndSet(true, false)
+                   ? dropRefGate.flatMap(_ -> delegate.dropRef(name))
+                   : delegate.dropRef(name);
+        }
+
+        @Override
+        public Promise<Unit> release(BlockId id) {
+            return delegate.release(id);
+        }
+
+        @Override
+        public Promise<BlockId> putRef(String name, byte[] content) {
+            return delegate.putRef(name, content);
+        }
+
+        @Override
+        public Promise<RefSwap> swapRef(String name, byte[] content) {
+            return delegate.swapRef(name, content);
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return delegate.delete(id);
+        }
+
+        @Override
+        public String name() {
+            return delegate.name();
+        }
+
+        @Override
+        public List<TierInfo> tierInfo() {
+            return delegate.tierInfo();
+        }
+
+        @Override
+        public void shutdown() {
+            delegate.shutdown();
         }
     }
 
