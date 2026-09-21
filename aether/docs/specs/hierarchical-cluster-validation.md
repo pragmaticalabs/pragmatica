@@ -148,3 +148,15 @@ and asserts nonempty V0 ballots in the first slot and round. Later slots may leg
 Final consensus and live-recovery gate results are recorded on the PR and by the merge-head
 CI artifact contract above. A sandboxed full-suite attempt could not bind local QUIC sockets;
 it is not correctness evidence and was replaced with an invocation that permits loopback sockets.
+
+At production revision `035566cd9`, the complete consensus module passed **834 tests, zero
+failures/errors/skips**, including local QUIC sockets and all repeated schedules:
+
+```sh
+env -u HCLOUD_TOKEN mvn -T1 -pl integrations/consensus test
+```
+
+Log: `/private/tmp/hierarchy-review-consensus-full2.log` (approximately five minutes).
+The two new request-outcome tests subsequently use bounded `Promise.await(TimeSpan)` for
+terminal results, avoiding a race with asynchronous callback dispatch. Their focused rerun
+is recorded in `/private/tmp/hierarchy-review-recovery-pending-final.log`.

@@ -92,15 +92,14 @@ class RabiaReorderedDeliveryTest {
         cluster.settle();
         assertThat(recovering.currentPhaseForTesting()).isEqualTo(Phase.phase(1));
         assertThat(recovering.pendingBatchCountForTesting()).isEqualTo(1);
-        assertThat(uncertain.isResolved()).isTrue();
-        uncertain.await().onFailure(cause -> assertThat(cause)
+        var outcome = uncertain.await(timeSpan(3).seconds());
+        assertThat(outcome.isFailure()).isTrue();
+        outcome.onFailure(cause -> assertThat(cause)
             .isInstanceOf(org.pragmatica.consensus.ConsensusError.SnapshotOutcomeUnknown.class));
-        assertThat(uncertain.await().isFailure()).isTrue();
         assertThat(retainedAnswer.isResolved()).isFalse();
         recovering.processDecision(new Decision<>(cluster.members.get(1), Phase.phase(1), StateValue.V1, pending));
         cluster.settle();
-        assertThat(retainedAnswer.isResolved()).isTrue();
-        assertThat(retainedAnswer.await().isSuccess()).isTrue();
+        assertThat(retainedAnswer.await(timeSpan(3).seconds()).isSuccess()).isTrue();
         assertThat(cluster.machines.getFirst().getProcessedCommands()).containsExactlyElementsOf(
             java.util.stream.Stream.concat(covered.stream(), retained.stream()).toList());
         assertThat(recovering.pendingBatchCountForTesting()).isZero();
@@ -128,8 +127,7 @@ class RabiaReorderedDeliveryTest {
         var batch = Batch.create(cluster.machines.getFirst().serializer(), commands);
         recovering.processDecision(new Decision<>(cluster.members.get(1), Phase.ZERO, StateValue.V1, batch));
         cluster.settle();
-        assertThat(answer.isResolved()).isTrue();
-        assertThat(answer.await().isSuccess()).isTrue();
+        assertThat(answer.await(timeSpan(3).seconds()).isSuccess()).isTrue();
         assertThat(cluster.machines.getFirst().getProcessedCommands()).containsExactlyElementsOf(commands);
     }
 
