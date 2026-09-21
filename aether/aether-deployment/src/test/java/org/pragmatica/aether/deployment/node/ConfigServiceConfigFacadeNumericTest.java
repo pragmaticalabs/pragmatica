@@ -11,12 +11,14 @@ import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.Test;
 
+import static org.pragmatica.config.ProviderBasedConfigService.providerBasedConfigService;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.config.ProviderBasedConfigService.providerBasedConfigService;
 
 
 /// #276 R20: the legacy `ConfigService` adapter parsed numbers with `Long.parseLong` /
@@ -60,31 +62,38 @@ class ConfigServiceConfigFacadeNumericTest {
     /// path on which the caller's default applies silently. (Before #1098 this test asserted the
     /// opposite, `readsAsAbsent` — it specified the defect.)
     @Test
-    void getLong_malformedValue_isNotAbsent_doesNotThrow() {
-        var value = callWithoutThrowing(() -> FACADE.getLong("pool", "size"));
-
-        assertThat(value.isEmpty()).describedAs("pool.size=\"twelve\" read as absent, default would apply").isFalse();
+    void getLong_malformedValue_failsNamingKeyAndValue_doesNotThrow() {
+        assertRefused(callWithoutThrowing(() -> FACADE.getLong("pool", "size")), "pool.size", "twelve");
     }
 
     @Test
-    void getDouble_malformedValue_isNotAbsent_doesNotThrow() {
-        var value = callWithoutThrowing(() -> FACADE.getDouble("pool", "ratio"));
-
-        assertThat(value.isEmpty()).describedAs("pool.ratio=\"half\" read as absent, default would apply").isFalse();
+    void getDouble_malformedValue_failsNamingKeyAndValue_doesNotThrow() {
+        assertRefused(callWithoutThrowing(() -> FACADE.getDouble("pool", "ratio")), "pool.ratio", "half");
     }
 
     @Test
-    void getInt_malformedValue_isNotAbsent_doesNotThrow() {
-        var value = callWithoutThrowing(() -> FACADE.getInt("pool", "size"));
+    void getInt_malformedValue_failsNamingKeyAndValue_doesNotThrow() {
+        assertRefused(callWithoutThrowing(() -> FACADE.getInt("pool", "size")), "pool.size", "twelve");
+    }
 
-        assertThat(value.isEmpty()).describedAs("pool.size=\"twelve\" read as absent, default would apply").isFalse();
+    /// Before #1098 `ConfigService.getBoolean` went through `Boolean.parseBoolean`, so `"yes"` was
+    /// not absent but a silent `false`.
+    @Test
+    void getBoolean_malformedValue_failsNamingKeyAndValue_doesNotThrow() {
+        assertRefused(callWithoutThrowing(() -> FACADE.getBoolean("pool", "flag")), "pool.flag", "yes");
     }
 
     @Test
-    void getBoolean_malformedValue_isNotAbsent_doesNotThrow() {
-        var value = callWithoutThrowing(() -> FACADE.getBoolean("pool", "flag"));
+    void requireInt_and_requireBoolean_malformedValue_failNamingKeyAndValue() {
+        assertRefused(FACADE.requireInt("pool", "size"), "pool.size", "twelve");
+        assertRefused(FACADE.requireBoolean("pool", "flag"), "pool.flag", "yes");
+    }
 
-        assertThat(value.isEmpty()).describedAs("pool.flag=\"yes\" read as absent, default would apply").isFalse();
+    private static void assertRefused(Result<?> read, String key, String raw) {
+        assertThat(read.isFailure()).describedAs("%s=\"%s\" must be refused, read %s", key, raw, read).isTrue();
+        read.onFailure(cause -> assertThat(cause.message()).contains(key)
+                                          .contains(raw)
+                                          .doesNotContain("not found"));
     }
 
     /// Control: well-formed values still parse.
@@ -95,15 +104,16 @@ class ConfigServiceConfigFacadeNumericTest {
 
         assertThat(max).isEqualTo(42L);
         assertThat(load).isEqualTo(0.75);
-        assertThat(FACADE.getLong("pool", "max").or(-1L)).isEqualTo(42L);
-        assertThat(FACADE.getDouble("pool", "load").or(-1.0)).isEqualTo(0.75);
+        assertThat(FACADE.getLong("pool", "max")).isEqualTo(Result.success(Option.some(42L)));
+        assertThat(FACADE.getDouble("pool", "load")).isEqualTo(Result.success(Option.some(0.75)));
     }
 
     /// Control: an absent key is a missing-key failure, distinct from a malformed one.
     @Test
     void absentKey_isMissing() {
         assertThat(FACADE.requireLong("pool", "nope").isFailure()).isTrue();
-        assertThat(FACADE.getLong("pool", "nope").isEmpty()).isTrue();
+        assertThat(FACADE.getLong("pool", "nope")).isEqualTo(Result.success(Option.none()));
+        assertThat(FACADE.getInt("pool", "nope")).isEqualTo(Result.success(Option.none()));
     }
 
     private static <T> T callWithoutThrowing(Supplier<T> call) {

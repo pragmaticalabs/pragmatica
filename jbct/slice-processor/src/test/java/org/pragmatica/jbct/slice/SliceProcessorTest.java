@@ -250,10 +250,10 @@ class SliceProcessorTest {
                 Result<Boolean> requireBoolean(String section, String key);
                 Result<List<String>> requireStringList(String section, String key);
                 Option<String> getString(String section, String key);
-                Option<Integer> getInt(String section, String key);
-                Option<Long> getLong(String section, String key);
-                Option<Double> getDouble(String section, String key);
-                Option<Boolean> getBoolean(String section, String key);
+                Result<Option<Integer>> getInt(String section, String key);
+                Result<Option<Long>> getLong(String section, String key);
+                Result<Option<Double>> getDouble(String section, String key);
+                Result<Option<Boolean>> getBoolean(String section, String key);
             }
             """);
 

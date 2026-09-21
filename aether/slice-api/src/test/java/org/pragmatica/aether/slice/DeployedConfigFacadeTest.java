@@ -155,31 +155,37 @@ class DeployedConfigFacadeTest {
         void optionalReadsReturnNoneWhenAbsentAndValueWhenPresent() {
             var populated = facade(Map.of(SECTION + ".weight", "7"));
 
-            assertThat(populated.getInt(SECTION, "weight").or(-1)).isEqualTo(7);
-            assertThat(facade(Map.of()).getInt(SECTION, "weight").isPresent()).isFalse();
+            assertThat(populated.getInt(SECTION, "weight")).isEqualTo(Result.success(Option.some(7)));
+            assertThat(facade(Map.of()).getInt(SECTION, "weight")).isEqualTo(Result.success(Option.none()));
             assertThat(facade(Map.of()).getString(SECTION, "host").isPresent()).isFalse();
-            assertThat(facade(Map.of()).getBoolean(SECTION, "secure").isPresent()).isFalse();
-            assertThat(facade(Map.of()).getLong(SECTION, "size").isPresent()).isFalse();
-            assertThat(facade(Map.of()).getDouble(SECTION, "ratio").isPresent()).isFalse();
+            assertThat(facade(Map.of()).getBoolean(SECTION, "secure")).isEqualTo(Result.success(Option.none()));
+            assertThat(facade(Map.of()).getLong(SECTION, "size")).isEqualTo(Result.success(Option.none()));
+            assertThat(facade(Map.of()).getDouble(SECTION, "ratio")).isEqualTo(Result.success(Option.none()));
         }
 
-        /// #1098 — a PRESENT but UNPARSEABLE value must not read as absent: that is what lets the
-        /// slice's default apply and `@ConfigUpdate` run with a state nobody configured.
+        /// #1098 — a PRESENT but UNPARSEABLE value must not read as absent: that is what let the
+        /// slice's default apply and `@ConfigUpdate` run with a state nobody configured. It is a
+        /// failure naming the key, the value and the slice.
         @Test
-        void optionalReadsDoNotReadAMalformedValueAsAbsent() {
+        void optionalReadsRefuseAMalformedValueNamingKeyValueAndSlice() {
             var config = facade(Map.of(SECTION + ".port", "80x",
                                         SECTION + ".size", "twelve",
                                         SECTION + ".ratio", "half",
                                         SECTION + ".secure", "yes"));
 
-            assertThat(config.getInt(SECTION, "port").isEmpty()).describedAs("port=\"80x\" read as absent, default would apply")
-                                                                 .isFalse();
-            assertThat(config.getLong(SECTION, "size").isEmpty()).describedAs("size=\"twelve\" read as absent, default would apply")
-                                                                  .isFalse();
-            assertThat(config.getDouble(SECTION, "ratio").isEmpty()).describedAs("ratio=\"half\" read as absent, default would apply")
-                                                                     .isFalse();
-            assertThat(config.getBoolean(SECTION, "secure").isEmpty()).describedAs("secure=\"yes\" read as absent, default would apply")
-                                                                       .isFalse();
+            assertRefused(config.getInt(SECTION, "port"), "port", "80x");
+            assertRefused(config.getLong(SECTION, "size"), "size", "twelve");
+            assertRefused(config.getDouble(SECTION, "ratio"), "ratio", "half");
+            assertRefused(config.getBoolean(SECTION, "secure"), "secure", "yes");
+        }
+
+        private static void assertRefused(Result<?> read, String key, String raw) {
+            assertThat(read.isFailure()).describedAs("%s=\"%s\" must be refused, read %s", key, raw, read)
+                                        .isTrue();
+            read.onFailure(cause -> assertThat(cause.message()).contains(SECTION + "." + key)
+                                                               .contains(raw)
+                                                               .contains(SLICE_ID)
+                                                               .doesNotContain("not found"));
         }
 
         /// #1098 — the `require*` twin: a malformed value is not a MISSING key, and the refusal has

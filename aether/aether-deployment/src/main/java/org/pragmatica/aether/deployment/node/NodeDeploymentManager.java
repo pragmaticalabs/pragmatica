@@ -48,6 +48,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -175,23 +176,23 @@ public interface NodeDeploymentManager {
         }
 
         @Override
-        public Option<Integer> getInt(String section, String key) {
-            return Option.none();
+        public Result<Option<Integer>> getInt(String section, String key) {
+            return Result.success(Option.none());
         }
 
         @Override
-        public Option<Long> getLong(String section, String key) {
-            return Option.none();
+        public Result<Option<Long>> getLong(String section, String key) {
+            return Result.success(Option.none());
         }
 
         @Override
-        public Option<Double> getDouble(String section, String key) {
-            return Option.none();
+        public Result<Option<Double>> getDouble(String section, String key) {
+            return Result.success(Option.none());
         }
 
         @Override
-        public Option<Boolean> getBoolean(String section, String key) {
-            return Option.none();
+        public Result<Option<Boolean>> getBoolean(String section, String key) {
+            return Result.success(Option.none());
         }
     }
 
@@ -211,31 +212,23 @@ public interface NodeDeploymentManager {
 
         @Override
         public Result<Integer> requireInt(String section, String key) {
-            return delegate.getInt(section + "." + key)
-                           .toResult(MISSING_KEY);
+            return getInt(section, key).flatMap(value -> value.toResult(MISSING_KEY));
         }
 
         // ConfigService exposes no numeric getters beyond getInt, so the adapter parses the string
         // itself — through core's Result-returning parsers, not Long.parseLong inside a map, which
         // threw NumberFormatException out of a facade whose whole contract is Result (#276 R20).
-        // A malformed value is a named failure on require*, distinct from an absent key; on the
-        // Option-returning get* it reads as absent, the same as ConfigurationProvider's own
-        // getLong/getDouble behave for the slice-api facade.
+        // A malformed value is a named failure on require* AND on get* (#1098): the Option-returning
+        // get* used to read it as absent, the same as ConfigurationProvider's own getLong/getDouble
+        // did for the slice-api facade before #1098.
         @Override
         public Result<Long> requireLong(String section, String key) {
-            return delegate.getString(section + "." + key)
-                           .toResult(MISSING_KEY)
-                           .flatMap(value -> Number.parseLong(value).mapError(_ -> NOT_A_LONG.apply(section + "." + key,
-                                                                                                    value)));
+            return getLong(section, key).flatMap(value -> value.toResult(MISSING_KEY));
         }
 
         @Override
         public Result<Double> requireDouble(String section, String key) {
-            return delegate.getString(section + "." + key)
-                           .toResult(MISSING_KEY)
-                           .flatMap(value -> Number.parseDouble(value).mapError(_ -> NOT_A_DOUBLE.apply(section
-                                                                                                       + "." + key,
-                                                                                                        value)));
+            return getDouble(section, key).flatMap(value -> value.toResult(MISSING_KEY));
         }
 
         // The parse failure is mapped at the Result boundary to a cause that NAMES the key and the
@@ -247,8 +240,7 @@ public interface NodeDeploymentManager {
 
         @Override
         public Result<Boolean> requireBoolean(String section, String key) {
-            return delegate.getBoolean(section + "." + key)
-                           .toResult(MISSING_KEY);
+            return getBoolean(section, key).flatMap(value -> value.toResult(MISSING_KEY));
         }
 
         private static final Cause STRING_LIST_NOT_SUPPORTED = Causes.cause("String list config not supported via legacy ConfigService adapter");
@@ -264,25 +256,33 @@ public interface NodeDeploymentManager {
         }
 
         @Override
-        public Option<Integer> getInt(String section, String key) {
+        public Result<Option<Integer>> getInt(String section, String key) {
             return delegate.getInt(section + "." + key);
         }
 
         @Override
-        public Option<Long> getLong(String section, String key) {
-            return delegate.getString(section + "." + key)
-                           .flatMap(value -> Number.parseLong(value).option());
+        public Result<Option<Long>> getLong(String section, String key) {
+            return parseOptional(section + "." + key, Number::parseLong, NOT_A_LONG);
         }
 
         @Override
-        public Option<Double> getDouble(String section, String key) {
-            return delegate.getString(section + "." + key)
-                           .flatMap(value -> Number.parseDouble(value).option());
+        public Result<Option<Double>> getDouble(String section, String key) {
+            return parseOptional(section + "." + key, Number::parseDouble, NOT_A_DOUBLE);
         }
 
         @Override
-        public Option<Boolean> getBoolean(String section, String key) {
+        public Result<Option<Boolean>> getBoolean(String section, String key) {
             return delegate.getBoolean(section + "." + key);
+        }
+
+        private <T> Result<Option<T>> parseOptional(String fullKey,
+                                                    Fn1<Result<T>, String> parser,
+                                                    Fn2<Cause, String, String> notParseable) {
+            return delegate.getString(fullKey)
+                           .fold(() -> Result.success(Option.none()),
+                                 value -> parser.apply(value)
+                                                .map(Option::some)
+                                                .mapError(_ -> notParseable.apply(fullKey, value)));
         }
     }
 

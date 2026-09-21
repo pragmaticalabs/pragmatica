@@ -11,8 +11,8 @@ import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.config.ProviderBasedConfigService.providerBasedConfigService;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// #1098 at record-binding level — the same conflation the `Option`-returning readers had, one
@@ -37,7 +37,10 @@ class ProviderBasedConfigServiceMalformedValueTest {
         public static final OptionalPortConfig DEFAULT = new OptionalPortConfig("default", Option.none());
     }
 
-    enum Mode { FAST, SAFE }
+    enum Mode {
+        FAST,
+        SAFE
+    }
 
     record ModeConfig(String name, Mode mode) {
         public static final ModeConfig DEFAULT = new ModeConfig("default", Mode.SAFE);
@@ -52,19 +55,21 @@ class ProviderBasedConfigServiceMalformedValueTest {
     }
 
     record TimeoutConfig(String name, TimeSpan timeout) {
-        public static final TimeoutConfig DEFAULT = new TimeoutConfig("default", TimeSpan.timeSpan(1).seconds());
+        public static final TimeoutConfig DEFAULT = new TimeoutConfig("default",
+                                                                      TimeSpan.timeSpan(1).seconds());
     }
 
     record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
-        public static final RetryConfig DEFAULT = new RetryConfig(3, BackoffStrategy.fixed().interval(TimeSpan.timeSpan(1).seconds()));
+        public static final RetryConfig DEFAULT = new RetryConfig(3,
+                                                                  BackoffStrategy.fixed().interval(TimeSpan.timeSpan(1).seconds()));
     }
 
     private static void assertRefusedNamingKeyAndValue(Result<?> result, String key, String raw) {
         assertThat(result.isFailure()).describedAs("%s=\"%s\" must fail the bind, not bind %s", key, raw, result)
-                                      .isTrue();
+                  .isTrue();
         result.onFailure(cause -> assertThat(cause.message()).describedAs("the refusal names the key and the raw value")
-                                                             .contains(key)
-                                                             .contains(raw));
+                                            .contains(key)
+                                            .contains(raw));
     }
 
     @Nested
@@ -78,21 +83,24 @@ class ProviderBasedConfigServiceMalformedValueTest {
 
         @Test
         void malformedEnum_isRefused_notReplacedByDefault() {
-            var result = serviceFrom(Map.of("test.name", "primary", "test.mode", "TURBO")).config("test", ModeConfig.class);
+            var result = serviceFrom(Map.of("test.name", "primary", "test.mode", "TURBO")).config("test",
+                                                                                                  ModeConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.mode", "TURBO");
         }
 
         @Test
         void malformedBoolean_isRefused_notCoercedToFalse() {
-            var result = serviceFrom(Map.of("test.name", "primary", "test.enabled", "yes")).config("test", FlagConfig.class);
+            var result = serviceFrom(Map.of("test.name", "primary", "test.enabled", "yes")).config("test",
+                                                                                                   FlagConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.enabled", "yes");
         }
 
         @Test
         void malformedTimeSpan_isRefused_notReplacedByDefault() {
-            var result = serviceFrom(Map.of("test.name", "primary", "test.timeout", "soon")).config("test", TimeoutConfig.class);
+            var result = serviceFrom(Map.of("test.name", "primary", "test.timeout", "soon")).config("test",
+                                                                                                    TimeoutConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.timeout", "soon");
         }
@@ -110,14 +118,16 @@ class ProviderBasedConfigServiceMalformedValueTest {
     class OptionalComponents {
         @Test
         void malformedOptionalInt_isRefused_notReadAsAbsent() {
-            var result = serviceFrom(Map.of("test.name", "primary", "test.port", "80x")).config("test", OptionalPortConfig.class);
+            var result = serviceFrom(Map.of("test.name", "primary", "test.port", "80x")).config("test",
+                                                                                                OptionalPortConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.port", "80x");
         }
 
         @Test
         void malformedOptionalBoolean_isRefused_notCoercedToFalse() {
-            var result = serviceFrom(Map.of("test.name", "primary", "test.enabled", "yes")).config("test", OptionalFlagConfig.class);
+            var result = serviceFrom(Map.of("test.name", "primary", "test.enabled", "yes")).config("test",
+                                                                                                   OptionalFlagConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.enabled", "yes");
         }
@@ -125,9 +135,17 @@ class ProviderBasedConfigServiceMalformedValueTest {
         /// Control: an absent optional component is `none()`, and a well-formed one binds.
         @Test
         void absentOptional_isNone_wellFormedOptional_binds() {
-            assertThat(serviceFrom(Map.of("test.name", "primary")).config("test", OptionalPortConfig.class).unwrap().port()).isEqualTo(Option.none());
-            assertThat(serviceFrom(Map.of("test.name", "primary", "test.port", "8443")).config("test", OptionalPortConfig.class).unwrap().port()).isEqualTo(Option.some(8443));
-            assertThat(serviceFrom(Map.of("test.name", "primary", "test.enabled", "FALSE")).config("test", OptionalFlagConfig.class).unwrap().enabled()).isEqualTo(Option.some(false));
+            assertThat(serviceFrom(Map.of("test.name", "primary")).config("test", OptionalPortConfig.class)
+                                  .unwrap()
+                                  .port()).isEqualTo(Option.none());
+            assertThat(serviceFrom(Map.of("test.name", "primary", "test.port", "8443")).config("test",
+                                                                                               OptionalPortConfig.class)
+                                  .unwrap()
+                                  .port()).isEqualTo(Option.some(8443));
+            assertThat(serviceFrom(Map.of("test.name", "primary", "test.enabled", "FALSE")).config("test",
+                                                                                                   OptionalFlagConfig.class)
+                                  .unwrap()
+                                  .enabled()).isEqualTo(Option.some(false));
         }
     }
 
@@ -135,36 +153,48 @@ class ProviderBasedConfigServiceMalformedValueTest {
     class BackoffStrategyComponents {
         @Test
         void exponential_malformedFactor_isRefused_notReplacedByFallback() {
-            var result = serviceFrom(Map.of("test.max_attempts", "3",
-                                            "test.backoff_strategy.type", "exponential",
-                                            "test.backoff_strategy.factor", "2x")).config("test", RetryConfig.class);
+            var result = serviceFrom(Map.of("test.max_attempts",
+                                            "3",
+                                            "test.backoff_strategy.type",
+                                            "exponential",
+                                            "test.backoff_strategy.factor",
+                                            "2x")).config("test", RetryConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.backoff_strategy.factor", "2x");
         }
 
         @Test
         void exponential_malformedDelay_isRefused_notReplacedByFallback() {
-            var result = serviceFrom(Map.of("test.max_attempts", "3",
-                                            "test.backoff_strategy.type", "exponential",
-                                            "test.backoff_strategy.initial_delay", "soon")).config("test", RetryConfig.class);
+            var result = serviceFrom(Map.of("test.max_attempts",
+                                            "3",
+                                            "test.backoff_strategy.type",
+                                            "exponential",
+                                            "test.backoff_strategy.initial_delay",
+                                            "soon")).config("test", RetryConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.backoff_strategy.initial_delay", "soon");
         }
 
         @Test
         void exponential_malformedJitter_isRefused_notCoercedToFalse() {
-            var result = serviceFrom(Map.of("test.max_attempts", "3",
-                                            "test.backoff_strategy.type", "exponential",
-                                            "test.backoff_strategy.with_jitter", "yes")).config("test", RetryConfig.class);
+            var result = serviceFrom(Map.of("test.max_attempts",
+                                            "3",
+                                            "test.backoff_strategy.type",
+                                            "exponential",
+                                            "test.backoff_strategy.with_jitter",
+                                            "yes")).config("test", RetryConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.backoff_strategy.with_jitter", "yes");
         }
 
         @Test
         void fixed_malformedInterval_isRefused_notReplacedByDefault() {
-            var result = serviceFrom(Map.of("test.max_attempts", "3",
-                                            "test.backoff_strategy.type", "fixed",
-                                            "test.backoff_strategy.interval", "soon")).config("test", RetryConfig.class);
+            var result = serviceFrom(Map.of("test.max_attempts",
+                                            "3",
+                                            "test.backoff_strategy.type",
+                                            "fixed",
+                                            "test.backoff_strategy.interval",
+                                            "soon")).config("test", RetryConfig.class);
 
             assertRefusedNamingKeyAndValue(result, "test.backoff_strategy.interval", "soon");
         }
