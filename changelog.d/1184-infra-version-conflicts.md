@@ -75,10 +75,18 @@
   forwarded a bare `nodeArtifactValue(FAILED)` — no reason, `fatal=false` — so cluster-wide a permanent
   version conflict (and every other `Fatal` on that path) read as retryable and the two slices that
   disagreed were named only in that worker's log. It now forwards
-  `NodeArtifactValue.failedNodeArtifactValue(cause, PERMANENT)`: the message and the classified `fatal`
-  flag reach consensus, `PERMANENT` for an unrecognised cause mirroring the FSM's `handleLoadingFailure`
-  (#930); a cause typed at its raise site classifies the same regardless.
+  `NodeArtifactValue.failedNodeArtifactValue(cause, …)`: the message and the classified `fatal` flag reach
+  consensus. The disposition of an UNTYPED cause is decided per phase, as the FSM decides it (#930): the
+  load phase is classified `PERMANENT` at its boundary (as `NodeDeploymentState.handleLoadingFailure` —
+  retrying re-runs the same deterministic work), and everything after it — activation
+  (`materializeAll()` resource connects, `slice.start()`) and publication — is `RETRY` (as
+  `handleActivationFailure`, the site that closes #923 — an unreachable database must not roll a
+  blueprint back). A cause typed at its raise site classifies the same way in either phase.
   [verified: `aether/node/src/test/java/org/pragmatica/aether/worker/deployment/WorkerDeploymentManagerTest.java`
-  — `loadFailure_isForwardedWithItsReasonAndFatalFlag`, control `intermittentLoadFailure_isForwardedAsRetryable`]
+  — `loadFailure_isForwardedWithItsReasonAndFatalFlag`, `untypedLoadFailure_isForwardedAsPermanent`,
+  `untypedActivationFailure_isForwardedAsRetryable`, `typedFatalActivationFailure_isForwardedAsFatal`,
+  control `intermittentLoadFailure_isForwardedAsRetryable`]
+  [unverified: the worker's failure handler does not unpublish routes/subscriptions the way the FSM's
+  `handleActivationFailure` does — pre-existing, not touched here]
 - [unverified: no multi-node run drove two deployed slices with conflicting `[infra]` versions; pinned at
   the resolver's entry points and the worker manager's forwarded record, not on a live cluster]

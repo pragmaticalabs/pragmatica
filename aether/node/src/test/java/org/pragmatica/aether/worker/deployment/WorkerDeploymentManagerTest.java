@@ -197,8 +197,9 @@ class WorkerDeploymentManagerTest {
         assertThat(failed.getFirst().failureReason().unwrap()).contains("Artifact not found in any repository: org.example:slice:1.0.0");
     }
 
-    /// The declared disposition is what decides an UNTYPED cause (#930): PERMANENT here, as on the FSM's
-    /// load path, because an unrecognised load failure re-runs the same deterministic work on retry.
+    /// The declared disposition is what decides an UNTYPED cause (#930), and it is decided per PHASE
+    /// (rev1416 round 3). Load phase: PERMANENT, as on the FSM's load path, because an unrecognised
+    /// load failure re-runs the same deterministic work on retry.
     @Test
     void untypedLoadFailure_isForwardedAsPermanent() {
         var forwarded = mock(MutationForwarder.class);
@@ -220,6 +221,63 @@ class WorkerDeploymentManagerTest {
         assertThat(failed).hasSize(1);
         assertThat(failed.getFirst().fatal()).isTrue();
         assertThat(failed.getFirst().failureReason().unwrap()).contains("unrecognised");
+    }
+
+    /// Activation phase: RETRY, as on the FSM's `handleActivationFailure` (the site that closes #923).
+    /// An unreachable database inside `materializeAll()` or a failing `slice.start()` is untyped and
+    /// must not roll a blueprint back; forwarded `fatal=false`, the leader re-drives it under budget.
+    @Test
+    void untypedActivationFailure_isForwardedAsRetryable() {
+        var forwarded = mock(MutationForwarder.class);
+        var sliceStore = mock(SliceStore.class);
+
+        when(sliceStore.loadSlice(any())).thenReturn(Promise.success(mock(LoadedSlice.class)));
+        when(sliceStore.activateSlice(any())).thenReturn(Causes.cause("db unreachable: connection refused").promise());
+        when(sliceStore.loaded()).thenReturn(List.of());
+        var manager = WorkerDeploymentManager.workerDeploymentManager(SELF,
+                                                                      sliceStore,
+                                                                      forwarded,
+                                                                      new ConcurrentHashMap<>(),
+                                                                      List.of(SELF),
+                                                                      () -> "default:local");
+
+        manager.onDirectivePut(WorkerSliceDirectiveValue.workerSliceDirectiveValue(ARTIFACT, 1, "any"));
+
+        var failed = forwardedFailures(forwarded);
+
+        assertThat(failed).hasSize(1);
+        assertThat(failed.getFirst().fatal()).as("an untyped activation failure is retryable").isFalse();
+        assertThat(failed.getFirst().failureReason().unwrap()).contains("db unreachable: connection refused");
+    }
+
+    /// A cause typed at its raise site classifies the same way in either phase: a Fatal raised during
+    /// activation is forwarded fatal=true even though the phase's declared disposition is RETRY.
+    @Test
+    void typedFatalActivationFailure_isForwardedAsFatal() {
+        var conflict = new SliceLoadingFailure.Fatal.SharedLoaderVersionConflict("org.example:slice:1.0.0",
+                                                                                 "org.example:lib:^2.0.0",
+                                                                                 "org.example:lib:1.0.0",
+                                                                                 "org.example:other:1.0.0");
+        var forwarded = mock(MutationForwarder.class);
+        var sliceStore = mock(SliceStore.class);
+
+        when(sliceStore.loadSlice(any())).thenReturn(Promise.success(mock(LoadedSlice.class)));
+        when(sliceStore.activateSlice(any())).thenReturn(conflict.promise());
+        when(sliceStore.loaded()).thenReturn(List.of());
+        var manager = WorkerDeploymentManager.workerDeploymentManager(SELF,
+                                                                      sliceStore,
+                                                                      forwarded,
+                                                                      new ConcurrentHashMap<>(),
+                                                                      List.of(SELF),
+                                                                      () -> "default:local");
+
+        manager.onDirectivePut(WorkerSliceDirectiveValue.workerSliceDirectiveValue(ARTIFACT, 1, "any"));
+
+        var failed = forwardedFailures(forwarded);
+
+        assertThat(failed).hasSize(1);
+        assertThat(failed.getFirst().fatal()).isTrue();
+        assertThat(failed.getFirst().failureReason().unwrap()).contains("slice org.example:slice:1.0.0 requires org.example:lib:^2.0.0");
     }
 
     private static List<NodeArtifactValue> forwardedFailures(MutationForwarder forwarder) {
