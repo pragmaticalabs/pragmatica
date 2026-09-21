@@ -553,9 +553,9 @@ public final class MembershipFsm {
                                   String community,
                                   NodeId governor,
                                   long governorTerm,
-                                  long incarnation,
+                                  long processEpoch,
                                   MemberDescriptor admittedDescriptor) {
-        if (community.isBlank() || governorTerm < 0 || incarnation < 0 || !("worker".equalsIgnoreCase(admittedDescriptor.role()) || "spot".equalsIgnoreCase(admittedDescriptor.role()))) {
+        if (community.isBlank() || governorTerm < 0 || processEpoch < 0 || !("worker".equalsIgnoreCase(admittedDescriptor.role()) || "spot".equalsIgnoreCase(admittedDescriptor.role()))) {
             return;
         }
 
@@ -563,11 +563,11 @@ public final class MembershipFsm {
                    tracking -> tracking.inTransition(() -> {
                        tracking.updateDescriptor(admittedDescriptor);
                        if (tracking.descriptor()
-                                   .isCore() || tracking.incarnation() > incarnation) {
+                                   .isCore() || !tracking.acceptsProcessEpoch(processEpoch)) {
                        return;
                    }
 
-                       tracking.dispatch(new MembershipEvent.GovernorHealthy(incarnation,
+                       tracking.dispatch(new MembershipEvent.GovernorHealthy(processEpoch,
                                                                              community,
                                                                              governor,
                                                                              governorTerm));
@@ -580,8 +580,8 @@ public final class MembershipFsm {
 
     /// Admission evidence is explicitly distinct from SWIM and committed-governor reports.
     @Contract
-    public void onWorkerAdmissionHealthy(NodeId id, long incarnation, MemberDescriptor descriptor) {
-        if (incarnation < 0 || !("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))) {
+    public void onWorkerAdmissionHealthy(NodeId id, long processEpoch, MemberDescriptor descriptor) {
+        if (processEpoch < 0 || !("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))) {
             return;
         }
 
@@ -589,11 +589,11 @@ public final class MembershipFsm {
                    tracking -> tracking.inTransition(() -> {
                        tracking.updateDescriptor(descriptor);
                        if (tracking.descriptor()
-                                   .isCore() || tracking.incarnation() > incarnation) {
+                                   .isCore() || !tracking.acceptsProcessEpoch(processEpoch)) {
                        return;
                    }
 
-                       tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(incarnation));
+                       tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(processEpoch));
                        tracking.clearConfirmedDeath();
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
                        tracking.dispatch(new UpHysteresisMet());
@@ -2081,6 +2081,17 @@ public final class MembershipFsm {
             return fsm.current()
                       .ctx()
                       .lastSeenIncarnation();
+        }
+
+        /// Rejected terminal evidence must not retract death confirmation or advance hysteresis.
+        synchronized boolean acceptsProcessEpoch(long processEpoch) {
+            return isDead() || isDeparting()
+                   ? processEpoch > processEpoch()
+                   : processEpoch >= processEpoch();
+        }
+
+        synchronized long processEpoch() {
+            return fsm.current().ctx().lastSeenProcessEpoch();
         }
 
         /// FSM-state → quiescence health-hint projection. DEAD → FAULTY (unconditional); SUSPECT →

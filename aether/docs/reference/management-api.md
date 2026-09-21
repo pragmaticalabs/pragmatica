@@ -1209,10 +1209,11 @@ explicitly on any route where the distinction matters.
 
 Get cluster-wide metrics including per-node load and deployment metrics.
 
-**Scope: cluster-wide, despite the route's `LOCAL` routing declaration** — `LOCAL` governs
-routing (no forwarding), not response scope. Any node answers with a `load` entry for **every**
-node it knows, so fetch this ONCE and select nodes by id; polling it per node returns the same
-cluster-wide map N times (the #591 instrument mis-read exactly this and had to hard-fail on it).
+**Scope: cluster-wide; routing: `AnyCoreNode`.** Core nodes answer from their replicated metrics
+view, and workers forward this request to a core. A worker receiving an already-forwarded request
+refuses the incomplete scope. Fetch this once and select nodes by id; polling every node does not
+provide independent node-local measurements. Entries remain subject to metrics freshness and
+coverage, so cluster-wide scope does not guarantee a fresh sample from every member.
 
 **Response:**
 ```json
