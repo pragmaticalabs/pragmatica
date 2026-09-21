@@ -3707,9 +3707,17 @@ seed_cluster_config() {
         if [ -n "$toml_max" ] && [ -n "$stored_max" ] \
            && [ "$stored_max" -lt "$toml_max" ] 2>/dev/null; then
             log_info "Reconciling cluster config: stored coreMax=${stored_max} < TOML max=${toml_max} (configVersion=${stored_version:-?})"
+            # #1086 (rev1412 NIT-5): never substitute 0 for an unreadable configVersion. Against a
+            # stored config the server refuses 0 as an unfenced overwrite (#289), so the fallback
+            # could only ever hide WHY the reconcile failed. The 200 body that yielded coreMax
+            # carries configVersion in the same record; an empty read here is a parser defect.
+            if [ -z "$stored_version" ]; then
+                log_warn "Cluster config reconcile NOT attempted: coreMax=${stored_max} was read but configVersion was not (body: $(printf '%s' "$body" | head -c 300))"
+                return 1
+            fi
             local escaped_toml json_body
             escaped_toml=$(escape_json "$toml_content")
-            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version:-0}}"
+            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version}}"
             local apply_out
             apply_out=$(leader_api_post "/api/v1/cluster/config" "$json_body" 2>&1) || true
             # Surface VersionConflict / ImmutableFieldChange rather than masking them:
