@@ -461,7 +461,10 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return List.of("docker",
                        "inspect",
                        "--format",
-                       "{{.State.Status}}\t{{.Name}}\t{{.Config.Hostname}}\t{{.Id}}",
+                       "{{.State.Status}}\t{{.Name}}\t{{.Config.Hostname}}\t{{.Id}}\t"
+                      + "{{with index .Config.Labels \"aether.cluster\"}}{{.}}{{end}}\t"
+                      + "{{with index .Config.Labels \"aether.role\"}}{{.}}{{end}}\t"
+                      + "{{with index .Config.Labels \"aether.node-id\"}}{{.}}{{end}}",
                        instanceId.value());
     }
 
@@ -567,8 +570,23 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         var parts = output.split("\t", -1);
         var state = safePart(parts, 0);
         var name = safePart(parts, 1).replaceFirst("^/", "");
+        var nodeId = safePart(parts, 6);
+        var tags = Map.of("aether.cluster",
+                          safePart(parts, 4),
+                          "aether.role",
+                          safePart(parts, 5),
+                          "aether.node-id",
+                          nodeId);
 
-        return new InstanceInfo(instanceId, mapDockerState(state), List.of(name), InstanceType.ON_DEMAND, Map.of());
+        return new InstanceInfo(instanceId,
+                                mapDockerState(state),
+                                List.of(name),
+                                InstanceType.ON_DEMAND,
+                                tags,
+                                nodeId.isEmpty()
+                                ? Option.none()
+                                : Option.some(nodeId),
+                                Option.none());
     }
 
     /// Docker's documented `ContainerState.Status` values. Any value not listed here maps to

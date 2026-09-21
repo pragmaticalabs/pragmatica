@@ -38,7 +38,7 @@ class RabiaReorderedDeliveryTest {
         clusters.forEach(ScheduledCluster::stop);
     }
 
-    @Test
+    @org.junit.jupiter.api.RepeatedTest(20)
     void conflictingProposalsConvergeToIdenticalLogsAcrossFairSchedules() {
         for (int size : List.of(3, 5)) {
             for (int seed = 0; seed < 12; seed++) {
@@ -65,6 +65,72 @@ class RabiaReorderedDeliveryTest {
             cluster.verifyPrefixes();
             cluster.machines.forEach(machine -> assertThat(machine.getProcessedCommands()).hasSize(3).doesNotHaveDuplicates());
         }
+    }
+
+    @Test
+    void advancingSnapshotDoesNotReproposeCoveredRequestsAndReportsUnknownOutcome() {
+        var cluster = new ScheduledCluster(3, 0);
+        clusters.add(cluster);
+        cluster.start();
+        var recovering = cluster.engines.getFirst();
+        var covered = List.of(new TestCommand("covered-by-snapshot"));
+        var uncertain = recovering.apply(covered);
+        var retained = List.of(new TestCommand("still-pending"));
+        var retainedAnswer = recovering.apply(retained);
+        cluster.settle();
+        var committed = Batch.create(cluster.machines.getFirst().serializer(), covered);
+        var pending = Batch.create(cluster.machines.getFirst().serializer(), retained);
+        cluster.machines.get(1).process(committed);
+        recovering.processPropose(new Propose<>(cluster.members.get(1), Phase.phase(101), Batch.emptyBatch()));
+        cluster.settle();
+        var snapshot = cluster.machines.get(1).makeSnapshot().unwrap();
+        recovering.processSyncResponse(new SyncResponse<>(cluster.members.get(1),
+            RabiaPersistence.SavedState.savedState(snapshot, Phase.phase(1), List.of(pending)), ResponderState.LIVE));
+        recovering.processSyncResponse(new SyncResponse<>(cluster.members.get(2),
+            RabiaPersistence.SavedState.savedState(snapshot, Phase.phase(1), List.of(pending)), ResponderState.LIVE));
+        cluster.settle();
+        cluster.settle();
+        assertThat(recovering.currentPhaseForTesting()).isEqualTo(Phase.phase(1));
+        assertThat(recovering.pendingBatchCountForTesting()).isEqualTo(1);
+        assertThat(uncertain.isResolved()).isTrue();
+        uncertain.await().onFailure(cause -> assertThat(cause)
+            .isInstanceOf(org.pragmatica.consensus.ConsensusError.SnapshotOutcomeUnknown.class));
+        assertThat(uncertain.await().isFailure()).isTrue();
+        assertThat(retainedAnswer.isResolved()).isFalse();
+        recovering.processDecision(new Decision<>(cluster.members.get(1), Phase.phase(1), StateValue.V1, pending));
+        cluster.settle();
+        assertThat(retainedAnswer.isResolved()).isTrue();
+        assertThat(retainedAnswer.await().isSuccess()).isTrue();
+        assertThat(cluster.machines.getFirst().getProcessedCommands()).containsExactlyElementsOf(
+            java.util.stream.Stream.concat(covered.stream(), retained.stream()).toList());
+        assertThat(recovering.pendingBatchCountForTesting()).isZero();
+    }
+
+    @Test
+    void sameFrontierSnapshotPreservesLocalRequestsMissingFromPeerQueue() {
+        var cluster = new ScheduledCluster(3, 0);
+        clusters.add(cluster);
+        cluster.start();
+        var recovering = cluster.engines.getFirst();
+        var commands = List.of(new TestCommand("local-only"));
+        var answer = recovering.apply(commands);
+        cluster.settle();
+        recovering.processPropose(new Propose<>(cluster.members.get(1), Phase.phase(101), Batch.emptyBatch()));
+        cluster.settle();
+        recovering.processSyncResponse(new SyncResponse<>(cluster.members.get(1),
+            RabiaPersistence.SavedState.savedState(new byte[0], Phase.ZERO, List.of()), ResponderState.LIVE));
+        recovering.processSyncResponse(new SyncResponse<>(cluster.members.get(2),
+            RabiaPersistence.SavedState.savedState(new byte[0], Phase.ZERO, List.of()), ResponderState.LIVE));
+        cluster.settle();
+        cluster.settle();
+        assertThat(recovering.pendingBatchCountForTesting()).isEqualTo(1);
+        assertThat(answer.isResolved()).isFalse();
+        var batch = Batch.create(cluster.machines.getFirst().serializer(), commands);
+        recovering.processDecision(new Decision<>(cluster.members.get(1), Phase.ZERO, StateValue.V1, batch));
+        cluster.settle();
+        assertThat(answer.isResolved()).isTrue();
+        assertThat(answer.await().isSuccess()).isTrue();
+        assertThat(cluster.machines.getFirst().getProcessedCommands()).containsExactlyElementsOf(commands);
     }
 
     @Test

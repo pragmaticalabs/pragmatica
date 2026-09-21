@@ -122,3 +122,29 @@ The post-integration live selector is `env -u HCLOUD_TOKEN ./forge.sh 'Hierarchi
 The post-integration recovery cases both passed at `bda9f6b29` (approximately 166 seconds including teardown). The separate enabled stream-consumer command is `env -u HCLOUD_TOKEN ./forge.sh 'DeclarativeStreamConsumerTest'`; its result is recorded in the PR/CI artifacts.
 
 The enabled declarative consumer suite passed all nine cases with no skips (approximately 63 seconds, `hierarchy-review-consumer-assignment-forge2.log`). Its typed-delivery assertion now compares the exact identifiers published by that test across all nodes, retaining duplicates; this removes late traffic from earlier test methods without weakening loss/duplication checks. The prior run failed with 11 arrivals against a baseline expecting 10 because the separate publish probe arrived late. No production change was needed for that fixture correction.
+
+## Snapshot pending-queue correction and final CI fixture repairs
+
+The broad consensus run exposed duplicate application after a lagging voter adopted a newer
+snapshot while retaining a request already covered by that snapshot. Reordered proposal
+learning made that stale request spread again. Snapshot synchronization and voter handoff now
+reconcile pending queues at the adopted frontier: matching pending batches retain local
+correlations; absent batches become an explicit `SnapshotOutcomeUnknown` for local callers.
+Equal-frontier adoption preserves local-only requests. The specification defines this ambiguity
+and requires outcome reconciliation before retry. This is not a durable exactly-once request ledger.
+
+`RabiaReorderedDeliveryTest.advancingSnapshotDoesNotReproposeCoveredRequestsAndReportsUnknownOutcome`
+reproduces the boundary directly and also proves a retained caller receives its later result.
+`sameFrontierSnapshotPreservesLocalRequestsMissingFromPeerQueue` pins the no-gap case.
+Removing the discard operation made the first test fail with two pending requests instead of
+one; restoring it passed both cases. The fair-schedule test repeats its 24 schedules twenty
+times to vary executor interleavings while retaining prefix and no-duplicate assertions.
+
+Docker's running-instance inspection now reads actual provider labels instead of returning an
+empty tag map. Its 49-case suite passes. The conflicting-proposals integration fixture seeds
+three real local proposals before any peer delivery, waits for the engine completion barriers,
+and asserts nonempty V0 ballots in the first slot and round. Later slots may legitimately converge.
+
+Final consensus and live-recovery gate results are recorded on the PR and by the merge-head
+CI artifact contract above. A sandboxed full-suite attempt could not bind local QUIC sockets;
+it is not correctness evidence and was replaced with an invocation that permits loopback sockets.

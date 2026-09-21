@@ -1177,11 +1177,10 @@ public class RabiaEngine<C extends Command> {
                                                            authorityFailure = Option.none();
                                                            currentConfig.set(Option.some(authority.configuration()
                                                                                                   .roster()));
+                                                           reconcileSnapshotPending(handoff.nextSlot(),
+                                                                                    handoff.pendingBatches());
                                                            currentPhase.set(handoff.nextSlot());
                                                            phases.clear();
-                                                           handoff.pendingBatches()
-                                                                  .forEach(batch -> pendingBatches.put(batch.id(),
-                                                                                                       batch));
                                                            observerMode = !authority.configuration()
                                                                                     .contains(self);
                                                            voterListeners.forEach(listener -> listener.accept(authority.configuration()));
@@ -2175,8 +2174,39 @@ public class RabiaEngine<C extends Command> {
                                                                   .or(false);
     }
 
+    /// A snapshot that skips local slots may already include any old pending request.
+    /// Only the source's still-pending batches can safely survive that gap. An equal-frontier
+    /// restore has no skipped decisions, so it preserves local requests absent from the source.
+    private void reconcileSnapshotPending(Phase nextSlot, List<Batch<C>> restoredPending) {
+        if (nextSlot.compareTo(currentPhase.get()) > 0) {
+            discardAmbiguousPending(nextSlot, restoredPending);
+        }
+
+        restoredPending.forEach(this::learnProposedBatch);
+        metrics.updatePendingBatches(self, pendingBatches.size());
+    }
+
+    private void discardAmbiguousPending(Phase nextSlot, List<Batch<C>> restoredPending) {
+        var retained = restoredPending.stream().map(Batch::id).collect(java.util.stream.Collectors.toSet());
+        var cause = new ConsensusError.SnapshotOutcomeUnknown(self, nextSlot.value());
+
+        for (var batch : List.copyOf(pendingBatches.values())) {
+            if (!retained.contains(batch.id())) {
+                pendingBatches.remove(batch.id());
+                failPendingCorrelations(batch, cause);
+            }
+        }
+    }
+
+    private void failPendingCorrelations(Batch<C> batch, Cause cause) {
+        for (var correlationId : batch.correlationIds()) {
+            Option.option(correlationMap.remove(correlationId)).onPresent(promise -> promise.fail(cause));
+        }
+    }
+
     private void applyRestoredState(SavedState<C> state) {
         stateTransferFailure = Option.none();
+        reconcileSnapshotPending(state.lastCommittedPhase(), state.pendingBatches());
         // Advance-only: never regress currentPhase below where it already is. A live Decision
         // applied during the Stopped/Syncing window (now buffered via `handleDecision`'s state
         // guard) could have advanced the counter past the candidate snapshot's phase; an
@@ -2185,7 +2215,6 @@ public class RabiaEngine<C extends Command> {
         currentPhase.updateAndGet(existing -> existing.compareTo(state.lastCommittedPhase()) >= 0
                                               ? existing
                                               : state.lastCommittedPhase());
-        state.pendingBatches().forEach(batch -> pendingBatches.put(batch.id(), batch));
         state.authority()
              .onPresent(authority -> voters.onPresent(value -> {
                                                           if (value.accepts(authority) || samePendingBarrier(value.authority(),

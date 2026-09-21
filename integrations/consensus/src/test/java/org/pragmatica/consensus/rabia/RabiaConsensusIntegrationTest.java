@@ -118,10 +118,15 @@ class RabiaConsensusIntegrationTest {
             var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd2")));
             var batch3 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd3")));
 
-            // All nodes propose different batches
-            cluster.simulateProposal(NODE_1, batch1);
-            cluster.simulateProposal(NODE_2, batch2);
-            cluster.simulateProposal(NODE_3, batch3);
+            // Fix each real local proposal before delivering any peer proposal. Receiving a
+            // peer proposal first is allowed to teach a node that batch and produce agreement.
+            cluster.engines.get(NODE_1).handleNewBatch(new NewBatch<>(NODE_1, batch1));
+            cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_2, batch2));
+            cluster.engines.get(NODE_3).handleNewBatch(new NewBatch<>(NODE_3, batch3));
+            cluster.engines.values().forEach(engine -> engine.settleForTesting().await());
+            var proposed = cluster.getMessagesByType(Propose.class);
+            assertThat(proposed.stream().map(Propose::sender).distinct()).hasSize(3);
+            assertThat(proposed.stream().map(value -> value.value().id()).distinct()).hasSize(3);
             cluster.deliverAllPendingMessages();
             Thread.sleep(50);
 
@@ -129,8 +134,9 @@ class RabiaConsensusIntegrationTest {
             Thread.sleep(50);
 
             // With no majority agreement, votes should be V0
-            var votes = cluster.getMessagesByType(VoteRound1.class);
-            assertThat(votes).allMatch(v -> v.stateValue() == StateValue.V0);
+            var votes = cluster.getMessagesByType(VoteRound1.class).stream()
+                .filter(vote -> vote.phase().equals(Phase.ZERO) && vote.round() == 0).toList();
+            assertThat(votes).isNotEmpty().allMatch(v -> v.stateValue() == StateValue.V0);
         }
 
         @Test
