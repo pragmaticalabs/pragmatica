@@ -104,7 +104,13 @@ record PlacementReconciler(NodeId self,
 
         return configuration(snapshot).fold(Promise::unitPromise,
                                             config -> reconcileConfiguration(config, snapshot))
-                            .onResultRun(() -> running.set(false));
+                            .fold(this::completePass);
+    }
+
+    private Promise<Unit> completePass(org.pragmatica.lang.Result<Unit> result) {
+        running.set(false);
+
+        return result.async();
     }
 
     private Map<AetherKey, AetherValue> aetherSnapshot() {
@@ -124,7 +130,10 @@ record PlacementReconciler(NodeId self,
         return Option.option(snapshot.get(AetherKey.ClusterConfigKey.CURRENT))
                      .filter(AetherValue.ClusterConfigValue.class::isInstance)
                      .map(AetherValue.ClusterConfigValue.class::cast)
-                     .flatMap(value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).option());
+                     .flatMap(value -> ClusterBootstrapConfigParser.parse(value.tomlContent())
+                                                                   .flatMap(config -> CommunityPolicies.normalize(config,
+                                                                                                                  value))
+                                                                   .option());
     }
 
     @Override
@@ -221,26 +230,39 @@ record PlacementReconciler(NodeId self,
     }
 
     private Promise<Unit> reconcileConfiguration(ClusterBootstrapConfig config, Map<AetherKey, AetherValue> snapshot) {
-        var pass = Promise.unitPromise();
+        var identities = new java.util.TreeSet<>(config.communities().keySet());
 
-        for (var policy : config.communities()
-                                .values()
-                                .stream()
-                                .sorted(Comparator.comparing(CommunityPlacement::id))
-                                .toList()) {
-            pass = pass.flatMap(_ -> reconcileCommunity(config, policy, snapshot).onSuccess(_ -> operation(policy.id()).onPresent(value -> snapshot.put(new AetherKey.CommunityPlacementOperationKey(policy.id()),
-                                                                                                                                                        value))));
-        }
+        snapshot.values()
+                .stream()
+                .filter(CommunityPlacementOperationValue.class::isInstance)
+                .map(CommunityPlacementOperationValue.class::cast)
+                .filter(CommunityPlacementOperationValue::active)
+                .map(CommunityPlacementOperationValue::communityId)
+                .forEach(identities::add);
 
-        for (var value : snapshot.values()) {
-            if (value instanceof CommunityPlacementOperationValue operation && operation.active() && !config.communities()
-                                                                                                            .containsKey(operation.communityId())) {
-                pass = pass.flatMap(_ -> currentLeader().fold(Promise::unitPromise,
-                                                              leader -> advance(config, operation, leader)));
-            }
-        }
+        return ReconciliationBatch.reconcile(List.copyOf(identities),
+                                             4,
+                                             org.pragmatica.lang.io.TimeSpan.timeSpan(30).seconds(),
+                                             this::reconcileIdentity,
+                                             (identity, cause) -> org.slf4j.LoggerFactory.getLogger(CommunityPlacementReconciler.class)
+                                                                                         .warn("Community {} reconciliation deferred: {}",
+                                                                                               identity,
+                                                                                               cause.message()));
+    }
 
-        return pass;
+    private Promise<Unit> reconcileIdentity(String identity) {
+        var snapshot = aetherSnapshot();
+
+        return configuration(snapshot).fold(Promise::unitPromise,
+                                            config -> Option.option(config.communities().get(identity)).fold(() -> currentLeader().fold(Promise::unitPromise,
+                                                                                                                                        leader -> operation(identity).filter(CommunityPlacementOperationValue::active)
+                                                                                                                                                           .fold(Promise::unitPromise,
+                                                                                                                                                                 value -> advance(config,
+                                                                                                                                                                                  value,
+                                                                                                                                                                                  leader))),
+                                                                                                             policy -> reconcileCommunity(config,
+                                                                                                                                          policy,
+                                                                                                                                          snapshot)));
     }
 
     private Promise<Unit> reconcileCommunity(ClusterBootstrapConfig config,
@@ -263,22 +285,25 @@ record PlacementReconciler(NodeId self,
                                             Map<AetherKey, AetherValue> snapshot) {
         var key = new AetherKey.CommunityKey(policy.id());
         var existing = store.getTyped(key, AetherValue.CommunityValue.class);
+        var dissolved = existing.filter(value -> value.state() == org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED)
+                                .isPresent();
 
-        if (existing.filter(value -> value.state() == org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVING || value.state() == org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED)
-                    .isPresent()) {
-            return Promise.success(false);
-        }
+        if (dissolved && policy.targetSize() == 0) return Promise.success(false);
 
-        if (existing.filter(value -> value.targetSize() == policy.targetSize()).isPresent()) {
+        if (!dissolved && existing.filter(value -> value.targetSize() == policy.targetSize()).isPresent()) {
             return Promise.success(true);
         }
 
         var desired = existing.map(value -> new AetherValue.CommunityValue(value.sourceName(),
                                                                            value.role(),
                                                                            policy.targetSize(),
-                                                                           value.state(),
+                                                                           dissolved
+                                                                           ? org.pragmatica.aether.slice.kvstore.CommunityState.FORMING
+                                                                           : value.state(),
                                                                            value.createdAt(),
-                                                                           value.dissolvedAt()))
+                                                                           dissolved
+                                                                           ? Option.none()
+                                                                           : value.dissolvedAt()))
                               .or(() -> AetherValue.CommunityValue.communityValue("",
                                                                                   AetherValue.ActivationDirectiveValue.WORKER,
                                                                                   policy.targetSize()));
@@ -351,7 +376,7 @@ record PlacementReconciler(NodeId self,
                                    : readinessExpired(config, operation)
                                      ? uncertain(operation,
                                                  leader,
-                                                 PlacementOperationPhase.BLOCKED,
+                                                 PlacementOperationPhase.READINESS_DELAYED,
                                                  "Reserved replacement did not become ready; reservation retained")
                                      : Promise.unitPromise();
             case DRAIN_REQUESTED -> System.currentTimeMillis() - operation.phaseChangedAt() > drainTimeout.millis()
@@ -367,6 +392,9 @@ record PlacementReconciler(NodeId self,
             case CREATE_UNCERTAIN -> observedTarget(operation).isPresent()
                                      ? createAccepted(config, operation, leader)
                                      : Promise.unitPromise();
+            case READINESS_DELAYED -> targetReady(operation)
+                                      ? beginDrain(operation, leader)
+                                      : Promise.unitPromise();
             case COMPLETE, DRAIN_UNCERTAIN, BLOCKED, UNKNOWN -> Promise.unitPromise();
         };
     }
@@ -401,7 +429,7 @@ record PlacementReconciler(NodeId self,
                                                                               .flatMap(_ -> createAccepted(config,
                                                                                                            requested,
                                                                                                            leader))
-                                                                              .fold(result -> result.fold(cause -> cause == CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE
+                                                                              .fold(result -> result.fold(cause -> cause instanceof CapacityControlledLifecycle.AdmissionFailure
                                                                                                                    ? deferCapacity(requested,
                                                                                                                                    leader,
                                                                                                                                    cause.message())

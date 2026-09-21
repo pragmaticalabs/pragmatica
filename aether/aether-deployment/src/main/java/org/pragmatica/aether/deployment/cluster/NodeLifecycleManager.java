@@ -32,6 +32,20 @@ public interface NodeLifecycleManager {
     Promise<Unit> restartNode(NodeId nodeId);
     boolean isCloudManaged();
 
+    /// Committed allocations remain capacity even when their create acknowledgement was lost.
+    default java.util.Set<NodeId> allocatedNodes(String role) {
+        return java.util.Set.of();
+    }
+
+    /// Retirement intent survives the caller and is retried only after fresh safety checks.
+    default java.util.Set<NodeId> retiringNodes(String role) {
+        return java.util.Set.of();
+    }
+
+    default Promise<Unit> reconcileInventory() {
+        return Promise.unitPromise();
+    }
+
     /// RFC-0017 stage 5 — the worker reconciler's ACTUAL-inventory read: instances matching the
     /// upper-layer tag filter (providers translate key conventions at their boundary, see
     /// `NODE_ID_TAG`). Default refusal keeps non-provisioning fakes honest — a fake that

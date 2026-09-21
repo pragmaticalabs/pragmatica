@@ -131,23 +131,50 @@ class CommunityPlacementReconcilerTest {
     }
 
     @Test
-    void implicitSurplusWaitsForQuiescenceAcknowledgementWithoutExplicitPolicy() {
+    void implicitSurplusCannotBypassNormalizedCommunityRetirement() {
         initialize();
         var entry = new AetherValue.TopologyEntry("pool", "worker", 0);
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
             new AetherValue.ClusterConfigValue(CONFIG.substring(0, CONFIG.indexOf("[community.stable]")),
                 "test", "1.0.0", List.of(entry), 3, 3, "forge", 2, 0)));
-        assertThat(reconciler.requestRetirement(OLD, entry).await().isSuccess()).isTrue();
-        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+        assertThat(reconciler.requestRetirement(OLD, entry).await().isFailure()).isTrue();
         assertThat(effects).isEmpty();
-        reconciler.reconcile().await();
-        reconciler.reconcile().await();
+        assertThat(retirementRefusals).containsExactly(OLD);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(CapacityControlledLifecycle.AdmissionFailure.class)
+    void preDispatchRefusalRetriesTheSameIdentity(CapacityControlledLifecycle.AdmissionFailure refusal) {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        var target = current().targetNode();
+        createOutcome = refusal.promise();
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.RESERVED);
+        assertThat(current().targetNode()).isEqualTo(target);
+        createOutcome = Promise.unitPromise();
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+        assertThat(current().targetNode()).isEqualTo(target);
+    }
+
+    @Test
+    void delayedReadinessResumesWithoutReplacingTheReservedIdentity() {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        reconciler.reconcile().await().unwrap();
+        var before = current();
+        var delayed = before.withPhase(PlacementOperationPhase.READINESS_DELAYED, before.issuer(), "readiness delayed");
+        var key = new AetherKey.CommunityPlacementOperationKey("stable");
+        seed(new KVCommand.LeaderTransaction<>(key, "delay", before.issuer(), List.of(),
+            List.of(new KVCommand.Mutation<>(key, Option.some(before), Option.some(delayed)))));
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.READINESS_DELAYED);
+        replacementReady();
+        reconciler.reconcile().await().unwrap();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.DRAIN_REQUESTED);
-        assertThat(effects).doesNotContain("terminate");
-        assertThat(reconciler.onDrainCompleted(OLD, current().operationId()).await().unwrap()).isTrue();
-        reconciler.reconcile().await();
-        reconciler.reconcile().await();
-        assertThat(effects).contains("terminate");
+        assertThat(current().targetNode()).isEqualTo(before.targetNode());
+        assertThat(effects).containsExactly("create", "drain");
     }
 
     @Test
@@ -353,7 +380,7 @@ class CommunityPlacementReconcilerTest {
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.EnumSource(value = PlacementOperationPhase.class,
         names = {"RESERVED", "CREATE_REQUESTED", "CREATE_UNCERTAIN", "AWAITING_READY", "DRAIN_REQUESTED",
-                 "DRAIN_UNCERTAIN", "DRAINED", "TERMINATING", "BLOCKED"})
+                 "DRAIN_UNCERTAIN", "DRAINED", "TERMINATING", "BLOCKED", "READINESS_DELAYED"})
     void freshLeaderResumesEveryPersistedWindowWithoutUnsafeProviderEffects(PlacementOperationPhase phase) {
         initialize();
         reconciler.reconcile().await().unwrap();
@@ -391,6 +418,20 @@ class CommunityPlacementReconcilerTest {
             assertThat(operation.previousSource()).isEqualTo(reserved.previousSource());
             assertThat(operation.operationId()).isEqualTo(reserved.operationId());
         });
+    }
+
+    @Test
+    void positiveTargetReopensAnEmptyDissolvedCommunity() {
+        initialize();
+        seed(new KVCommand.Remove<>(new AetherKey.ActivationDirectiveKey(OLD)));
+        seed(new KVCommand.Remove<>(new AetherKey.NodePlacementKey(OLD)));
+        seed(new KVCommand.Put<>(new AetherKey.CommunityKey("stable"),
+            new AetherValue.CommunityValue("pool", "worker", 0,
+                org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED, 1, Option.some(2L))));
+        reconciler.reconcile().await().unwrap();
+        assertThat(store.getTyped(new AetherKey.CommunityKey("stable"), AetherValue.CommunityValue.class)
+            .unwrap().state()).isEqualTo(org.pragmatica.aether.slice.kvstore.CommunityState.FORMING);
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.RESERVED);
     }
 
     @Test

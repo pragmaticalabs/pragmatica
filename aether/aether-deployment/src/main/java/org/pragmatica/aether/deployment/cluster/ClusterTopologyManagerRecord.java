@@ -122,7 +122,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<java.util.function.Predicate<NodeId>> retirementAllowed,
                                     AtomicReference<HierarchyStateWriter> hierarchyWriter,
                                     ConcurrentHashMap<NodeId, Long> pendingDrains,
-                                    org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
+                                    org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling,
+                                    AtomicLong replayRunning) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -245,7 +246,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(node -> false),
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
-                                                org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
+                                                org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
+                                                new AtomicLong(-1));
     }
 
     @Override
@@ -829,13 +831,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                         .flatMap(renderedSpec -> provisionWithZoneRotation(renderedSpec,
                                                                                            replacementZones(intendedRole,
                                                                                                             sourceName)))
-                                        .onFailure(this::recordProvisioningFailure)
                                         .onSuccess(instance -> recordProvisionedReplacement(instance,
                                                                                             newNodeId,
                                                                                             intendedRole,
                                                                                             sourceName))
                                         .onSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
-                                        .map(ClusterTopologyManagerRecord::asDispatched);
+                                        .map(ClusterTopologyManagerRecord::asDispatched)
+                                        .fold(this::completeProvision)
+                                        .onFailure(this::recordProvisioningFailure);
+    }
+
+    private Promise<ProvisionDisposition> completeProvision(Result<ProvisionDisposition> result) {
+        return result.fold(this::provisionRefused, Promise::success);
+    }
+
+    private Promise<ProvisionDisposition> provisionRefused(Cause cause) {
+        return cause instanceof CapacityControlledLifecycle.AdmissionFailure
+               ? Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION))
+               : cause.promise();
     }
 
     /// #1022 — the leader has just created a BILLABLE server, and until this line it dropped the
@@ -1102,8 +1115,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// arrives mid-pass is NOT dropped: it is recorded in `workerReconcilePending` and replayed as
     /// exactly one follow-up pass when the in-flight one releases. Replay cannot self-perpetuate —
     /// the follow-up consumes the flag before it runs, so only a genuinely new external trigger can
-    /// set it again. Deferred provisions (open circuit, no peers) surface on the next commit or
-    /// leader activation, matching the deferral semantics of [#provisionReplacement].
+    /// set it again. Deferred provisions are retried by the periodic lifecycle poll without requiring
+    /// another configuration commit or leadership change.
     @Contract
     @Override
     public synchronized void reconcileWorkerTopology() {
@@ -1165,6 +1178,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private synchronized Unit pollWorkerTopology(long epoch) {
         if (active.get() && activationEpoch.get() == epoch) {
             reconcileWorkerTopology();
+            lifecycleManager.reconcileInventory()
+                            .onFailure(cause -> log.warn("Capacity reconciliation deferred: {}",
+                                                         cause.message()));
+            lifecycleManager.retiringNodes("core").forEach(this::terminateDeparted);
+            scheduleActivationReplay();
         }
 
         return unit();
@@ -1173,7 +1191,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public Promise<Unit> provisionPlacementNode(AetherValue.CommunityPlacementOperationValue operation) {
         if (!active.get()) {
-            return Causes.cause("Placement provisioning requires active core leader").promise();
+            return CapacityControlledLifecycle.AdmissionFailure.INACTIVE_AUTHORITY.promise();
         }
 
         var epoch = activationEpoch.get();
@@ -1181,7 +1199,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var context = buildProvisionContext(operation.targetNode(), NodeRole.WORKER, source);
 
         if (context.peers().or("").isEmpty()) {
-            return Causes.cause("No ready core peers for placement provisioning").promise();
+            return CapacityControlledLifecycle.AdmissionFailure.NO_READY_PEERS.promise();
         }
 
         return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
@@ -1194,12 +1212,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                       .map(zone -> rendered.withPlacement(PlacementHint.zoneHint(zone)))
                                                       .or(rendered))
                             .async()
+                            .fold(this::preparedPlacement)
                             .flatMap(spec -> lifecycleManager.provisionNode(spec,
                                                                             operation.sourceBinding()))
                             .flatMap(instance -> recordPlacementProvision(instance,
                                                                           operation.targetNode(),
                                                                           source,
                                                                           epoch));
+    }
+
+    private Promise<ProvisionSpec> preparedPlacement(Result<ProvisionSpec> result) {
+        return result.onFailure(cause -> log.warn("Placement configuration refused: {}",
+                                                  cause.message()))
+                     .fold(_ -> CapacityControlledLifecycle.AdmissionFailure.INVALID_CONFIGURATION.promise(),
+                           Promise::success);
     }
 
     private Promise<Unit> recordPlacementProvision(InstanceInfo instance, NodeId node, SourceName source, long epoch) {
@@ -1236,15 +1262,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private Promise<Unit> reconcileWorkerEntries(ClusterConfigValue config, long epoch) {
         var entries = config.desiredTopology().stream().filter(entry -> !entry.isCore()).toList();
-        var pass = Promise.unitPromise();
 
-        for (var entry : entries) {
-            pass = pass.flatMap(_ -> reconcileWorkerEntry(ClusterName.maybeClusterName(config.clusterName()),
-                                                          entry,
-                                                          epoch));
-        }
-
-        return pass;
+        return ReconciliationBatch.reconcile(entries,
+                                             4,
+                                             TimeSpan.timeSpan(30).seconds(),
+                                             entry -> reconcileWorkerEntry(ClusterName.maybeClusterName(config.clusterName()),
+                                                                           entry,
+                                                                           epoch),
+                                             (entry, cause) -> log.warn("Worker inventory {}/{} deferred: {}",
+                                                                        entry.sourceName(),
+                                                                        entry.role(),
+                                                                        cause.message()));
     }
 
     private Promise<Unit> reconcileWorkerEntry(Option<ClusterName> clusterName,
@@ -1326,7 +1354,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual, long epoch) {
-        if (entry.role().equals(NodeRole.WORKER.value()) && usesExplicitCommunities()) {
+        if (entry.role().equals(NodeRole.WORKER.value()) && communityPlacement.get().isPresent()) {
             return Promise.unitPromise();
         }
 
@@ -1879,7 +1907,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void terminateDeparted(NodeId nodeId) {
-        if (!active.get() || !retirementAllowed.get().test(nodeId)) {
+        if (!active.get() || !isAutoHealEnabled() || !retirementAllowed.get().test(nodeId)) {
             return;
         }
 
@@ -1890,7 +1918,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                       cause.message()));
     }
 
-    /// R4 — ACTIVATION REPLAY. `activate()` runs a one-shot reconciliation of this cluster's core instances,
+    /// Core inventory reconciliation. Activation and the periodic lifecycle poll run a bounded reconciliation of this cluster's core instances,
     /// because nothing else replays reaps a previous leader skipped or never received. A queued `NodeRemoved`
     /// can be delivered while every CTM is inactive and is then dropped, and a refused grace reap is not
     /// retried. Two inventory reads are taken [#activationReplayGrace] apart. An instance is terminated only
@@ -1902,7 +1930,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void scheduleActivationReplay() {
         var epoch = activationEpoch.get();
 
-        replayCandidates(epoch).onSuccess(firstRead -> scheduleReplayConfirmation(epoch, firstRead));
+        if (replayRunning.getAndSet(epoch) == epoch) return;
+
+        replayCandidates(epoch).flatMap(first -> replayAfterGrace(epoch, first))
+                        .timeout(activationReplayGrace().plus(TimeSpan.timeSpan(30).seconds()))
+                        .onFailure(cause -> log.warn("Core inventory reconciliation deferred: {}",
+                                                     cause.message()))
+                        .onResultRun(() -> replayRunning.compareAndSet(epoch, -1));
     }
 
     /// R4 grace — `provisioningTimeout` (60s default). Derived: it is the window the CTM already grants a
@@ -1912,18 +1946,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return autoHealConfig.provisioningTimeout();
     }
 
-    @Contract
-    private void scheduleReplayConfirmation(long epoch, Set<NodeId> firstRead) {
-        if (firstRead.isEmpty()) {
-            return;
-        }
-
-        SharedScheduler.schedule(() -> confirmActivationReplay(epoch, firstRead), activationReplayGrace());
+    private Promise<Unit> replayAfterGrace(long epoch, Set<NodeId> firstRead) {
+        return firstRead.isEmpty()
+               ? Promise.unitPromise()
+               : Promise.promise(activationReplayGrace(),
+                                 () -> Result.success(firstRead))
+                        .flatMap(first -> replayCandidates(epoch).map(second -> reapConfirmedOrphans(epoch,
+                                                                                                     first,
+                                                                                                     second)));
     }
 
-    @Contract
-    private void confirmActivationReplay(long epoch, Set<NodeId> firstRead) {
-        replayCandidates(epoch).onSuccess(secondRead -> terminateOrphans(epoch, firstRead, secondRead));
+    private Unit reapConfirmedOrphans(long epoch, Set<NodeId> first, Set<NodeId> second) {
+        terminateOrphans(epoch, first, second);
+
+        return unit();
     }
 
     /// The listing is asynchronous, so the activation that was current when the second read was ISSUED can be
@@ -1950,8 +1986,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     /// The unprotected core instances of THIS cluster, or none when the read must not act: a stale activation,
     /// an inactive CTM, a view that is not quorum-safe, or no cluster name to scope the listing. A failed listing
-    /// is logged and yields none — degrade forward: this activation replays nothing, and the next activation
-    /// reads again.
+    /// is logged and yields none — the next periodic pass retries without treating failure as absence.
     private Promise<Set<NodeId>> replayCandidates(long epoch) {
         return replayMayAct(epoch)
                ? resolveClusterName().fold(() -> Promise.success(Set.<NodeId> of()), this::unprotectedCoreInstances)

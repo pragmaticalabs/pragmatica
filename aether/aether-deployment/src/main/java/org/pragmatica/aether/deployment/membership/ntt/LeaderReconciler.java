@@ -34,6 +34,7 @@ import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
@@ -42,6 +43,7 @@ import org.pragmatica.utility.ULID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -295,6 +297,9 @@ public final class LeaderReconciler {
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
+
+    private final AtomicReference<Supplier<Set<NodeId>>> durableProvisioning = new AtomicReference<>(Set::of);
+
     /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
     /// provider never accumulates stacked queries for the same replacement across poll ticks.
     private final Set<NodeId> statusQueriesOutstanding = ConcurrentHashMap.newKeySet();
@@ -652,7 +657,7 @@ public final class LeaderReconciler {
 
     /// Observability — number of in-flight provisioning records this leader is tracking.
     public int inFlightProvisioningCount() {
-        return inFlightProvisioning.size();
+        return inFlightProvisioningKeys().size();
     }
 
     /// Provisioning-stickiness fix — the set of in-flight provisioning ids this leader currently
@@ -660,12 +665,16 @@ public final class LeaderReconciler {
     /// `ClusterSyncContext.setDispatchedNodesSupplier`) so followers retain it and a new leader can
     /// seed from it. Read-only snapshot.
     public Set<NodeId> inFlightProvisioningKeys() {
-        return Set.copyOf(inFlightProvisioning.keySet());
+        var pending = new LinkedHashSet<>(inFlightProvisioning.keySet());
+
+        pending.addAll(durableProvisioning.get().get());
+
+        return Set.copyOf(pending);
     }
 
     /// Provisioning-stickiness fix — inject the supplier of the prior leader's STICKILY-retained
     /// dispatched set, consulted on leadership gain ([`#activate()`]) to seed `inFlightProvisioning`.
-    /// `AetherNode` wires this to `ClusterSyncCollector::retainedDispatchedNodes`. `null` resets to
+    /// Production uses committed allocations instead of this legacy/test inheritance seam. `null` resets to
     /// the empty-set default (no seed).
     @Contract
     public void setRetainedDispatchedSupplier(Supplier<Set<NodeId>> supplier) {
@@ -1047,7 +1056,12 @@ public final class LeaderReconciler {
         }
 
         if (effective >= configuredCoreCount) {
-            return "NO_DEFICIT";
+            return membershipFsm.coreCountedMembers()
+                                .size() < configuredCoreCount && !durableProvisioning.get()
+                                                                                     .get()
+                                                                                     .isEmpty()
+                   ? "AWAITING_DURABLE_CAPACITY"
+                   : "NO_DEFICIT";
         }
 
         if (!quorumSafe) {
@@ -1104,10 +1118,17 @@ public final class LeaderReconciler {
     /// whose in-flight placeholder has not yet expired is present in both sets; counting it
     /// once (via the union) prevents the inflated-surplus → spurious-drain → quorum-loss
     /// dissolution. Never a sum.
+    public Unit setDurableProvisioningSupplier(Supplier<Set<NodeId>> supplier) {
+        durableProvisioning.set(supplier);
+
+        return unit();
+    }
+
     private int effectiveCapacity(Set<NodeId> currentMembers) {
         var union = new LinkedHashSet<>(currentMembers);
 
         union.addAll(inFlightProvisioning.keySet());
+        union.addAll(durableProvisioning.get().get());
 
         return union.size();
     }

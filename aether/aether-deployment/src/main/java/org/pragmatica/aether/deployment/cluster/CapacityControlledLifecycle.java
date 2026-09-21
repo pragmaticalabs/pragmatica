@@ -41,22 +41,176 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                           Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
                                           BooleanSupplier activeLeader,
                                           IntSupplier limit,
-                                          AtomicBoolean initializing) implements NodeLifecycleManager {
-    public static NodeLifecycleManager capacityControlledLifecycle(NodeLifecycleManager delegate,
-                                                                   NodeId self,
-                                                                   KVStore<AetherKey, AetherValue> store,
-                                                                   Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
-                                                                   BooleanSupplier activeLeader,
-                                                                   IntSupplier limit) {
-        return new CapacityControlledLifecycle(delegate, self, store, apply, activeLeader, limit, new AtomicBoolean());
+                                          AtomicBoolean initializing,
+                                          AtomicBoolean inventoryReconciling,
+                                          java.util.concurrent.atomic.AtomicReference<Option<AetherValue.ClusterConfigValue>> inventoriedConfiguration,
+                                          java.util.Set<String> activeSources,
+                                          java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger> inventoryCursors) implements NodeLifecycleManager {
+    public static CapacityControlledLifecycle capacityControlledLifecycle(NodeLifecycleManager delegate,
+                                                                          NodeId self,
+                                                                          KVStore<AetherKey, AetherValue> store,
+                                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
+                                                                          BooleanSupplier activeLeader,
+                                                                          IntSupplier limit) {
+        return new CapacityControlledLifecycle(delegate,
+                                               self,
+                                               store,
+                                               apply,
+                                               activeLeader,
+                                               limit,
+                                               new AtomicBoolean(),
+                                               new AtomicBoolean(),
+                                               new java.util.concurrent.atomic.AtomicReference<>(Option.none()),
+                                               new java.util.HashSet<>(),
+                                               new java.util.concurrent.ConcurrentHashMap<>());
     }
 
     public enum AdmissionFailure implements org.pragmatica.lang.Cause {
-        CAPACITY_UNAVAILABLE;
+        CAPACITY_UNAVAILABLE,
+        INVENTORY_UNAVAILABLE,
+        NO_READY_PEERS,
+        INACTIVE_AUTHORITY,
+        INVALID_CONFIGURATION;
         @Override
         public String message() {
-            return "Fleet capacity reservation unavailable; no provider create was dispatched";
+            return switch (this) {
+                case CAPACITY_UNAVAILABLE -> "Capacity or source admission unavailable; no provider create was dispatched";
+                case INVENTORY_UNAVAILABLE -> "Complete inventory is unavailable; no provider create was dispatched";
+                case NO_READY_PEERS -> "No ready core seed peers; no provider create was dispatched";
+                case INACTIVE_AUTHORITY -> "Active core authority is unavailable; no provider create was dispatched";
+                case INVALID_CONFIGURATION -> "Provisioning configuration is invalid; no provider create was dispatched";
+            };
         }
+    }
+
+    @Override
+    public Promise<Unit> reconcileInventory() {
+        if (leader().isEmpty() || !inventoryReconciling.compareAndSet(false, true)) return Promise.unitPromise();
+
+        return configuredInventory().fold(this::completeInventory);
+    }
+
+    private Promise<Unit> completeInventory(org.pragmatica.lang.Result<Unit> result) {
+        inventoryReconciling.set(false);
+
+        return result.async();
+    }
+
+    private Promise<Unit> configuredInventory() {
+        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+                    .fold(Promise::unitPromise,
+                          config -> ClusterBootstrapConfigParser.parse(config.tomlContent())
+                                                                .async()
+                                                                .flatMap(parsed -> ReconciliationBatch.reconcile(parsed.sources()
+                                                                                                                       .values()
+                                                                                                                       .stream()
+                                                                                                                       .filter(source -> source.type() != SourceType.SSH)
+                                                                                                                       .sorted(java.util.Comparator.comparing(source -> source.name()
+                                                                                                                                                                              .value()))
+                                                                                                                       .toList(),
+                                                                                                                 4,
+                                                                                                                 org.pragmatica.lang.io.TimeSpan.timeSpan(30)
+                                                                                                                                                .seconds(),
+                                                                                                                 source -> reconcileSource(parsed.cluster()
+                                                                                                                                                 .name(),
+                                                                                                                                           source.name()),
+                                                                                                                 (source, cause) -> org.slf4j.LoggerFactory.getLogger(CapacityControlledLifecycle.class)
+                                                                                                                                                           .warn("Capacity inventory for {} deferred: {}",
+                                                                                                                                                                 source.name(),
+                                                                                                                                                                 cause.message()))));
+    }
+
+    private Promise<Unit> reconcileSource(ClusterName cluster, SourceName source) {
+        return delegate.sourceBinding(source)
+                       .async()
+                       .flatMap(binding -> listInstances(Map.of("aether-cluster",
+                                                                cluster.value(),
+                                                                "aether-source",
+                                                                source.value()),
+                                                         source,
+                                                         binding).flatMap(instances -> confirmMissing(source,
+                                                                                                      binding,
+                                                                                                      instances)));
+    }
+
+    private Promise<Unit> confirmMissing(SourceName source, String binding, List<InstanceInfo> instances) {
+        var observed = instances.stream()
+                                .map(instance -> observedNode(instance, source))
+                                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        var missing = reservations().entrySet()
+                                  .stream()
+                                  .filter(entry -> entry.getValue()
+                                                        .sourceName()
+                                                        .equals(source.value()))
+                                  .filter(entry -> entry.getValue()
+                                                        .sourceBinding()
+                                                        .equals(binding))
+                                  .filter(entry -> entry.getValue()
+                                                        .phase() == CapacityReservationPhase.OBSERVED || entry.getValue()
+                                                                                                              .phase() == CapacityReservationPhase.RETIRING)
+                                  .filter(entry -> !observed.contains(entry.getKey()))
+                                  .map(Map.Entry::getKey)
+                                  .sorted(java.util.Comparator.comparing(NodeId::id))
+                                  .toList();
+
+        return ReconciliationBatch.reconcile(nextMissing(binding, missing),
+                                             4,
+                                             org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds(),
+                                             node -> instancesForNode(node, source, binding).mapToUnit(),
+                                             (node, cause) -> org.slf4j.LoggerFactory.getLogger(CapacityControlledLifecycle.class)
+                                                                                     .warn("Capacity absence confirmation for {} deferred: {}",
+                                                                                           node,
+                                                                                           cause.message()));
+    }
+
+    private List<NodeId> nextMissing(String binding, List<NodeId> missing) {
+        if (missing.size() <= 32) return missing;
+
+        var cursor = inventoryCursors.computeIfAbsent(binding, _ -> new java.util.concurrent.atomic.AtomicInteger());
+        var start = Math.floorMod(cursor.getAndAdd(32), missing.size());
+
+        return java.util.stream.IntStream.range(0, 32)
+                                         .mapToObj(offset -> missing.get((start + offset) % missing.size()))
+                                         .toList();
+    }
+
+    @Override
+    public java.util.Set<NodeId> allocatedNodes(String role) {
+        return reservations().entrySet()
+                           .stream()
+                           .filter(entry -> entry.getValue()
+                                                 .intendedRole()
+                                                 .equalsIgnoreCase(role))
+                           .filter(entry -> entry.getValue()
+                                                 .phase() != CapacityReservationPhase.RETIRING)
+                           .map(Map.Entry::getKey)
+                           .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    @Override
+    public java.util.Set<NodeId> retiringNodes(String role) {
+        return reservations().entrySet()
+                           .stream()
+                           .filter(entry -> entry.getValue()
+                                                 .intendedRole()
+                                                 .equalsIgnoreCase(role))
+                           .filter(entry -> entry.getValue()
+                                                 .phase() == CapacityReservationPhase.RETIRING)
+                           .map(Map.Entry::getKey)
+                           .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private Map<NodeId, CapacityReservationValue> reservations() {
+        var result = new java.util.HashMap<NodeId, CapacityReservationValue>();
+        Map<?, ?> snapshot = store.snapshot();
+
+        snapshot.forEach((key, value) -> {
+            if (key instanceof AetherKey.CapacityReservationKey reservation && value instanceof CapacityReservationValue state) {
+                result.put(reservation.nodeId(), state);
+            }
+        });
+
+        return Map.copyOf(result);
     }
 
     @Override
@@ -67,12 +221,30 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Promise<InstanceInfo> provisionBound(ProvisionSpec spec, String binding) {
+        if (!acquireSource(binding)) return AdmissionFailure.CAPACITY_UNAVAILABLE.promise();
+
+        return provisionAdmitted(spec, binding).timeout(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)
+                                .fold(result -> completeSource(binding, result));
+    }
+
+    private synchronized boolean acquireSource(String binding) {
+        return activeSources.size() < 4 && activeSources.add(binding);
+    }
+
+    private synchronized Promise<InstanceInfo> completeSource(String binding,
+                                                              org.pragmatica.lang.Result<InstanceInfo> result) {
+        activeSources.remove(binding);
+
+        return result.async();
+    }
+
+    private Promise<InstanceInfo> provisionAdmitted(ProvisionSpec spec, String binding) {
         return spec.context()
                    .nodeId()
                    .fold(() -> Causes.cause("Capacity reservation requires a stable node identity").promise(),
                          raw -> NodeId.nodeId(raw)
                                       .async()
-                                      .flatMap(node -> existingAttempt(node).flatMap(_ -> ensureInventory())
+                                      .flatMap(node -> existingAttempt(node).flatMap(_ -> admissionInventory())
                                                                       .flatMap(_ -> reserveBound(node,
                                                                                                  spec.context()
                                                                                                      .sourceName(),
@@ -131,8 +303,21 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class);
     }
 
+    private Promise<Unit> admissionInventory() {
+        return ensureInventory().onFailure(cause -> org.slf4j.LoggerFactory.getLogger(CapacityControlledLifecycle.class)
+                                                                           .warn("Capacity admission awaits complete inventory: {}",
+                                                                                 cause.message()))
+                              .fold(result -> result.fold(_ -> AdmissionFailure.INVENTORY_UNAVAILABLE.promise(),
+                                                          Promise::success));
+    }
+
     private Promise<Unit> ensureInventory() {
-        if (ledger().filter(CapacityLedgerValue::inventoryComplete).isPresent()) {
+        var configuration = store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class);
+
+        if (configuration.isEmpty()) return AdmissionFailure.INVENTORY_UNAVAILABLE.promise();
+
+        if (ledger().filter(CapacityLedgerValue::inventoryComplete).isPresent() && inventoriedConfiguration.get()
+                                                                                                           .equals(configuration)) {
             return Promise.unitPromise();
         }
 
@@ -140,7 +325,21 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
             return Causes.cause("Fleet inventory initialization in progress").promise();
         }
 
-        return initializeInventory().onResultRun(() -> initializing.set(false));
+        return initializeInventory().timeout(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)
+                                  .map(_ -> rememberInventory(configuration))
+                                  .fold(this::completeInitialization);
+    }
+
+    private Unit rememberInventory(Option<AetherValue.ClusterConfigValue> configuration) {
+        inventoriedConfiguration.set(configuration);
+
+        return Unit.unit();
+    }
+
+    private Promise<Unit> completeInitialization(org.pragmatica.lang.Result<Unit> result) {
+        initializing.set(false);
+
+        return result.async();
     }
 
     private Promise<Unit> initializeInventory() {
@@ -186,9 +385,10 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private Promise<Boolean> reserveBound(NodeId node, SourceName source, String binding, String intendedRole) {
         var key = new AetherKey.CapacityReservationKey(node);
         var current = ledger();
+        var configuration = store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class);
 
-        if (store.get(key).isPresent() || current.filter(value -> value.inventoryComplete() && value.allocated() < limit.getAsInt())
-                                                 .isEmpty()) {
+        if (!inventoriedConfiguration.get().equals(configuration) || store.get(key).isPresent() || current.filter(value -> value.inventoryComplete() && value.allocated() < limit.getAsInt())
+                                                                                                          .isEmpty()) {
             return Promise.success(false);
         }
 
@@ -200,7 +400,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                              Option.some(new CapacityReservationValue(source.value(),
                                                                                                                       binding,
                                                                                                                       intendedRole.toLowerCase(java.util.Locale.ROOT),
-                                                                                                                      CapacityReservationPhase.DISPATCHED))))));
+                                                                                                                      CapacityReservationPhase.DISPATCHED)))),
+                                            List.of(new KVCommand.ReadWitness<AetherKey>(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                         configuration.map(config -> (Object) config)))));
     }
 
     private Promise<Unit> observeBound(List<InstanceInfo> instances, SourceName source, String binding) {
@@ -221,7 +423,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                 return Causes.cause("Provider node identity is duplicated across capacity sources").promise();
             }
 
-            if (existing.filter(value -> value.phase() == CapacityReservationPhase.OBSERVED).isPresent()) {
+            if (existing.filter(value -> value.phase() == CapacityReservationPhase.OBSERVED || value.phase() == CapacityReservationPhase.RETIRING)
+                        .isPresent()) {
                 continue;
             }
 
@@ -262,6 +465,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private Promise<Boolean> mutate(Option<CapacityLedgerValue> before,
                                     CapacityLedgerValue after,
                                     List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+        return mutate(before, after, changes, List.of());
+    }
+
+    private Promise<Boolean> mutate(Option<CapacityLedgerValue> before,
+                                    CapacityLedgerValue after,
+                                    List<KVCommand.Mutation<AetherKey, AetherValue>> changes,
+                                    List<KVCommand.ReadWitness<AetherKey>> guards) {
         return leader().fold(() -> Promise.success(false),
                              currentLeader -> {
                                  var mutations = new ArrayList<>(changes);
@@ -273,7 +483,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                  var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(AetherKey.CapacityLedgerKey.INSTANCE,
                                                                                                        id,
                                                                                                        currentLeader,
-                                                                                                       List.of(),
+                                                                                                       guards,
                                                                                                        mutations);
 
                                  return apply.apply(List.of(command))
@@ -286,7 +496,14 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Promise<Unit> releaseConfirmed(NodeId node, SourceName source, String binding) {
-        return release(node, source, binding, CapacityReservationPhase.OBSERVED);
+        return store.getTyped(new AetherKey.CapacityReservationKey(node),
+                              CapacityReservationValue.class)
+                    .filter(value -> value.phase() == CapacityReservationPhase.OBSERVED || value.phase() == CapacityReservationPhase.RETIRING)
+                    .fold(Promise::unitPromise,
+                          value -> release(node,
+                                           source,
+                                           binding,
+                                           value.phase()));
     }
 
     private Promise<Unit> release(NodeId node,
@@ -411,8 +628,33 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                           .equals(binding))
                     .toResult(Causes.cause("Termination does not match the committed capacity source binding"))
                     .async()
-                    .flatMap(_ -> delegate.terminateNode(node, source, binding))
+                    .flatMap(reservation -> recordRetirement(node, reservation))
+                    .flatMap(_ -> leader().isPresent()
+                                  ? delegate.terminateNode(node, source, binding)
+                                  : HierarchyStateWriter.Refusal.INACTIVE.promise())
                     .flatMap(_ -> instancesForNode(node, source, binding).mapToUnit());
+    }
+
+    private Promise<Unit> recordRetirement(NodeId node, CapacityReservationValue before) {
+        if (before.phase() == CapacityReservationPhase.RETIRING) return Promise.unitPromise();
+
+        if (before.phase() != CapacityReservationPhase.OBSERVED) return HierarchyStateWriter.Refusal.CONFLICT.promise();
+
+        var current = ledger();
+        var next = current.map(value -> new CapacityLedgerValue(value.allocated(),
+                                                                value.version() + 1,
+                                                                value.inventoryComplete()));
+        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(new AetherKey.CapacityReservationKey(node),
+                                                                      Option.some(before),
+                                                                      Option.some(new CapacityReservationValue(before.sourceName(),
+                                                                                                               before.sourceBinding(),
+                                                                                                               before.intendedRole(),
+                                                                                                               CapacityReservationPhase.RETIRING)));
+
+        return next.fold(() -> HierarchyStateWriter.Refusal.CONFLICT.promise(),
+                         value -> mutate(current, value, List.of(mutation)).flatMap(accepted -> accepted
+                                                                                                ? Promise.unitPromise()
+                                                                                                : HierarchyStateWriter.Refusal.CONFLICT.promise()));
     }
 
     @Override

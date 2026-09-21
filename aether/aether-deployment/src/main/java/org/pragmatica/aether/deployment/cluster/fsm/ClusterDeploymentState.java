@@ -1081,6 +1081,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                            .fold(() -> Result.success(new PlacementConfiguration(observed,
                                                                                  Map.of())),
                                  value -> org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(value.tomlContent())
+                                                                                                           .flatMap(config -> org.pragmatica.aether.deployment.cluster.CommunityPolicies.normalize(config,
+                                                                                                                                                                                                   value))
                                                                                                            .map(config -> new PlacementConfiguration(observed,
                                                                                                                                                      config.communities())));
         }

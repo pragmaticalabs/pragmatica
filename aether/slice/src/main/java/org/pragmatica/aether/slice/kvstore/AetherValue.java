@@ -2079,6 +2079,7 @@ public sealed interface AetherValue {
         DISPATCHED,
         OBSERVED,
         RELEASED,
+        RETIRING,
         UNKNOWN
     }
 
@@ -2153,6 +2154,7 @@ public sealed interface AetherValue {
         CREATE_UNCERTAIN,
         DRAIN_UNCERTAIN,
         BLOCKED,
+        READINESS_DELAYED,
         UNKNOWN
     }
 

@@ -168,6 +168,26 @@ class LeaderReconcilerTest {
     }
 
     @Test
+    void durableAttemptMasksDeficitWithoutAnyRetainedDispatchObservation() {
+        configuredCoreCount.set(5);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B));
+        reconciler.setDurableProvisioningSupplier(() -> Set.of(PEER_C, PEER_D));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        assertThat(reconciler.currentProvisioningSnapshot().effective()).isEqualTo(5);
+        // Only removal of durable evidence, not elapsed local time, reopens the deficit.
+        reconciler.setDurableProvisioningSupplier(Set::of);
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+    }
+
+    @Test
     void healthyUnknownIdentityDoesNotContributeToCoreCapacity() {
         seedClusterWithPeers(PEER_A);
         health.markHealthy(PEER_B);
