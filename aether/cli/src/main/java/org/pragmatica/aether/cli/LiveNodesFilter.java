@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -23,12 +24,29 @@ public sealed interface LiveNodesFilter {
 
     /// Filter the `nodes` array of a `LiveNodesResponse` to entries with `swimAlive=true`
     /// and recompute `liveCount`/`zombieCount`. Returns the original JSON unchanged when it
-    /// cannot be parsed (the caller's downstream formatter then surfaces the parse problem).
+    /// cannot be parsed, or carries no `nodes` array at all (#1033: an error envelope from a
+    /// failed fetch used to be rebuilt into `{"nodes":[],…}`, erasing the error) — the caller's
+    /// downstream formatter then surfaces the parse problem or the error.
     static String onlyAlive(String json) {
         return MAPPER.readTree(json)
+                     .filter(NotALiveNodesDocument.INSTANCE,
+                             root -> root.path("nodes")
+                                         .isArray())
                      .map(LiveNodesFilter::rebuildAliveOnly)
                      .flatMap(MAPPER::writeAsString)
                      .or(json);
+    }
+
+    enum NotALiveNodesDocument implements Cause {
+        INSTANCE("Not a live-nodes document: no `nodes` array");
+        private final String message;
+        NotALiveNodesDocument(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
     }
 
     /// Extract the boolean `reachable` field from a `NodeEndpointResponse`. Absent / unparseable
