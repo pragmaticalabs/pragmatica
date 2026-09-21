@@ -334,9 +334,14 @@ public final class RouteConfigLoader {
                                                               String section,
                                                               String key,
                                                               RouteSecurityLevel defaultSecurity) {
+        // A route key holds one of three shapes. Dispatch on the shape rather than probing the typed
+        // getters: a typed read that finds another shape is recorded as a type mismatch and refuses
+        // the load (#1098), and a string route missing the array probe is not a mismatch.
         return toml.getInlineTable(section, key)
                    .map(table -> parseInlineTableRoute(key, table))
-                   .or(() -> toml.getStringList(section, key)
+                   .or(() -> toml.rawValue(section, key)
+                                 .filter(value -> value instanceof List<?>)
+                                 .flatMap(_ -> toml.getStringList(section, key))
                                  .map(list -> parseArrayRoute(key, list))
                                  .or(() -> parseStringRoute(toml, section, key, defaultSecurity)));
     }

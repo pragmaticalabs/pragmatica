@@ -301,6 +301,14 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
                                                    : Option.none());
     }
 
+    /// The value as the parser typed it, untyped and unrecorded — for a key that legitimately holds
+    /// one of several shapes (a route is a string, an array or an inline table), where the caller
+    /// dispatches on the shape rather than probing the typed getters, which would record every
+    /// probe that missed as a type mismatch (#1098).
+    public Option<Object> rawValue(String section, String key) {
+        return getValue(section, key);
+    }
+
     private Option<Object> getValue(String section, String key) {
         return Option.option(sections.get(section)).flatMap(m -> Option.option(m.get(key)));
     }
