@@ -6,7 +6,7 @@
   refuses it at decode time and `RequestContext.jsonBody` answers 400 — it never reached the bypass, and the ticket's
   "a client that omits the version" wording was wrong on that half): probed live on PR #1070's review, 5→7 with `expectedVersion:0`
   against `storedVersion=1` answered `HTTP 200 … configVersion:2`. The fence exists so two operators, or an
-  operator and the reconciler, cannot clobber each other's desired count; a client that sent no version bypassed it
+  operator and the reconciler, cannot clobber each other's desired count; a client that sent the zero default bypassed it
   silently. Reproduced through the real route handler: on the unmodified base
   `ScaleRequest("eu","core",5,0)` against `configVersion=1` answered
   `Success(ScaleClusterResponse[… previousCount=3, newCount=5, configVersion=2])`.
