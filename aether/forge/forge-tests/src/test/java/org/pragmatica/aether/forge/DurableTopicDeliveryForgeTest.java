@@ -718,10 +718,9 @@ class DurableTopicDeliveryForgeTest {
         return !body.contains("\"error\"") && body.contains("count");
     }
 
-    /// One gate attempt: publishes a fresh `__warmup__-N` order and classifies the outcome. A definite
-    /// success ends the gate (the publish path resolves, which is what every arm's publishes rely on).
-    /// The id becomes [#preAttachOrderId] — once, never overwritten — when it is definitely in the log
-    /// before the attach:
+    /// One gate attempt: publishes a fresh `__warmup__-N` order and classifies the outcome. The gate ends
+    /// on a definite success or on an established id, whichever comes first. The id becomes
+    /// [#preAttachOrderId] — once, never overwritten — when it is definitely in the log before the attach:
     ///
     ///  - an in-flight sample ([#observeAppendBeforeAttach]) saw the owner's head offset advance by
     ///    EXACTLY one over the pre-attempt baseline AND a peer acked through that offset (the append is
@@ -737,7 +736,15 @@ class DurableTopicDeliveryForgeTest {
     ///
     /// Anything else — an error body, an HTTP failure, an unknown outcome whose offset did not advance by
     /// exactly one (not landed, or landed alongside an earlier unknown one) — puts the id on
-    /// [#excludedWarmupIds]; the gate tries again under the next id either way until a publish resolves.
+    /// [#excludedWarmupIds] and the gate tries again under the next id.
+    ///
+    /// **The gate ends the moment an id is established, whatever the outcome of that attempt.** A further
+    /// order-events publish is exactly what [PreAttachBacklog] asserts is NOT needed: under a runtime
+    /// that never reads the backlog, the gate's own retry append wakes the listener, which drains the
+    /// stranded warm-up along with the retry, and the arm reads green on an id that was delivered only
+    /// because of the "further publish" (rev1341 F7, measured under M1: retry at +0.65 s, both offsets
+    /// drained 7 ms later). Readiness of the publish path is carried by [#poisonPublishReady] on the other
+    /// stream and by every arm asserting its own publishes resolve.
     /// The first attempt is classified unknown unconditionally when [#FORCE_UNKNOWN_FIRST_WARMUP] is set,
     /// which exercises the second path on a run whose first publish would have resolved.
     private boolean publishPreAttachWarmup() {
@@ -805,7 +812,7 @@ class DurableTopicDeliveryForgeTest {
         }
 
         if (preAttachOrderId.map(id::equals).or(false)) {
-            return false;
+            return true;
         }
 
         excludedWarmupIds.add(id + "(head " + headBefore + "->" + headAfter + ", peer-acked " + viewAfter.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false)
