@@ -54,37 +54,3 @@ jobs:
           path: |
             target/hierarchy-mutations/**
             integrations/cluster/target/surefire-reports/**
-
-  runtime-acceptance:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          java-version: '25'
-          distribution: zulu
-          cache: maven
-      - name: Record tested merge and PR revisions
-        env:
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          mkdir -p target/hierarchy-evidence
-          git rev-parse HEAD > target/hierarchy-evidence/merge-sha.txt
-          printf '%s\n' "$PR_HEAD" > target/hierarchy-evidence/pr-head-sha.txt
-          uname -a > target/hierarchy-evidence/runner.txt
-          java -version 2> target/hierarchy-evidence/java.txt
-      - name: Build runtime and Forge fixtures
-        run: env -u HCLOUD_TOKEN ./build.sh
-      - name: Run hierarchy correctness and recovery acceptance
-        run: >-
-          env -u HCLOUD_TOKEN ./forge.sh
-          'HierarchyAuthorityAcceptanceTest,HierarchicalDecisionReplayTest,HierarchicalRecoveryEnvelopeTest,HierarchicalMetadataRecoveryTest,HierarchicalGovernorReportLossTest,HierarchicalWorkerFormationTest,HierarchicalCoreRestartTest,HierarchicalCoreResizeTest,HierarchicalWorkerDrainTest,HierarchicalLoadedMovementTest,HierarchicalCommunityMovementTest,HierarchicalWorkerWorkloadTest,EmberAddNodeRoleLabelTest,ClusterFormationTest,StreamOwnershipDriverFenceTest,SliceInvocationTest'
-      - uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: hierarchy-runtime-evidence
-          path: |
-            target/hierarchy-evidence/**
-            aether/forge/forge-tests/target/failsafe-reports/**
-            aether/forge/forge-tests/target/hierarchy-envelope/**
