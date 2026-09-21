@@ -57,7 +57,9 @@ credential/compute/security fields. Counts, instance sizes and image/user-data d
 that profile identity. The runtime operation digest also includes the resolved protected account
 credentials and provider configuration. Bound provision, lookup and termination resolve and verify
 that digest from one immutable configuration snapshot before selecting a provider, preventing a
-check/use account change. Digests contain no plaintext credentials. Runtime source identity
+check/use account change. Digests contain no plaintext credentials.
+[limit: source-binding-secret-commitment] These deterministic unsalted digests are commitments,
+not encryption; weak credentials can be guessed offline. Restrict access to binding metadata. Runtime source identity
 changes must be refused while existing placements or operations reference the old binding; [unverified: source-mutation-management] the management route must enforce this constraint;
 its current source-mutation rejection has not been established by a named test. Use a new source name
 for account or provider movement. Secret rotation must preserve the account denoted by the source;
