@@ -168,8 +168,19 @@ public final class EncryptingStorageTier implements StorageTier {
                                                    .equals(MARKER_FILE_NAME);
     }
 
+    /// #1190: the marker is a CREATE whose presence a later boot's fail-closed guard keys on, so it
+    /// is forced to the device -- file and directory entry -- before [ArmedLocalDisk#commitMarker]
+    /// returns. A crash after the return can no longer leave ciphertext blocks beside an absent
+    /// marker, which a plain boot would have mounted a plain tier over. The one remaining window
+    /// is a crash BEFORE the return: the marker may then be absent or torn, and a torn marker is
+    /// safe (presence is the signal; [#refuseIfEncryptedWithoutKeyring] handles zero bytes) while
+    /// an absent one is fail-safe -- no block was written yet: the guard only arms a marker write
+    /// over an EMPTY directory, and `StorageFactory.createAll` (`aether/node`) hands out the tiers
+    /// only after every marker has committed. No sibling-and-rename here: a temp file orphaned at
+    /// the directory root
+    /// would be counted by [#isBlockFile] as a plaintext block and refuse the next enable.
     private static Result<Unit> writeMarker(Path markerPath, String activeKeyId) {
-        return FileOps.writeBytes(markerPath, activeKeyId.getBytes(StandardCharsets.UTF_8));
+        return FileOps.writeBytesDurable(markerPath, activeKeyId.getBytes(StandardCharsets.UTF_8));
     }
 
     @Override

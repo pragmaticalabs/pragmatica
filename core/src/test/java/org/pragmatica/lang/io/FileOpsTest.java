@@ -4,8 +4,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
+
+import jdk.jfr.Recording;
+import jdk.jfr.consumer.RecordedEvent;
+import jdk.jfr.consumer.RecordingFile;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -58,6 +65,38 @@ class FileOpsTest {
             writeString(file, "original");
             writeString(file, "replaced");
             assertThat(readString(file).unwrap()).isEqualTo("replaced");
+        }
+
+        /// #1190: durable means the JDK issued `force(true)` on the file AND on its parent
+        /// directory before the call returned -- observed through JFR's `jdk.FileForce`, emitted
+        /// by `FileChannelImpl.force` itself. `writeBytes` is the control: same bytes, no force.
+        @Test
+        void writeBytesDurable_forcesFileAndParentDirectory_beforeReturning() {
+            var file = tempDir.resolve("durable.bin");
+            var plain = tempDir.resolve("plain.bin");
+
+            var forced = forcedPathsDuring(() -> {
+                assertThat(writeBytesDurable(file, new byte[]{7, 8, 9}).isSuccess()).isTrue();
+                assertThat(writeBytes(plain, new byte[]{7, 8, 9}).isSuccess()).isTrue();
+            });
+
+            assertThat(readBytes(file).unwrap()).containsExactly(7, 8, 9);
+            assertThat(forced).contains(file.toAbsolutePath(), tempDir.toAbsolutePath())
+                              .doesNotContain(plain.toAbsolutePath());
+        }
+
+        @Test
+        void writeBytesDurable_truncatesExisting() {
+            var file = tempDir.resolve("durable-overwrite.bin");
+            writeBytes(file, new byte[]{1, 2, 3, 4, 5});
+            assertThat(writeBytesDurable(file, new byte[]{9}).isSuccess()).isTrue();
+            assertThat(readBytes(file).unwrap()).containsExactly(9);
+        }
+
+        @Test
+        void writeBytesDurable_fails_forMissingParentDirectory() {
+            var result = writeBytesDurable(tempDir.resolve("missing").resolve("durable.bin"), new byte[]{1});
+            assertThat(result.isFailure()).isTrue();
         }
 
         @Test
@@ -345,5 +384,36 @@ class FileOpsTest {
                 assertThat(cause.message()).contains("Failed to write");
             });
         }
+    }
+
+    /// Every `jdk.FileForce` the JVM emits while `action` runs. Threshold zero: the default
+    /// profile drops forces shorter than 20 ms, which is every fsync on a warm disk.
+    static List<Path> forcedPathsDuring(Runnable action) {
+        try (var recording = new Recording()) {
+            recording.enable("jdk.FileForce").withThreshold(Duration.ZERO);
+            recording.start();
+            action.run();
+            recording.stop();
+
+            var dump = Files.createTempFile("file-force", ".jfr");
+
+            try {
+                recording.dump(dump);
+
+                return RecordingFile.readAllEvents(dump)
+                                    .stream()
+                                    .filter(event -> event.getEventType().getName().equals("jdk.FileForce"))
+                                    .map(FileOpsTest::forcedPath)
+                                    .toList();
+            } finally {
+                Files.deleteIfExists(dump);
+            }
+        } catch (IOException e) {
+            throw new AssertionError("JFR recording failed: " + e.getMessage(), e);
+        }
+    }
+
+    private static Path forcedPath(RecordedEvent event) {
+        return Path.of(event.getString("path")).toAbsolutePath();
     }
 }

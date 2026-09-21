@@ -1,5 +1,7 @@
 package org.pragmatica.lang.io;
 
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.CopyOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -94,6 +96,9 @@ public sealed interface FileOps {
     }
 
     /// Write a byte array to a file. Creates the file if it doesn't exist, truncates if it does.
+    /// Not durable: nothing is fsynced, so after this returns the bytes may still sit in the page
+    /// cache and a crash can lose them, or the file itself. Use [#writeBytesDurable] when the
+    /// caller's next step assumes the file survives a crash.
     static Result<Unit> writeBytes(Path path, byte[] content) {
         return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
                            () -> {
@@ -101,6 +106,38 @@ public sealed interface FileOps {
                                            content,
                                            StandardOpenOption.CREATE,
                                            StandardOpenOption.TRUNCATE_EXISTING);
+
+                               return unit();
+                           });
+    }
+
+    /// Write a byte array to a file and make it durable before returning: the bytes and the
+    /// file's metadata are forced to the device (`FileChannel.force(true)`), then the parent
+    /// directory is forced so the entry that names the file survives a crash too. Creates the
+    /// file if it doesn't exist, truncates if it does. Durable, not atomic: the write is in place,
+    /// so a crash between open and force can leave a truncated file at `path` -- a caller that
+    /// must never expose a torn file writes a sibling and publishes it with [#moveAtomic].
+    /// [unverified: Windows -- a directory cannot be opened as a channel there, so the directory
+    /// force fails and this returns a failure rather than a silently weaker guarantee; Linux and
+    /// macOS honour both forces.]
+    static Result<Unit> writeBytesDurable(Path path, byte[] content) {
+        return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
+                           () -> {
+                               try (var file = FileChannel.open(path,
+                                                                StandardOpenOption.CREATE,
+                                                                StandardOpenOption.TRUNCATE_EXISTING,
+                                                                StandardOpenOption.WRITE)) {
+                                   var buffer = ByteBuffer.wrap(content);
+
+                                   while (buffer.hasRemaining()) {
+                                       file.write(buffer);
+                                   }
+                                   file.force(true);
+                               }
+                               try (var directory = FileChannel.open(path.toAbsolutePath().getParent(),
+                                                                     StandardOpenOption.READ)) {
+                                   directory.force(true);
+                               }
 
                                return unit();
                            });
