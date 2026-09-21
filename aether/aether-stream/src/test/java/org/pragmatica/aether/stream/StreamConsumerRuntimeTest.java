@@ -1577,6 +1577,14 @@ class StreamConsumerRuntimeTest {
                                           });
                 manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
                 assertThat(firstLatch.await(5, TimeUnit.SECONDS)).isTrue();
+                // #1401: the handler counts the latch down before the pass advances the cursor
+                // (`deliverySucceeded` runs after the handler's promise settles), and the detach flush
+                // commits the cursor AS IT STANDS — an unsubscribe issued in that gap commits 0 (CI: `but
+                // was: 0L`). The property under test is the flush of an ACCOUNTED delivery, so await the
+                // runtime's own accounting before detaching, under the same 5 s deadline.
+                assertThat(awaitCursor(observedRuntime, "orders", 0, "group-1", 1L, 5_000))
+                          .describedAs("the runtime accounted the delivery before the detach")
+                          .isEqualTo(1L);
                 observedRuntime.unsubscribe("orders", 0, "group-1");
                 assertThat(committed.get()).describedAs("committed offset is one past the last delivered offset")
                           .isEqualTo(1L);
@@ -2133,6 +2141,21 @@ class StreamConsumerRuntimeTest {
             assertThat(returned.await(2, TimeUnit.SECONDS)).describedAs("close() returned once the store settled, well inside the 5 s bound").isTrue();
             assertThat((System.nanoTime() - started) / 1_000_000).isLessThan(3_000L);
             assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("settled inside the bound: no incident").isZero();
+        }
+
+        private static long awaitCursor(StreamConsumerRuntime runtime,
+                                        String streamName,
+                                        int partition,
+                                        String group,
+                                        long expected,
+                                        long timeoutMillis) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMillis;
+
+            while (runtime.cursorPosition(streamName, partition, group).or(-1L) != expected && System.currentTimeMillis() < deadline) {
+                Thread.sleep(5);
+            }
+
+            return runtime.cursorPosition(streamName, partition, group).or(-1L);
         }
 
         /// Every `commit` returns a fresh pending promise, recorded so the test can settle it.
