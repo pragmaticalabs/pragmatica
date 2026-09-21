@@ -29,18 +29,23 @@ public sealed interface LiveNodesFilter {
     /// downstream formatter then surfaces the parse problem or the error.
     static String onlyAlive(String json) {
         return MAPPER.readTree(json)
-                     .filter(NotALiveNodesDocument.INSTANCE, root -> root.path("nodes").isArray())
+                     .filter(NotALiveNodesDocument.INSTANCE,
+                             root -> root.path("nodes")
+                                         .isArray())
                      .map(LiveNodesFilter::rebuildAliveOnly)
                      .flatMap(MAPPER::writeAsString)
                      .or(json);
     }
 
     enum NotALiveNodesDocument implements Cause {
-        INSTANCE;
-
+        INSTANCE("Not a live-nodes document: no `nodes` array");
+        private final String message;
+        NotALiveNodesDocument(String message) {
+            this.message = message;
+        }
         @Override
         public String message() {
-            return "Not a live-nodes document: no `nodes` array";
+            return message;
         }
     }
 

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Files;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 ///
 /// The sibling list commands share the one producer (`fetch`) and the one consumer
 /// (`printQuery`), so they are pinned here too: one shape, one fix.
+@SuppressWarnings("JBCT-EX-01")
 class UnreachableClusterExitTest {
     @TempDir
     Path home;
@@ -115,14 +117,15 @@ class UnreachableClusterExitTest {
         var err = Files.createTempFile(home, "cli-", ".err");
         var builder = new ProcessBuilder(command).redirectOutput(out.toFile())
                                                  .redirectError(err.toFile())
-                                                 .redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")));
+                                                 .redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
 
         builder.environment().remove("AETHER_API_KEY");
         var process = builder.start();
 
         if (!process.waitFor(60, TimeUnit.SECONDS)) {
             process.destroyForcibly();
-            fail("CLI did not exit within 60 s; stdout so far:\n" + Files.readString(out) + "\nstderr so far:\n" + Files.readString(err));
+            fail("CLI did not exit within 60 s; stdout so far:\n" + Files.readString(out)
+                + "\nstderr so far:\n" + Files.readString(err));
         }
 
         return new Run(process.exitValue(), Files.readString(out), Files.readString(err));

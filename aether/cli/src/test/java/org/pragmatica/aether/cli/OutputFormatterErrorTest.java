@@ -4,19 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.pragmatica.lang.Cause;
-
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+import org.pragmatica.lang.Cause;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import picocli.CommandLine;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #308: the CLI must honor `--format json` on error paths so a scripted client can parse
 /// failures. `OutputFormatter.printError(Cause, options)` emits a structured `{"error":...}`
@@ -71,11 +73,12 @@ class OutputFormatterErrorTest {
     /// into `{"error":"…"}` — must not be rendered as a (possibly empty) result document with exit 0.
     /// The envelope goes to stderr and the exit code is non-zero, in every format, quiet or not.
     private static final String ENVELOPE = "{\"error\":\"Connection failed: Connection refused\"}";
+
     private static final OutputFormatter.TableSpec NODES_TABLE = new OutputFormatter.TableSpec("Nodes",
-                                                                                              List.of(new OutputFormatter.Column("NODE ID",
-                                                                                                                                 "nodeId",
-                                                                                                                                 30)),
-                                                                                              "nodes");
+                                                                                               List.of(new OutputFormatter.Column("NODE ID",
+                                                                                                                                  "nodeId",
+                                                                                                                                  30)),
+                                                                                               "nodes");
 
     @Test
     void printQuery_errorEnvelope_tableFormat_exitsError_andDrawsNoTable() {
@@ -101,7 +104,8 @@ class OutputFormatterErrorTest {
 
         assertThat(exit).isEqualTo(ExitCode.ERROR);
         assertThat(errCapture.toString(StandardCharsets.UTF_8)).contains("{\"error\":\"Connection failed: Connection refused\"}");
-        assertThat(outCapture.toString(StandardCharsets.UTF_8)).as("an error envelope is not a result document").isEmpty();
+        assertThat(outCapture.toString(StandardCharsets.UTF_8)).as("an error envelope is not a result document")
+                  .isEmpty();
     }
 
     @Test
@@ -139,6 +143,7 @@ class OutputFormatterErrorTest {
 
     private static OutputOptions parseOptions(String... args) {
         var options = new OutputOptions();
+
         new CommandLine(new Holder(options)).parseArgs(args);
 
         return options;
