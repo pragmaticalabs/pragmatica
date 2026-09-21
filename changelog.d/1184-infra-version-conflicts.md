@@ -48,6 +48,9 @@
 - To name both requesters the loader now records who first loaded each artifact
   (`SharedLibraryClassLoader.loadedBy`), and `processSharedDependencies` / `processInfraDependencies`
   take the requesting slice's artifact, passed from `DependencyResolver` as `manifest.artifact()`.
-  [unverified: the `DependencyResolver` wiring of `manifest.artifact()` has no unit test in
-  `aether/slice`; a wrong constant there compiles and would name the wrong slice while still failing the
-  load — the failure itself is pinned, the attribution at that call site is not]
+  [verified: `aether/slice/src/test/java/org/pragmatica/aether/slice/dependency/DependencyResolverInfraConflictTest.java`
+  drives both `resolve` and `resolveWithContext` with a slice jar whose dependency file declares the
+  conflicting `[infra]` version and asserts the message names `org.example:slice-b:1.0.0` (from the
+  manifest) and `org.example:slice-a:1.0.0`]
+- [unverified: no multi-node run drove two deployed slices with conflicting `[infra]` versions; the
+  claim above is pinned at the resolver's entry points, not on a live cluster]
