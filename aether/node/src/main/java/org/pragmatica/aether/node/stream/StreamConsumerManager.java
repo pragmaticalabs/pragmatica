@@ -26,12 +26,16 @@ import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.ConsumerCallback;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy;
+import org.pragmatica.aether.stream.StreamConsumerRuntime.SubscriptionSnapshot;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
@@ -39,6 +43,7 @@ import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -144,6 +149,16 @@ public interface StreamConsumerManager {
     void abandonAll();
 
     List<ConsumerStatus> statuses();
+    /// #1333: the durable-topic groups over `topicStream` — synthesized from the topic subscriptions, so
+    /// absent from [#statuses], which reads the declarative registry only. Same per-partition shape.
+    List<ConsumerStatus> topicGroupStatuses(String topicStream);
+
+    /// #1333: a committed checkpoint landed in KV. When it carries a rewind epoch newer than the one the
+    /// consumer for that key runs under, a reconcile pass restarts that consumer at once instead of on
+    /// the next tick. Every other checkpoint — the consumer's own — is ignored.
+    @Contract
+    void onCheckpointPut(ValuePut<?, ?> put);
+
     int activeSubscriptionCount();
     /// #654: node-wide count of cursor commits (final flush at detach, or periodic checkpoint) that
     /// failed or did not settle within their shutdown bound. Delegates to the underlying
@@ -177,6 +192,15 @@ public interface StreamConsumerManager {
             public List<ConsumerStatus> statuses() {
                 return List.of();
             }
+
+            @Override
+            public List<ConsumerStatus> topicGroupStatuses(String topicStream) {
+                return List.of();
+            }
+
+            @Contract
+            @Override
+            public void onCheckpointPut(ValuePut<?, ?> put) {}
 
             @Override
             public int activeSubscriptionCount() {
@@ -223,6 +247,19 @@ public interface StreamConsumerManager {
         Map<NodeId, SliceState> placement(Artifact artifact);
     }
 
+    /// The rewind epoch committed in KV for one `(stream, partition, group)` (#1333), or none when no
+    /// checkpoint is committed. Read on every reconcile pass for every held subscription: a committed
+    /// epoch STRICTLY newer than the one the consumer runs under means a projection rebuild rewound
+    /// the group, and the consumer is restarted so it resumes at the rewound position under that epoch.
+    @FunctionalInterface
+    interface CommittedEpochSource {
+        Option<RewindEpoch> committedEpoch(String streamName, int partition, String consumerGroup);
+
+        static CommittedEpochSource none() {
+            return (_, _, _) -> Option.none();
+        }
+    }
+
     /// `lastCursorCommitFailure` (#654): detail of this partition's most recent cursor commit
     /// failure while the consumer stays attached; [Option#none] once it commits successfully again,
     /// or if none has failed. Sourced from
@@ -230,13 +267,15 @@ public interface StreamConsumerManager {
     /// `deadLetterInFlight` / `retryInFlight` (#1266): the holds currently stopping this partition's
     /// delivery loop, so a held partition is distinguishable from a quiet one. `awaitingCursorFetch`: the
     /// consumer has not started at all, because its cursor fetch keeps failing and is being retried.
+    /// `rewindEpoch` (#1333): the epoch this consumer resumed under and commits with.
     record PartitionCursor(int partition,
                            long cursor,
                            boolean stalled,
                            Option<String> lastCursorCommitFailure,
                            boolean deadLetterInFlight,
                            boolean retryInFlight,
-                           boolean awaitingCursorFetch) {}
+                           boolean awaitingCursorFetch,
+                           RewindEpoch rewindEpoch) {}
 
     /// Who consumes one partition, and who owns it. Both are computed locally and identically on every
     /// node, so a single call to any node answers "who consumes partition 3, and does it read locally?"
@@ -310,6 +349,31 @@ public interface StreamConsumerManager {
                                                        NodeId self,
                                                        TopicGroupDeclarationSource topicGroups,
                                                        AssignmentAuthority authority) {
+        return streamConsumerManager(registry,
+                                     runtime,
+                                     invoker,
+                                     invocationHandler,
+                                     nodeCodec,
+                                     ownership,
+                                     placement,
+                                     self,
+                                     topicGroups,
+                                     authority,
+                                     CommittedEpochSource.none());
+    }
+
+    /// #1333: with the committed-epoch source, so a pass restarts a consumer whose group was rewound.
+    static StreamConsumerManager streamConsumerManager(StreamConsumerRegistry registry,
+                                                       StreamConsumerRuntime runtime,
+                                                       SliceInvoker invoker,
+                                                       InvocationHandler invocationHandler,
+                                                       SliceCodec nodeCodec,
+                                                       PartitionOwnership ownership,
+                                                       SlicePlacement placement,
+                                                       NodeId self,
+                                                       TopicGroupDeclarationSource topicGroups,
+                                                       AssignmentAuthority authority,
+                                                       CommittedEpochSource committedEpochs) {
         var manager = new ManagerState(registry,
                                        runtime,
                                        invoker,
@@ -319,6 +383,7 @@ public interface StreamConsumerManager {
                                        placement,
                                        self,
                                        topicGroups,
+                                       committedEpochs,
                                        ManagerState.HANDLER_TIMEOUT,
                                        authority);
 
@@ -349,6 +414,7 @@ public interface StreamConsumerManager {
         private final SlicePlacement placement;
         private final NodeId self;
         private final TopicGroupDeclarationSource topicGroups;
+        private final CommittedEpochSource committedEpochs;
         private final TimeSpan handlerTimeout;
         private final AssignmentAuthority authority;
         private final Map<SubscriptionKey, ConsumerDeclaration> active = new ConcurrentHashMap<>();
@@ -368,6 +434,7 @@ public interface StreamConsumerManager {
                      SlicePlacement placement,
                      NodeId self,
                      TopicGroupDeclarationSource topicGroups,
+                     CommittedEpochSource committedEpochs,
                      TimeSpan handlerTimeout,
                      AssignmentAuthority authority) {
             this.registry = registry;
@@ -379,6 +446,7 @@ public interface StreamConsumerManager {
             this.placement = placement;
             this.self = self;
             this.topicGroups = topicGroups;
+            this.committedEpochs = committedEpochs;
             this.handlerTimeout = handlerTimeout;
             this.authority = authority;
         }
@@ -424,6 +492,74 @@ public interface StreamConsumerManager {
             retireSuperseded();
             desired.forEach(key -> subscribeIfAbsent(key, byGroup));
             dropStale(desired);
+            restartRewound(byGroup);
+        }
+
+        /// #1333, level-triggered: a subscription whose committed epoch is STRICTLY newer than the one its
+        /// consumer runs under was rewound by a projection rebuild. Abandon it — WITHOUT the final flush,
+        /// which carries the old epoch and the KV applier refuses (#1271's `abandon` path, reused) — and
+        /// re-attach it, so the fresh consumer fetches `(epoch', fromOffset)` and replays from there. The
+        /// re-attach goes through admission again: the committed assignment record must still name this
+        /// node. A consumer still fetching its cursor is left alone: it has no epoch yet and will pick up
+        /// the committed one when the fetch lands.
+        private void restartRewound(Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+            var snapshots = snapshotsByKey();
+
+            active.keySet()
+                  .stream()
+                  .filter(key -> rewoundBehind(key,
+                                               Option.option(snapshots.get(key))))
+                  .toList()
+                  .forEach(key -> restartForRewind(key, byGroup));
+        }
+
+        private boolean rewoundBehind(SubscriptionKey key, Option<SubscriptionSnapshot> snapshot) {
+            return snapshot.filter(live -> !live.awaitingCursorFetch())
+                           .map(live -> committedEpochs.committedEpoch(key.streamName(),
+                                                                       key.partition(),
+                                                                       key.consumerGroup())
+                                                       .map(committed -> committed.isStrictlyAfter(live.rewindEpoch()))
+                                                       .or(false))
+                           .or(false);
+        }
+
+        private void restartForRewind(SubscriptionKey key, Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+            log.info("Consumer group {} on {}[{}] was rewound (committed epoch is newer than the consumer's); restarting it at the rewound cursor",
+                     key.consumerGroup(),
+                     key.streamName(),
+                     key.partition());
+            abandon(key);
+            subscribeIfAbsent(key, byGroup);
+        }
+
+        private Map<SubscriptionKey, SubscriptionSnapshot> snapshotsByKey() {
+            return runtime.subscriptions()
+                          .stream()
+                          .collect(Collectors.toMap(snapshot -> new SubscriptionKey(snapshot.streamName(),
+                                                                                    snapshot.partition(),
+                                                                                    snapshot.consumerGroup()),
+                                                    snapshot -> snapshot,
+                                                    (first, _) -> first));
+        }
+
+        /// The put is the trigger, the pass is the decision: [#restartRewound] re-reads the committed
+        /// epoch, so a stale or reordered notification cannot restart anything the KV does not justify.
+        @Contract
+        @Override
+        public void onCheckpointPut(ValuePut<?, ?> put) {
+            if (put.cause().key() instanceof StreamCursorCheckpointKey key && put.cause().value() instanceof StreamCursorCheckpointValue value && rewindsHeldConsumer(key,
+                                                                                                                                                                      value)) {
+                reconcile();
+            }
+        }
+
+        private boolean rewindsHeldConsumer(StreamCursorCheckpointKey key, StreamCursorCheckpointValue value) {
+            var subscription = new SubscriptionKey(key.streamName(), key.partitionIndex(), key.consumerGroup());
+
+            return active.containsKey(subscription) && Option.option(snapshotsByKey().get(subscription))
+                                                             .map(live -> value.rewindEpoch()
+                                                                               .isStrictlyAfter(live.rewindEpoch()))
+                                                             .or(false);
         }
 
         /// Subscriptions this node SHOULD hold for one declaration, plus the loud reporting for the
@@ -1024,6 +1160,18 @@ public interface StreamConsumerManager {
                            .toList();
         }
 
+        @Override
+        public List<ConsumerStatus> topicGroupStatuses(String topicStream) {
+            var cursors = cursorsByKey();
+
+            return topicGroups.declarations()
+                              .stream()
+                              .filter(declaration -> declaration.streamName()
+                                                                .equals(topicStream))
+                              .map(declaration -> statusOf(declaration, cursors))
+                              .toList();
+        }
+
         private Map<SubscriptionKey, PartitionCursor> cursorsByKey() {
             return runtime.subscriptions()
                           .stream()
@@ -1036,7 +1184,8 @@ public interface StreamConsumerManager {
                                                                                     snapshot.lastCursorCommitFailure(),
                                                                                     snapshot.deadLetterInFlight(),
                                                                                     snapshot.retryInFlight(),
-                                                                                    snapshot.awaitingCursorFetch()),
+                                                                                    snapshot.awaitingCursorFetch(),
+                                                                                    snapshot.rewindEpoch()),
                                                     (first, _) -> first));
         }
 

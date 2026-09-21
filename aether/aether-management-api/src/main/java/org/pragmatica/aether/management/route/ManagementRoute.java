@@ -298,6 +298,27 @@ public enum ManagementRoute {
                                 param("version"),
                                 spacer("groups")),
                         taskGroup(STREAMING)),
+    // #1333 durable-topic groups (durable-pubsub-spec §9): every consumer group over the topic's backing
+    // stream — per partition the consumer and owner node, the committed cursor with its rewind epoch,
+    // and, where this node hosts the group's projection, its REBUILDING/LIVE state. LOCAL like
+    // STREAM_DECLARATIVE_CONSUMERS: the projection column is per-node truth, and the answer names the
+    // node to run the rebuild on. The identity is the TOPIC address (`namespace:topic:version`), not the
+    // `topic:`-prefixed stream name.
+    TOPICS_GROUPS(GET,
+                  List.of(spacer("topics"), param("namespace"), param("topic"), param("version"), spacer("groups")),
+                  LOCAL),
+    // #1333 rebuild the projection behind one group: capture the replay range, reset the store to a new
+    // generation, rewind the group's committed cursor under a fenced epoch (CTO ruling 5: LOCAL, 409 on a
+    // node that does not host the projection). The verb precedes the group rather than following it
+    // (`.../groups/{group}/rebuild`) because the route DSL binds at most five path tokens after the prefix.
+    TOPICS_GROUP_REBUILD(POST,
+                         List.of(spacer("topics"),
+                                 param("namespace"),
+                                 param("topic"),
+                                 param("version"),
+                                 spacer("rebuild"),
+                                 param("group")),
+                         LOCAL),
     STREAMS_PUBLISH(POST,
                     List.of(spacer("streams"), param("namespace"), param("stream"), param("version"), spacer("publish")),
                     taskGroup(STREAMING)),
