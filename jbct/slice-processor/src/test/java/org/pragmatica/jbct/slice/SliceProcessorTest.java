@@ -4348,6 +4348,69 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("ServerConfig::serverConfig");
     }
 
+    /// #1098, the live consequence the ticket names: a `@ConfigUpdate` handler re-parses the section
+    /// through the same access expressions, so a malformed optional value must fail `parsed` (and be
+    /// logged, not dispatched) rather than be wrapped in `Result.success` and read as absent.
+    @Test
+    void should_generate_config_update_parsing_without_wrapping_typed_optional_reads() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.server")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target({ElementType.PARAMETER, ElementType.METHOD})
+            public @interface AppConfig {}
+            """);
+        var serverConfig = JavaFileObjects.forSourceString("test.config.ServerConfig",
+                                                            """
+            package test.config;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+            public record ServerConfig(String host, Option<Integer> port, Option<Boolean> enableTls) {
+                public static Result<ServerConfig> serverConfig(String host, Option<Integer> port, Option<Boolean> enableTls) {
+                    return Result.success(new ServerConfig(host, port, enableTls));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ServerService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.AppConfig;
+            import test.config.ServerConfig;
+            @Slice
+            public interface ServerService {
+                Promise<String> serve(String request);
+                @AppConfig
+                Promise<Unit> onConfig(ServerConfig config);
+                static ServerService serverService(@AppConfig ServerConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(serverConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ServerServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("public static void notifyConfigUpdate(");
+        assertThat(factoryContent).contains("config.requireString(\"app.server\", \"host\")");
+        assertThat(factoryContent).contains("config.getInt(\"app.server\", \"port\")");
+        assertThat(factoryContent).contains("config.getBoolean(\"app.server\", \"enable_tls\")");
+        assertThat(factoryContent).doesNotContain("Result.success(config.getInt(");
+        assertThat(factoryContent).doesNotContain("Result.success(config.getBoolean(");
+        assertThat(factoryContent).contains("parsed.onFailure(cause -> configLog.warn(\"Config parse failed for section {}: {}\", section, cause.message()));");
+    }
+
     @Test
     void should_generate_config_parsing_for_string_list_field() throws Exception {
         var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
