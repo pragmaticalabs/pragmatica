@@ -50,7 +50,13 @@ public sealed interface OutputFormatter {
         };
     }
 
+    /// Same refusal as [#printQuery] for the action commands (#1033 review): the success line
+    /// over an error envelope reported an operation that never ran as one that succeeded.
     static int printAction(String json, OutputOptions options, String successMessage) {
+        if (isErrorResponse(json)) {
+            return printResponseError(json, extractErrorMessage(json), options);
+        }
+
         if (options.isQuiet()) {
             return ExitCode.SUCCESS;
         }
