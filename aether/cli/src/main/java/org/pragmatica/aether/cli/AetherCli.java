@@ -59,7 +59,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.TopicsCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2436,9 +2436,23 @@ public class AetherCli implements Runnable {
                     return errorCode;
                 }
 
-                return OutputFormatter.printAction(response,
-                                                   blueprintParent.parent.outputOptions(),
-                                                   "Published blueprint: " + coordinates);
+                var exit = OutputFormatter.printAction(response,
+                                                       blueprintParent.parent.outputOptions(),
+                                                       "Published blueprint: " + coordinates);
+
+                printRejectedStreamBindings(response, blueprintParent.parent.outputOptions());
+
+                return exit;
+            }
+
+            /// #1336: the TABLE success line alone hides the `[streams.X]` declarations the cluster did not
+            /// bind; JSON/VALUE/CSV already carry the whole body.
+            private static void printRejectedStreamBindings(String response, OutputOptions options) {
+                if (options.isQuiet() || options.format() != OutputFormat.TABLE) {
+                    return;
+                }
+
+                RejectedStreamBindings.lines(response).forEach(System.out::println);
             }
         }
 
@@ -4069,6 +4083,95 @@ public class AetherCli implements Runnable {
                 var response = entityParent.parent.fetch(ENTITY_KEYSPACES);
 
                 return OutputFormatter.printQuery(response, entityParent.parent.outputOptions());
+            }
+        }
+    }
+
+    /// #1333 durable-topic operator surface (durable-pubsub-spec §9). Both routes are LOCAL: `groups`
+    /// describes the node you asked — its projection column is what THAT node hosts, while the
+    /// consumer/owner assignment and the committed cursor are cluster facts every node answers alike —
+    /// and `rebuild` must be sent to the node consuming the group's partitions, which `groups` names.
+    @Command(name = "topics", description = "Inspect durable-topic consumer groups and rebuild projections", subcommands = {TopicsCommand.GroupsCommand.class, TopicsCommand.RebuildCommand.class})
+    static class TopicsCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Contract
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        /// A topic must be addressed in full (`namespace:topic:version`), for the same reason streams
+        /// are (#1044): a bare name could resolve to two different backing streams.
+        private static Result<ResourceAddress> resolveTopicAddress(String raw) {
+            return raw.contains(":")
+                   ? ResourceAddress.resourceAddress(raw)
+                   : Causes.cause("'" + raw
+                                 + "' is a bare topic name, which is ambiguous: it names no namespace. Use the full"
+                                 + " namespace:topic:version, e.g. '<your-namespace>:" + raw
+                                 + ":1.0.0'.").result();
+        }
+
+        private static int handleAddressError(Cause cause) {
+            System.err.println("Error: invalid topic address: " + cause.message());
+
+            return ExitCode.ERROR;
+        }
+
+        private static List<String> pathOf(ResourceAddress address) {
+            return List.of(address.namespace().value(),
+                           address.name().value(),
+                           address.version().asString());
+        }
+
+        @Command(name = "groups", description = "Show the durable consumer groups over a topic, per partition: assignee, owner, committed cursor and rewind epoch, and the projection state this node hosts")
+        static class GroupsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private TopicsCommand topicsParent;
+
+            @Parameters(index = "0", description = "Topic address: namespace:topic:version")
+            private String address;
+
+            @Override
+            public Integer call() {
+                return resolveTopicAddress(address).fold(TopicsCommand::handleAddressError, this::fetchGroups);
+            }
+
+            private int fetchGroups(ResourceAddress addr) {
+                var response = topicsParent.parent.fetch(TOPICS_GROUPS, pathOf(addr));
+
+                return OutputFormatter.printQuery(response, topicsParent.parent.outputOptions());
+            }
+        }
+
+        /// Rebuilds the projection behind ONE consumer group: captures the replay range, resets the
+        /// projection store to a new generation and rewinds the group's committed cursor under a fenced
+        /// epoch. Answers 409 on a node that does not host the projection — run `aether topics groups` first
+        /// and target the node named as `consumerNode`.
+        @Command(name = "rebuild", description = "Rebuild the projection behind a durable consumer group (LOCAL: target the node consuming the group)")
+        static class RebuildCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private TopicsCommand topicsParent;
+
+            @Parameters(index = "0", description = "Topic address: namespace:topic:version")
+            private String address;
+
+            @Parameters(index = "1", description = "Consumer group id (artifactBase#method, as shown by 'aether topics groups')")
+            private String group;
+
+            @Override
+            public Integer call() {
+                return resolveTopicAddress(address).fold(TopicsCommand::handleAddressError, this::postRebuild);
+            }
+
+            private int postRebuild(ResourceAddress addr) {
+                var params = new java.util.ArrayList<>(pathOf(addr));
+
+                params.add(group);
+                var response = topicsParent.parent.post(TOPICS_GROUP_REBUILD, params, "");
+
+                return OutputFormatter.printQuery(response, topicsParent.parent.outputOptions());
             }
         }
     }

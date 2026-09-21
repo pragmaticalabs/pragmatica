@@ -39,8 +39,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
@@ -48,6 +50,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -70,6 +73,12 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public final class StreamPartitionManager implements AutoCloseable {
+    /// A held-back tick may be the ordinary race between the truncation tick and the snapshot interval; the
+    /// second consecutive one is not (the interval has elapsed), so that is when the tick first WARNs.
+    private static final long HELD_BACK_GRACE_TICKS = 2;
+    /// After the first WARN, repeat every this many held-back ticks (5 min at the 30 s cadence).
+    private static final long HELD_BACK_WARN_EVERY = 10;
+    private static final int HELD_BACK_WARN_SAMPLE = 5;
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
@@ -164,9 +173,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// = no WAL ⇒ exactly the pre-WAL behavior (Forge/unit/legacy factories). When present, each
     /// partition opens its own [PartitionWal] under `<walBaseDir>/<streamName>/<partition>.wal` at
     /// ring-create time, and an OWNER publish (`publishLocal`) does not ack until the event is
-    /// fsync-durable in that WAL. The replica-receive path (`appendRecovered`) never writes the WAL.
+    /// fsync-durable in that WAL. The replica-receive path (`appendRecovered`) writes the same WAL and
+    /// makes it durable at [#syncReplicated] (#634 item 1, #1244).
     private final Option<Path> walBaseDir;
-    private final ConcurrentHashMap<String, Promise<Unit>> lastReplicatedWalWrite = new ConcurrentHashMap<>();
+    /// The latest replicated WAL write per `(stream, partition)` key (#1244): what [#syncReplicated]
+    /// commits, and the offset it then makes visible (#1235). Updated inside the partition's ordered append
+    /// section, so it always holds the highest offset written.
+    private final ConcurrentHashMap<String, ReplicatedWrite> lastReplicatedWalWrite = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -174,6 +187,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `-1`) leaves Forge/unit/legacy callers replaying the whole log from offset 0; the aether-level
     /// wiring binds it to the node's [org.pragmatica.aether.stream.segment.SegmentIndex].
     private final LastSealedOffsetSource lastSealedOffset;
+    /// Bound for WAL truncation (#1345): the sealed watermarks a restart would REBUILD, not the live index.
+    /// See [DurableSealedOffsetSource]. The production wiring derives it from the latest metadata snapshot on
+    /// disk; the standalone/test factories treat their single source as durable.
+    private final DurableSealedOffsetSource durableSealedOffset;
+    /// Durable bound each WAL-backed partition saw at the previous truncation tick — see [#noteHeldBack].
+    private final ConcurrentHashMap<String, Long> durableAtPreviousTick = new ConcurrentHashMap<>();
+    /// See [#walReclamationHeldBackTicks]. Written only by the truncation tick.
+    private volatile long walReclamationHeldBackTicks;
     private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
     /// Placement-role seam (#265 increment 1/2): consulted per `(stream, partition)` to GATE ring
     /// materialization on placement — a ring is built iff `roleFor` reports OWNER/REPLICA (increment 2).
@@ -216,12 +237,26 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `AetherNode` binds it to the [org.pragmatica.aether.stream.replication.ReplicaRegistry]. Default:
     /// [#ALL_CAUGHT_UP]. Volatile: set once at wiring, read on the reconcile tick.
     private volatile ReplicaCatchupSource catchupSource = ALL_CAUGHT_UP;
-
     /// Live committed-ownership guard for the owner release rule (#265 increment 5): a node never releases a
     /// partition whose COMMITTED owner is still itself. `AetherNode` binds it to the committed
     /// `StreamPartitionOwnershipValue`. Default: [#OWNER_ELSEWHERE]. Volatile: set once at wiring, read on
     /// the reconcile tick.
     private volatile OwnerReleaseGuard ownerReleaseGuard = OWNER_ELSEWHERE;
+
+    /// Default owner-write admission (#1230): no committed ownership source, so no application append is
+    /// refused on ownership grounds. Forge/unit/legacy managers keep this; `AetherNode` late-binds the real
+    /// committed-`StreamPartitionOwnershipValue` check.
+    private static final OwnerWriteAdmission ADMIT_ALL = (_, _) -> Option.none();
+    /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
+    /// owner-write admission (#1230) — only the epoch fence applies to them.
+    private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
+    /// A publish with no min-sync barrier: the floor check is trivially met.
+    private static final int NO_REPLICA_FLOOR = 0;
+
+    /// Live committed-ownership admission for application appends (#1230). Consulted by [#publishLocal]
+    /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
+    /// a replica. Default: [#ADMIT_ALL]. Volatile: set once at wiring, read on every owner-path append.
+    private volatile OwnerWriteAdmission ownerWriteAdmission = ADMIT_ALL;
 
     /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
@@ -283,7 +318,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    Option<OwnershipEpochHighWater> epochHighWater,
                                    StreamOwnerEpochSource ownerEpochSource,
                                    Option<Path> walBaseDir,
-                                   LastSealedOffsetSource lastSealedOffset) {
+                                   LastSealedOffsetSource lastSealedOffset,
+                                   DurableSealedOffsetSource durableSealedOffset) {
         this.maxTotalBytes = maxTotalBytes;
         this.evictionListener = evictionListener;
         this.replicationManager = replicationManager;
@@ -292,6 +328,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerEpochSource = ownerEpochSource;
         this.walBaseDir = walBaseDir;
         this.lastSealedOffset = lastSealedOffset;
+        this.durableSealedOffset = durableSealedOffset;
+        replicationManager.observeAcks(this::onReplicaAck);
     }
 
     /// See [#WAL_RECOVERY_HEAD_GAPS].
@@ -307,7 +345,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
                                           Option.none(),
-                                          LastSealedOffsetSource.none());
+                                          LastSealedOffsetSource.none(),
+                                          DurableSealedOffsetSource.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes) {
@@ -318,7 +357,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
                                           Option.none(),
-                                          LastSealedOffsetSource.none());
+                                          LastSealedOffsetSource.none(),
+                                          DurableSealedOffsetSource.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
@@ -329,7 +369,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
                                           Option.none(),
-                                          LastSealedOffsetSource.none());
+                                          LastSealedOffsetSource.none(),
+                                          DurableSealedOffsetSource.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -342,7 +383,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
                                           Option.none(),
-                                          LastSealedOffsetSource.none());
+                                          LastSealedOffsetSource.none(),
+                                          DurableSealedOffsetSource.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -356,14 +398,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
                                           Option.none(),
-                                          LastSealedOffsetSource.none());
+                                          LastSealedOffsetSource.none(),
+                                          DurableSealedOffsetSource.none());
     }
 
     /// Fence-enabled factory (#345 item 1d-ii): every local and replicated-receive append is
     /// owner-epoch-fenced against `epochHighWater` (the per-`(stream, partition)` domain high-water,
     /// CP-seeded and observe-advanced by 1d-i). Local publishes are stamped with this node's current
     /// owner epoch from `ownerEpochSource`; replicated batches carry the sending owner's epoch on the
-    /// wire. The aether-level wiring supplies both.
+    /// wire. The aether-level wiring supplies both, and — the only factory that demands it — the DURABLE
+    /// sealed bound WAL truncation uses (#1345): `lastSealedOffset` seeds recovery from the live index,
+    /// `durableSealedOffset` is what a restart would rebuild, and the two differ by exactly the refs not yet
+    /// snapshotted. Passing the live index for both re-creates the renumbering this parameter exists to end.
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 EvictionListener evictionListener,
                                                                 ReplicationManager replicationManager,
@@ -371,7 +417,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                 OwnershipEpochHighWater epochHighWater,
                                                                 StreamOwnerEpochSource ownerEpochSource,
                                                                 Option<Path> walBaseDir,
-                                                                LastSealedOffsetSource lastSealedOffset) {
+                                                                LastSealedOffsetSource lastSealedOffset,
+                                                                DurableSealedOffsetSource durableSealedOffset) {
         return new StreamPartitionManager(maxTotalBytes,
                                           evictionListener,
                                           replicationManager,
@@ -379,7 +426,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.some(epochHighWater),
                                           ownerEpochSource,
                                           walBaseDir,
-                                          lastSealedOffset);
+                                          lastSealedOffset,
+                                          durableSealedOffset);
     }
 
     /// Test/standalone factory wiring a per-partition crash-durable WAL root (streaming-persistence
@@ -407,7 +455,41 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
                                           walBaseDir,
-                                          lastSealedOffset);
+                                          lastSealedOffset,
+                                          DurableSealedOffsetSource.same(lastSealedOffset));
+    }
+
+    /// Test/standalone factory wiring an eviction listener (the segment sealer) together with a per-partition
+    /// WAL root and a last-sealed source, with the no-replication / no-cluster / fence-free defaults — the
+    /// seal → sealed-watermark → WAL-truncation → recovery chain end to end without a cluster (#1234). The
+    /// source is treated as durable: truncation runs off it directly.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset) {
+        return streamPartitionManager(maxTotalBytes,
+                                      evictionListener,
+                                      walBaseDir,
+                                      lastSealedOffset,
+                                      DurableSealedOffsetSource.same(lastSealedOffset));
+    }
+
+    /// As above, with the DURABLE bound for WAL truncation supplied separately (#1345) — the seal →
+    /// snapshot-lag → truncation → crash → recovery chain, where the live index and the refs on disk differ.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset,
+                                                                DurableSealedOffsetSource durableSealedOffset) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          ReplicationManager.NONE,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero(),
+                                          walBaseDir,
+                                          lastSealedOffset,
+                                          durableSealedOffset);
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -419,7 +501,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
                                           Option.none(),
-                                          LastSealedOffsetSource.none());
+                                          LastSealedOffsetSource.none(),
+                                          DurableSealedOffsetSource.none());
     }
 
     /// Placement-role supplier seam (#265 increment 1). Reports whether THIS node is the OWNER, a
@@ -455,6 +538,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     @FunctionalInterface
     public interface OwnerReleaseGuard {
         boolean committedOwnerElsewhere(String stream, int partition);
+    }
+
+    /// Committed-ownership admission for application appends (#1230). Reports the COMMITTED
+    /// `StreamPartitionOwnershipValue.owner` of `(stream, partition)` when it names a node OTHER than self;
+    /// [Option#none] when self is the committed owner or no ownership record is committed (the cold-start
+    /// window, where the fence is inert and HRW routing alone picks the writer). Holding the partition ring
+    /// authorizes reads and replication receipt, never an application write: the epoch fence cannot tell a
+    /// live replica from the owner, because both stamp the same committed epoch. `AetherNode` binds it to the
+    /// committed ownership record; the default admits every append.
+    @FunctionalInterface
+    public interface OwnerWriteAdmission {
+        Option<NodeId> remoteCommittedOwner(String stream, int partition);
     }
 
     /// Committed-config source for the owner-side forwarded-publish race recovery (write-forward race fix).
@@ -546,6 +641,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerReleaseGuard(OwnerReleaseGuard guard) {
         this.ownerReleaseGuard = guard;
+    }
+
+    /// Late-bind the committed-ownership write admission (#1230). `AetherNode` wires this to the committed
+    /// `StreamPartitionOwnershipValue` (refuse iff it names a node other than self). Until then — and in
+    /// Forge/unit/legacy managers — the default admits every append. Set once at wiring; read on every
+    /// owner-path append.
+    @Contract
+    public void ownerWriteAdmission(OwnerWriteAdmission admission) {
+        this.ownerWriteAdmission = admission;
     }
 
     /// Late-bind the committed-config source for the owner-side forwarded-publish race recovery
@@ -1027,7 +1131,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       walBaseDir,
                                       lastSealedOffset)
                           .onSuccess(StreamEntry::markCommitted)
-                          .onFailure(_ -> hydrationFailed(config, floorBytes))
+                          .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
                           .or((StreamEntry) null);
     }
 
@@ -1087,10 +1191,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     @Contract
-    private void hydrationFailed(StreamConfig config, long floorBytes) {
+    /// The cause is the ring build's own — an off-heap allocation, a WAL open, or a refused WAL recovery
+    /// (#1345: `WalReplayMismatch`) — so it is carried, not narrated as an allocation failure.
+    private void hydrationFailed(StreamConfig config, long floorBytes, Cause cause) {
         release(floorBytes);
-        log.warn("Follower could not materialize committed stream '{}' — off-heap floor allocation failed; entry not created",
-                 config.name());
+        log.warn("Follower could not materialize committed stream '{}' — entry not created: {}",
+                 config.name(),
+                 cause.message());
     }
 
     /// Follower defense-in-depth (#265 increment 4, spec §7/§11): a COMMITTED config whose declared partition
@@ -1121,14 +1228,27 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// on this node it returns the RETRYABLE {@link StreamError.StreamConfigNotYetVisible} so the forwarder
     /// backs off and retries rather than surfacing a spurious permanent failure. Any OTHER `publishLocal`
     /// failure (event too large, partition out of range, a genuine non-owner `PARTITION_NOT_LOCAL`, a stale
-    /// epoch) propagates UNCHANGED — no lazy create, no retry.
-    public Result<Long> publishForwarded(String streamName, int partition, byte[] payload, long timestamp) {
-        return publishLocal(streamName, partition, payload, timestamp).fold(cause -> recoverForwardedPublish(cause,
-                                                                                                             streamName,
-                                                                                                             partition,
-                                                                                                             payload,
-                                                                                                             timestamp),
-                                                                            Result::success);
+    /// epoch) propagates UNCHANGED — no lazy create, no retry. `minAcks` is the #1236 replica floor, checked
+    /// through {@link #publishLocalAtFloor} — AFTER the owner admission, so a forward that lands on a
+    /// non-owner is answered with the retryable [StreamError.NotOwnerAppend], never with a
+    /// `NOT_ENOUGH_REPLICAS` about replication this node does not own. The caller reads `minAcks` from the
+    /// stream it knows; on the lazy-materialization path that stream was unknown (`min-sync` 0), so the
+    /// retry takes its floor from the committed config it materializes from (#1290 review M1).
+    ///
+    /// The owner re-checks the stream's consistency ({@link #ensureWritableConsistency}, #1262) on BOTH
+    /// attempts — the first append and the post-materialize retry — rather than trusting the forwarder to
+    /// have refused: a STRONG or UNKNOWN stream is never appended here as EVENTUAL.
+    public Result<Long> publishForwarded(String streamName,
+                                         int partition,
+                                         byte[] payload,
+                                         long timestamp,
+                                         int minAcks) {
+        return writableAppend(streamName, partition, payload, timestamp, minAcks).fold(cause -> recoverForwardedPublish(cause,
+                                                                                                                        streamName,
+                                                                                                                        partition,
+                                                                                                                        payload,
+                                                                                                                        timestamp),
+                                                                                       Result::success);
     }
 
     private Result<Long> recoverForwardedPublish(Cause cause,
@@ -1154,12 +1274,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                            timestamp));
     }
 
+    /// The retry's replica floor is the committed config's own `min-sync - 1`: the caller's floor was read
+    /// before the stream existed here and is therefore always 0 on this path.
     private Result<Long> materializeThenPublish(StreamConfig config,
                                                 String streamName,
                                                 int partition,
                                                 byte[] payload,
                                                 long timestamp) {
-        return ensureStreamMaterialized(config).flatMap(_ -> publishLocal(streamName, partition, payload, timestamp));
+        return ensureStreamMaterialized(config).flatMap(_ -> writableAppend(streamName,
+                                                                            partition,
+                                                                            payload,
+                                                                            timestamp,
+                                                                            config.minSyncReplicas() - 1));
+    }
+
+    private Result<Long> writableAppend(String streamName, int partition, byte[] payload, long timestamp, int minAcks) {
+        return ensureWritableConsistency(streamName).flatMap(_ -> publishLocalAtFloor(streamName,
+                                                                                      partition,
+                                                                                      payload,
+                                                                                      timestamp,
+                                                                                      minAcks));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
@@ -1168,6 +1302,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                             payload,
                             timestamp,
                             ownerEpochSource.currentOwnerEpoch(streamName, partition));
+    }
+
+    /// Owner-local publish that also checks the replica floor (#1236) — `minAcks` in-sync peers must exist
+    /// BEFORE the append, so a `NOT_ENOUGH_REPLICAS` refusal leaves nothing in the ring or the WAL. The
+    /// floor runs AFTER the epoch fence and the owner admission (#1230/#1236 composition): the in-sync
+    /// floor is the OWNER's replication state, so a non-owner is redirected ([StreamError.NotOwnerAppend])
+    /// rather than answering `NOT_ENOUGH_REPLICAS` for a partition whose replication it does not own.
+    public Result<Long> publishLocalAtFloor(String streamName,
+                                            int partition,
+                                            byte[] payload,
+                                            long timestamp,
+                                            int minAcks) {
+        return publishLocal(streamName,
+                            partition,
+                            payload,
+                            timestamp,
+                            ownerEpochSource.currentOwnerEpoch(streamName, partition),
+                            minAcks);
     }
 
     /// Owner-local publish stamped with an explicit `ownerEpoch` fencing token (#345 item 1d-ii). The
@@ -1187,22 +1339,89 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// get distinct contiguous offsets, the WAL file is in offset order (recovery places records by it) and
     /// replicas receive events in offset order (their `fromOffset` check rejects anything else). Only the
     /// group-commit fsync is awaited after the section is released, so concurrent publishers still share
-    /// fsyncs. A publish whose fsync then fails has already been replicated; it was already readable from
-    /// the owner's ring before the fsync, so this adds no new exposure.
+    /// fsyncs. A publish whose fsync then fails has already been replicated.
+    ///
+    /// Visibility (#1235): the appended event is NOT readable by consumers and wakes no push listener
+    /// until it is durable here AND acknowledged by `minSyncReplicas - 1` distinct peers ([#refreshVisible]).
+    /// A failed frame write or fsync therefore never exposes the event, even when a peer acks it later.
+    ///
+    /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] when the committed owner of
+    /// `(streamName, partition)` is another node — see [OwnerWriteAdmission]. It runs AFTER the epoch fence,
+    /// so a deposed writer presenting a stale epoch is told it is deposed ([StreamError.StaleEpochAppend],
+    /// permanent) rather than being redirected (`NotOwnerAppend`, transient); a current-epoch append from a
+    /// live non-owner passes the fence and is refused here.
     public Result<Long> publishLocal(String streamName,
                                      int partition,
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch) {
+        return publishLocal(streamName, partition, payload, timestamp, ownerEpoch, NO_REPLICA_FLOOR);
+    }
+
+    private Result<Long> publishLocal(String streamName,
+                                      int partition,
+                                      byte[] payload,
+                                      long timestamp,
+                                      Epoch ownerEpoch,
+                                      int minAcks) {
         return resolveStreamEntry(streamName).flatMap(entry -> publishInSection(entry,
                                                                                 streamName,
                                                                                 partition,
                                                                                 payload,
                                                                                 timestamp,
-                                                                                ownerEpoch))
+                                                                                ownerEpoch,
+                                                                                admitOwnerWrite(streamName,
+                                                                                                partition,
+                                                                                                minAcks)))
                                  .flatMap(this::awaitDurable)
+                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset))
                                  .fold(cause -> handleDrop(cause, streamName, partition),
                                        Result::success);
+    }
+
+    /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
+    /// offset order, so the whole prefix is. Visibility is recomputed BEFORE the publish returns, so an
+    /// owner-only (`minSyncReplicas <= 1`) publisher can read its own write. A ring released in the
+    /// meantime has no reader left to expose the event to, so its absence is ignored.
+    @Contract
+    private void ownerDurable(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerDurable(ring, streamName, partition, offset));
+    }
+
+    @Contract
+    private void ownerDurable(OffHeapRingBuffer ring, String streamName, int partition, long offset) {
+        ring.markDurable(offset);
+        refreshVisible(ring, streamName, partition);
+    }
+
+    /// Owner-side ack observer (#1235). The replication manager runs it BEFORE it records the ack in the
+    /// registry, so no waiter can be resolved — by an await or a registry read — before the event is
+    /// visible. It runs a second time after the registry update; see [#refreshVisible] for why.
+    @Contract
+    private void onReplicaAck(ReplicationMessage.ReplicateAck ack) {
+        resolvePartitionBuffer(ack.streamName(), ack.partition()).onSuccess(ring -> ackedVisible(ring, ack));
+    }
+
+    /// Reads the ack through the overlay, because this observer runs BEFORE the registry records it.
+    @Contract
+    private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
+        ring.advanceVisible(Math.min(ring.durableOffset(),
+                                     replicationManager.replicatedThrough(ack, minSyncReplicasFor(ack.streamName()) - 1)));
+    }
+
+    /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).
+    /// Both inputs cover a contiguous prefix — group commit resolves in offset order, and a replica acks
+    /// only its verified contiguous run (#260) — so the minimum is a prefix too. No advance is lost to a
+    /// race between the fsync path and the ack path. The fsync path writes `durable` and then reads the
+    /// registry. The ack's second observer call runs after the registry write and then reads `durable`.
+    /// Both are volatile accesses, so at least one of the two sees both inputs.
+    @Contract
+    private void refreshVisible(OffHeapRingBuffer ring, String streamName, int partition) {
+        ring.advanceVisible(Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
+    }
+
+    private long peerAcknowledgedThrough(String streamName, int partition) {
+        return replicationManager.replicatedThrough(streamName, partition, minSyncReplicasFor(streamName) - 1);
     }
 
     /// Frozen-ring drop handling (#1233). The ring reports [StreamError.General#EVENT_DROPPED] BEFORE the
@@ -1277,18 +1496,31 @@ public final class StreamPartitionManager implements AutoCloseable {
         return refusedReplicaDropsSinceBoot.get();
     }
 
+    /// Owner admission first, then the replica floor: the floor is evaluated only for an admitted write.
+    private Result<Unit> admitOwnerWrite(String streamName, int partition, int minAcks) {
+        return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
+                                  .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
+                                  .or(Result::unitResult)
+                                  .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks));
+    }
+
+    /// The owner-side pre-checks — epoch fence, then `admission` (owner admission and replica floor, #1230/#1236)
+    /// — run BEFORE the partition's ordered section: they read committed state the section cannot make
+    /// atomic with the append, and a refused write must neither take an offset nor hold the lock.
     private Result<LoggedAppend> publishInSection(StreamEntry entry,
                                                   String streamName,
                                                   int partition,
                                                   byte[] payload,
                                                   long timestamp,
-                                                  Epoch ownerEpoch) {
+                                                  Epoch ownerEpoch,
+                                                  Result<Unit> admission) {
         return appendToPartition(entry,
                                  streamName,
                                  partition,
                                  payload,
                                  timestamp,
                                  ownerEpoch,
+                                 admission,
                                  offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
     }
 
@@ -1347,6 +1579,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// caller awaiting replication awaits it once (acks are cumulative). Stamped with this node's current
     /// owner epoch, as the no-epoch [#publishLocal] is.
     public Result<Long> publishLocalBatch(String streamName, int partition, List<byte[]> payloads, long timestamp) {
+        return publishLocalBatchAtFloor(streamName, partition, payloads, timestamp, NO_REPLICA_FLOOR).fold(cause -> publishEachIfRunDoesNotFit(cause,
+                                                                                                                                               streamName,
+                                                                                                                                               partition,
+                                                                                                                                               payloads,
+                                                                                                                                               timestamp),
+                                                                                                           Result::success);
+    }
+
+    /// Admitted storage run without single-event fallback: a caller retains per-event outcomes when
+    /// an oversized run must be retried one event at a time. Refusals before append preserve the run.
+    public Result<Long> publishLocalBatchAtFloor(String streamName,
+                                                 int partition,
+                                                 List<byte[]> payloads,
+                                                 long timestamp,
+                                                 int minAcks) {
         var ownerEpoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
 
         return resolveStreamEntry(streamName).flatMap(entry -> publishBatchInSection(entry,
@@ -1354,14 +1601,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                      partition,
                                                                                      payloads,
                                                                                      timestamp,
-                                                                                     ownerEpoch))
+                                                                                     ownerEpoch,
+                                                                                     minAcks))
                                  .flatMap(this::awaitDurable)
-                                 .fold(cause -> publishEachIfRunDoesNotFit(cause,
-                                                                           streamName,
-                                                                           partition,
-                                                                           payloads,
-                                                                           timestamp),
-                                       Result::success);
+                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset));
     }
 
     /// #1287 review K1. Not an absorbed failure: a run the ring cannot hold as one contiguous unit (an
@@ -1394,8 +1637,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        int partition,
                                                        List<byte[]> payloads,
                                                        long timestamp,
-                                                       Epoch ownerEpoch) {
-        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSizes(entry, payloads))
+                                                       Epoch ownerEpoch,
+                                                       int minAcks) {
+        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admitOwnerWrite(streamName,
+                                                                                              partition,
+                                                                                              minAcks))
+                             .flatMap(_ -> checkEventSizes(entry, payloads))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
                              .flatMap(buffer -> appendRunInSection(buffer,
                                                                    streamName,
@@ -1423,7 +1670,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static Result<Unit> checkEventSizes(StreamEntry entry, List<byte[]> payloads) {
-        return Result.allOf(payloads.stream().map(payload -> checkEventSize(entry, payload)).toList()).mapToUnit();
+        for (var payload : payloads) {
+            if (payload.length > entry.config().maxEventSizeBytes()) {
+                return checkEventSize(entry, payload);
+            }
+        }
+
+        return Result.unitResult();
     }
 
     /// The in-section half of a batch publish: the run's WAL frames in offset order (no fsync), its group
@@ -1484,8 +1737,41 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(streams.get(streamName)).flatMap(entry -> entry.walFor(partition));
     }
 
+    /// The publish path's replication barrier. Visibility is refreshed inline when it resolves (rev1309 F1):
+    /// an await can resolve from the registry SNAPSHOT — two concurrent acks each overlay only their own
+    /// ack in the pre-update observer call, both registry rows then land, and the await resolves before
+    /// either post-update observer call — so without this the continuation could miss its own acked write.
+    /// A ring released in the meantime has no reader left to expose the event to.
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
-        return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
+        return replicationManager.awaitReplication(streamName, partition, offset, minAcks)
+                                 .onSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
+                                                                                                                                streamName,
+                                                                                                                                partition)));
+    }
+
+    /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind
+    /// `DefaultStreamPublisher`, `PartitionedStreamAccess` and the management publish (#1263) — and by the
+    /// owner-side {@link #publishForwarded}: a stream whose declared consistency no write path can honour is
+    /// refused rather than appended as EVENTUAL. The entity-log substrate's direct {@link #publishLocal} is
+    /// outside it (EVENTUAL by construction).
+    ///   - `STRONG` promises consensus-ordered acknowledgement, and `ConsensusPublishPath` has no production
+    ///     caller → [StreamError.General#CONSENSUS_PATH_UNAVAILABLE], the cause `DefaultStreamPublisher`
+    ///     already used.
+    ///   - `UNKNOWN` (#964) was written by a node running a newer `ConsistencyMode` and may be STRONG there →
+    ///     [StreamError.General#UNREADABLE_CONSISTENCY_MODE].
+    /// An unknown stream passes; the append path reports it. `StreamResourceValidator` rejects STRONG at
+    /// deploy time first, so this is defence in depth for streams created by other routes.
+    public Result<Unit> ensureWritableConsistency(String streamName) {
+        return option(streams.get(streamName)).map(entry -> writableConsistency(entry.config().consistencyMode()))
+                     .or(Result::unitResult);
+    }
+
+    private static Result<Unit> writableConsistency(ConsistencyMode mode) {
+        return switch (mode) {
+            case EVENTUAL -> Result.unitResult();
+            case STRONG -> StreamError.General.CONSENSUS_PATH_UNAVAILABLE.result();
+            case UNKNOWN -> StreamError.General.UNREADABLE_CONSISTENCY_MODE.result();
+        };
     }
 
     /// Pre-append replica-floor check (#1236). Publish paths call this BEFORE {@link #publishLocal}, so a
@@ -1531,11 +1817,41 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                          payload,
                                                                                          timestamp,
                                                                                          ownerEpoch))
+                                 .onSuccess(offset -> visibleAtOnceWithoutWal(streamName, partition, offset))
                                  .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
+    /// #1235, replica side: a replicated record becomes visible to reads served BY THIS NODE once its own
+    /// WAL write is durable — at once when the partition has no WAL, otherwise at the batch barrier
+    /// ([#syncReplicated]), which advances visibility to the offset it committed. A replica does not learn
+    /// the owner's visible position, so this bounds a replica-local read by the replica's durability, not
+    /// by the owner's min-sync acks.
+    ///
+    /// #1235 × #1244: requesting the record's own group commit here — one commit request per record — made
+    /// the barrier's "one fsync per batch" hold only when the async commits happened to coalesce, so the
+    /// advance is the barrier's step, not the append's. A failed WAL write poisons the chain: nothing at or
+    /// after it becomes visible, and the failure surfaces where the receive handler awaits the barrier
+    /// before acking.
+    @Contract
+    private void visibleAtOnceWithoutWal(String streamName, int partition, long offset) {
+        if (walFor(streamName, partition).isEmpty()) {
+            replicaDurable(streamName, partition, offset);
+        }
+    }
+
+    @Contract
+    private void replicaDurable(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset));
+    }
+
+    @Contract
+    private static void replicaDurable(OffHeapRingBuffer ring, long offset) {
+        ring.markDurable(offset);
+        ring.advanceVisible(offset);
+    }
+
     /// The replica append shares the owner's ordered section (#1231): it and any concurrent local append
-    /// on this partition are serialized, and its WAL write is chained in offset order.
+    /// on this partition are serialized, and its WAL frame is written in offset order.
     private Result<Long> appendReplicatedInSection(StreamEntry entry,
                                                    String streamName,
                                                    int partition,
@@ -1548,20 +1864,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  payload,
                                  timestamp,
                                  ownerEpoch,
-                                 offset -> walReplicatedInOrder(streamName, partition, offset, payload, timestamp));
-    }
-
-    /// Chains the replicated record's WAL append in offset order and reports `offset` as the in-section
-    /// result. It cannot fail here by design: a failed WAL append poisons the chain and surfaces at
-    /// [#syncReplicated], the barrier the acking replica awaits.
-    private Result<Long> walReplicatedInOrder(String streamName,
-                                              int partition,
-                                              long offset,
-                                              byte[] payload,
-                                              long timestamp) {
-        walReplicated(streamName, partition, offset, payload, timestamp);
-
-        return success(offset);
+                                 RECEIPT_NEEDS_NO_ADMISSION,
+                                 offset -> success(logReplicated(streamName, partition, offset, payload, timestamp)));
     }
 
     /// #1233: a replicated event this replica's frozen ring cannot store fails the append (never applied,
@@ -1584,45 +1888,91 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// path uses, so the "replicated" half of `minSyncReplicas` is crash-durable rather than RAM-until-seal
     /// — before this, correlated power loss inside the unsealed window lost acked entity writes at ANY RF.
     ///
-    /// The append is NOT awaited here: backfill replays thousands of records sequentially, and awaiting
-    /// each would serialize the pull on the group-commit cadence. Durability is claimed at the ACK, not
-    /// the append — [#syncReplicated] is the barrier, and the replication receive handler awaits it
-    /// before acking, so the owner's barrier counts only fsynced replicas. Group commit resolves appends
-    /// in offset order, so awaiting the LAST append's promise covers the whole prefix.
-    private void walReplicated(String streamName, int partition, long offset, byte[] payload, long timestamp) {
-        walFor(streamName, partition).onPresent(wal -> chainWalWrite(streamName,
-                                                                     partition,
-                                                                     wal,
-                                                                     offset,
-                                                                     payload,
-                                                                     timestamp));
+    /// Runs inside the partition's ordered append section, so frames land in offset order, and writes the
+    /// frame with NO fsync (#1244): durability is claimed at the ACK, not the append. [#syncReplicated] is
+    /// the barrier — the receive handler awaits it once per batch and a backfill run awaits it before
+    /// promoting — and it commits every frame written so far in one group commit. The record's offset is
+    /// handed through unchanged. A failed write is recorded rather than raised: the record is applied and
+    /// serveable, but [#syncReplicated] fails, so acks stop and the owner's barrier degrades honestly.
+    private long logReplicated(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+        walFor(streamName, partition).onPresent(wal -> recordReplicatedWrite(streamName,
+                                                                             partition,
+                                                                             new ReplicatedWrite(wal,
+                                                                                                 offset,
+                                                                                                 wal.write(offset,
+                                                                                                           payload,
+                                                                                                           timestamp))));
+
+        return offset;
     }
 
-    /// Appends are CHAINED per partition — each starts only after its predecessor is durable — and the
-    /// chain is extended inside the partition's ordered append section, so it is in offset order; file
-    /// order is load-bearing (recovery places records by stored offset and refuses a gap or duplicate;
-    /// truncation assumes monotonic offsets). The chain costs one fsync per record (#1244). A failed append deliberately POISONS the chain: a later
-    /// success after a mid-chain failure would leave a hole the ring does not have, so `localLogComplete`
-    /// would lie — instead every later [#syncReplicated] fails, acks stop, and the owner's barrier
-    /// degrades honestly until the replica is repaired or restarted.
-    private void chainWalWrite(String streamName,
-                               int partition,
-                               PartitionWal wal,
-                               long offset,
-                               byte[] payload,
-                               long timestamp) {
-        lastReplicatedWalWrite.compute(partitionKeyOf(streamName, partition),
-                                       (_, previous) -> previous == null
-                                                        ? wal.append(offset, payload, timestamp)
-                                                        : previous.flatMap(_ -> wal.append(offset, payload, timestamp)));
+    /// #1277 review N2: forget the latest replicated write recorded for `(streamName, partition)` when its
+    /// WAL is released — but only while the entry still points at THAT instance, so releasing a duplicate
+    /// that lost the install race can never erase the live winner's entry (which would let its next
+    /// barrier resolve without an fsync).
+    ///
+    /// Called AFTER the WAL is closed (#1277 review N3): a barrier racing the release then finds the closed
+    /// channel through the still-recorded entry and fails, instead of finding no entry and resolving
+    /// before the close-time fsync has run.
+    @Contract
+    private void forgetReplicatedWrites(String streamName, int partition, Option<PartitionWal> wal) {
+        wal.onPresent(released -> lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
+                                                                          (_, write) -> unlessWrittenTo(write, released)));
     }
 
-    /// The durability barrier for replicated records: resolves once every WAL append issued by
-    /// [#appendRecovered] for `(streamName, partition)` so far is fsynced. Wall-less deployments (legacy,
-    /// Forge, the explicit non-durable opt-in) resolve immediately — the ack then means exactly what it
-    /// meant before this change.
+    /// [java.util.Map#computeIfPresent] contract: `null` removes the entry.
+    @NullReturn
+    private static ReplicatedWrite unlessWrittenTo(ReplicatedWrite write, PartitionWal released) {
+        return write.wal() == released
+               ? null
+               : write;
+    }
+
+    private void recordReplicatedWrite(String streamName, int partition, ReplicatedWrite write) {
+        lastReplicatedWalWrite.put(partitionKeyOf(streamName, partition), write);
+    }
+
+    /// The durability barrier for replicated records: ONE group commit covering every WAL frame
+    /// [#appendRecovered] has written for `(streamName, partition)` so far (#1244) — a batch of N records
+    /// costs one commit request and one fsync, not N. Once that commit succeeds, and before the returned
+    /// promise resolves, the records up to the committed write's offset become visible to reads served by
+    /// this node (#1235) — so a caller that acks after this barrier acks records this replica already
+    /// serves. Fails while the latest replicated write on this WAL failed, and then advances nothing.
+    /// WAL-less deployments (legacy, Forge, the explicit non-durable opt-in) resolve immediately — the ack
+    /// then means exactly what it meant before the WAL existed.
     public Promise<Unit> syncReplicated(String streamName, int partition) {
-        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition))).or(Promise::unitPromise);
+        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition))).map(write -> commitAndExpose(streamName,
+                                                                                                                      partition,
+                                                                                                                      write))
+                     .or(Promise::unitPromise);
+    }
+
+    /// [Promise#withSuccess] runs the advance as a step of the barrier promise, not as a detached completion
+    /// handler: the caller's success implies the advance already happened.
+    private Promise<Unit> commitAndExpose(String streamName, int partition, ReplicatedWrite write) {
+        return write.commit()
+                    .withSuccess(_ -> replicaDurable(streamName,
+                                                     partition,
+                                                     write.offset()));
+    }
+
+    /// A replicated WAL frame write: the WAL it went to, the record's offset — the position the barrier
+    /// exposes once this write is durable (#1235) — and its write sequence (or the write failure).
+    ///
+    /// The latest write replaces the previous one; no separate poison flag is kept. A later success after
+    /// a failed write would leave a hole the ring does not have, but a failed frame write or fsync
+    /// FAIL-STOPS the WAL, so every later write on that instance fails too and acks stay withheld. The one
+    /// refusal that does not fail-stop, [PartitionWal.WalError.OffsetRegression], means the replica's ring
+    /// assigned an offset its WAL already holds — ring and WAL disagree, and that offset's payload in the
+    /// file may differ from the ring's; a later successful write lets acks resume past it.
+    /// `[design intent — unverified: reachable only through a ring/WAL head mismatch such as a frozen-ring
+    /// drop during recovery (#1233); no test induces it]`. The entry is forgotten when its WAL is released
+    /// ([#forgetReplicatedWrites]), so a rebuilt partition's first barrier never targets a closed WAL.
+    private record ReplicatedWrite(PartitionWal wal, long offset, Result<Long> writeSeq) {
+        Promise<Unit> commit() {
+            return writeSeq.async()
+                           .flatMap(wal::commit);
+        }
     }
 
     private static String partitionKeyOf(String streamName, int partition) {
@@ -1649,16 +1999,29 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      .or(-1L);
     }
 
+    /// #1333: the consumer-visible span of a partition this node holds — ring tail through the VISIBLE
+    /// position — or [Option#none] when the ring is not materialised here. What a projection rebuild
+    /// captures, and what a forwarded read answers alongside its events.
+    public Option<VisibleBounds> visibleBounds(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition).map(buffer -> VisibleBounds.visibleBounds(buffer.tailOffset(),
+                                                                                                       buffer.visibleOffset()))
+                                     .option();
+    }
+
     /// Append into the partition's ordered section: `inOrder` runs with the assigned offset before any
-    /// other append on this partition is assigned one (see [OffHeapRingBuffer#appendOrdered]).
+    /// other append on this partition is assigned one (see [OffHeapRingBuffer#appendOrdered]). The epoch
+    /// fence and `admission` are checked first, in that order (#1230: a deposed writer learns it is deposed,
+    /// not merely redirected), and before the section is entered.
     private <T> Result<T> appendToPartition(StreamEntry entry,
                                             String streamName,
                                             int partition,
                                             byte[] payload,
                                             long timestamp,
                                             Epoch ownerEpoch,
+                                            Result<Unit> admission,
                                             Fn1<Result<T>, Long> inOrder) {
-        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSize(entry, payload))
+        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
+                             .flatMap(_ -> checkEventSize(entry, payload))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
                              .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, inOrder))
                              .onSuccess(_ -> entry.updateActivity());
@@ -1669,7 +2032,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// metadata-only partition is materialized ONLY when this node is its OWNER/REPLICA (a publish/replica-
     /// receive that lands here because reconcile has not fired yet must not drop the write); a genuine
     /// non-replica (`NONE`) is rejected with `PARTITION_NOT_LOCAL` so the caller forwards to a holder (the
-    /// read/write routers already fall back to owner-forward on an absent local buffer — spec §8). The
+    /// read router forwards on an absent local buffer, the write routers route by owner (#1230) — spec §8). The
     /// READ path never materializes — it forwards.
     private Result<OffHeapRingBuffer> resolveAppendTarget(String streamName, int partition, StreamEntry entry) {
         if (partition < 0 || partition >= entry.declaredPartitions()) {
@@ -1716,11 +2079,33 @@ public final class StreamPartitionManager implements AutoCloseable {
         return resolvePartitionBuffer(streamName, partition).option();
     }
 
+    /// Consumer read of the local ring, bounded by the partition's VISIBLE position (#1235).
     public Result<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
                                                               int partition,
                                                               long fromOffset,
                                                               int maxEvents) {
         return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.read(fromOffset, maxEvents));
+    }
+
+    /// Whether `nodeId` is a registered replica of `(streamName, partition)` in the SAME registry the
+    /// replication manager sends to and counts acks from (#1235). Gates the appended-head catch-up read:
+    /// a node outside the replica set gets a consumer read instead.
+    public boolean isRegisteredReplica(String streamName, int partition, NodeId nodeId) {
+        return replicationManager.registry()
+                                 .replicasFor(streamName, partition)
+                                 .stream()
+                                 .map(ReplicaDescriptor::nodeId)
+                                 .anyMatch(nodeId::equals);
+    }
+
+    /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up
+    /// and survivor pulls, which must see events that are not yet visible, and the entity log fold, whose
+    /// head is the appended head. Never a consumer path.
+    public Result<List<OffHeapRingBuffer.RawEvent>> readAppended(String streamName,
+                                                                 int partition,
+                                                                 long fromOffset,
+                                                                 int maxEvents) {
+        return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.readAppended(fromOffset, maxEvents));
     }
 
     public Option<StreamInfo> streamInfo(String streamName) {
@@ -1924,37 +2309,80 @@ public final class StreamPartitionManager implements AutoCloseable {
         return current;
     }
 
+    /// Whether `offset` of `(streamName, partition)` has been evicted and handed to the eviction listener but
+    /// is not yet durably sealed (#1234) — a read of it is IN FLIGHT and succeeds once the seal lands.
+    public boolean sealInFlight(String streamName, int partition, long offset) {
+        return evictionListener.holdsUnsealed(streamName, partition, offset);
+    }
+
     /// Periodically reclaim WAL disk by truncating each partition's write-ahead log up to its DURABLE
     /// last-sealed offset (streaming-persistence W5). For every live stream and each partition that has a
-    /// [PartitionWal], `base = lastSealedOffset.lastSealedOffset(stream, partition)` is computed and, when
-    /// `base >= 0`, `wal.truncate(base)` discards records with `offset <= base`. Those records are already
-    /// durable in cold segments (served post-restart by the tiered reader), so dropping them from the WAL
-    /// loses nothing — recovery serves them from segments and the un-sealed tail (`offset > base`) stays in
-    /// the WAL. Driving off the DURABLE sealed bound (rather than hooking the void eviction→seal listener)
-    /// avoids any "truncated before the segment was durable" window. Best-effort: a `truncate` failure on
-    /// one partition is logged and never aborts the others; a `-1` bound (nothing sealed) is a no-op for
+    /// [PartitionWal], `base = durable.lastSealedOffset(stream, partition)` is computed and, when `base >= 0`,
+    /// `wal.truncate(base)` discards records with `offset <= base`. Those records are already durable in cold
+    /// segments (served post-restart by the tiered reader), so dropping them from the WAL loses nothing —
+    /// recovery serves them from segments and the un-sealed tail (`offset > base`) stays in the WAL.
+    ///
+    /// `durable` is the [DurableSealedOffsetSource] view taken ONCE per tick — the watermark a restart would
+    /// REBUILD, never the live index (#1345): segment refs reach disk only through the metadata snapshot, so
+    /// between a seal and that snapshot the live index is ahead of what recovery will see, and a WAL compacted
+    /// off the live index in that window left the survivors' refs nowhere; recovery then seeded the ring below
+    /// the compaction point and appended the survivors at fresh offsets. The contiguous bound (#1234) still
+    /// applies: it never passes a segment that failed to seal. Best-effort: a `truncate` failure on one
+    /// partition is logged and never aborts the others; a `-1` bound (nothing durably sealed) is a no-op for
     /// that partition; the no-WAL path ([Option#none] `walBaseDir`) holds no [PartitionWal] and is untouched.
+    ///
+    /// Reclamation is thereby coupled to the metadata snapshot: while the snapshot cannot be written or read
+    /// (disk full, permissions, a torn newest file) the durable bound stops advancing and nothing is reclaimed —
+    /// the WAL grows, bounded by the disk. That is the safe direction, and it is made visible here rather than
+    /// only by the snapshot manager's own WARN: a partition is HELD BACK when its durable bound sits below the
+    /// live watermark AND did not move since the previous tick. One such tick is a legitimate race with the
+    /// snapshot interval; from the second consecutive tick on ([#HELD_BACK_GRACE_TICKS]) the tick WARNs, then
+    /// again every [#HELD_BACK_WARN_EVERY] ticks, naming the partitions and their WAL bytes on disk, and
+    /// [#walReclamationHeldBackTicks] counts the consecutive held-back ticks for the operator surface.
     @Contract
     public void truncateWalsToSealed() {
-        streams.forEach(this::truncateStreamWals);
+        var durable = durableSealedOffset.current();
+        var heldBack = new ArrayList<HeldBackPartition>();
+
+        streams.forEach((streamName, entry) -> truncateStreamWals(streamName, entry, durable, heldBack));
+        reportHeldBack(heldBack);
+    }
+
+    /// Consecutive truncation ticks in which at least one partition's durable sealed bound sat below its live
+    /// watermark without advancing since the previous tick (#1345): `0` while the metadata snapshot keeps up;
+    /// climbing means WAL reclamation is halted because the snapshot cannot be written or read.
+    public long walReclamationHeldBackTicks() {
+        return walReclamationHeldBackTicks;
     }
 
     @Contract
-    private void truncateStreamWals(String streamName, StreamEntry entry) {
+    private void truncateStreamWals(String streamName,
+                                    StreamEntry entry,
+                                    LastSealedOffsetSource durable,
+                                    List<HeldBackPartition> heldBack) {
         for (int partition = 0; partition < entry.declaredPartitions(); partition++) {
-            truncatePartitionToSealed(streamName, partition, entry.walFor(partition));
+            truncatePartitionToSealed(streamName, partition, entry.walFor(partition), durable, heldBack);
         }
     }
 
     @Contract
-    private void truncatePartitionToSealed(String streamName, int partition, Option<PartitionWal> wal) {
-        wal.onPresent(w -> truncateWalToSealed(streamName, partition, w));
+    private void truncatePartitionToSealed(String streamName,
+                                           int partition,
+                                           Option<PartitionWal> wal,
+                                           LastSealedOffsetSource durable,
+                                           List<HeldBackPartition> heldBack) {
+        wal.onPresent(w -> truncateWalToSealed(streamName, partition, w, durable, heldBack));
     }
 
     @Contract
-    private void truncateWalToSealed(String streamName, int partition, PartitionWal wal) {
-        var base = lastSealedOffset.lastSealedOffset(streamName, partition);
+    private void truncateWalToSealed(String streamName,
+                                     int partition,
+                                     PartitionWal wal,
+                                     LastSealedOffsetSource durable,
+                                     List<HeldBackPartition> heldBack) {
+        var base = durable.lastSealedOffset(streamName, partition);
 
+        noteHeldBack(streamName, partition, wal, base, heldBack);
         if (base >= 0) {
             wal.truncate(base)
                .onFailure(cause -> log.warn("WAL truncate to sealed offset {} failed for {}/{}: {}",
@@ -1965,11 +2393,71 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
+    /// Held back: the live watermark is above the durable bound, and the durable bound is exactly what this
+    /// partition saw at the previous tick — the snapshot has not advanced across a whole tick.
+    @Contract
+    private void noteHeldBack(String streamName,
+                              int partition,
+                              PartitionWal wal,
+                              long durableBase,
+                              List<HeldBackPartition> heldBack) {
+        var live = lastSealedOffset.lastSealedOffset(streamName, partition);
+        var previous = durableAtPreviousTick.put(partitionKeyOf(streamName, partition), durableBase);
+
+        if (live > durableBase && previous != null && previous == durableBase) {
+            heldBack.add(HeldBackPartition.heldBackPartition(streamName,
+                                                             partition,
+                                                             durableBase,
+                                                             live,
+                                                             wal.stats().sizeBytes()));
+        }
+    }
+
+    @Contract
+    private void reportHeldBack(List<HeldBackPartition> heldBack) {
+        if (heldBack.isEmpty()) {
+            walReclamationHeldBackTicks = 0;
+
+            return;
+        }
+
+        var ticks = walReclamationHeldBackTicks + 1;
+
+        walReclamationHeldBackTicks = ticks;
+        if (ticks >= HELD_BACK_GRACE_TICKS && (ticks - HELD_BACK_GRACE_TICKS) % HELD_BACK_WARN_EVERY == 0) {
+            log.warn("WAL reclamation held back for {} consecutive tick(s) on {} partition(s), {} WAL bytes on disk: "
+                    + "the sealed watermark on disk (metadata snapshot) is not advancing while sealing continues — "
+                    + "check that the streams snapshot directory is writable and its LATEST readable. {}",
+                     ticks,
+                     heldBack.size(),
+                     heldBack.stream().mapToLong(HeldBackPartition::walBytes).sum(),
+                     heldBack.stream().limit(HELD_BACK_WARN_SAMPLE).map(HeldBackPartition::describe).toList());
+        }
+    }
+
+    /// @param durable  the on-disk sealed bound the tick used
+    /// @param live     the in-memory sealed watermark, above `durable`
+    /// @param walBytes live bytes of the partition WAL on disk (compaction would reclaim the sealed prefix)
+    private record HeldBackPartition(String streamName, int partition, long durable, long live, long walBytes) {
+        static HeldBackPartition heldBackPartition(String streamName,
+                                                   int partition,
+                                                   long durable,
+                                                   long live,
+                                                   long walBytes) {
+            return new HeldBackPartition(streamName, partition, durable, live, walBytes);
+        }
+
+        String describe() {
+            return streamName + "/" + partition + " durable=" + durable + " live=" + live + " walBytes=" + walBytes;
+        }
+    }
+
     @Contract
     @Override
     public void close() {
         streams.values().forEach(StreamEntry::close);
         streams.clear();
+        durableAtPreviousTick.clear();
         totalAllocatedBytes.set(0);
         inFlightMaterializations.clear();
         systemMaterializeQueue.clear();
@@ -1977,8 +2465,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         queuedMaterializations.clear();
         releaseCandidacy.clear();
         // #642: this manager owns the replication manager, and the batcher underneath it arms a
-        // fixed-rate flush on the process-wide SharedScheduler. Nothing else called its close(), so a
-        // stopped node kept flushing replication batches at its peers.
+        // one-shot flush per batch (#1246) on the process-wide SharedScheduler. Nothing else called its
+        // close(), so a stopped node kept flushing replication batches at its peers.
         replicationManager.close();
     }
 
@@ -2037,8 +2525,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> closeAndRelease(StreamEntry entry) {
         releaseEntry(entry);
         entry.deleteWals();
+        evictionListener.onStreamDeleted(entry.config().name());
+        forgetHeldBack(entry);
 
         return success(unit());
+    }
+
+    /// The held-back bookkeeping ([#noteHeldBack]) is keyed per partition; a removed stream's keys would
+    /// otherwise outlive it, and a re-created stream of the same name would compare its first tick against
+    /// the dead stream's bound.
+    @Contract
+    private void forgetHeldBack(StreamEntry entry) {
+        for (int partition = 0; partition < entry.declaredPartitions(); partition++) {
+            durableAtPreviousTick.remove(partitionKeyOf(entry.config().name(),
+                                                        partition));
+        }
     }
 
     /// Release a stream's live budget and close it WITHOUT double-counting the buffer seam.
@@ -2053,6 +2554,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void releaseEntry(StreamEntry entry) {
         release(entry.controlBytes());
         entry.close();
+        IntStream.range(0,
+                        entry.declaredPartitions())
+                 .forEach(partition -> forgetReplicatedWrites(entry.config().name(),
+                                                              partition,
+                                                              entry.walFor(partition)));
     }
 
     /// Held-floor = `perPartitionFloor × materializedCount` (#265 increment 2): the off-heap floor for
@@ -2471,6 +2977,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         release(controlBytes);
         mp.close();
+        forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
         releaseCandidacy.remove(ref);
         freeReshuffleSlot(ref);
         releasedSinceBoot.incrementAndGet();
@@ -3035,14 +3542,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         /// Replay one partition's WAL tail into its ring, or a no-op when the partition has no WAL
-        /// ([Option#none]). The fresh ring is seeded above the durable last-sealed offset and only records
+        /// ([Option#none]). The WAL is attached to the ring's eviction listener FIRST (#1234): replay can evict,
+        /// and those hand-overs must already see the partition as WAL-backed. The fresh ring is seeded above the durable last-sealed offset and only records
         /// with `offset > lastSealedOffset` are appended (PartitionWal.replay already filters them).
         private static Result<Unit> recoverPartition(String streamName,
                                                      int partition,
                                                      OffHeapRingBuffer ring,
                                                      Option<PartitionWal> wal,
                                                      LastSealedOffsetSource lastSealedOffset) {
-            return wal.map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
+            return wal.onPresent(ring::attachWal)
+                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
                       .or(() -> success(unit()));
         }
 
@@ -3080,6 +3589,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// un-sealed tail plus any lazily truncated records below the floor, which compaction bounds at
         /// about its 8 MB threshold. The un-sealed tail itself is bounded only by sealing. Replay already
         /// read the whole file's bytes before #1258; this keeps the parsed records too.
+        ///
+        /// The tail is checked for contiguity against the seed BEFORE anything is appended (#1345): a
+        /// mid-log hole or duplicate refuses the partition with nothing in the ring, so no append can evict,
+        /// seal, and hand the sink segments from a recovery that is about to be refused. [#placeRecord]
+        /// re-checks per record as it appends; this pass is what makes the refusal total.
         private static Result<Unit> placeTail(String streamName,
                                               int partition,
                                               Path walFile,
@@ -3087,12 +3601,30 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               long base,
                                               List<WalRecord> fileRecords) {
             var tail = recordsAbove(fileRecords, base);
+            var seed = seedFor(streamName, partition, walFile, base, fileRecords);
 
-            return seedRing(ring, seedFor(streamName, partition, walFile, base, fileRecords)).flatMap(_ -> appendTail(streamName,
-                                                                                                                      partition,
-                                                                                                                      walFile,
-                                                                                                                      ring,
-                                                                                                                      tail));
+            return requireContiguous(streamName, partition, walFile, seed, tail).flatMap(_ -> seedRing(ring, seed))
+                                    .flatMap(_ -> appendTail(streamName, partition, walFile, ring, tail));
+        }
+
+        /// Every tail record must carry the offset the ring will assign it — `seed + 1, seed + 2, …`. The
+        /// first mismatch is the refusal, with the same cause [#placeRecord] would raise at that record.
+        private static Result<Unit> requireContiguous(String streamName,
+                                                      int partition,
+                                                      Path walFile,
+                                                      long seed,
+                                                      List<WalRecord> tail) {
+            var expected = seed + 1;
+
+            for (var record : tail) {
+                if (record.offset() != expected) {
+                    return new StreamError.WalReplayMismatch(streamName, partition, walFile, expected, record.offset()).result();
+                }
+
+                expected++;
+            }
+
+            return success(unit());
         }
 
         private static List<WalRecord> recordsAbove(List<WalRecord> fileRecords, long base) {

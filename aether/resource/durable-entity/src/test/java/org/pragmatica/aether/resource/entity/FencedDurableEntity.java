@@ -39,7 +39,7 @@ import org.pragmatica.serialization.Serializer;
 ///     owner; it carries no owner routing of its own. Cross-node owner-forwarding lives on
 ///     [PartitionFencedDurableEntity] ([EntityOwnerForward]), which is what a node provisions —
 ///     [DurableEntityFactory] never builds this entity, so it is reached only by direct construction
-///     in tests.
+///     in tests, and lives in test sources for that reason (#1270).
 ///
 /// ## State representation
 ///

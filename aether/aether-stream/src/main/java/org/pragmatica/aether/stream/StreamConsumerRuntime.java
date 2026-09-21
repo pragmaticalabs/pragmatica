@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -26,7 +27,7 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// [`Contract`].
     ///
     /// Closing flushes every consumer's cursor before removing push listeners. That flush is
-    /// `ConsumerCursorStore.commit(...)` — a `Promise<Unit>` consensus write that can fail, or simply
+    /// `ConsumerCursorStore.commit(...)` — a `Promise<CommitOutcome>` consensus write that can fail, or simply
     /// not settle before shutdown needs to proceed. #654: the batch of final commits is bound-await
     /// for up to 5 seconds so a wedged or slow write cannot hold node stop; a commit that has not
     /// settled within the bound counts as failed for THIS shutdown even if it later succeeds. Every
@@ -34,7 +35,8 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// consumer stays attached, visible on [SubscriptionSnapshot#lastCursorCommitFailure]. A store
     /// composed of sub-stages (#654 round 2, e.g. the node's cluster-aware store chaining a consensus
     /// checkpoint publish onto the local write) may recover an inner failure rather than fail
-    /// `commit(...)` itself — that case is logged by the STORE at its own level, not here, but is
+    /// `commit(...)` itself, reporting it as that commit's `LocalOnly` outcome (#1239) — that case is
+    /// logged by the STORE at its own level, not here, but is
     /// still folded into the same counter/detail, prefixed `checkpoint publish:` to distinguish it from
     /// a `local commit:` failure, which this runtime logs at ERROR (consumer group, stream, partition,
     /// cause) directly. **Redelivery contract**: a consumer whose final flush failed or did not settle
@@ -64,7 +66,30 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                            ConsumerCallback callback,
                            IdlePolicy idlePolicy);
 
+    /// #1271: a subscription admitted under a committed consumer assignment. Every cursor commit and
+    /// fetch carries [ConsumerFence#epoch], delivery pauses whenever [ConsumerFence#admitted] reads false,
+    /// and a cursor commit the store refuses as `Fenced` stops delivery for good. The default ignores the
+    /// fence — correct only for a runtime that delivers nothing (test doubles); the real runtime
+    /// overrides it.
+    default Result<Unit> subscribe(String streamName,
+                                   int partition,
+                                   ConsumerConfig config,
+                                   ConsumerCallback callback,
+                                   IdlePolicy idlePolicy,
+                                   ConsumerFence fence) {
+        return subscribe(streamName, partition, config, callback, idlePolicy);
+    }
+
     Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup);
+
+    /// #1271: detach WITHOUT the final cursor flush — for a node that has lost the consumer assignment,
+    /// whose flush the store would refuse anyway (and which, if it were admitted by a stale view, could
+    /// only move the cursor of a partition this node no longer owns). The default is the graceful
+    /// [#unsubscribe]; the real runtime overrides it.
+    default Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
+        return unsubscribe(streamName, partition, consumerGroup);
+    }
+
     Option<Long> cursorPosition(String streamName, int partition, String consumerGroup);
     Option<TransactionalCursorCommit> transactionalCursorCommit();
     DeadLetterHandler deadLetterHandler();
@@ -80,14 +105,26 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// One live subscription. `cursor` is the next offset this consumer will read, i.e. one past the
     /// last delivered offset. `lastCursorCommitFailure` (#654) is the detail of this consumer's most
     /// recent cursor commit failure, cleared on its next successful commit; [Option#none] when its
-    /// last commit succeeded or none has been attempted yet.
+    /// last commit succeeded or none has been attempted yet. `deadLetterInFlight` / `retryInFlight`
+    /// (#1266) are the holds that stop the delivery loop while a failed head event is being resolved —
+    /// a dead-letter append outstanding, or a retry scheduled — so a HELD partition never reads as an
+    /// idle one (both are `false` with the cursor frozen when the partition is merely quiet).
+    /// `awaitingCursorFetch` (rev1272 F7 follow-up) is the third non-delivering state: this subscription
+    /// has not STARTED, because its cursor fetch keeps failing and is being retried. `rewindEpoch`
+    /// (#1333) is the epoch the consumer resumed under and stamps on every commit — `RewindEpoch.NONE`
+    /// for a group never rewound; the node compares it with the committed epoch to detect a rewind it
+    /// must restart the consumer for.
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,
                                 long cursor,
                                 boolean stalled,
                                 IdlePolicy idlePolicy,
-                                Option<String> lastCursorCommitFailure) {}
+                                Option<String> lastCursorCommitFailure,
+                                boolean deadLetterInFlight,
+                                boolean retryInFlight,
+                                boolean awaitingCursorFetch,
+                                RewindEpoch rewindEpoch) {}
 
     /// Whether the idle reaper may unsubscribe a consumer that has not polled recently.
     ///

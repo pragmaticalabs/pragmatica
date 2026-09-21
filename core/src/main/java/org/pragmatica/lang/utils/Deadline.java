@@ -23,6 +23,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Ambient per-request deadline budget, shared across layers of one client-visible operation.
 ///
 /// Each layer that waits (a forward hop, a correlation timeout, a remote read) caps its own
@@ -46,18 +47,13 @@ public sealed interface Deadline {
     /// Wire value meaning "the sender had no budget"; [#fromWireMillis(long)] maps any negative
     /// value back to [#unbounded()].
     long NO_BUDGET = -1L;
-
     TimeSpan remaining();
-
     boolean isBounded();
-
     /// Cap a layer's own default wait by what is left of the request budget.
     TimeSpan bounded(TimeSpan defaultSpan);
-
     /// An equal share of the remaining budget across `parts` sequential attempts (at least 1ns,
     /// so a zero share cannot arm an instant timer storm; `parts` below 1 counts as 1).
     TimeSpan remainingShare(int parts);
-
     /// True when the budget is bounded and has `floor` or less remaining — the point where
     /// starting more work is waste, because the client (or the forwarding sender) is gone before
     /// the work can answer.
@@ -93,7 +89,8 @@ public sealed interface Deadline {
 
         @Override
         public TimeSpan remainingShare(int parts) {
-            return timeSpan(Math.max(1L, remaining().nanos() / Math.max(1, parts))).nanos();
+            return timeSpan(Math.max(1L,
+                                     remaining().nanos() / Math.max(1, parts))).nanos();
         }
 
         @Override
@@ -111,34 +108,27 @@ public sealed interface Deadline {
     /// value is the same value.
     enum Unbounded implements Deadline {
         INSTANCE;
-
         private static final TimeSpan FOREVER = timeSpan(Long.MAX_VALUE).nanos();
-
         @Override
         public TimeSpan remaining() {
             return FOREVER;
         }
-
         @Override
         public boolean isBounded() {
             return false;
         }
-
         @Override
         public TimeSpan bounded(TimeSpan defaultSpan) {
             return defaultSpan;
         }
-
         @Override
         public TimeSpan remainingShare(int parts) {
             return FOREVER;
         }
-
         @Override
         public boolean expired(TimeSpan floor) {
             return false;
         }
-
         @Override
         public long toWireMillis() {
             return NO_BUDGET;
@@ -154,7 +144,8 @@ public sealed interface Deadline {
     }
 
     static Deadline startingNow(TimeSpan budget, TimeSource clock) {
-        return new Bounded(clock.nanoTime() + budget.nanos(), clock);
+        return new Bounded(clock.nanoTime() + budget.nanos(),
+                           clock);
     }
 
     static Deadline fromWireMillis(long remainingMillis) {

@@ -26,6 +26,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.stream.DurableSealedOffsetSource;
+import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamWalView;
@@ -159,7 +161,12 @@ class RetentionRoutesTest {
         void assembleRetention_includesSegmentOnlyPartitions() {
             var segmentIndex = new SegmentIndex();
 
+            // History tiered away the way it happens on a live node: [0-99] and [100-200] seal, then
+            // retention reclaims [0-99]. Since #1234 the sealed-through bound is CONTIGUOUS, so a lone
+            // segment starting at 100 would (correctly) report -1 — offsets 0-99 never sealed.
+            segmentIndex.addSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 0L, 99L);
             segmentIndex.addSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 100L, 200L);
+            segmentIndex.removeSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 0L);
 
             var response = RetentionRoutes.assembleRetention(snapshot(PLAIN_STREAM,
                                                                       PARTITION,
@@ -236,6 +243,37 @@ class RetentionRoutesTest {
             var response = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore(), 7L);
 
             assertThat(response.walRecoveryHeadGapsAccepted()).isEqualTo(7L);
+        }
+
+        /// #1345: the held-back counter reaches the operator surface through the manager overload the route
+        /// calls; the snapshot-only overloads have no manager and report 0. Held-back is driven the way the
+        /// tick computes it: a durable bound below the live watermark that did not move since the previous
+        /// tick — two ticks with a stuck `-1` bound against a sealed index count one.
+        @Test
+        void assembleRetention_managerOverload_reportsWalReclamationHeldBackTicks(@TempDir Path walDir) {
+            var index = new SegmentIndex();
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
+                                                                        EvictionListener.NOOP,
+                                                                        Option.some(walDir),
+                                                                        index::lastSealedOffset,
+                                                                        DurableSealedOffsetSource.none());
+
+            manager.createStream(StreamConfig.streamConfig("held",
+                                                           1,
+                                                           RetentionPolicy.retentionPolicy(1_000, 1024L * 1024, 3_600_000),
+                                                           "earliest"))
+                   .onFailure(cause -> fail(cause.message()));
+            index.addSegment("held", 0, 0, 9);
+            manager.truncateWalsToSealed();
+            manager.truncateWalsToSealed();
+
+            var reported = RetentionRoutes.assembleRetention(manager, new SegmentIndex(), emptyStore());
+
+            manager.close();
+            assertThat(reported.walReclamationHeldBackTicks()).isEqualTo(1L).isEqualTo(manager.walReclamationHeldBackTicks());
+            assertThat(RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore())
+                                      .walReclamationHeldBackTicks()).as("no manager in hand: nothing to report")
+                                                                     .isZero();
         }
 
         /// #1258 round 3 nit: pins the PRODUCTION overload the route calls. A real WAL recovery accepts a
@@ -503,7 +541,7 @@ class RetentionRoutesTest {
     }
 
     private static RetentionResponse responseOf(RetentionPartitionView row) {
-        return new RetentionResponse(0L, List.of(row), 0L);
+        return new RetentionResponse(0L, List.of(row), 0L, 0L);
     }
 
     private static RetentionPartitionView violatedRow() {

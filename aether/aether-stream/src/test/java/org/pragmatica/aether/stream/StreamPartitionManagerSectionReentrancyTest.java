@@ -16,14 +16,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
-import java.io.IOException;
 import java.lang.management.ManagementFactory;
-import java.nio.ByteBuffer;
-import java.nio.MappedByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -118,7 +111,7 @@ class StreamPartitionManagerSectionReentrancyTest {
         var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
 
         assertThat(manager.createStream(config("s", 1)).isSuccess()).isTrue();
-        var gate = GatedForceChannel.inject(walOf(manager, "s", 0));
+        var gate = GatedWalFsync.inject(GatedWalFsync.walOf(manager, "s", 0));
         var parkedPublish = CompletableFuture.supplyAsync(() -> manager.publishLocal("s", 0, "a".getBytes(UTF_8), 1L));
 
         assertThat(gate.forceEntered.await(10, TimeUnit.SECONDS)).as("the publish reached its fsync").isTrue();
@@ -206,14 +199,6 @@ class StreamPartitionManagerSectionReentrancyTest {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    static PartitionWal walOf(StreamPartitionManager manager, String stream, int partition) throws Exception {
-        var walFor = StreamPartitionManager.class.getDeclaredMethod("walFor", String.class, int.class);
-
-        walFor.setAccessible(true);
-        return ((Option<PartitionWal>) walFor.invoke(manager, stream, partition)).unwrap();
-    }
-
     private static List<Long> replayOffsets(Path file) {
         var wal = PartitionWal.open(file).unwrap();
         var records = new ArrayList<WalRecord>();
@@ -221,117 +206,5 @@ class StreamPartitionManagerSectionReentrancyTest {
         wal.replay(-1L, records::add).onFailure(cause -> fail(cause.message()));
         wal.close();
         return records.stream().map(WalRecord::offset).toList();
-    }
-
-    /// Delegates everything to the WAL's real channel, except that `force` parks until released.
-    static final class GatedForceChannel extends FileChannel {
-        final FileChannel delegate;
-        final CountDownLatch forceEntered = new CountDownLatch(1);
-        final CountDownLatch forceProceed = new CountDownLatch(1);
-
-        private GatedForceChannel(FileChannel delegate) {
-            this.delegate = delegate;
-        }
-
-        static GatedForceChannel inject(PartitionWal wal) throws ReflectiveOperationException {
-            var field = PartitionWal.class.getDeclaredField("channel");
-
-            field.setAccessible(true);
-            var gate = new GatedForceChannel((FileChannel) field.get(wal));
-
-            field.set(wal, gate);
-            return gate;
-        }
-
-        @Override
-        public void force(boolean metaData) throws IOException {
-            forceEntered.countDown();
-            try {
-                forceProceed.await(30, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            delegate.force(metaData);
-        }
-
-        @Override
-        public int read(ByteBuffer dst) throws IOException {
-            return delegate.read(dst);
-        }
-
-        @Override
-        public long read(ByteBuffer[] dsts, int offset, int length) throws IOException {
-            return delegate.read(dsts, offset, length);
-        }
-
-        @Override
-        public int read(ByteBuffer dst, long position) throws IOException {
-            return delegate.read(dst, position);
-        }
-
-        @Override
-        public int write(ByteBuffer src) throws IOException {
-            return delegate.write(src);
-        }
-
-        @Override
-        public long write(ByteBuffer[] srcs, int offset, int length) throws IOException {
-            return delegate.write(srcs, offset, length);
-        }
-
-        @Override
-        public int write(ByteBuffer src, long position) throws IOException {
-            return delegate.write(src, position);
-        }
-
-        @Override
-        public long position() throws IOException {
-            return delegate.position();
-        }
-
-        @Override
-        public FileChannel position(long newPosition) throws IOException {
-            return delegate.position(newPosition);
-        }
-
-        @Override
-        public long size() throws IOException {
-            return delegate.size();
-        }
-
-        @Override
-        public FileChannel truncate(long size) throws IOException {
-            return delegate.truncate(size);
-        }
-
-        @Override
-        public long transferTo(long position, long count, WritableByteChannel target) throws IOException {
-            return delegate.transferTo(position, count, target);
-        }
-
-        @Override
-        public long transferFrom(ReadableByteChannel src, long position, long count) throws IOException {
-            return delegate.transferFrom(src, position, count);
-        }
-
-        @Override
-        public MappedByteBuffer map(MapMode mode, long position, long size) throws IOException {
-            return delegate.map(mode, position, size);
-        }
-
-        @Override
-        public FileLock lock(long position, long size, boolean shared) throws IOException {
-            return delegate.lock(position, size, shared);
-        }
-
-        @Override
-        public FileLock tryLock(long position, long size, boolean shared) throws IOException {
-            return delegate.tryLock(position, size, shared);
-        }
-
-        @Override
-        protected void implCloseChannel() throws IOException {
-            delegate.close();
-        }
     }
 }

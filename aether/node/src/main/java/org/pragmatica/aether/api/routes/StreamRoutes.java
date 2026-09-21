@@ -223,11 +223,16 @@ public final class StreamRoutes implements RouteSource {
                                                  assignment.ownerNode().map(NodeId::id));
     }
 
-    private static DeclarativeConsumerPartition toConsumerPartition(PartitionCursor cursor) {
+    /// Package-private: the #1266 hold fields and `awaitingCursorFetch` are pinned by
+    /// `StreamRoutesConsumerPartitionTest`.
+    static DeclarativeConsumerPartition toConsumerPartition(PartitionCursor cursor) {
         return new DeclarativeConsumerPartition(cursor.partition(),
                                                 cursor.cursor(),
                                                 cursor.stalled(),
-                                                cursor.lastCursorCommitFailure().or(""));
+                                                cursor.lastCursorCommitFailure().or(""),
+                                                cursor.deadLetterInFlight(),
+                                                cursor.retryInFlight(),
+                                                cursor.awaitingCursorFetch());
     }
 
     private static StreamHydrationResponse toHydrationResponse(HydrationSnapshot snapshot) {

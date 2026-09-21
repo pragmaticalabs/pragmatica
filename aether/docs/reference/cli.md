@@ -1709,6 +1709,48 @@ aether streams read user-events 0 --since 100 --limit 50
 
 ---
 
+## Durable Topics (`aether topics`)
+
+Operator surface for durable pub/sub consumer groups and the projections behind them (#1333). Both
+commands are LOCAL: they describe, and act on, the node the CLI is pointed at.
+
+### `aether topics groups <namespace:topic:version>`
+
+Show every consumer group over a durable topic — one per durable subscriber method, identified as the
+runtime identifies it (`artifactBase#method`) — and, per partition, which node consumes it and which
+owns it, the consensus-committed cursor with its rewind epoch, the live cursor where this node runs the
+consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection.
+
+```bash
+aether topics groups com.example:projection-events:1.0.0
+```
+
+The topic must be addressed in full (`namespace:topic:version`); a bare name is refused because it
+could name two different backing streams. `replayState: UNKNOWN` means this node hosts no projection
+for the group — ask the node shown as `consumerNode`.
+
+See [Management API — Durable Topic Groups](management-api.md#durable-topic-groups).
+
+### `aether topics rebuild <namespace:topic:version> <group>`
+
+Rebuild the read model behind one consumer group's projection: capture the replay range, reset the
+projection store to a new generation, rewind the group's committed cursor under a fenced epoch. Run it
+against the node that consumes the group's partitions (`consumerNode` from `aether topics groups`); any
+other node answers `409` naming that node.
+
+```bash
+aether topics rebuild com.example:projection-events:1.0.0 'com.example:orders-slice#onProjectionEvent'
+```
+
+The answer carries the new generation, the rewind token and the captured range per partition. Follow
+progress with `aether topics groups`: the partition reads `REBUILDING` with `nextReplayOffset` advancing,
+then `LIVE`; `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
+replay event that dead-letters is skipped and stays out of the rebuilt model until redriven.
+
+See [Management API — Rebuild Projection](management-api.md#rebuild-projection).
+
+---
+
 ## Stream Namespaces (`aether stream`)
 
 The `aether stream` command group (singular) operates on **namespaced** streams addressed by a
@@ -2703,7 +2745,10 @@ A checkpoint is the only thing that bounds an entity log: until a partition is c
 floor reclaims nothing for it. **`writes` climbing is the signal that the driver is alive** — writes and
 reads keep succeeding even when checkpointing has stopped, so a flat `writes` under load is the fault to
 act on. `failures` and `checkpointedThrough` say which partitions are stuck; a partition this node has
-never folded is absent rather than reported as offset 0.
+never folded is absent rather than reported as offset 0. `checkpointLag` (#1302) is, per folded partition,
+the log head minus the COMMITTED checkpoint in consensus KV, for partitions this node OWNS — how far a
+recovery would replay; its node-wide
+maximum drives the `entity.checkpoint.lag.max` threshold alert (default WARNING 5,000 / CRITICAL 10,000).
 
 Output is the endpoint's JSON, pretty-printed:
 
@@ -2711,7 +2756,8 @@ Output is the endpoint's JSON, pretty-printed:
 {
   "keyspaces": [
     {"keyspace": "orders", "partitionCount": 8, "writes": 214, "failures": 0,
-     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}}
+     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502},
+     "checkpointLag": {"0": 59, "3": 12, "5": 0}}
   ]
 }
 ```
@@ -2805,7 +2851,10 @@ segment; `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest
 any local source; `violated` / `violation` — the tri-floor invariant verdict. `walTotalBytes` at the
 root is this node's total live WAL footprint; `walRecoveryHeadGapsAccepted` counts WAL recoveries that
 accepted a gap before a WAL file's first record as reclaimed history (non-zero without retention
-having reclaimed that partition means records were lost — the WARN log names the range). Full schema and the precise invariant in the
+having reclaimed that partition means records were lost — the WARN log names the range);
+`walReclamationHeldBackTicks` counts consecutive truncation ticks in which the on-disk sealed watermark
+sat below the live one without advancing (non-zero and climbing means the streams metadata snapshot
+cannot be written or read, and WAL reclamation is halted until it can). Full schema and the precise invariant in the
 Management API section linked above.
 
 **A `violated: true` row means this node cannot rebuild that partition from its checkpoint** — the

@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
@@ -104,6 +105,21 @@ public sealed interface Causes {
     ///
     /// @param throwable the instance of [Throwable] to extract stack trace and message from
     /// @return created instance
+    /// #1311: the ONE place a caught `Throwable` is checked for a [VirtualMachineError] before being
+    /// converted into a Cause, an empty Option or a log line. Every lift-style `catch (Throwable)` in core
+    /// (`Result.lift`, `Unit.lift`, `Tuple.lift`, `Option.lift`, the Promise continuation guard, the
+    /// scheduler's task guard) calls this first: an exhausted stack or heap is not a failure a Cause can
+    /// carry, and converting it produced a plausible-looking failed value that no guard could see. The
+    /// `throw` is that ruling's mechanism, not a business exception, hence `@Contract`.
+    ///
+    /// @param throwable the caught instance; rethrown if it is a [VirtualMachineError], returned otherwise
+    @Contract
+    static void rethrowIfFatal(Throwable throwable) {
+        if (throwable instanceof VirtualMachineError fatal) {
+            throw fatal;
+        }
+    }
+
     static Cause fromThrowable(Throwable throwable) {
         var sw = new StringWriter();
 
@@ -158,8 +174,13 @@ public sealed interface Causes {
     }
 
     /// Typed variant of [#forThreeValues(String)]; see [#forOneValue(String, Fn1)].
-    static <T1, T2, T3, C extends Cause> Fn3<C, T1, T2, T3> forThreeValues(String template, Fn1<C, String> causeFactory) {
-        return (input1, input2, input3) -> causeFactory.apply(String.format(Locale.ROOT, template, input1, input2, input3));
+    static <T1, T2, T3, C extends Cause> Fn3<C, T1, T2, T3> forThreeValues(String template,
+                                                                           Fn1<C, String> causeFactory) {
+        return (input1, input2, input3) -> causeFactory.apply(String.format(Locale.ROOT,
+                                                                            template,
+                                                                            input1,
+                                                                            input2,
+                                                                            input3));
     }
 
     /// Data-retaining rung of [#forOneValue(String, Fn1)]: the mapper receives the VALUE and the
@@ -176,7 +197,9 @@ public sealed interface Causes {
 
     /// Two-value data-retaining rung; see [#forOneValue(String, Fn2)].
     static <T1, T2, C extends Cause> Fn2<C, T1, T2> forTwoValues(String template, Fn3<C, T1, T2, String> causeFactory) {
-        return (input1, input2) -> causeFactory.apply(input1, input2, String.format(Locale.ROOT, template, input1, input2));
+        return (input1, input2) -> causeFactory.apply(input1,
+                                                      input2,
+                                                      String.format(Locale.ROOT, template, input1, input2));
     }
 
     /// Three-value data-retaining rung; see [#forOneValue(String, Fn2)].
@@ -185,7 +208,11 @@ public sealed interface Causes {
         return (input1, input2, input3) -> causeFactory.apply(input1,
                                                               input2,
                                                               input3,
-                                                              String.format(Locale.ROOT, template, input1, input2, input3));
+                                                              String.format(Locale.ROOT,
+                                                                            template,
+                                                                            input1,
+                                                                            input2,
+                                                                            input3));
     }
 
     interface CompositeCause extends Cause {

@@ -7,6 +7,7 @@ package org.pragmatica.aether.slice;
 import java.util.List;
 
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -27,10 +28,15 @@ import org.pragmatica.lang.Unit;
 /// publisher.
 public interface StreamPublisher<T> {
     Promise<Unit> publish(T event);
-
-    default Promise<Unit> publishBatch(List<T> events) {
-        return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
-    }
+    /// Batch publish (#1342): one [PublishOutcome] per event, in input order, always `events.size()` long.
+    /// The promise resolves with the list even when every event failed — a batch is not atomic, and a failed
+    /// batch is not "nothing was written" (#1236: per-event outcome-unknown), so the outcome travels per event
+    /// instead of being folded into one `Unit` that had acknowledged refused events as success. No default:
+    /// a batch derived from `publish` could not report the offsets that landed.
+    /// A local partition group may be one storage run with one cumulative replication barrier. A
+    /// failed barrier makes every submitted event outcome-unknown; NotAttempted is reserved for
+    /// events never submitted (such as a stopped remote or oversized-run fallback chain).
+    Promise<List<PublishOutcome>> publishBatch(List<T> events);
 
     /// Resolver-side fail-safe: refuse to bind an app `StreamPublisher` for a system address.
     ///
@@ -59,11 +65,14 @@ public interface StreamPublisher<T> {
             }
         }
 
-        @SuppressWarnings("unused")
-        record unused() implements StreamPublisherError {
-            @Override
-            public String message() {
-                return "";
+        /// #1342: an event was not attempted because an earlier event of the same partition group failed. A
+        /// group appends in order and stops at the first failure, so this event is NOT in the log.
+        record PrecedingEventFailed(int partition, Cause cause, String message) implements StreamPublisherError {
+            public static PrecedingEventFailed precedingEventFailed(int partition, Cause cause) {
+                return new PrecedingEventFailed(partition,
+                                                cause,
+                                                "Not attempted: an earlier event of partition " + partition
+                                               + " failed: " + cause.message());
             }
         }
     }

@@ -28,3 +28,10 @@
   size (payload plus a bounded per-event framing cost, so millions of tiny events split too) is at most half
   of it; the batch still awaits one ack on its last offset.
   `[mechanism: DefaultReplicationManager.chunkEnd; pinned by DefaultStreamPublisherBatchTest]`
+- **rc4 integration preserves per-input outcomes and current write authority.** Local runs use the shared
+  owner router, committed-owner admission, live min-sync floor/barrier, and durable/visible frontier.
+  A failed cumulative barrier reports every submitted event as outcome-unknown; it never labels an
+  already-appended suffix not-attempted. Remote and oversized-run fallback chains retain their successful
+  prefix and stop before later events after a failure. The batch is not atomic and ambiguous runs are not
+  automatically retried.
+  `[verified: BatchPublishOutcomeTest, StreamWritePathContractTest.StreamPublisherBatchPath]`

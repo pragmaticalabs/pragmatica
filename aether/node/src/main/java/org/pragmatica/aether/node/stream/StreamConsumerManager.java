@@ -12,6 +12,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -24,21 +25,34 @@ import org.pragmatica.aether.node.stream.StreamConsumerRegistry.ConsumerDeclarat
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
+import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.ConsumerCallback;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy;
+import org.pragmatica.aether.stream.StreamConsumerRuntime.SubscriptionSnapshot;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -77,13 +91,33 @@ import org.slf4j.LoggerFactory;
 /// ## Guarantee
 ///
 /// **At-least-once delivery per partition, conditional on the slice being ACTIVE on at least one live
-/// node.** Duplicates arise from redelivery after a handler failure under `RETRY`; from the
-/// reconcile-tick window during an ownership or placement change, in which the old and new assignee
-/// may both deliver; and from resuming at the last checkpoint (≤1000 events or ≤30s of progress)
-/// rather than the last delivered offset after an UNGRACEFUL move — a graceful detach flushes the
-/// exact cursor. Replay after an ungraceful move is bounded by that checkpoint cadence. This is NOT
-/// effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment
-/// views can both deliver and both write the cursor, last write winning.
+/// node.** Duplicates arise from redelivery after a handler failure under `RETRY`; from resuming at the
+/// last checkpoint (≤1000 events or ≤1s of progress — 500ms for durable-topic groups) rather than the
+/// last delivered offset after an UNGRACEFUL move — a graceful detach flushes the exact cursor; and from
+/// the BOUNDED reassignment overlap below. This is NOT effectively-once, and it is NOT a guarantee of a
+/// single deliverer at every instant.
+///
+/// **Assignment fencing (#1271).** Which node delivers a `(group, partition)` is decided by a COMMITTED
+/// record ([ConsumerAssignmentWriter], leader-only), not by each node's own view:
+///   - **Attach** — a node attaches only where its locally applied committed record names it, under the
+///     record's epoch; an absent record admits nobody. [mechanism: `admittedPartitions` reads the
+///     committed record; the local computation only feeds the leader's writer]
+///   - **Deliver** — the runtime re-reads the record before every delivery pass, so two nodes deliver one
+///     partition only while their committed-state MIRRORS disagree about it: the overlap is bounded by
+///     the apply skew between the two nodes plus the one batch already in flight on the loser.
+///     [mechanism: `ConsumerFence#admitted` checked per pass] [unverified: the skew itself is unmeasured]
+///   - **Cursor** — the consensus applier admits a checkpoint only from the committed assignee at the
+///     committed epoch, so a deposed node never moves or regresses the committed cursor, including before
+///     its successor's first checkpoint. [mechanism: `AssignmentGuarded` arm of the KV applier]
+///   - **Loser** — detaches without a final flush, on its first refused commit or on the next reconcile
+///     that sees the moved record, whichever comes first.
+///   - **Quorum loss** — a node that loses quorum cannot learn of a reassignment made by the majority, so
+///     its mirror freezes; it abandons every subscription at the quorum-loss DETECTION ([#abandonAll], wired
+///     to the self-fence), which bounds that overlap by the detector's threshold rather than by the drain's
+///     halt. [unverified: the end-to-end bound on a partitioned cluster has not been measured]
+///
+/// Operator recovery: none is needed for an overlap — it ends on its own when the mirrors converge or the
+/// minority side's detector fires; its cost is duplicate delivery, which consumers must tolerate anyway.
 ///
 /// Delivery is ZERO only when the slice is ACTIVE on no live node — nothing can run the handler. That
 /// case is reported loudly and appears in [#statuses] as `unassignedPartitions`.
@@ -101,12 +135,36 @@ public interface StreamConsumerManager {
     @Contract
     void stop();
 
+    /// #1271: detach every consumer WITHOUT a final cursor flush — wired to the node's quorum-loss
+    /// self-fence. A node that has lost quorum cannot commit a cursor and must stop delivering at once
+    /// rather than at the drain's halt: the majority side is free to reassign its partitions, and every
+    /// batch this node delivers from then on is a duplicate of work the new assignee will redo.
+    @Contract
+    void abandonAll();
+
     List<ConsumerStatus> statuses();
+    /// #1333: the durable-topic groups over `topicStream` — synthesized from the topic subscriptions, so
+    /// absent from [#statuses], which reads the declarative registry only. Same per-partition shape.
+    List<ConsumerStatus> topicGroupStatuses(String topicStream);
+
+    /// #1333: a committed checkpoint landed in KV. When it carries a rewind epoch newer than the one the
+    /// consumer for that key runs under, a reconcile pass restarts that consumer at once instead of on
+    /// the next tick. Every other checkpoint — the consumer's own — is ignored.
+    @Contract
+    void onCheckpointPut(ValuePut<?, ?> put);
+
     int activeSubscriptionCount();
     /// #654: node-wide count of cursor commits (final flush at detach, or periodic checkpoint) that
     /// failed or did not settle within their shutdown bound. Delegates to the underlying
     /// [org.pragmatica.aether.stream.StreamConsumerRuntime#cursorCommitFailureCount].
     long cursorCommitFailureCount();
+
+    /// #1271: the node's quorum-loss listener with the consumer abandon composed in FRONT of it — delivery
+    /// stops before the drain procedure starts, since the drain ends in a halt that may be seconds away and
+    /// every batch delivered meanwhile duplicates work the majority's new assignee will redo.
+    static <I> Consumer<I> abandoningOnQuorumLoss(Consumer<I> quorumLossChain, StreamConsumerManager manager) {
+        return ((Consumer<I>) _ -> manager.abandonAll()).andThen(quorumLossChain);
+    }
 
     /// Inert manager for `ManageableNode` proxies that have no stream runtime behind them. Reports
     /// no consumers; it never fabricates any.
@@ -120,10 +178,23 @@ public interface StreamConsumerManager {
             @Override
             public void stop() {}
 
+            @Contract
+            @Override
+            public void abandonAll() {}
+
             @Override
             public List<ConsumerStatus> statuses() {
                 return List.of();
             }
+
+            @Override
+            public List<ConsumerStatus> topicGroupStatuses(String topicStream) {
+                return List.of();
+            }
+
+            @Contract
+            @Override
+            public void onCheckpointPut(ValuePut<?, ?> put) {}
 
             @Override
             public int activeSubscriptionCount() {
@@ -170,11 +241,35 @@ public interface StreamConsumerManager {
         Map<NodeId, SliceState> placement(Artifact artifact);
     }
 
+    /// The rewind epoch committed in KV for one `(stream, partition, group)` (#1333), or none when no
+    /// checkpoint is committed. Read on every reconcile pass for every held subscription: a committed
+    /// epoch STRICTLY newer than the one the consumer runs under means a projection rebuild rewound
+    /// the group, and the consumer is restarted so it resumes at the rewound position under that epoch.
+    @FunctionalInterface
+    interface CommittedEpochSource {
+        Option<RewindEpoch> committedEpoch(String streamName, int partition, String consumerGroup);
+
+        static CommittedEpochSource none() {
+            return (_, _, _) -> Option.none();
+        }
+    }
+
     /// `lastCursorCommitFailure` (#654): detail of this partition's most recent cursor commit
     /// failure while the consumer stays attached; [Option#none] once it commits successfully again,
     /// or if none has failed. Sourced from
     /// [org.pragmatica.aether.stream.StreamConsumerRuntime.SubscriptionSnapshot#lastCursorCommitFailure].
-    record PartitionCursor(int partition, long cursor, boolean stalled, Option<String> lastCursorCommitFailure) {}
+    /// `deadLetterInFlight` / `retryInFlight` (#1266): the holds currently stopping this partition's
+    /// delivery loop, so a held partition is distinguishable from a quiet one. `awaitingCursorFetch`: the
+    /// consumer has not started at all, because its cursor fetch keeps failing and is being retried.
+    /// `rewindEpoch` (#1333): the epoch this consumer resumed under and commits with.
+    record PartitionCursor(int partition,
+                           long cursor,
+                           boolean stalled,
+                           Option<String> lastCursorCommitFailure,
+                           boolean deadLetterInFlight,
+                           boolean retryInFlight,
+                           boolean awaitingCursorFetch,
+                           RewindEpoch rewindEpoch) {}
 
     /// Who consumes one partition, and who owns it. Both are computed locally and identically on every
     /// node, so a single call to any node answers "who consumes partition 3, and does it read locally?"
@@ -201,6 +296,19 @@ public interface StreamConsumerManager {
                           List<PartitionAssignment> partitionAssignments,
                           Option<String> diagnostic) {}
 
+    /// #1271: the committed consumer assignment — the ONE authority for which node delivers a
+    /// `(group, partition)`. `committed` reads this node's committed-state mirror; `writer` is the
+    /// leader-only [ConsumerAssignmentWriter]; `applier` submits its `Put`s through consensus.
+    record AssignmentAuthority(ConsumerAssignmentWriter.CommittedAssignments committed,
+                               ConsumerAssignmentWriter writer,
+                               Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier) {
+        public static AssignmentAuthority assignmentAuthority(ConsumerAssignmentWriter.CommittedAssignments committed,
+                                                              ConsumerAssignmentWriter writer,
+                                                              Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier) {
+            return new AssignmentAuthority(committed, writer, applier);
+        }
+    }
+
     static StreamConsumerManager streamConsumerManager(StreamConsumerRegistry registry,
                                                        StreamConsumerRuntime runtime,
                                                        SliceInvoker invoker,
@@ -208,7 +316,8 @@ public interface StreamConsumerManager {
                                                        SliceCodec nodeCodec,
                                                        PartitionOwnership ownership,
                                                        SlicePlacement placement,
-                                                       NodeId self) {
+                                                       NodeId self,
+                                                       AssignmentAuthority authority) {
         return streamConsumerManager(registry,
                                      runtime,
                                      invoker,
@@ -217,7 +326,8 @@ public interface StreamConsumerManager {
                                      ownership,
                                      placement,
                                      self,
-                                     TopicGroupDeclarationSource.none());
+                                     TopicGroupDeclarationSource.none(),
+                                     authority);
     }
 
     /// #386 registration entry point (option-(a) ruling): durable-topic groups join the reconcile
@@ -231,7 +341,33 @@ public interface StreamConsumerManager {
                                                        PartitionOwnership ownership,
                                                        SlicePlacement placement,
                                                        NodeId self,
-                                                       TopicGroupDeclarationSource topicGroups) {
+                                                       TopicGroupDeclarationSource topicGroups,
+                                                       AssignmentAuthority authority) {
+        return streamConsumerManager(registry,
+                                     runtime,
+                                     invoker,
+                                     invocationHandler,
+                                     nodeCodec,
+                                     ownership,
+                                     placement,
+                                     self,
+                                     topicGroups,
+                                     authority,
+                                     CommittedEpochSource.none());
+    }
+
+    /// #1333: with the committed-epoch source, so a pass restarts a consumer whose group was rewound.
+    static StreamConsumerManager streamConsumerManager(StreamConsumerRegistry registry,
+                                                       StreamConsumerRuntime runtime,
+                                                       SliceInvoker invoker,
+                                                       InvocationHandler invocationHandler,
+                                                       SliceCodec nodeCodec,
+                                                       PartitionOwnership ownership,
+                                                       SlicePlacement placement,
+                                                       NodeId self,
+                                                       TopicGroupDeclarationSource topicGroups,
+                                                       AssignmentAuthority authority,
+                                                       CommittedEpochSource committedEpochs) {
         var manager = new ManagerState(registry,
                                        runtime,
                                        invoker,
@@ -240,7 +376,10 @@ public interface StreamConsumerManager {
                                        ownership,
                                        placement,
                                        self,
-                                       topicGroups);
+                                       topicGroups,
+                                       committedEpochs,
+                                       ManagerState.HANDLER_TIMEOUT,
+                                       authority);
 
         registry.setChangeListener(manager::onDeclarationChange);
 
@@ -252,6 +391,14 @@ public interface StreamConsumerManager {
 
         private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
 
+        /// #1238: bound on one handler invocation. The consumer runtime runs ONE serial delivery loop per
+        /// (group, partition), so a handler that never resolves would hold that partition forever; a
+        /// timed-out invocation is a delivery FAILURE and goes through the group's error strategy (retry,
+        /// then dead-letter). 30s is the value the deleted `StreamConsumerAdapter` used (#577); no
+        /// configuration surface for it exists. [design intent — unverified: not derived from a measured
+        /// handler-latency distribution.]
+        static final TimeSpan HANDLER_TIMEOUT = TimeSpan.timeSpan(30).seconds();
+
         private final StreamConsumerRegistry registry;
         private final StreamConsumerRuntime runtime;
         private final SliceInvoker invoker;
@@ -261,7 +408,12 @@ public interface StreamConsumerManager {
         private final SlicePlacement placement;
         private final NodeId self;
         private final TopicGroupDeclarationSource topicGroups;
+        private final CommittedEpochSource committedEpochs;
+        private final TimeSpan handlerTimeout;
+        private final AssignmentAuthority authority;
         private final Map<SubscriptionKey, ConsumerDeclaration> active = new ConcurrentHashMap<>();
+        /// #1271: the committed assignment epoch each active subscription was admitted under.
+        private final Map<SubscriptionKey, Epoch> admittedEpochs = new ConcurrentHashMap<>();
         private final Map<String, Diagnosis> diagnoses = new ConcurrentHashMap<>();
         private final AtomicBoolean passRequested = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
@@ -275,7 +427,10 @@ public interface StreamConsumerManager {
                      PartitionOwnership ownership,
                      SlicePlacement placement,
                      NodeId self,
-                     TopicGroupDeclarationSource topicGroups) {
+                     TopicGroupDeclarationSource topicGroups,
+                     CommittedEpochSource committedEpochs,
+                     TimeSpan handlerTimeout,
+                     AssignmentAuthority authority) {
             this.registry = registry;
             this.runtime = runtime;
             this.invoker = invoker;
@@ -285,6 +440,9 @@ public interface StreamConsumerManager {
             this.placement = placement;
             this.self = self;
             this.topicGroups = topicGroups;
+            this.committedEpochs = committedEpochs;
+            this.handlerTimeout = handlerTimeout;
+            this.authority = authority;
         }
 
         private void onDeclarationChange(Object key, Option<ConsumerDeclaration> declaration) {
@@ -325,8 +483,77 @@ public interface StreamConsumerManager {
                                       .flatMap(declaration -> desiredFor(declaration, collisions).stream())
                                       .collect(Collectors.toCollection(LinkedHashSet::new));
 
+            retireSuperseded();
             desired.forEach(key -> subscribeIfAbsent(key, byGroup));
             dropStale(desired);
+            restartRewound(byGroup);
+        }
+
+        /// #1333, level-triggered: a subscription whose committed epoch is STRICTLY newer than the one its
+        /// consumer runs under was rewound by a projection rebuild. Abandon it — WITHOUT the final flush,
+        /// which carries the old epoch and the KV applier refuses (#1271's `abandon` path, reused) — and
+        /// re-attach it, so the fresh consumer fetches `(epoch', fromOffset)` and replays from there. The
+        /// re-attach goes through admission again: the committed assignment record must still name this
+        /// node. A consumer still fetching its cursor is left alone: it has no epoch yet and will pick up
+        /// the committed one when the fetch lands.
+        private void restartRewound(Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+            var snapshots = snapshotsByKey();
+
+            active.keySet()
+                  .stream()
+                  .filter(key -> rewoundBehind(key,
+                                               Option.option(snapshots.get(key))))
+                  .toList()
+                  .forEach(key -> restartForRewind(key, byGroup));
+        }
+
+        private boolean rewoundBehind(SubscriptionKey key, Option<SubscriptionSnapshot> snapshot) {
+            return snapshot.filter(live -> !live.awaitingCursorFetch())
+                           .map(live -> committedEpochs.committedEpoch(key.streamName(),
+                                                                       key.partition(),
+                                                                       key.consumerGroup())
+                                                       .map(committed -> committed.isStrictlyAfter(live.rewindEpoch()))
+                                                       .or(false))
+                           .or(false);
+        }
+
+        private void restartForRewind(SubscriptionKey key, Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+            log.info("Consumer group {} on {}[{}] was rewound (committed epoch is newer than the consumer's); restarting it at the rewound cursor",
+                     key.consumerGroup(),
+                     key.streamName(),
+                     key.partition());
+            abandon(key);
+            subscribeIfAbsent(key, byGroup);
+        }
+
+        private Map<SubscriptionKey, SubscriptionSnapshot> snapshotsByKey() {
+            return runtime.subscriptions()
+                          .stream()
+                          .collect(Collectors.toMap(snapshot -> new SubscriptionKey(snapshot.streamName(),
+                                                                                    snapshot.partition(),
+                                                                                    snapshot.consumerGroup()),
+                                                    snapshot -> snapshot,
+                                                    (first, _) -> first));
+        }
+
+        /// The put is the trigger, the pass is the decision: [#restartRewound] re-reads the committed
+        /// epoch, so a stale or reordered notification cannot restart anything the KV does not justify.
+        @Contract
+        @Override
+        public void onCheckpointPut(ValuePut<?, ?> put) {
+            if (put.cause().key() instanceof StreamCursorCheckpointKey key && put.cause().value() instanceof StreamCursorCheckpointValue value && rewindsHeldConsumer(key,
+                                                                                                                                                                      value)) {
+                reconcile();
+            }
+        }
+
+        private boolean rewindsHeldConsumer(StreamCursorCheckpointKey key, StreamCursorCheckpointValue value) {
+            var subscription = new SubscriptionKey(key.streamName(), key.partitionIndex(), key.consumerGroup());
+
+            return active.containsKey(subscription) && Option.option(snapshotsByKey().get(subscription))
+                                                             .map(live -> value.rewindEpoch()
+                                                                               .isStrictlyAfter(live.rewindEpoch()))
+                                                             .or(false);
         }
 
         /// Subscriptions this node SHOULD hold for one declaration, plus the loud reporting for the
@@ -346,10 +573,78 @@ public interface StreamConsumerManager {
             var bridge = invocationHandler.localSlice(declaration.artifact());
 
             recordDiagnosis(declaration, diagnose(declaration, assignments, bridge));
+            publishAssignments(declaration, assignments);
 
             return bridge.isPresent()
-                   ? subscriptionKeys(declaration, minePartitions(assignments))
+                   ? subscriptionKeys(declaration, admittedPartitions(declaration))
                    : unsubscribeAndDropAll(declaration);
+        }
+
+        /// #1271: on the leader, commit this pass's computed assignment as the per-partition records every
+        /// node's admission reads. A follower's writer returns nothing. The apply is fire-and-forget: a
+        /// failed or slow commit leaves the old record standing and the next tick re-drives it.
+        private void publishAssignments(ConsumerDeclaration declaration, List<PartitionAssignment> assignments) {
+            var commands = authority.writer()
+                                    .writeAssignmentChanges(declaration.streamName(),
+                                                            declaration.consumerGroup(),
+                                                            assignments);
+
+            if (!commands.isEmpty()) {
+                authority.applier()
+                         .apply(commands)
+                         .onFailure(cause -> log.warn("Consumer assignment commit for {} group={} failed, next reconcile retries: {}",
+                                                      declaration.streamName(),
+                                                      declaration.consumerGroup(),
+                                                      cause.message()));
+            }
+        }
+
+        /// #1271: the partitions the COMMITTED records name this node for. This node's own computation
+        /// ([#assignmentsFor]) no longer decides what it delivers — two nodes whose views of ownership or
+        /// membership disagree would each compute themselves — it only feeds the leader's writer and the
+        /// operator diagnosis. An absent record admits nobody.
+        private List<Integer> admittedPartitions(ConsumerDeclaration declaration) {
+            return ownership.partitionCount(declaration.streamName())
+                            .map(count -> IntStream.range(0, count)
+                                                   .filter(partition -> committedToSelf(declaration.streamName(),
+                                                                                        partition,
+                                                                                        declaration.consumerGroup()).isPresent())
+                                                   .boxed()
+                                                   .toList())
+                            .or(List.of());
+        }
+
+        private Option<ConsumerAssignmentValue> committedToSelf(String stream, int partition, String group) {
+            return authority.committed()
+                            .assignmentOf(stream, partition, group)
+                            .filter(record -> record.assignee()
+                                                    .equals(self));
+        }
+
+        private Option<ConsumerAssignmentValue> committedToSelf(SubscriptionKey key) {
+            return committedToSelf(key.streamName(), key.partition(), key.consumerGroup());
+        }
+
+        /// Is `key` still this node's at exactly `epoch`, as the committed-state mirror shows it now.
+        private boolean stillAdmitted(SubscriptionKey key, Epoch epoch) {
+            return committedToSelf(key).map(record -> record.epoch()
+                                                            .equals(epoch))
+                                  .or(false);
+        }
+
+        /// #1271: a subscription admitted under an epoch that is no longer the committed one — the
+        /// assignment moved away and back (A→B→A) since it attached — is abandoned so this pass re-attaches
+        /// it under the current epoch. Its cursor state predates the other node's tenure and must not be
+        /// trusted; the re-attach resumes from the committed cursor.
+        private void retireSuperseded() {
+            admittedEpochs.entrySet()
+                          .stream()
+                          .filter(entry -> committedToSelf(entry.getKey()).map(record -> !record.epoch()
+                                                                                                .equals(entry.getValue()))
+                                                          .or(false))
+                          .map(Map.Entry::getKey)
+                          .toList()
+                          .forEach(this::detach);
         }
 
         private List<SubscriptionKey> declineColliding(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
@@ -448,15 +743,6 @@ public interface StreamConsumerManager {
         private boolean deploymentPending(ConsumerDeclaration declaration) {
             return ! placement.placement(declaration.artifact())
                               .isEmpty();
-        }
-
-        private List<Integer> minePartitions(List<PartitionAssignment> assignments) {
-            return assignments.stream()
-                              .filter(assignment -> assignment.consumerNode()
-                                                              .map(self::equals)
-                                                              .or(false))
-                              .map(PartitionAssignment::partition)
-                              .toList();
         }
 
         private static List<Integer> unassignedPartitions(List<PartitionAssignment> assignments) {
@@ -612,22 +898,39 @@ public interface StreamConsumerManager {
                           .orElseGet(Option::none);
         }
 
+        /// #1271: admission — attach only while the committed record names this node, and under the
+        /// record's epoch. Re-read here rather than trusted from the desired set, which was computed a moment
+        /// earlier in the same pass.
         private void attach(SubscriptionKey key, ConsumerDeclaration declaration) {
+            committedToSelf(key).onPresent(record -> attachAdmitted(key, declaration, record.epoch()));
+        }
+
+        private void attachAdmitted(SubscriptionKey key, ConsumerDeclaration declaration, Epoch epoch) {
             if (active.putIfAbsent(key, declaration) != null) {
                 return;
             }
 
+            admittedEpochs.put(key, epoch);
             invocationHandler.localSlice(declaration.artifact())
-                             .onPresent(bridge -> doSubscribe(key, declaration, bridge))
-                             .onEmpty(() -> active.remove(key));
+                             .onPresent(bridge -> doSubscribe(key, declaration, bridge, epoch))
+                             .onEmpty(() -> forget(key));
         }
 
-        private void doSubscribe(SubscriptionKey key, ConsumerDeclaration declaration, SliceBridge bridge) {
+        private void forget(SubscriptionKey key) {
+            active.remove(key);
+            admittedEpochs.remove(key);
+        }
+
+        private void doSubscribe(SubscriptionKey key,
+                                 ConsumerDeclaration declaration,
+                                 SliceBridge bridge,
+                                 Epoch epoch) {
             runtime.subscribe(key.streamName(),
                               key.partition(),
                               consumerConfigFor(key, declaration),
-                              callbackFor(declaration, bridge),
-                              IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED)
+                              callbackFor(key, declaration, bridge),
+                              IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                              fenceFor(key, epoch))
                    .onSuccess(_ -> logAttached(key, declaration))
                    .onFailure(cause -> failAttach(key, cause));
         }
@@ -647,8 +950,25 @@ public interface StreamConsumerManager {
             }
         }
 
+        /// The runtime re-checks [ConsumerFence#admitted] before every delivery pass — a read of this
+        /// node's committed-state mirror, no consensus round — so delivery stops at the next pass once the
+        /// mirror applies a reassignment, without waiting for the next reconcile tick.
+        private ConsumerFence fenceFor(SubscriptionKey key, Epoch epoch) {
+            return new ConsumerFence() {
+                @Override
+                public Epoch epoch() {
+                    return epoch;
+                }
+
+                @Override
+                public boolean admitted() {
+                    return stillAdmitted(key, epoch);
+                }
+            };
+        }
+
         private void failAttach(SubscriptionKey key, Cause cause) {
-            active.remove(key);
+            forget(key);
             log.error("Declarative stream consumer FAILED to attach: {}[{}] group={}: {}",
                       key.streamName(),
                       key.partition(),
@@ -656,8 +976,8 @@ public interface StreamConsumerManager {
                       cause.message());
         }
 
-        private ConsumerCallback callbackFor(ConsumerDeclaration declaration, SliceBridge bridge) {
-            return (_, payload, _) -> deliver(declaration, bridge, payload);
+        private ConsumerCallback callbackFor(SubscriptionKey key, ConsumerDeclaration declaration, SliceBridge bridge) {
+            return (offset, payload, _) -> deliver(key, declaration, bridge, offset, payload);
         }
 
         /// Durable-topic groups take the spec-cadence config (durable-pubsub-spec §6/§7 — 5
@@ -668,9 +988,13 @@ public interface StreamConsumerManager {
                    : ConsumerConfig.consumerConfig(declaration.consumerGroup());
         }
 
-        private Promise<Unit> deliver(ConsumerDeclaration declaration, SliceBridge bridge, byte[] payload) {
+        private Promise<Unit> deliver(SubscriptionKey key,
+                                      ConsumerDeclaration declaration,
+                                      SliceBridge bridge,
+                                      long offset,
+                                      byte[] payload) {
             return DurableTopicNames.isTopicStream(declaration.streamName())
-                   ? deliverTopicEvent(declaration, bridge, payload)
+                   ? deliverTopicEvent(key, declaration, offset, payload)
                    : bridge.decode(payload)
                            .flatMap(event -> invokeConsumer(declaration, event));
         }
@@ -681,11 +1005,31 @@ public interface StreamConsumerManager {
         /// bridge, the same cross-slice type contract every RPC message already rides. The
         /// handler's promise is the ack — nothing else about delivery differs from a declarative
         /// consumer, which is the point of the option-(a) reuse.
-        private Promise<Unit> deliverTopicEvent(ConsumerDeclaration declaration, SliceBridge bridge, byte[] rawEvent) {
+        ///
+        /// #1295: the delivery carries its [MessageContext] — the envelope's `messageId` (the §8
+        /// idempotency key), the topic address, and the partition and offset it was read from. The
+        /// subscribing slice's bridge decodes the payload and hands a context-carrying (2-arg) subscriber
+        /// `contextualEvent(event, context)`, a 1-arg subscriber the bare event. The invocation is LOCAL by
+        /// construction ([SliceInvoker#invokeLocalWithContext] never forwards), which is what lets the
+        /// context stay an in-process value.
+        private Promise<Unit> deliverTopicEvent(SubscriptionKey key,
+                                                ConsumerDeclaration declaration,
+                                                long offset,
+                                                byte[] rawEvent) {
             return Result.lift(() -> nodeCodec.<TopicEventEnvelope> decode(rawEvent))
                          .async()
-                         .flatMap(envelope -> bridge.decode(envelope.payload()))
-                         .flatMap(event -> invokeConsumer(declaration, event));
+                         .flatMap(envelope -> invoker.invokeLocalWithContext(declaration.artifact(),
+                                                                             declaration.methodName(),
+                                                                             envelope.payload(),
+                                                                             contextOf(key, offset, envelope))
+                                                     .timeout(handlerTimeout));
+        }
+
+        private static MessageContext contextOf(SubscriptionKey key, long offset, TopicEventEnvelope envelope) {
+            return MessageContext.messageContext(envelope.messageId(),
+                                                 DurableTopicNames.topicAddressOf(key.streamName()),
+                                                 key.partition(),
+                                                 offset);
         }
 
         private Promise<Unit> invokeConsumer(ConsumerDeclaration declaration, Object event) {
@@ -693,6 +1037,7 @@ public interface StreamConsumerManager {
                                        declaration.methodName(),
                                        payloadFor(declaration, event),
                                        UNIT_TYPE_TOKEN)
+                          .timeout(handlerTimeout)
                           .mapToUnit();
         }
 
@@ -726,20 +1071,36 @@ public interface StreamConsumerManager {
                   .forEach(this::detach);
         }
 
+        /// #1271: a node still admitted at the epoch it attached under detaches gracefully — its final flush
+        /// is the cursor's last word. A node that has LOST the assignment abandons without the flush: the
+        /// store would refuse it, and it could only describe progress on a partition that is no longer
+        /// this node's.
         private void detach(SubscriptionKey key) {
-            active.remove(key);
-            runtime.unsubscribe(key.streamName(),
-                                key.partition(),
-                                key.consumerGroup())
-                   .onSuccess(_ -> log.info("Declarative stream consumer detached: {}[{}] group={}",
-                                            key.streamName(),
-                                            key.partition(),
-                                            key.consumerGroup()))
+            var stillOurs = Option.option(admittedEpochs.get(key)).map(epoch -> stillAdmitted(key, epoch)).or(false);
+
+            forget(key);
+            release(key, stillOurs).onSuccess(_ -> logDetached(key, stillOurs))
                    .onFailure(cause -> log.debug("Detach of {}[{}] group={} reported: {}",
                                                  key.streamName(),
                                                  key.partition(),
                                                  key.consumerGroup(),
                                                  cause.message()));
+        }
+
+        private Result<Unit> release(SubscriptionKey key, boolean stillOurs) {
+            return stillOurs
+                   ? runtime.unsubscribe(key.streamName(), key.partition(), key.consumerGroup())
+                   : runtime.abandon(key.streamName(), key.partition(), key.consumerGroup());
+        }
+
+        private static void logDetached(SubscriptionKey key, boolean flushed) {
+            log.info("Declarative stream consumer detached: {}[{}] group={} ({})",
+                     key.streamName(),
+                     key.partition(),
+                     key.consumerGroup(),
+                     flushed
+                     ? "cursor flushed"
+                     : "assignment lost, no final flush");
         }
 
         /// The detach sweep holds `passLock`, so a pass already in flight finishes first and whatever it
@@ -756,6 +1117,21 @@ public interface StreamConsumerManager {
             }
 
             log.info("Declarative stream consumer manager stopped");
+        }
+
+        @Contract
+        @Override
+        public void abandonAll() {
+            var keys = active.keySet().stream().toList();
+
+            keys.forEach(this::abandon);
+            log.warn("Quorum lost — abandoned {} declarative stream consumer subscription(s) without a final flush (#1271)",
+                     keys.size());
+        }
+
+        private void abandon(SubscriptionKey key) {
+            forget(key);
+            runtime.abandon(key.streamName(), key.partition(), key.consumerGroup());
         }
 
         @Override
@@ -778,6 +1154,18 @@ public interface StreamConsumerManager {
                            .toList();
         }
 
+        @Override
+        public List<ConsumerStatus> topicGroupStatuses(String topicStream) {
+            var cursors = cursorsByKey();
+
+            return topicGroups.declarations()
+                              .stream()
+                              .filter(declaration -> declaration.streamName()
+                                                                .equals(topicStream))
+                              .map(declaration -> statusOf(declaration, cursors))
+                              .toList();
+        }
+
         private Map<SubscriptionKey, PartitionCursor> cursorsByKey() {
             return runtime.subscriptions()
                           .stream()
@@ -787,7 +1175,11 @@ public interface StreamConsumerManager {
                                                     snapshot -> new PartitionCursor(snapshot.partition(),
                                                                                     snapshot.cursor(),
                                                                                     snapshot.stalled(),
-                                                                                    snapshot.lastCursorCommitFailure()),
+                                                                                    snapshot.lastCursorCommitFailure(),
+                                                                                    snapshot.deadLetterInFlight(),
+                                                                                    snapshot.retryInFlight(),
+                                                                                    snapshot.awaitingCursorFetch(),
+                                                                                    snapshot.rewindEpoch()),
                                                     (first, _) -> first));
         }
 

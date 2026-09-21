@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -12,30 +13,23 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
-import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.StreamPublisher.StreamPublisherError;
+import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
-import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
 
 
 public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
-    /// #964: raised when the configured consistency mode decoded to `UNKNOWN`, i.e. the blueprint was
-    /// written by a node running a newer `ConsistencyMode`. Publishing anyway would mean promising an
-    /// acknowledgement semantics this node picked by default.
-    private static final Cause UNREADABLE_CONSISTENCY_MODE = Causes.cause("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
-                                                                         + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG");
-
-    private final StreamPartitionManager partitionManager;
     private final Serializer serializer;
     private final String streamName;
     private final int partitionCount;
@@ -43,25 +37,15 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     private final AtomicLong roundRobinCounter;
     private final ConsistencyMode consistencyMode;
     private final Option<ConsensusPublishPath> consensusPath;
-    private final int minSyncReplicas;
-    private final Option<StreamForwardClient> forwardClient;
-    private final Option<Fn0<Option<NodeId>>> governorResolver;
-    private final Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver;
-    private final Option<NodeId> selfNodeId;
+    private final StreamWriteRouter writeRouter;
 
-    private DefaultStreamPublisher(StreamPartitionManager partitionManager,
-                                   Serializer serializer,
+    private DefaultStreamPublisher(Serializer serializer,
                                    String streamName,
                                    int partitionCount,
                                    Option<Function<T, Object>> partitionKeyExtractor,
                                    ConsistencyMode consistencyMode,
                                    Option<ConsensusPublishPath> consensusPath,
-                                   int minSyncReplicas,
-                                   Option<StreamForwardClient> forwardClient,
-                                   Option<Fn0<Option<NodeId>>> governorResolver,
-                                   Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
-                                   Option<NodeId> selfNodeId) {
-        this.partitionManager = partitionManager;
+                                   StreamWriteRouter writeRouter) {
         this.serializer = serializer;
         this.streamName = streamName;
         this.partitionCount = partitionCount;
@@ -69,11 +53,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         this.roundRobinCounter = new AtomicLong(0);
         this.consistencyMode = consistencyMode;
         this.consensusPath = consensusPath;
-        this.minSyncReplicas = minSyncReplicas;
-        this.forwardClient = forwardClient;
-        this.governorResolver = governorResolver;
-        this.partitionOwnerResolver = partitionOwnerResolver;
-        this.selfNodeId = selfNodeId;
+        this.writeRouter = writeRouter;
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
@@ -81,18 +61,13 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                 String streamName,
                                                                 int partitionCount,
                                                                 Option<Function<T, Object>> partitionKeyExtractor) {
-        return new DefaultStreamPublisher<>(partitionManager,
-                                            serializer,
-                                            streamName,
-                                            partitionCount,
-                                            partitionKeyExtractor,
-                                            ConsistencyMode.EVENTUAL,
-                                            Option.none(),
-                                            0,
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none());
+        return streamPublisher(partitionManager,
+                               serializer,
+                               streamName,
+                               partitionCount,
+                               partitionKeyExtractor,
+                               ConsistencyMode.EVENTUAL,
+                               Option.none());
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
@@ -102,20 +77,24 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                 Option<Function<T, Object>> partitionKeyExtractor,
                                                                 ConsistencyMode consistencyMode,
                                                                 Option<ConsensusPublishPath> consensusPath) {
-        return new DefaultStreamPublisher<>(partitionManager,
-                                            serializer,
-                                            streamName,
-                                            partitionCount,
-                                            partitionKeyExtractor,
-                                            consistencyMode,
-                                            consensusPath,
-                                            0,
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none());
+        return streamPublisher(partitionManager,
+                               serializer,
+                               streamName,
+                               partitionCount,
+                               partitionKeyExtractor,
+                               consistencyMode,
+                               consensusPath,
+                               Option.none(),
+                               Option.none(),
+                               Option.none(),
+                               Option.none());
     }
 
+    /// Full overload. The EVENTUAL write is delegated whole to {@link StreamWriteRouter} (#1263), built here
+    /// from the forward client, the owner rule ({@link StreamWriteRouter#hrwOwner} over the partition-aware
+    /// HRW resolver with the arg-less leader resolver as fallback) and the self identity. The min-sync
+    /// barrier is no longer a constructor argument: the router reads the stream's committed
+    /// `min-sync-replicas` live on every publish.
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
                                                                 Serializer serializer,
                                                                 String streamName,
@@ -123,45 +102,24 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                 Option<Function<T, Object>> partitionKeyExtractor,
                                                                 ConsistencyMode consistencyMode,
                                                                 Option<ConsensusPublishPath> consensusPath,
-                                                                int minSyncReplicas) {
-        return new DefaultStreamPublisher<>(partitionManager,
-                                            serializer,
-                                            streamName,
-                                            partitionCount,
-                                            partitionKeyExtractor,
-                                            consistencyMode,
-                                            consensusPath,
-                                            minSyncReplicas,
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none());
-    }
-
-    public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
-                                                                Serializer serializer,
-                                                                String streamName,
-                                                                int partitionCount,
-                                                                Option<Function<T, Object>> partitionKeyExtractor,
-                                                                ConsistencyMode consistencyMode,
-                                                                Option<ConsensusPublishPath> consensusPath,
-                                                                int minSyncReplicas,
                                                                 Option<StreamForwardClient> forwardClient,
                                                                 Option<Fn0<Option<NodeId>>> governorResolver,
                                                                 Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
                                                                 Option<NodeId> selfNodeId) {
-        return new DefaultStreamPublisher<>(partitionManager,
-                                            serializer,
+        var writeRouter = StreamWriteRouter.streamWriteRouter(partitionManager,
+                                                              forwardClient,
+                                                              selfNodeId,
+                                                              (_, partition) -> StreamWriteRouter.hrwOwner(partitionOwnerResolver,
+                                                                                                           governorResolver,
+                                                                                                           partition));
+
+        return new DefaultStreamPublisher<>(serializer,
                                             streamName,
                                             partitionCount,
                                             partitionKeyExtractor,
                                             consistencyMode,
                                             consensusPath,
-                                            minSyncReplicas,
-                                            forwardClient,
-                                            governorResolver,
-                                            partitionOwnerResolver,
-                                            selfNodeId);
+                                            writeRouter);
     }
 
     @Override
@@ -171,182 +129,137 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         var timestamp = System.currentTimeMillis();
 
         return switch (consistencyMode) {
-            case EVENTUAL -> publishEventual(partition, bytes, timestamp);
+            // #964 / #1262: UNKNOWN is NOT decided here. It takes the shared write path, whose single
+            // consistency guard (StreamPartitionManager#ensureWritableConsistency, reading the stream's
+            // committed config) refuses it with UNREADABLE_CONSISTENCY_MODE for every entry point alike.
+            case EVENTUAL, UNKNOWN -> publishEventual(partition, bytes, timestamp).mapToUnit();
             case STRONG -> publishStrong(partition, bytes, timestamp);
-            // #964, fail closed: EVENTUAL and STRONG differ in what the caller is promised on
-            // acknowledgement, so guessing either one is a durability claim this node cannot back.
-            // Refusing hands the choice back to the caller with a diagnosable cause.
-            case UNKNOWN -> UNREADABLE_CONSISTENCY_MODE.promise();
         };
     }
 
+    /// One [PublishOutcome] per event, in input order (#1342). The promise never fails on per-event grounds: a
+    /// refused or timed-out event is [PublishOutcome.OutcomeUnknown] (#1236: it may already be in the log), an
+    /// event that never reached the write path is [PublishOutcome.NotAttempted], and the offsets that DID land
+    /// are reported, so a caller can retry without duplicating them (#1237).
     @Override
-    public Promise<Unit> publishBatch(List<T> events) {
+    public Promise<List<PublishOutcome>> publishBatch(List<T> events) {
         if (events.isEmpty()) {
-            return Promise.unitPromise();
+            return Promise.success(List.of());
         }
 
         if (consistencyMode == ConsistencyMode.STRONG) {
             return publishBatchStrong(events);
         }
-        // #964: the batch path tested only for STRONG, so an UNKNOWN mode would have taken the
-        // EVENTUAL branch by default -- the same fail-open the single-event switch above refuses.
-        if (consistencyMode == ConsistencyMode.UNKNOWN) {
-            return UNREADABLE_CONSISTENCY_MODE.promise();
-        }
-
+        // #964: an UNKNOWN mode takes the EVENTUAL batch path, where every event reaches the shared write
+        // router and is refused there — the same single guard the single-event path relies on. Each refusal
+        // is that event's outcome instead of being acknowledged as success.
         return publishBatchEventual(events);
     }
 
-    private Promise<Unit> publishBatchStrong(List<T> events) {
-        return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
+    /// #1262 B3 / #1342: with no consensus path every event is [PublishOutcome.NotAttempted] with the same typed
+    /// cause a single publish gets, nothing written. With one, every event is proposed and its own result is
+    /// its outcome — the earlier `Promise.allOf(...).mapToUnit()` had acknowledged a batch of refusals as success.
+    private Promise<List<PublishOutcome>> publishBatchStrong(List<T> events) {
+        return consensusPath.map(path -> proposeAll(path, events))
+                            .or(() -> Promise.success(notAttempted(events.size(),
+                                                                   StreamError.General.CONSENSUS_PATH_UNAVAILABLE)));
+    }
+
+    private Promise<List<PublishOutcome>> proposeAll(ConsensusPublishPath path, List<T> events) {
+        var now = System.currentTimeMillis();
+
+        return Promise.allOf(events.stream()
+                                   .map(event -> path.publish(streamName,
+                                                              resolvePartition(event),
+                                                              serializer.encode(event),
+                                                              now))
+                                   .toList()).map(results -> results.stream()
+                                                                    .map(PublishOutcome::attempted)
+                                                                    .toList());
+    }
+
+    private static List<PublishOutcome> notAttempted(int count, Cause cause) {
+        return Collections.nCopies(count, (PublishOutcome) new PublishOutcome.NotAttempted(cause));
     }
 
     /// #266: an EVENTUAL batch is grouped by each event's COMPUTED partition (not routed wholesale to
-    /// the first event's partition), and each group is routed like a single {@link #publish} — local owner
-    /// publish + replicate + min-sync await, or write-forward to the remote owner. This preserves
-    /// key→partition affinity and gives the batch the same replication semantics as single publish
-    /// (composes with #262). A local group is ONE storage batch (#1245, see {@link #publishGroupInOrder}).
-    private Promise<Unit> publishBatchEventual(List<T> events) {
+    /// the first event's partition) and each group uses the SAME owner authority and min-sync guards as single
+    /// {@link #publish} — local owner publish + replicate + min-sync await, or write-forward to the
+    /// remote owner. This preserves key→partition affinity and gives the batch identical replication
+    /// semantics to single publish (composes with #262), instead of the prior whole-batch misroute that
+    /// also bypassed replication and failed `PARTITION_NOT_LOCAL` for any non-local partition. Groups run
+    /// concurrently, so the batch is not atomic: one group's failure leaves the others' events in the log
+    /// (#1342) — each event's outcome is placed back at its input index rather than folded into one result.
+    private Promise<List<PublishOutcome>> publishBatchEventual(List<T> events) {
         var now = System.currentTimeMillis();
         var byPartition = groupByPartition(events);
+        var groupRuns = byPartition.entrySet()
+                                   .stream()
+                                   .map(group -> publishGroupInOrder(group.getKey(),
+                                                                     group.getValue(),
+                                                                     events,
+                                                                     now))
+                                   .toList();
 
-        return Promise.allOf(byPartition.entrySet()
-                                        .stream()
-                                        .map(group -> publishGroupInOrder(group.getKey(),
-                                                                          group.getValue(),
-                                                                          now))
-                                        .toList()).mapToUnit();
+        return Promise.allOf(groupRuns).map(groupOutcomes -> placeByIndex(byPartition, groupOutcomes, events.size()));
     }
 
-    /// Group events by computed partition, preserving encounter order within each partition group so
+    /// Group event INDICES by computed partition, preserving encounter order within each partition group so
     /// per-key ordering is maintained. A `LinkedHashMap` keeps group iteration deterministic.
-    private Map<Integer, List<T>> groupByPartition(List<T> events) {
-        var groups = new LinkedHashMap<Integer, List<T>>();
+    private Map<Integer, List<Integer>> groupByPartition(List<T> events) {
+        var groups = new LinkedHashMap<Integer, List<Integer>>();
 
-        events.forEach(event -> groups.computeIfAbsent(resolvePartition(event),
-                                                       _ -> new ArrayList<>())
-                                      .add(event));
+        for (var index = 0; index < events.size(); index++) {
+            groups.computeIfAbsent(resolvePartition(events.get(index)), _ -> new ArrayList<>()).add(index);
+        }
 
         return groups;
     }
 
-    /// Publish one partition's group, in order, to the partition it was GROUPED under (#1245): the
-    /// partition is never re-resolved, because a keyless re-resolution advances the round-robin counter
-    /// again and scatters the group. A local ring takes the whole group as ONE storage batch — one ordered
-    /// section, one WAL group commit, one replication message and one replication await on its last
-    /// offset — so per-partition order holds by construction. A remote owner still receives the events one
-    /// by one, each awaiting the previous (no batch forward exists). Different partition groups run
-    /// concurrently (the caller's `allOf`).
-    private Promise<Unit> publishGroupInOrder(int partition, List<T> group, long timestamp) {
-        var payloads = group.stream().map(serializer::encode).toList();
+    /// Local owners append a partition group as one storage run. Remote owners and runs
+    /// that cannot be batched use the shared ordered single-event route. Outcomes retain input order.
+    private Promise<List<PublishOutcome>> publishGroupInOrder(int partition,
+                                                              List<Integer> indices,
+                                                              List<T> events,
+                                                              long timestamp) {
+        var payloads = indices.stream().map(index -> serializer.encode(events.get(index))).toList();
 
-        return partitionManager.partitionBuffer(streamName, partition)
-                               .isPresent()
-               ? publishLocalBatch(partition, payloads, timestamp)
-               : publishRemoteInOrder(partition, payloads, timestamp);
+        return writeRouter.publishBatch(streamName, partition, payloads, timestamp);
     }
 
-    private Promise<Unit> publishLocalBatch(int partition, List<byte[]> payloads, long timestamp) {
-        if (minSyncReplicas <= 1) {
-            return partitionManager.publishLocalBatch(streamName, partition, payloads, timestamp)
-                                   .mapToUnit()
-                                   .async();
+    /// Put each group's outcomes back at the input indices of its events. Every index belongs to exactly one
+    /// group and a group run resolves with exactly one outcome per event, so every slot is filled; a group run
+    /// that failed as a whole (it cannot, by construction) would leave its events outcome-unknown, never silent.
+    private static List<PublishOutcome> placeByIndex(Map<Integer, List<Integer>> byPartition,
+                                                     List<Result<List<PublishOutcome>>> groupOutcomes,
+                                                     int size) {
+        var slots = new PublishOutcome[size];
+        var groupIndex = 0;
+
+        for (var indices : byPartition.values()) {
+            var outcomes = groupOutcomes.get(groupIndex++)
+                                        .fold(cause -> notAttemptedAsUnknown(indices.size(),
+                                                                             cause),
+                                              resolved -> resolved);
+
+            for (var i = 0; i < indices.size(); i++) {
+                slots[indices.get(i)] = outcomes.get(i);
+            }
         }
 
-        return partitionManager.publishLocalBatch(streamName, partition, payloads, timestamp)
-                               .async()
-                               .flatMap(lastOffset -> partitionManager.awaitReplication(streamName,
-                                                                                        partition,
-                                                                                        lastOffset,
-                                                                                        minSyncReplicas - 1));
+        return List.of(slots);
     }
 
-    private Promise<Unit> publishRemoteInOrder(int partition, List<byte[]> payloads, long timestamp) {
-        var chain = Promise.<Unit> unitPromise();
-
-        for (var bytes : payloads) {
-            chain = chain.flatMap(_ -> publishRemote(partition, bytes, timestamp));
-        }
-
-        return chain;
+    private static List<PublishOutcome> notAttemptedAsUnknown(int count, Cause cause) {
+        return Collections.nCopies(count, (PublishOutcome) new PublishOutcome.OutcomeUnknown(cause));
     }
 
-    private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
-        if (partitionManager.partitionBuffer(streamName, partition).isPresent()) {
-            return publishLocalEventual(partition, bytes, timestamp);
-        }
-
-        return publishRemote(partition, bytes, timestamp);
-    }
-
-    private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 1) {
-            return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                                   .mapToUnit()
-                                   .async();
-        }
-        // #1236: the floor is checked BEFORE the append, so NOT_ENOUGH_REPLICAS means "not in the log";
-        // once appended, a barrier that does not confirm is an unknown outcome, never a failure.
-        return partitionManager.ensureReplicaFloor(streamName, partition, minSyncReplicas - 1)
-                               .flatMap(_ -> partitionManager.publishLocal(streamName, partition, bytes, timestamp))
-                               .async()
-                               .flatMap(offset -> partitionManager.awaitReplication(streamName,
-                                                                                    partition,
-                                                                                    offset,
-                                                                                    minSyncReplicas - 1)
-                                                                  .mapError(PublishOutcomeUnknown.FACTORY));
-    }
-
-    /// Non-materialized publish: route to the partition's HRW owner instead of the STREAMING leader. The
-    /// owner is resolved via the partition-aware HRW resolver (the SAME `ReplicaSetController` placement
-    /// that owns the replica set), falling back to the arg-less leader resolver only when no HRW resolver
-    /// is wired (legacy / minimal runtimes). A resolved owner that is THIS node — or the absence of an
-    /// owner or forward client — falls back to a local append rather than a send-to-self (which QUIC
-    /// silently drops, hanging the forward). Mirrors {@link StreamWriteRouter}'s `forwardToOwner` and
-    /// {@link PartitionedStreamAccess}'s owner-routed publish.
-    private Promise<Unit> publishRemote(int partition, byte[] bytes, long timestamp) {
-        return resolveOwner(partition).filter(this::isRemote)
-                           .flatMap(owner -> forwardClient.map(client -> forwardToOwner(client,
-                                                                                        owner,
-                                                                                        partition,
-                                                                                        bytes,
-                                                                                        timestamp)))
-                           .or(() -> publishLocalEventual(partition, bytes, timestamp));
-    }
-
-    /// #467: prefer the partition-aware HRW owner-resolver (the placement authority that owns the replica
-    /// set); fall back to the arg-less leader resolver only when no HRW resolver is wired.
-    private Option<NodeId> resolveOwner(int partition) {
-        return partitionOwnerResolver.flatMap(resolver -> resolver.apply(partition))
-                                     .orElse(() -> governorResolver.flatMap(Fn0::apply));
-    }
-
-    /// A resolved owner is forwardable only when it is known to differ from this node; a self-owner (or an
-    /// unknown self) never forwards, so the send-to-self QUIC drop cannot occur.
-    private boolean isRemote(NodeId owner) {
-        return ! selfNodeId.map(owner::equals)
-                           .or(true);
-    }
-
-    /// Forward the publish to the partition's HRW owner with the shared BOUNDED forward-retry (#485): the
-    /// app publish path previously forwarded exactly once, so a transient owner-config-lag race — the
-    /// owner's committed-config view not yet caught up to the config this sender just committed and
-    /// forwarded — surfaced to the app as a permanent failure. The forge warm-up gate hides this in-JVM,
-    /// but real deployments must absorb it the same way the management/API write path does; the retry
-    /// policy lives once in {@link StreamForwardRetry} (parity with {@link StreamWriteRouter} and
-    /// {@link PartitionedStreamAccess}). Only the owner's explicit retryable signal
-    /// ({@link StreamForwardError.RemotePublishRetryable}) is retried; every other failure stays permanent.
-    private Promise<Unit> forwardToOwner(StreamForwardClient client,
-                                         NodeId owner,
-                                         int partition,
-                                         byte[] bytes,
-                                         long timestamp) {
-        return StreamForwardRetry.withBoundedRetry(() -> client.publishRemote(owner,
-                                                                              streamName,
-                                                                              partition,
-                                                                              bytes,
-                                                                              timestamp)).mapToUnit();
+    /// EVENTUAL write: delegated whole to the ONE write operation, {@link StreamWriteRouter} (#1263) — owner
+    /// routing by authority rather than ring presence (#1230), the committed-owner redirect, the bounded
+    /// forward retry (#485) and the min-sync barrier read live. STRONG takes the explicit consensus
+    /// alternative in {@link #publishStrong}, never this path.
+    private Promise<Long> publishEventual(int partition, byte[] bytes, long timestamp) {
+        return writeRouter.publish(streamName, partition, bytes, timestamp);
     }
 
     private Promise<Unit> publishStrong(int partition, byte[] bytes, long timestamp) {

@@ -5,21 +5,33 @@
 package org.pragmatica.aether.stream;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.Supplier;
 import java.util.stream.LongStream;
 
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -381,6 +393,607 @@ class StreamConsumerRuntimeTest {
                 flakyRuntime.close();
             }
         }
+
+        /// rev1285d F1: when RETRY exhaustion dead-letters the head event from the retry path
+        /// ([ConsumerRuntimeState#handleRetryFailureAgain]), the retry hold must already be released when
+        /// the sink is asked to append. A sink that resolves inline — the in-memory one does — runs the
+        /// resume (`completeDeadLetter` -> `requestDrain`) INSIDE the append call; released after it, the
+        /// re-drive found the loop still held, read nothing, and the backlog already in the ring sat
+        /// undelivered until the next append while the snapshot read idle (the reviewer measured 3/24
+        /// stranded at head, 20/20 with the window widened by 50ms).
+        ///
+        /// The deterministic arm is the hold recorded AT APPEND TIME through the runtime's package-private
+        /// seam: it is true on every run of the wrong ordering and false on every run of the right one. The
+        /// delivery arm (offset 1 arrives after the dead-letter) is the user-visible property and is only a
+        /// tripwire on the wrong ordering, because the strand needs the scheduler hop to lose the race.
+        @Test
+        void retryExhaustion_releasesTheRetryHold_beforeTheDeadLetterAppend_soAnInlineCompletionResumesTheLoop() throws Exception {
+            createTestStream("orders");
+            var sink = new HoldRecordingDeadLetterSink();
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, sink);
+
+            sink.observe(() -> observedRuntime.isRetryInFlight("orders", 0, "group-dlq"));
+
+            try {
+                var delivered = new CopyOnWriteArrayList<Long>();
+                // maxRetries 2: the first failure schedules ONE retry, whose failure exhausts the budget
+                // on the retry path — the path under test, not handleRetry's in-pass exhaustion.
+                var config = ConsumerConfig.consumerConfig("group-dlq",
+                                                           1,
+                                                           ProcessingMode.ORDERED,
+                                                           ErrorStrategy.RETRY,
+                                                           1000L,
+                                                           2,
+                                                           "");
+
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          config,
+                                          (offset, payload, ts) -> {
+                                              if (offset == 0L) {
+                                              return StreamError.General.BUFFER_EMPTY.promise();
+                                          }
+
+                                              delivered.add(offset);
+
+                                              return Promise.unitPromise();
+                                          });
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                // In the ring BEFORE the dead-letter lands, so nothing appends after it to re-drive the loop.
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+                assertThat(sink.appended.await(10, TimeUnit.SECONDS)).describedAs("control: the head event reached the dead-letter sink")
+                          .isTrue();
+                assertThat(sink.retryHeldAtAppend.get()).describedAs("the retry hold is released BEFORE the append is issued, so an inline completion finds only the dead-letter hold")
+                          .isFalse();
+                awaitOffset(delivered, 1L, 2_000);
+                assertThat(delivered).describedAs("the backlog already in the ring is delivered after the dead-letter, with no further append")
+                                     .containsExactly(1L);
+                assertThat(observedRuntime.deadLetterHandler().read("orders", 10)).singleElement()
+                          .extracting(DeadLetterEntry::offset)
+                          .isEqualTo(0L);
+                assertThat(observedRuntime.cursorPosition("orders", 0, "group-dlq").or(-1L)).isEqualTo(2L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        private static void awaitOffset(List<Long> delivered, long offset, long timeoutMs) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMs;
+
+            while (!delivered.contains(offset) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+    }
+
+    /// The in-memory sink (inline resolution, the shape that exposes the rev1285d F1 window) plus a record
+    /// of the runtime's retry hold as it stood when `append` was called.
+    static final class HoldRecordingDeadLetterSink implements DeadLetterHandler {
+        final CountDownLatch appended = new CountDownLatch(1);
+        final AtomicBoolean retryHeldAtAppend = new AtomicBoolean(true);
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+        private volatile java.util.function.BooleanSupplier retryHeld = () -> true;
+
+        void observe(java.util.function.BooleanSupplier retryHeld) {
+            this.retryHeld = retryHeld;
+        }
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    String failingGroup,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            retryHeldAtAppend.set(retryHeld.getAsBoolean());
+            appended.countDown();
+
+            return delegate.append(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
+        }
+    }
+
+    /// Review rev1272 F1/F2 on #1285: ONE serial loop per (group, partition) means a single escape that
+    /// leaves `drainRunning` set stops that partition's consumer permanently, where the old per-append
+    /// cycles simply tried again on the next append. Every foreign call inside a pass (handler, reader,
+    /// cursor store) must surface as a failure on the normal path, and the pass must always release the
+    /// loop. The probes are the reviewer's, reproduced.
+    @Nested
+    class PassBoundary {
+        private final List<Long> delivered = new CopyOnWriteArrayList<>();
+
+        @Test
+        void handlerSyncThrow_isADeliveryFailure_andDoesNotWedgeTheLoop() throws Exception {
+            createTestStream("orders");
+            var thrown = new AtomicBoolean(false);
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-h", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> throwOnce(thrown, offset));
+            manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+            manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+            awaitSize(3);
+            assertThat(thrown.get()).describedAs("control: the handler really threw").isTrue();
+            assertThat(delivered).describedAs("a handler that throws is retried like one that fails, and the loop moves on")
+                                 .containsExactly(0L, 1L, 2L);
+        }
+
+        /// A throwing handler goes through the ERROR STRATEGY, not the read-failure path: with SKIP it is
+        /// dead-lettered and the loop moves on. Treated as a failed read instead, the same offset would be
+        /// re-read forever and never dead-lettered.
+        @Test
+        void handlerThatAlwaysThrows_isDeadLettered_likeAFailingHandler() throws Exception {
+            createTestStream("orders");
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-a", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                              (offset, payload, ts) -> alwaysThrowOnZero(offset));
+            manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+            awaitSize(1);
+            assertThat(delivered).describedAs("the event behind the throwing one is delivered").containsExactly(1L);
+            assertThat(runtime.deadLetterHandler().read("orders", 10)).describedAs("the throwing event is dead-lettered once")
+                                                                      .hasSize(1);
+        }
+
+        @Test
+        void readerSyncThrow_releasesTheLoop_andLaterAppendsAreDelivered() throws Exception {
+            createTestStream("orders");
+            var reads = new AtomicInteger();
+            var throwingReader = new ConsumerRuntimeState(manager,
+                                                          DeadLetterHandler.deadLetterHandler(),
+                                                          none(),
+                                                          none(),
+                                                          (stream, partition, from, max) -> throwOnFirstRead(reads, stream, partition, from, max));
+
+            try {
+                throwingReader.subscribe("orders", 0, ConsumerConfig.consumerConfig("group-r"), (offset, payload, ts) -> record(offset));
+                awaitReads(reads, 1);
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                awaitSize(2);
+                assertThat(delivered).describedAs("the loop is released after the reader threw").containsExactly(0L, 1L);
+            } finally {
+                throwingReader.close();
+            }
+        }
+
+        /// F2: in push mode nothing but an append re-drives the loop, so a subscribe kick whose read FAILS
+        /// (a failed promise, not a throw) would strand the backlog until the next append.
+        @Test
+        void subscribeKick_retriesAFailedRead_soTheBacklogIsNotStranded() throws Exception {
+            createTestStream("orders");
+            var reads = new AtomicInteger();
+            var failingReader = new ConsumerRuntimeState(manager,
+                                                         DeadLetterHandler.deadLetterHandler(),
+                                                         none(),
+                                                         none(),
+                                                         (stream, partition, from, max) -> failFirstRead(reads, stream, partition, from, max));
+
+            try {
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                failingReader.subscribe("orders", 0, ConsumerConfig.consumerConfig("group-f"), (offset, payload, ts) -> record(offset));
+                awaitSize(2);
+                assertThat(reads.get()).describedAs("control: the kick's read ran and failed").isGreaterThanOrEqualTo(1);
+                assertThat(delivered).describedAs("the backlog is delivered with no further append").containsExactly(0L, 1L);
+            } finally {
+                failingReader.close();
+            }
+        }
+
+        /// A throw inside an ASYNCHRONOUS continuation of the pass — here the cursor store, reached through
+        /// the checkpoint after a handler that completes on another thread — escapes on that thread, and
+        /// Promise continuations do not catch, so the pass would never settle. The store call is lifted.
+        @Test
+        void cursorStoreSyncThrow_isACommitFailure_andDeliveryContinues() throws Exception {
+            createTestStream("orders");
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    throw new IllegalStateException("store blew up synchronously");
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-s", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 1L, 3, ""),
+                                          (offset, payload, ts) -> recordLater(offset));
+                Thread.sleep(20);
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+                awaitSize(3);
+                assertThat(delivered).describedAs("a throwing cursor store never stops delivery").containsExactly(0L, 1L, 2L);
+                assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("the throw is counted as a commit failure")
+                                                                      .isGreaterThanOrEqualTo(1L);
+                assertThat(org.pragmatica.lang.Result.lift(observedRuntime::close).isSuccess())
+                          .describedAs("the final flush on close meets the same throwing store and must not throw either")
+                          .isTrue();
+            } finally {
+                org.pragmatica.lang.Result.lift(observedRuntime::close);
+            }
+        }
+
+        /// K1 pin: each further pass is a fresh scheduler task. Inline, `onResult` on an already-resolved
+        /// promise recurses once per 100-event batch on ONE stack, and a deep backlog overflows it. Stack
+        /// depth itself needs a backlog larger than a test ring holds, so the pin is its observable
+        /// signature: the second batch is delivered on a different thread from the first.
+        @Test
+        void furtherPasses_runOnAFreshSchedulerTask_notInlineOnThePreviousPass() throws Exception {
+            createTestStream("orders");
+            var threads = new ConcurrentHashMap<Long, Thread>();
+            var latch = new CountDownLatch(150);
+
+            for (int i = 0; i < 150; i++) {
+                manager.publishLocal("orders", 0, ("e" + i).getBytes(UTF_8), 1000L + i);
+            }
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-k"),
+                              (offset, payload, ts) -> recordThread(threads, latch, offset));
+            assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(threads.get(100L)).describedAs("batch two (offset 100) runs on a fresh task, not inline on batch one's stack")
+                                         .isNotSameAs(threads.get(0L));
+        }
+
+        private Promise<Unit> throwOnce(AtomicBoolean thrown, long offset) {
+            if (offset == 0L && thrown.compareAndSet(false, true)) {
+                throw new IllegalStateException("handler blew up synchronously");
+            }
+
+            return record(offset);
+        }
+
+        private Promise<Unit> alwaysThrowOnZero(long offset) {
+            if (offset == 0L) {
+                throw new IllegalStateException("handler always throws on offset 0");
+            }
+
+            return record(offset);
+        }
+
+        private Promise<Unit> record(long offset) {
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private Promise<Unit> recordLater(long offset) {
+            Promise<Unit> outcome = Promise.promise();
+
+            delivered.add(offset);
+            CompletableFuture.delayedExecutor(5, TimeUnit.MILLISECONDS)
+                             .execute(() -> outcome.succeed(Unit.unit()));
+
+            return outcome;
+        }
+
+        private static Promise<Unit> recordThread(Map<Long, Thread> threads, CountDownLatch latch, long offset) {
+            threads.put(offset, Thread.currentThread());
+            latch.countDown();
+
+            return Promise.unitPromise();
+        }
+
+        private Promise<List<OffHeapRingBuffer.RawEvent>> throwOnFirstRead(AtomicInteger reads, String stream, int partition, long from, int max) {
+            if (reads.incrementAndGet() == 1) {
+                throw new IllegalStateException("reader blew up synchronously");
+            }
+
+            return manager.readLocal(stream, partition, from, max).async();
+        }
+
+        private Promise<List<OffHeapRingBuffer.RawEvent>> failFirstRead(AtomicInteger reads, String stream, int partition, long from, int max) {
+            if (reads.incrementAndGet() == 1) {
+                return StreamError.General.PARTITION_NOT_LOCAL.promise();
+            }
+
+            return manager.readLocal(stream, partition, from, max).async();
+        }
+
+        private void awaitSize(int size) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (delivered.size() < size && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+
+        private static void awaitReads(AtomicInteger reads, int count) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 2_000;
+
+            while (reads.get() < count && System.currentTimeMillis() < deadline) {
+                Thread.sleep(5);
+            }
+        }
+    }
+
+    /// #1266: a dead-letter append that throws synchronously or never settles must not hold a partition.
+    /// A throw escaping before any callback is attached leaves the dead-letter hold set forever: silent,
+    /// permanent, and indistinguishable from an idle partition. (The handler-throw case lives in
+    /// [PassBoundary], fixed with #1238's review round.)
+    @Nested
+    class SynchronousThrows {
+        @Test
+        void deadLetterHandlerSyncThrow_doesNotWedge() throws Exception {
+            createTestStream("orders");
+            var sink = new ThrowingOnceDeadLetterSink();
+            var throwingRuntime = streamConsumerRuntime(manager, sink);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                throwingRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-t", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                          (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+                awaitContains(delivered, 1L);
+                assertThat(sink.thrown.get()).describedAs("control: the sink really threw once").isEqualTo(1);
+                assertThat(delivered).describedAs("the next event is delivered past a sink that threw synchronously")
+                                     .contains(1L);
+                assertThat(throwingRuntime.deadLetterHandler().read("orders", 10)).describedAs("the poison event is still dead-lettered once the sink recovers")
+                                                                                  .hasSize(1);
+            } finally {
+                throwingRuntime.close();
+            }
+        }
+
+        /// rev1272 F5, the reviewer's probe verbatim: the dead-letter sink throws synchronously once, SKIP
+        /// strategy, offset 0 is poison, then e1 and e2. On #1285 alone (sink call not lifted) the result
+        /// was `delivered=[] cursor=Some(0)` — `deadLetterInFlight` stuck true. The sink call is lifted, so
+        /// the throw takes the retry-with-backoff path and the partition moves on.
+        @Test
+        void reviewProbe_deadLetterSinkSyncThrowOnce_doesNotHoldTheLoopForever() throws Exception {
+            createTestStream("orders");
+            var sink = new ThrowingOnceDeadLetterSink();
+            var probeRuntime = streamConsumerRuntime(manager, sink);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                probeRuntime.subscribe("orders",
+                                       0,
+                                       ConsumerConfig.consumerConfig("group-f5", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                       (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+                awaitContains(delivered, 2L);
+                assertThat(sink.thrown.get()).describedAs("control: the sink really threw").isEqualTo(1);
+                assertThat(delivered).containsExactly(1L, 2L);
+                assertThat(probeRuntime.cursorPosition("orders", 0, "group-f5").or(-1L)).isEqualTo(3L);
+            } finally {
+                probeRuntime.close();
+            }
+        }
+
+        /// #1266 review (attack5): a handler that returns `null` instead of a promise once is a failed
+        /// delivery — retried — and the loop moves on.
+        @Test
+        void handlerReturningNull_isADeliveryFailure_andDoesNotWedgeTheLoop() throws Exception {
+            createTestStream("orders");
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var returnedNull = new AtomicBoolean(false);
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-null", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> nullOnceOnZero(returnedNull, delivered, offset));
+            manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+            manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+            awaitContains(delivered, 2L);
+            assertThat(returnedNull.get()).describedAs("control: the handler really returned null").isTrue();
+            assertThat(delivered).containsExactly(0L, 1L, 2L);
+        }
+
+        /// The discriminating half: a handler that ALWAYS returns `null` goes through the error strategy
+        /// (SKIP dead-letters it), not the read-failure path that would re-read the same offset forever.
+        @Test
+        void handlerAlwaysReturningNull_isDeadLettered() throws Exception {
+            createTestStream("orders");
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-null2", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                              (offset, payload, ts) -> nullOnZero(delivered, offset));
+            manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+            awaitContains(delivered, 1L);
+            assertThat(delivered).containsExactly(1L);
+            assertThat(runtime.deadLetterHandler().read("orders", 10)).hasSize(1);
+        }
+
+        /// #1266 review F2: every outcome ends with the holds clear — cancellation included.
+        @Test
+        void cancel_releasesBothDeliveryHolds() {
+            var state = ConsumerRuntimeState.ConsumerState.consumerState(ConsumerConfig.consumerConfig("group-c"),
+                                                                          (offset, payload, ts) -> Promise.unitPromise(),
+                                                                          0L,
+                                                                          StreamConsumerRuntime.IdlePolicy.REAP_WHEN_IDLE);
+
+            state.markRetryInFlight();
+            state.markDeadLetterInFlight();
+            state.cancel();
+            assertThat(state.isRetryInFlight()).isFalse();
+            assertThat(state.isDeadLetterInFlight()).isFalse();
+        }
+
+        /// #1266: an append that never settles is bounded (shortened here through the constructor seam;
+        /// production uses [ConsumerRuntimeState#DEAD_LETTER_APPEND_TIMEOUT]) and takes the retry path —
+        /// and while it is outstanding the hold is VISIBLE on the snapshot, never an idle-looking partition.
+        @Test
+        void deadLetterAppendNeverSettles_doesNotHoldForever_andTheHoldIsVisible() throws Exception {
+            createTestStream("orders");
+            var sink = new NeverSettlingOnceDeadLetterSink();
+            var boundedRuntime = new ConsumerRuntimeState(manager,
+                                                          sink,
+                                                          none(),
+                                                          none(),
+                                                          StreamConsumerRuntime.localPartitionReader(manager),
+                                                          org.pragmatica.lang.io.TimeSpan.timeSpan(300).millis());
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                boundedRuntime.subscribe("orders",
+                                         0,
+                                         ConsumerConfig.consumerConfig("group-n", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                         (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+                Thread.sleep(100);
+                assertThat(boundedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> assertThat(snapshot.deadLetterInFlight())
+                                                          .describedAs("the outstanding dead-letter append is visible as a hold")
+                                                          .isTrue());
+                awaitContains(delivered, 1L);
+                assertThat(sink.calls.get()).describedAs("control: the first append never settled, a retry followed")
+                                            .isGreaterThanOrEqualTo(2);
+                assertThat(delivered).describedAs("the timeout released the loop and the next event was delivered")
+                                     .contains(1L);
+                assertThat(boundedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> assertThat(snapshot.deadLetterInFlight()).isFalse());
+            } finally {
+                boundedRuntime.close();
+            }
+        }
+
+        /// #1266: a scheduled retry of the head event is a hold too, and is visible the same way.
+        @Test
+        void retryBackoff_isVisibleAsAHold() throws Exception {
+            createTestStream("orders");
+            var attempts = new AtomicInteger();
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-r", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> attempts.incrementAndGet() == 1
+                                                       ? StreamError.General.BUFFER_EMPTY.promise()
+                                                       : Promise.unitPromise());
+            manager.publishLocal("orders", 0, "flaky".getBytes(UTF_8), 1000L);
+            Thread.sleep(30);
+            assertThat(runtime.subscriptions()).singleElement()
+                      .satisfies(snapshot -> assertThat(snapshot.retryInFlight())
+                                                      .describedAs("inside the retry backoff (>= 100ms base, jittered) the hold is visible")
+                                                      .isTrue());
+
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (runtime.cursorPosition("orders", 0, "group-r").or(-1L) < 1L && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertThat(runtime.subscriptions()).singleElement()
+                      .satisfies(snapshot -> assertThat(snapshot.retryInFlight()).describedAs("released once the retry succeeded")
+                                                                                 .isFalse());
+        }
+
+        private Promise<Unit> failFirst(List<Long> delivered, long offset) {
+            if (offset == 0L) {
+                return StreamError.General.BUFFER_EMPTY.promise();
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        @SuppressWarnings("JBCT-NULL-01")
+        private static Promise<Unit> nullOnceOnZero(AtomicBoolean returnedNull, List<Long> delivered, long offset) {
+            if (offset == 0L && returnedNull.compareAndSet(false, true)) {
+                return null;
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        @SuppressWarnings("JBCT-NULL-01")
+        private static Promise<Unit> nullOnZero(List<Long> delivered, long offset) {
+            if (offset == 0L) {
+                return null;
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private void awaitContains(List<Long> delivered, long offset) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 5_000;
+
+            while (!delivered.contains(offset) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+    }
+
+    /// Returns a promise that never settles from the FIRST `append`, then delegates.
+    static final class NeverSettlingOnceDeadLetterSink implements DeadLetterHandler {
+        final AtomicInteger calls = new AtomicInteger();
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    String failingGroup,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            if (calls.getAndIncrement() == 0) {
+                return Promise.promise();
+            }
+
+            return delegate.append(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
+        }
+    }
+
+    /// Throws synchronously from `append` exactly once, then delegates to the in-memory default.
+    static final class ThrowingOnceDeadLetterSink implements DeadLetterHandler {
+        final AtomicInteger thrown = new AtomicInteger();
+        private final AtomicBoolean armed = new AtomicBoolean(true);
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    String failingGroup,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            if (armed.compareAndSet(true, false)) {
+                thrown.incrementAndGet();
+                throw new IllegalStateException("sink blew up synchronously");
+            }
+
+            return delegate.append(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
+        }
     }
 
     /// Sink that refuses appends until [#recover] is called, then delegates to the in-memory
@@ -454,6 +1067,303 @@ class StreamConsumerRuntimeTest {
         }
     }
 
+    /// #1271: a subscription admitted under a committed consumer assignment. Delivery pauses while the
+    /// fence reads not-admitted (re-checked every pass), a `Fenced` commit outcome is terminal (no retry,
+    /// delivery stops for good), and a fenced or abandoned consumer detaches without a final flush.
+    @Nested
+    class AssignmentFence {
+        private static final Epoch EPOCH = Epoch.epoch(1L, 1L);
+
+        private record SwitchableFence(AtomicBoolean admittedNow) implements ConsumerFence {
+            @Override
+            public Epoch epoch() {
+                return EPOCH;
+            }
+
+            @Override
+            public boolean admitted() {
+                return admittedNow.get();
+            }
+        }
+
+        /// A store recording every fenced commit (with its epoch) and answering each with `outcome`.
+        private static ConsumerCursorStore recordingFencedStore(List<Epoch> fencedCommits,
+                                                                List<Long> unfencedCommits,
+                                                                CommitOutcome outcome) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String group, String stream, int partition, long offset) {
+                    unfencedCommits.add(offset);
+
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<CommitOutcome> commit(String group, String stream, int partition, long offset, Epoch epoch) {
+                    fencedCommits.add(epoch);
+
+                    return Promise.success(outcome);
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String group, String stream, int partition) {
+                    return Promise.success(Option.none());
+                }
+            };
+        }
+
+        private static ConsumerConfig fastCheckpoints() {
+            return ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+        }
+
+        @Test
+        void delivery_pauses_whileTheFenceReadsNotAdmitted_andResumesWhenItDoes() throws InterruptedException {
+            createTestStream("orders");
+            var admitted = new AtomicBoolean(false);
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var latch = new CountDownLatch(1);
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-1"),
+                              (offset, payload, ts) -> recordDelivery(delivered, latch, offset),
+                              IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                              new SwitchableFence(admitted));
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            Thread.sleep(200);
+            assertThat(delivered).describedAs("not the committed assignee: nothing is delivered").isEmpty();
+
+            admitted.set(true);
+            manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+            assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(delivered).startsWith(0L);
+        }
+
+        @Test
+        void commits_carryTheFenceEpoch_throughTheFencedStoreApi() throws InterruptedException {
+            createTestStream("orders");
+            var fenced = new CopyOnWriteArrayList<Epoch>();
+            var unfenced = new CopyOnWriteArrayList<Long>();
+            var fencedRuntime = streamConsumerRuntime(manager,
+                                                      DeadLetterHandler.deadLetterHandler(),
+                                                      recordingFencedStore(fenced, unfenced, CommitOutcome.persisted()));
+
+            try {
+                fencedRuntime.subscribe("orders",
+                                        0,
+                                        fastCheckpoints(),
+                                        (offset, payload, ts) -> Promise.unitPromise(),
+                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                                        new SwitchableFence(new AtomicBoolean(true)));
+                Thread.sleep(50);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                awaitNonEmpty(fenced);
+
+                assertThat(fenced).allMatch(EPOCH::equals);
+                assertThat(unfenced).describedAs("a fenced consumer never commits outside its assignment").isEmpty();
+            } finally {
+                fencedRuntime.close();
+            }
+        }
+
+        /// The #1239 retry loop must NOT retry a `Fenced` outcome — it would re-send a deposed assignment
+        /// forever — and delivery stops for good once one is seen.
+        @Test
+        void fencedOutcome_isTerminal_noRetry_andDeliveryStops() throws InterruptedException {
+            createTestStream("orders");
+            var fenced = new CopyOnWriteArrayList<Epoch>();
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var fencedRuntime = streamConsumerRuntime(manager,
+                                                      DeadLetterHandler.deadLetterHandler(),
+                                                      recordingFencedStore(fenced,
+                                                                           new CopyOnWriteArrayList<>(),
+                                                                           CommitOutcome.fenced("moved")));
+
+            try {
+                fencedRuntime.subscribe("orders",
+                                        0,
+                                        fastCheckpoints(),
+                                        (offset, payload, ts) -> recordDelivery(delivered, new CountDownLatch(1), offset),
+                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                                        new SwitchableFence(new AtomicBoolean(true)));
+                Thread.sleep(50);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                awaitNonEmpty(fenced);
+                Thread.sleep(500);
+                var deliveredBefore = delivered.size();
+
+                manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+                Thread.sleep(300);
+
+                assertThat(fenced).describedAs("one refused commit, never retried").hasSize(1);
+                assertThat(delivered).describedAs("nothing is delivered after the refusal").hasSize(deliveredBefore);
+                assertThat(fencedRuntime.subscriptions()
+                                        .getFirst()
+                                        .lastCursorCommitFailure()).isEqualTo(Option.some("fenced: moved"));
+            } finally {
+                fencedRuntime.close();
+            }
+        }
+
+        /// rev1335 M18: the retry arm of terminality. [#fencedOutcome_isTerminal_noRetry_andDeliveryStops]
+        /// passes through the delivery-stop half alone — with delivery stopped nothing requests a checkpoint,
+        /// so `issueCheckpoint`'s fenced short-circuit is unobservable there. Here the checkpoint IS requested
+        /// after the fence: the pass keeps delivering the batch it had already read (`deliverNextEvent` does
+        /// not re-check admission mid-batch; the next PASS reads nothing), each delivery asks for a checkpoint
+        /// (the counters reset only on a Persisted commit), and the slot is free. Every later event waits until
+        /// the fence is latched before it returns, so the requests provably arrive after the refusal, and the
+        /// assertion is that not one of them reaches the store. `Fenced` routed to `retryCheckpoint` instead
+        /// (rev1335 M7) is masked by this same short-circuit and stays unobservable — defence in depth.
+        @Test
+        void fencedOutcome_issuesNoFurtherCommit_whenTheRestOfTheBatchRequestsOne() throws InterruptedException {
+            createTestStream("orders");
+            var fenced = new CopyOnWriteArrayList<Epoch>();
+            var deliveredAfterTheFence = new CopyOnWriteArrayList<Long>();
+            var fencedRuntime = streamConsumerRuntime(manager,
+                                                      DeadLetterHandler.deadLetterHandler(),
+                                                      recordingFencedStore(fenced,
+                                                                           new CopyOnWriteArrayList<>(),
+                                                                           CommitOutcome.fenced("moved")));
+
+            try {
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "event-3".getBytes(UTF_8), 3000L);
+                Thread.sleep(50);
+                fencedRuntime.subscribe("orders",
+                                        0,
+                                        fastCheckpoints(),
+                                        (offset, payload, ts) -> deliverAfterTheFence(fencedRuntime, offset, deliveredAfterTheFence),
+                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                                        new SwitchableFence(new AtomicBoolean(true)));
+                awaitNonEmpty(fenced);
+                awaitSize(deliveredAfterTheFence, 2);
+                Thread.sleep(300);
+
+                assertThat(deliveredAfterTheFence).describedAs("precondition: the rest of the batch was delivered AFTER the fence latched, so each of them requested a checkpoint")
+                                                  .containsExactly(1L, 2L);
+                assertThat(fenced).describedAs("the refused commit is the last one — a fenced consumer never re-sends its deposed token")
+                                  .hasSize(1);
+            } finally {
+                fencedRuntime.close();
+            }
+        }
+
+        /// Every delivery holds 20ms before its cursor advance, so the 10ms checkpoint interval has certainly
+        /// elapsed and the advance requests a checkpoint: offset 0's is the first (refused) commit. Every later
+        /// delivery additionally returns only once that refusal has been latched, so its request is provably
+        /// made after the fence.
+        private static Promise<Unit> deliverAfterTheFence(StreamConsumerRuntime fencedRuntime,
+                                                          long offset,
+                                                          List<Long> deliveredAfterTheFence) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+            if (offset == 0L) {
+                return Promise.unitPromise();
+            }
+
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (!fenceLatched(fencedRuntime) && System.currentTimeMillis() < deadline) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+            }
+
+            if (fenceLatched(fencedRuntime)) {
+                deliveredAfterTheFence.add(offset);
+            }
+
+            return Promise.unitPromise();
+        }
+
+        private static boolean fenceLatched(StreamConsumerRuntime fencedRuntime) {
+            return fencedRuntime.subscriptions()
+                                .stream()
+                                .anyMatch(subscription -> subscription.lastCursorCommitFailure()
+                                                                      .map(failure -> failure.startsWith("fenced: "))
+                                                                      .or(false));
+        }
+
+        @Test
+        void unsubscribe_skipsTheFinalFlush_afterAFencedOutcome() throws InterruptedException {
+            createTestStream("orders");
+            var fenced = new CopyOnWriteArrayList<Epoch>();
+            var fencedRuntime = streamConsumerRuntime(manager,
+                                                      DeadLetterHandler.deadLetterHandler(),
+                                                      recordingFencedStore(fenced,
+                                                                           new CopyOnWriteArrayList<>(),
+                                                                           CommitOutcome.fenced("moved")));
+
+            try {
+                fencedRuntime.subscribe("orders",
+                                        0,
+                                        fastCheckpoints(),
+                                        (offset, payload, ts) -> Promise.unitPromise(),
+                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                                        new SwitchableFence(new AtomicBoolean(true)));
+                Thread.sleep(50);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                awaitNonEmpty(fenced);
+                Thread.sleep(100);
+                fencedRuntime.unsubscribe("orders", 0, "group-1");
+                Thread.sleep(200);
+
+                assertThat(fenced).describedAs("no final flush after the store refused this node").hasSize(1);
+            } finally {
+                fencedRuntime.close();
+            }
+        }
+
+        @Test
+        void abandon_detachesWithoutTheFinalFlush() throws InterruptedException {
+            createTestStream("orders");
+            var fenced = new CopyOnWriteArrayList<Epoch>();
+            var latch = new CountDownLatch(1);
+            var fencedRuntime = streamConsumerRuntime(manager,
+                                                      DeadLetterHandler.deadLetterHandler(),
+                                                      recordingFencedStore(fenced,
+                                                                           new CopyOnWriteArrayList<>(),
+                                                                           CommitOutcome.persisted()));
+
+            try {
+                fencedRuntime.subscribe("orders",
+                                        0,
+                                        ConsumerConfig.consumerConfig("group-1"),
+                                        (offset, payload, ts) -> recordDelivery(new CopyOnWriteArrayList<>(), latch, offset),
+                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                                        new SwitchableFence(new AtomicBoolean(true)));
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+                var commitsBefore = fenced.size();
+
+                fencedRuntime.abandon("orders", 0, "group-1");
+                Thread.sleep(200);
+
+                assertThat(fenced).describedAs("abandon issues no commit").hasSize(commitsBefore);
+                assertThat(fencedRuntime.subscriptions()).isEmpty();
+            } finally {
+                fencedRuntime.close();
+            }
+        }
+
+        private static Promise<Unit> recordDelivery(List<Long> delivered, CountDownLatch latch, long offset) {
+            delivered.add(offset);
+            latch.countDown();
+
+            return Promise.unitPromise();
+        }
+
+        private static void awaitNonEmpty(List<?> list) throws InterruptedException {
+            awaitSize(list, 1);
+        }
+
+        private static void awaitSize(List<?> list, int size) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (list.size() < size && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+    }
+
     @Nested
     class CloseTests {
         @Test
@@ -481,10 +1391,10 @@ class StreamConsumerRuntimeTest {
     /// without redelivery, and a periodic checkpoint failure never blocks delivery.
     @Nested
     class CursorCommitObservability {
-        private static ConsumerCursorStore committing(Promise<Unit> commitResult) {
+        private static ConsumerCursorStore committing(Promise<CommitOutcome> commitResult) {
             return new ConsumerCursorStore() {
                 @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
                     return commitResult;
                 }
 
@@ -499,26 +1409,6 @@ class StreamConsumerRuntimeTest {
         /// for the same `(group, stream, partition)` key are two DISTINCT calls into `commit(...)`, so
         /// this hands back a different promise per call instead of [#committing]'s single fixed one —
         /// the shape D1 needed to reproduce two commits sharing one [ConsumerRuntimeState.ConsumerState].
-        private static ConsumerCursorStore committingSequence(List<Promise<Unit>> commitResults, CountDownLatch commitsIssued) {
-            var index = new AtomicInteger(0);
-
-            return new ConsumerCursorStore() {
-                @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
-                    var i = Math.min(index.getAndIncrement(), commitResults.size() - 1);
-
-                    commitsIssued.countDown();
-
-                    return commitResults.get(i);
-                }
-
-                @Override
-                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
-                    return Promise.success(none());
-                }
-            };
-        }
-
         @Test
         void close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound() throws Exception {
             createTestStream("orders");
@@ -557,7 +1447,7 @@ class StreamConsumerRuntimeTest {
         @Test
         void close_countsUnsettledCommit_whenFinalCommitNeverSettlesWithinBound() throws InterruptedException {
             createTestStream("orders");
-            Promise<Unit> pending = Promise.promise();
+            Promise<CommitOutcome> pending = Promise.promise();
             var store = committing(pending);
             var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
 
@@ -601,7 +1491,7 @@ class StreamConsumerRuntimeTest {
         @Test
         void close_countsUnsettledCommit_evenWhenFinalCommitLaterSucceeds() throws InterruptedException {
             createTestStream("orders");
-            Promise<Unit> pending = Promise.promise();
+            Promise<CommitOutcome> pending = Promise.promise();
             var store = committing(pending);
             var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
 
@@ -625,7 +1515,7 @@ class StreamConsumerRuntimeTest {
             var lateResolution = new CountDownLatch(1);
 
             pending.onResult(_ -> lateResolution.countDown());
-            pending.succeed(Unit.unit());
+            pending.succeed(CommitOutcome.persisted());
 
             assertThat(lateResolution.await(2, TimeUnit.SECONDS))
                       .describedAs("the late success handler must actually run before the counter assertion means anything")
@@ -641,10 +1531,10 @@ class StreamConsumerRuntimeTest {
             var committed = new AtomicReference<Long>();
             var store = new ConsumerCursorStore() {
                 @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
                     committed.set(offset);
 
-                    return Promise.unitPromise();
+                    return Promise.success(CommitOutcome.persisted());
                 }
 
                 @Override
@@ -668,6 +1558,14 @@ class StreamConsumerRuntimeTest {
                                           });
                 manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
                 assertThat(firstLatch.await(5, TimeUnit.SECONDS)).isTrue();
+                // #1401: the handler counts the latch down before the pass advances the cursor
+                // (`deliverySucceeded` runs after the handler's promise settles), and the detach flush
+                // commits the cursor AS IT STANDS — an unsubscribe issued in that gap commits 0 (CI: `but
+                // was: 0L`). The property under test is the flush of an ACCOUNTED delivery, so await the
+                // runtime's own accounting before detaching, under the same 5 s deadline.
+                assertThat(awaitCursor(observedRuntime, "orders", 0, "group-1", 1L, 5_000))
+                          .describedAs("the runtime accounted the delivery before the detach")
+                          .isEqualTo(1L);
                 observedRuntime.unsubscribe("orders", 0, "group-1");
                 assertThat(committed.get()).describedAs("committed offset is one past the last delivered offset")
                           .isEqualTo(1L);
@@ -726,6 +1624,367 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// #1239 acceptance: a periodic checkpoint that fails is RETRIED until it persists, and its
+        /// trigger counters are not reset by the failure. One event, then silence — nothing else would
+        /// ever trigger another checkpoint, so only the retry can land the cursor.
+        @Test
+        void checkpointIfNeeded_retriesUntilPersisted_whenFirstCommitFails_onAQuietPartition() throws InterruptedException {
+            createTestStream("orders");
+            var commits = new CopyOnWriteArrayList<Long>();
+            var persisted = new CopyOnWriteArrayList<Long>();
+            var store = failingFirst(commits, persisted);
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            try {
+                observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+                // The 10ms interval elapses first, so the one delivery trips the time-based checkpoint.
+                Thread.sleep(50);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+
+                var deadline = System.currentTimeMillis() + 3_000;
+
+                while (persisted.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(commits).describedAs("the first commit was attempted and failed").isNotEmpty();
+                assertThat(persisted).describedAs("a failed periodic commit is retried until the store accepts the cursor")
+                          .isNotEmpty();
+                assertThat(persisted.getLast()).isEqualTo(observedRuntime.cursorPosition("orders", 0, "group-1").or(-1L));
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        /// #1239: at most one periodic commit in flight per consumer, coalescing to the latest cursor, so
+        /// two commits for one key can never land out of order.
+        @Test
+        void checkpointIfNeeded_keepsOneCommitInFlight_andCoalescesToTheLatestCursor() throws InterruptedException {
+            createTestStream("orders");
+            var outstanding = new AtomicInteger();
+            var peakOutstanding = new AtomicInteger();
+            var persisted = new CopyOnWriteArrayList<Long>();
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    Promise<CommitOutcome> pending = Promise.promise();
+
+                    peakOutstanding.accumulateAndGet(outstanding.incrementAndGet(), Math::max);
+                    CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS)
+                                     .execute(() -> settle(pending, offset));
+
+                    return pending;
+                }
+
+                private void settle(Promise<CommitOutcome> pending, long offset) {
+                    outstanding.decrementAndGet();
+                    persisted.add(offset);
+                    pending.succeed(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 1L, 3, "");
+
+            try {
+                observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+                Thread.sleep(20);
+                for (int i = 0; i < 20; i++) {
+                    manager.publishLocal("orders", 0, ("event-" + i).getBytes(UTF_8), 1000L + i);
+                    Thread.sleep(5);
+                }
+
+                var deadline = System.currentTimeMillis() + 3_000;
+
+                while (!persisted.contains(20L) && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(peakOutstanding.get()).describedAs("one periodic commit in flight per consumer")
+                          .isEqualTo(1);
+                assertThat(persisted).describedAs("coalesced commits land in cursor order and reach the latest cursor")
+                          .isSorted()
+                          .contains(20L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        /// #1239 ruling (A-minus): monotonicity is the RUNTIME's obligation, not the store's — the store is
+        /// also the pull API's writer, where a lower commit is a legitimate rewind. So the runtime must
+        /// never ISSUE a commit lower than one that already succeeded. Driven through the path that used to
+        /// regress: a RETRY whose backoff an append lands in, periodic commits every millisecond resolving
+        /// from another thread, and the detach-time final commit.
+        @Test
+        void runtime_neverIssuesACommitBelowItsLastSuccessfulOne() throws InterruptedException {
+            createTestStream("orders");
+            var issued = new CopyOnWriteArrayList<Long>();
+            var regressions = new CopyOnWriteArrayList<String>();
+            var lastSucceeded = new java.util.concurrent.atomic.AtomicLong(-1);
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    Promise<CommitOutcome> pending = Promise.promise();
+
+                    if (offset < lastSucceeded.get()) {
+                        regressions.add(offset + " issued after " + lastSucceeded.get() + " succeeded");
+                    }
+                    issued.add(offset);
+                    CompletableFuture.delayedExecutor(5, TimeUnit.MILLISECONDS)
+                                     .execute(() -> succeed(pending, offset));
+
+                    return pending;
+                }
+
+                private void succeed(Promise<CommitOutcome> pending, long offset) {
+                    lastSucceeded.accumulateAndGet(offset, Math::max);
+                    pending.succeed(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 1L, 5, "");
+            var firstAttempt = new AtomicBoolean(true);
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          config,
+                                          (offset, payload, ts) -> resolveLater(offset == 0L && firstAttempt.getAndSet(false)));
+                manager.publishLocal("orders", 0, "flaky".getBytes(UTF_8), 1000L);
+                // Inside the retry backoff (>= 100ms base, jittered): the appends must not overtake it.
+                Thread.sleep(40);
+                for (int i = 1; i <= 5; i++) {
+                    manager.publishLocal("orders", 0, ("event-" + i).getBytes(UTF_8), 1000L + i);
+                    Thread.sleep(10);
+                }
+
+                var deadline = System.currentTimeMillis() + 5_000;
+
+                while (observedRuntime.cursorPosition("orders", 0, "group-1").or(-1L) < 6L && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                Thread.sleep(300);
+                observedRuntime.unsubscribe("orders", 0, "group-1");
+                Thread.sleep(50);
+                assertThat(issued).describedAs("commits were actually issued, so the assertions below can fail")
+                          .isNotEmpty();
+                assertThat(regressions).describedAs("no commit issued below one that already succeeded")
+                          .isEmpty();
+                assertThat(issued).describedAs("issued commits never step backwards")
+                          .isSorted();
+                assertThat(issued.getLast()).describedAs("the detach flush carries the final cursor")
+                          .isEqualTo(6L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        private static Promise<Unit> resolveLater(boolean fail) {
+            Promise<Unit> outcome = Promise.promise();
+
+            CompletableFuture.delayedExecutor(10, TimeUnit.MILLISECONDS)
+                             .execute(() -> settle(outcome, fail));
+
+            return outcome;
+        }
+
+        private static void settle(Promise<Unit> outcome, boolean fail) {
+            if (fail) {
+                outcome.fail(StreamError.General.BUFFER_EMPTY);
+            } else {
+                outcome.succeed(Unit.unit());
+            }
+        }
+
+        /// rev1272 F6: with one periodic commit in flight per consumer, a commit that NEVER settles held the
+        /// slot forever — every later checkpoint was absorbed as "pending" (`commits=1`). The periodic
+        /// commit is bounded; past the bound it counts as failed and the retry commits the latest cursor.
+        @Test
+        void periodicCommitNeverSettles_isBounded_andALaterCheckpointLands() throws InterruptedException {
+            createTestStream("orders");
+            var calls = new AtomicInteger();
+            var persisted = new CopyOnWriteArrayList<Long>();
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (calls.incrementAndGet() == 1) {
+                        return Promise.promise();
+                    }
+                    persisted.add(offset);
+
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            try {
+                observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+                Thread.sleep(50);
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                Thread.sleep(200);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+
+                var deadline = System.currentTimeMillis() + 10_000;
+
+                while (persisted.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(20);
+                }
+                assertThat(calls.get()).describedAs("control: the first periodic commit was issued (and never settles)")
+                                       .isGreaterThanOrEqualTo(1);
+                assertThat(persisted).describedAs("a never-settling periodic commit must not stop every later checkpoint")
+                                     .isNotEmpty();
+                assertThat(persisted.getLast()).isEqualTo(2L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        /// rev1272 F7 (pre-existing): a cursor store whose `fetch` THROWS at subscribe used to escape to
+        /// the caller with the consumer registered but never started — and every re-subscribe was refused
+        /// as already subscribed. The fetch is lifted and a failed fetch is retried, so the consumer starts
+        /// once the store answers, from the cursor it holds.
+        @Test
+        void cursorFetchSyncThrow_atSubscribe_doesNotStrandTheConsumer() throws InterruptedException {
+            createTestStream("orders");
+            var fetches = new AtomicInteger();
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    if (fetches.incrementAndGet() == 1) {
+                        throw new IllegalStateException("store blew up synchronously");
+                    }
+
+                    return Promise.success(option(1L));
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+
+                var subscribed = org.pragmatica.lang.Result.lift(() -> observedRuntime.subscribe("orders",
+                                                                                                0,
+                                                                                                ConsumerConfig.consumerConfig("group-1"),
+                                                                                                (offset, payload, ts) -> recordOffset(delivered, offset)));
+
+                assertThat(subscribed.flatMap(result -> result).isSuccess()).describedAs("subscribe must not throw when the store's fetch throws: %s", subscribed)
+                                                                           .isTrue();
+
+                var deadline = System.currentTimeMillis() + 3_000;
+
+                while (delivered.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(fetches.get()).describedAs("control: the first fetch threw, a retry followed").isGreaterThanOrEqualTo(2);
+                assertThat(delivered).describedAs("the consumer starts from the stored cursor once the store answers")
+                                     .containsExactly(1L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        /// rev1272 F7 follow-up: a consumer whose cursor fetch keeps failing is retrying, not idle, and the
+        /// snapshot says so — cursor 0 with nothing stalled is otherwise indistinguishable from a quiet
+        /// partition. It clears once the store answers.
+        @Test
+        void subscribe_reportsAwaitingCursorFetch_whileTheCursorStoreKeepsFailing() throws InterruptedException {
+            createTestStream("orders");
+            var failing = new AtomicBoolean(true);
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return failing.get()
+                           ? StreamError.General.BUFFER_EMPTY.promise()
+                           : Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-1"),
+                                          (offset, payload, ts) -> recordOffset(delivered, offset));
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                Thread.sleep(150);
+                assertThat(observedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> {
+                                         assertThat(snapshot.awaitingCursorFetch()).describedAs("a consumer stuck retrying its cursor fetch must not read as idle")
+                                                   .isTrue();
+                                         assertThat(snapshot.stalled()).isFalse();
+                                         assertThat(snapshot.cursor()).isZero();
+                                     });
+                assertThat(delivered).describedAs("it has not started, so nothing is delivered yet").isEmpty();
+
+                failing.set(false);
+
+                var deadline = System.currentTimeMillis() + 5_000;
+
+                while (delivered.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(delivered).containsExactly(0L);
+                assertThat(observedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> assertThat(snapshot.awaitingCursorFetch()).describedAs("cleared once the store answered")
+                                                           .isFalse());
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        private static Promise<Unit> recordOffset(List<Long> delivered, long offset) {
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private static ConsumerCursorStore failingFirst(List<Long> commits, List<Long> persisted) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    commits.add(offset);
+                    if (commits.size() == 1) {
+                        return StreamError.General.BUFFER_EMPTY.promise();
+                    }
+                    persisted.add(offset);
+
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+        }
+
         /// #654 round 4 (D1 regression): `checkpointIfNeeded` and `close()`'s `flushCursorForKey` can
         /// each issue their own commit for the SAME consumer inside one `close()` — the periodic one is
         /// still in flight when the final one is issued, and nothing drains it (`closed` only stops new
@@ -733,40 +1992,57 @@ class StreamConsumerRuntimeTest {
         /// the two to be reported ever incremented the counter and the other's later resolution logged
         /// ERROR without incrementing — one incident silently discarded. Round 4 gives each commit its
         /// own [ConsumerRuntimeState.TrackedCommit#reported] token: the bound must count both.
+        ///
+        /// #1401 rewrite on the #1393 seams. The earlier shape let the store return a pending promise, so the
+        /// periodic commit's own 5 s timeout was armed BEFORE `close()` and raced the shutdown bound: when it
+        /// fired first (CI run 35548028994: `unsettled at the bound` for the final at 06.1993, `(local) failed:
+        /// timed out` for the periodic at 06.1996), the bound rightly skipped the already-settled periodic and
+        /// its increment arrived on an async Promise event handler 0.3 ms later — after `close()` had returned
+        /// and the test had read 1. Now the periodic's store call is HELD until after `close()` returns: its
+        /// timeout cannot be armed before the bound, both commits are provably in flight while `close()`
+        /// waits, and the bound reports both synchronously on the closing thread. The late half is kept: once
+        /// released, the periodic's genuine failure must not add a second increment.
         @Test
         void close_countsBothUnsettledCommits_whenPeriodicAndFinalCommitShareOneConsumer() throws InterruptedException {
             createTestStream("orders");
-            Promise<Unit> periodicPending = Promise.promise();
-            Promise<Unit> finalPending = Promise.promise();
-            var commitsIssued = new CountDownLatch(1);
-            var store = committingSequence(List.of(periodicPending, finalPending), commitsIssued);
-            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            Promise<CommitOutcome> periodicPending = Promise.promise();
+            var entered = new CountDownLatch(1);
+            var gate = new CountDownLatch(1);
+            var runtimeRef = new AtomicReference<ConsumerRuntimeState>();
+            var inFlightAtStoreCall = new AtomicInteger(-1);
+            var store = heldThenPending(entered, gate, periodicPending, () -> inFlightAtStoreCall.set(runtimeRef.get().inFlightCommitCount()));
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
             var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
-            var delivered = new CountDownLatch(1);
 
-            observedRuntime.subscribe("orders",
-                                      0,
-                                      config,
-                                      (offset, payload, ts) -> {
-                                          delivered.countDown();
-
-                                          return Promise.unitPromise();
-                                      });
+            runtimeRef.set(observedRuntime);
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
             // The 10ms checkpoint interval elapses before the first event, so the very first successful
-            // delivery already trips checkpointIfNeeded's time-based branch, putting the PERIODIC commit
-            // in flight before close() issues the second, final commit for the same key.
+            // delivery already trips checkpointIfNeeded's time-based branch and issues the PERIODIC commit.
             Thread.sleep(50);
             manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
-            assertThat(delivered.await(5, TimeUnit.SECONDS)).isTrue();
-            assertThat(commitsIssued.await(2, TimeUnit.SECONDS))
-                      .describedAs("the periodic checkpoint commit must be in flight before close() issues the final commit for the same key")
-                      .isTrue();
+            assertThat(entered.await(5, TimeUnit.SECONDS)).describedAs("the periodic commit's store call is in progress").isTrue();
+            assertThat(inFlightAtStoreCall.get()).describedAs("the periodic commit is registered before its own store call").isEqualTo(1);
 
-            observedRuntime.close();
+            var returned = new CountDownLatch(1);
+            var countAtClose = new AtomicLong(-1);
 
-            assertThat(observedRuntime.cursorCommitFailureCount())
-                      .describedAs("two distinct unsettled commits for one consumer at the bound must count as two incidents, not one")
-                      .isEqualTo(2L);
+            Thread.ofPlatform().start(() -> {
+                observedRuntime.close();
+                countAtClose.set(observedRuntime.cursorCommitFailureCount());
+                returned.countDown();
+            });
+            awaitUntil(() -> observedRuntime.inFlightCommitCount() == 2, "close() issued the FINAL commit beside the held periodic one");
+            assertThat(returned.await(300, TimeUnit.MILLISECONDS)).describedAs("close() is waiting on both at the bound").isFalse();
+            assertThat(observedRuntime.inFlightCommitCount()).describedAs("both commits are still in flight while close() waits").isEqualTo(2);
+
+            try {
+                assertThat(returned.await(10, TimeUnit.SECONDS)).describedAs("close() returned at the bound").isTrue();
+                assertThat(countAtClose.get())
+                          .describedAs("two distinct unsettled commits for one consumer at the bound must count as two incidents, not one")
+                          .isEqualTo(2L);
+            } finally {
+                gate.countDown();
+            }
 
             var lateResolution = new CountDownLatch(1);
 
@@ -779,6 +2055,260 @@ class StreamConsumerRuntimeTest {
             assertThat(observedRuntime.cursorCommitFailureCount())
                       .describedAs("the periodic commit's token already won at the bound; its later genuine failure must not add a second increment")
                       .isEqualTo(2L);
+        }
+
+        /// #1401 product pin: a commit's incident is counted BEFORE its handle settles, in the same frame. The
+        /// periodic commit's store promise is failed on the test thread; the runtime's `with*()` actions run inline
+        /// in that frame in attachment order — count, unregister, settle the handle — and, through the periodic
+        /// slot, the FINAL commit's store call follows in the same frame. That store call is the observer: it
+        /// reads the count with no thread boundary and no wait. With the increment on an async `onFailure` it
+        /// reads 0, deterministically. The final fails synchronously so `close()` returns as soon as both
+        /// handles settle — inside the bound — with both counted. The CI shape this guards (run 35548028994: the
+        /// periodic failed by its own bound δ before the shutdown bound, its increment on an async handler after
+        /// the closing thread had read 1) cannot itself discriminate the async variant — the closing thread's
+        /// wake-up loses to the executor — which is why the observer here sits inside the resolve frame.
+        @Test
+        void commitFails_incidentIsCountedBeforeItsHandleSettles_observedFromTheSameResolveFrame() throws InterruptedException {
+            createTestStream("orders");
+            Promise<CommitOutcome> periodicPending = Promise.promise();
+            var runtimeRef = new AtomicReference<ConsumerRuntimeState>();
+            var issued = new CountDownLatch(1);
+            var countAtFinalStoreCall = new AtomicLong(-1);
+            var inFlightAtFinalStoreCall = new AtomicInteger(-1);
+            var store = new ConsumerCursorStore() {
+                private final AtomicInteger calls = new AtomicInteger();
+
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (calls.getAndIncrement() == 0) {
+                        issued.countDown();
+
+                        return periodicPending;
+                    }
+                    // Inside the frame that resolves the periodic commit: its count must already be there.
+                    countAtFinalStoreCall.set(runtimeRef.get().cursorCommitFailureCount());
+                    inFlightAtFinalStoreCall.set(runtimeRef.get().inFlightCommitCount());
+
+                    return StreamError.General.BUFFER_EMPTY.promise();
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            runtimeRef.set(observedRuntime);
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            assertThat(issued.await(5, TimeUnit.SECONDS)).describedAs("the periodic commit was issued").isTrue();
+
+            var returned = new CountDownLatch(1);
+            var countAtClose = new AtomicLong(-1);
+
+            Thread.ofPlatform().start(() -> {
+                observedRuntime.close();
+                countAtClose.set(observedRuntime.cursorCommitFailureCount());
+                returned.countDown();
+            });
+            awaitUntil(() -> observedRuntime.inFlightCommitCount() == 2, "close() registered the final commit behind the pending periodic one");
+            assertThat(returned.getCount()).describedAs("close() is waiting on both").isEqualTo(1L);
+
+            periodicPending.fail(StreamError.General.BUFFER_EMPTY);
+
+            assertThat(countAtFinalStoreCall.get())
+                      .describedAs("the periodic commit's incident was counted before its handle settled — read from inside the same resolve frame, no wait")
+                      .isEqualTo(1L);
+            assertThat(inFlightAtFinalStoreCall.get()).describedAs("the periodic commit was unregistered before its handle settled; the final is the one left")
+                                                      .isEqualTo(1);
+            assertThat(returned.await(2, TimeUnit.SECONDS)).describedAs("close() returned once both handles settled, inside the bound").isTrue();
+            assertThat(countAtClose.get()).describedAs("both incidents were counted as of close() returning").isEqualTo(2L);
+        }
+
+        /// The first `commit` runs `onEntry`, counts down `entered`, parks inside the call until `gate` opens, and
+        /// then returns `first`; every later commit returns a fresh promise that never settles.
+        private static ConsumerCursorStore heldThenPending(CountDownLatch entered,
+                                                            CountDownLatch gate,
+                                                            Promise<CommitOutcome> first,
+                                                            Runnable onEntry) {
+            var calls = new AtomicInteger();
+
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (calls.getAndIncrement() > 0) {
+                        return Promise.promise();
+                    }
+
+                    onEntry.run();
+                    entered.countDown();
+                    try {
+                        gate.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+
+                    return first;
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+        }
+
+        /// #1388 (CI run 35515972207, `expected: 2L but was: 1L`): the periodic commit's store call is STILL IN
+        /// PROGRESS when `close()` runs — a stalled store, or the issuing thread descheduled between the store
+        /// call and the registration. `issueTrackedCommit` used to register the commit only after the store
+        /// returned, so `close()`'s snapshot missed it and the bound counted the final commit alone. Two pins,
+        /// both through the store seam: the stub reads [ConsumerRuntimeState#inFlightCommitCount] from INSIDE
+        /// `commit()` — the commit must already be registered at that instant — and then parks there until the
+        /// test releases it after `close()` has returned, so the bound can count 2 only if it was.
+        @Test
+        void close_countsAPeriodicCommitWhoseStoreCallIsStillInProgress_asUnsettled() throws InterruptedException {
+            createTestStream("orders");
+            var entered = new CountDownLatch(1);
+            var gate = new CountDownLatch(1);
+            var runtimeRef = new AtomicReference<ConsumerRuntimeState>();
+            var inFlightAtStoreCall = new AtomicInteger(-1);
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager,
+                                                                               DeadLetterHandler.deadLetterHandler(),
+                                                                               heldOnFirstCommit(entered, gate, () -> inFlightAtStoreCall.set(runtimeRef.get().inFlightCommitCount())));
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            runtimeRef.set(observedRuntime);
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            // As in the sibling above: the 10ms checkpoint interval elapses before the first event, so its
+            // delivery trips the time-based checkpoint and issues the periodic commit.
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            assertThat(entered.await(5, TimeUnit.SECONDS)).describedAs("the periodic commit's store call is in progress").isTrue();
+            assertThat(inFlightAtStoreCall.get()).describedAs("the periodic commit is registered in flight BEFORE its own store call is made")
+                                                 .isEqualTo(1);
+
+            try {
+                observedRuntime.close();
+
+                assertThat(observedRuntime.cursorCommitFailureCount())
+                          .describedAs("a periodic commit whose store call had not returned when close() ran is bound-awaited and counted beside the final commit")
+                          .isEqualTo(2L);
+            } finally {
+                gate.countDown();
+            }
+        }
+
+        /// #1388 review (rev1393 M1, adopted from `oss/internal/probes/s25-rev1393/Rev1393ProbeTest.java`): the
+        /// tracked handle is no longer the chain, so "the handle settles when the chain settles"
+        /// (`issueTrackedCommit`'s `withResult`) is its own property — without it every `close()` with a commit in
+        /// flight would wait the full 5 s bound and count a settled commit as unsettled. Both commits pending at
+        /// `close()`, settled by the test while it waits: `close()` returns when they do, well inside the bound, and
+        /// counts nothing. Reddens with the `withResult` line deleted.
+        @Test
+        void pendingCommitsSettledAfterCloseBegan_closeReturnsWhenTheyDo_countsNothing() throws Exception {
+            createTestStream("orders");
+            var pendings = new CopyOnWriteArrayList<Promise<CommitOutcome>>();
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), pendingEachCommit(pendings));
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            awaitUntil(() -> pendings.size() >= 1, "periodic commit issued");
+
+            var returned = new CountDownLatch(1);
+            var started = System.nanoTime();
+
+            Thread.ofPlatform().start(() -> {
+                observedRuntime.close();
+                returned.countDown();
+            });
+            // #1355: the final commit's store call is chained behind the periodic one, so only ONE store promise
+            // exists until the periodic settles; the final's handle is registered though.
+            assertThat(returned.await(500, TimeUnit.MILLISECONDS)).describedAs("close() is waiting on the pending periodic commit").isFalse();
+            assertThat(pendings).hasSize(1);
+
+            pendings.getFirst().succeed(CommitOutcome.persisted());
+            awaitUntil(() -> pendings.size() >= 2, "the final commit's store call fires once its predecessor settled");
+            assertThat(returned.await(300, TimeUnit.MILLISECONDS)).describedAs("close() is now waiting on the pending final commit").isFalse();
+
+            pendings.get(1).succeed(CommitOutcome.persisted());
+
+            assertThat(returned.await(2, TimeUnit.SECONDS)).describedAs("close() returned once the store settled, well inside the 5 s bound").isTrue();
+            assertThat((System.nanoTime() - started) / 1_000_000).isLessThan(3_000L);
+            assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("settled inside the bound: no incident").isZero();
+        }
+
+        private static long awaitCursor(StreamConsumerRuntime runtime,
+                                        String streamName,
+                                        int partition,
+                                        String group,
+                                        long expected,
+                                        long timeoutMillis) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMillis;
+
+            while (runtime.cursorPosition(streamName, partition, group).or(-1L) != expected && System.currentTimeMillis() < deadline) {
+                Thread.sleep(5);
+            }
+
+            return runtime.cursorPosition(streamName, partition, group).or(-1L);
+        }
+
+        /// Every `commit` returns a fresh pending promise, recorded so the test can settle it.
+        private static ConsumerCursorStore pendingEachCommit(List<Promise<CommitOutcome>> pendings) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    var pending = Promise.<CommitOutcome>promise();
+
+                    pendings.add(pending);
+
+                    return pending;
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+        }
+
+        private static void awaitUntil(Supplier<Boolean> condition, String what) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (!condition.get() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(5);
+            }
+            assertThat(condition.get()).describedAs(what).isTrue();
+        }
+
+        /// The first `commit` runs `onEntry`, counts down `entered`, then parks inside the call until `gate`
+        /// opens; it never settles, and neither does any later commit.
+        private static ConsumerCursorStore heldOnFirstCommit(CountDownLatch entered, CountDownLatch gate, Runnable onEntry) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (entered.getCount() > 0) {
+                        onEntry.run();
+                        entered.countDown();
+                        try {
+                            gate.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+
+                    return Promise.promise();
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
         }
     }
 
@@ -852,6 +2382,65 @@ class StreamConsumerRuntimeTest {
             assertThat(runtime.subscriptions()).hasSize(2);
         }
 
+        /// rev1285d N1: a client consumer still retrying its cursor fetch has not started; its
+        /// `lastPollTime` is the construction time, so without the flag the reaper read it as idle after
+        /// 60s, unsubscribed it and thereby stopped the fetch retry. The second arm proves the exemption is
+        /// the FETCH, not the consumer: once started, the same consumer is reaped like any other.
+        @Test
+        void reapIdleConsumers_keepsClientConsumer_whileItsCursorFetchIsStillRetrying() throws Exception {
+            createTestStream("orders");
+            var failing = new AtomicBoolean(true);
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return failing.get()
+                           ? StreamError.General.BUFFER_EMPTY.promise()
+                           : Promise.success(none());
+                }
+            };
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("client-group"),
+                                          (offset, payload, ts) -> {
+                                              delivered.add(offset);
+
+                                              return Promise.unitPromise();
+                                          });
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                Thread.sleep(150);
+                assertThat(observedRuntime.subscriptions()).singleElement()
+                          .extracting(StreamConsumerRuntime.SubscriptionSnapshot::awaitingCursorFetch)
+                          .describedAs("control: the fetch is still being retried")
+                          .isEqualTo(true);
+                observedRuntime.reapIdleConsumers(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+                assertThat(observedRuntime.subscriptions()).describedAs("a consumer that has not started is retrying, not idle")
+                          .hasSize(1);
+
+                failing.set(false);
+
+                var deadline = System.currentTimeMillis() + 5_000;
+
+                while (delivered.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(delivered).describedAs("control: the store answered and the consumer started").containsExactly(0L);
+                observedRuntime.reapIdleConsumers(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+                assertThat(observedRuntime.subscriptions()).describedAs("once started it is a client consumer like any other and is reaped when idle")
+                          .isEmpty();
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
         private void reapAt(long now) {
             ((ConsumerRuntimeState) runtime).reapIdleConsumers(now);
         }
@@ -880,6 +2469,293 @@ class StreamConsumerRuntimeTest {
         void subscriptions_isEmpty_whenNothingSubscribed() {
             createTestStream("orders");
             assertThat(runtime.subscriptions()).isEmpty();
+        }
+    }
+
+    /// #1238: ONE serial delivery loop per (group, partition). Every handler here resolves its promise
+    /// LATER, from ANOTHER thread — an already-resolved promise runs its continuations inline on the
+    /// caller, which is exactly the fixture shape that hid the overlapping-cycle and out-of-chain cursor
+    /// advance defects from every earlier test in this class.
+    @Nested
+    class SerialDeliveryLoop {
+        private static final long HANDLER_DELAY_MS = 200;
+
+        private final List<Long> delivered = new CopyOnWriteArrayList<>();
+        private final AtomicInteger inFlight = new AtomicInteger();
+        private final AtomicInteger peakInFlight = new AtomicInteger();
+
+        /// Records the delivery and its concurrency, then completes `outcome` from another thread after
+        /// `delayMs`. The in-flight count drops BEFORE the promise resolves, so a serial loop never
+        /// observes two.
+        private Promise<Unit> completeLater(long offset, long delayMs, Promise<Unit> outcome, boolean fail) {
+            delivered.add(offset);
+            peakInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+            CompletableFuture.delayedExecutor(delayMs, TimeUnit.MILLISECONDS)
+                             .execute(() -> resolveLater(outcome, fail));
+
+            return outcome;
+        }
+
+        private void resolveLater(Promise<Unit> outcome, boolean fail) {
+            inFlight.decrementAndGet();
+            if (fail) {
+                outcome.fail(StreamError.General.BUFFER_EMPTY);
+            } else {
+                outcome.succeed(Unit.unit());
+            }
+        }
+
+        private void awaitDelivered(long offset, long timeoutMs) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMs;
+
+            while (!delivered.contains(offset) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+
+        @Test
+        void pushDelivery_deliversEachOffsetOnce_andNeverConcurrently_whenHandlerCompletesLater() throws InterruptedException {
+            createTestStream("orders");
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-1"),
+                              (offset, payload, ts) -> completeLater(offset, HANDLER_DELAY_MS, Promise.promise(), false));
+            manager.publishLocal("orders", 0, "event-0".getBytes(UTF_8), 1000L);
+            Thread.sleep(10);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 2000L);
+            awaitDelivered(1L, 5_000);
+            // Long enough for any overlapping cycle or late continuation to show up as a duplicate.
+            Thread.sleep(3 * HANDLER_DELAY_MS);
+            assertThat(delivered).describedAs("each offset exactly once, in order")
+                      .containsExactly(0L, 1L);
+            assertThat(peakInFlight.get()).describedAs("one group never has two deliveries in flight on one partition")
+                      .isEqualTo(1);
+            assertThat(runtime.cursorPosition("orders", 0, "group-1").or(-1L)).isEqualTo(2L);
+        }
+
+        @Test
+        void subscribe_deliversBacklog_whenEventsWerePublishedBeforeSubscribe() throws InterruptedException {
+            createTestStream("orders");
+            var latch = new CountDownLatch(3);
+
+            manager.publishLocal("orders", 0, "event-0".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 2000L);
+            manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 3000L);
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-1"),
+                              (offset, payload, ts) -> countDown(latch, offset));
+            assertThat(latch.await(2, TimeUnit.SECONDS)).describedAs("events already in the ring are delivered on subscribe, not on the next append")
+                      .isTrue();
+            assertThat(delivered).containsExactly(0L, 1L, 2L);
+        }
+
+        @Test
+        void appendBatch_deliversEveryEvent_pastOneReadBatch() throws InterruptedException {
+            createTestStream("orders");
+            var count = 250;
+            var latch = new CountDownLatch(count);
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-1"),
+                              (offset, payload, ts) -> countDown(latch, offset));
+
+            var payloads = LongStream.range(0, count)
+                                     .mapToObj(i -> ("event-" + i).getBytes(UTF_8))
+                                     .toList();
+
+            manager.partitionBuffer("orders", 0)
+                   .onEmpty(() -> org.junit.jupiter.api.Assertions.fail("ring must be local"))
+                   .onPresent(buffer -> buffer.appendBatch(payloads, nowTimestamps(count)));
+            assertThat(latch.await(2, TimeUnit.SECONDS)).describedAs("one batch append notifies once; the loop must drain past its 100-event read")
+                      .isTrue();
+            assertThat(delivered).hasSize(count);
+        }
+
+        @Test
+        void retryBackoff_holdsTheLoop_soAnAppendCannotRedeliverTheFailingEventInParallel() throws InterruptedException {
+            createTestStream("orders");
+            var attempts = new ConcurrentHashMap<Long, AtomicInteger>();
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY);
+
+            runtime.subscribe("orders",
+                              0,
+                              config,
+                              (offset, payload, ts) -> completeLater(offset,
+                                                                     20,
+                                                                     Promise.promise(),
+                                                                     offset == 0L && attempts.computeIfAbsent(offset,
+                                                                                                              _ -> new AtomicInteger())
+                                                                                             .incrementAndGet() == 1));
+            manager.publishLocal("orders", 0, "flaky".getBytes(UTF_8), 1000L);
+            // Lands inside the first retry backoff (>= 100ms base, jittered).
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+            awaitDelivered(1L, 5_000);
+            Thread.sleep(500);
+            assertThat(delivered).describedAs("offset 0: the failed attempt plus exactly one retry; nothing re-read it meanwhile")
+                      .containsExactly(0L, 0L, 1L);
+            assertThat(peakInFlight.get()).isEqualTo(1);
+            assertThat(runtime.cursorPosition("orders", 0, "group-1").or(-1L)).isEqualTo(2L);
+        }
+
+        /// #1238 threading: the append listener fires on the notifying thread (the publisher today; the
+        /// per-partition notifier after #1258). It must only mark the loop dirty and hand the pass to an
+        /// executor — a handler run inline there can re-enter the publish path (the #1258 deadlock) or
+        /// stall every other notification for that partition. Same for subscribe's backlog kick.
+        @Test
+        void handler_neverRunsOnTheNotifyingOrSubscribingThread() throws InterruptedException {
+            createTestStream("orders");
+            var handlerThreads = new CopyOnWriteArrayList<Thread>();
+            var latch = new CountDownLatch(2);
+
+            manager.publishLocal("orders", 0, "backlog".getBytes(UTF_8), 1000L);
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-1"),
+                              (offset, payload, ts) -> recordThread(handlerThreads, latch));
+            manager.publishLocal("orders", 0, "appended".getBytes(UTF_8), 2000L);
+            assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(handlerThreads).describedAs("neither the subscribe kick nor the append notification runs the handler on the caller's thread")
+                                      .doesNotContain(Thread.currentThread());
+        }
+
+        private Promise<Unit> recordThread(List<Thread> threads, CountDownLatch latch) {
+            threads.add(Thread.currentThread());
+            latch.countDown();
+
+            return Promise.unitPromise();
+        }
+
+        @Test
+        void advanceCursor_neverMovesBackwards() {
+            var state = ConsumerRuntimeState.ConsumerState.consumerState(ConsumerConfig.consumerConfig("group-1"),
+                                                                          (offset, payload, ts) -> Promise.unitPromise(),
+                                                                          0L,
+                                                                          StreamConsumerRuntime.IdlePolicy.REAP_WHEN_IDLE);
+
+            state.advanceCursor(5L);
+            state.advanceCursor(3L);
+            assertThat(state.cursor()).describedAs("a late retry or dead-letter completion must not regress the cursor")
+                      .isEqualTo(5L);
+        }
+
+        private static long[] nowTimestamps(int count) {
+            return LongStream.range(0, count)
+                             .map(_ -> System.currentTimeMillis())
+                             .toArray();
+        }
+
+        private Promise<Unit> countDown(CountDownLatch latch, long offset) {
+            delivered.add(offset);
+            latch.countDown();
+
+            return Promise.unitPromise();
+        }
+    }
+
+    /// #1238 [unverified] item, traced: a ring released on role loss (`completeRelease` -> `ring.close()`,
+    /// which clears the append listeners) leaves a consumer that stays assigned here with neither a
+    /// listener nor a poller. The periodic attachment check must notice and fall back to polling.
+    @Nested
+    class RingReleasedUnderConsumer {
+        private static final long REMOTE_HEAD_EXCLUSIVE = 3L;
+
+        @Test
+        void revalidatePushAttachments_fallsBackToPolling_whenTheRingIsReleased() throws Exception {
+            var releasing = streamPartitionManager(64 * 1024 * 1024L);
+            var role = new AtomicReference<>(Role.OWNER);
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var consumer = new ConsumerRuntimeState(releasing,
+                                                    DeadLetterHandler.deadLetterHandler(),
+                                                    none(),
+                                                    none(),
+                                                    (stream, partition, from, max) -> localOrRemote(releasing,
+                                                                                                    stream,
+                                                                                                    partition,
+                                                                                                    from,
+                                                                                                    max));
+
+            try {
+                releasing.placementRoleSupplier((_, _) -> role.get());
+                releasing.clusterSizeSupplier(() -> 3);
+                releasing.replicaCatchupSource((_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(3, true));
+                releasing.ownerReleaseGuard((_, _) -> true);
+                releasing.createStream(singlePartition("s"))
+                         .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("create should succeed"));
+                consumer.subscribe("s",
+                                   0,
+                                   ConsumerConfig.consumerConfig("group-1"),
+                                   (offset, payload, ts) -> record(delivered, offset),
+                                   StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+                releasing.publishLocal("s", 0, "local-0".getBytes(UTF_8), 1000L);
+                awaitSize(delivered, 1);
+                assertThat(delivered).describedAs("push delivery from the local ring").containsExactly(0L);
+
+                role.set(Role.NONE);
+                releasing.reconcileReshuffle();
+                releasing.reconcileReshuffle();
+                releasing.reconcileReshuffle();
+                assertThat(releasing.partitionBuffer("s", 0).isPresent()).describedAs("ring released on role loss")
+                          .isFalse();
+                Thread.sleep(300);
+                assertThat(delivered).describedAs("the defect state: listener cleared by close, no poller — nothing moves")
+                          .containsExactly(0L);
+
+                consumer.revalidatePushAttachments();
+                awaitSize(delivered, 3);
+                assertThat(delivered).describedAs("the consumer falls back to polling and reads through the reader")
+                          .containsExactly(0L, 1L, 2L);
+            } finally {
+                consumer.close();
+                releasing.close();
+            }
+        }
+
+        private static StreamConfig singlePartition(String name) {
+            return StreamConfig.streamConfig(name,
+                                             1,
+                                             RetentionPolicy.retentionPolicy(100, 64 * 1024L, 3_600_000L),
+                                             "latest",
+                                             1_048_576L,
+                                             ConsistencyMode.EVENTUAL,
+                                             1,
+                                             0,
+                                             StreamCompression.NONE,
+                                             none());
+        }
+
+        /// Stands in for the node's routed reader: local while the ring is here, else the owner's log
+        /// (offsets `from` .. [#REMOTE_HEAD_EXCLUSIVE]).
+        private static Promise<List<OffHeapRingBuffer.RawEvent>> localOrRemote(StreamPartitionManager local,
+                                                                                String stream,
+                                                                                int partition,
+                                                                                long from,
+                                                                                int max) {
+            if (local.partitionBuffer(stream, partition).isPresent()) {
+                return local.readLocal(stream, partition, from, max).async();
+            }
+
+            return Promise.success(LongStream.range(from, REMOTE_HEAD_EXCLUSIVE)
+                                             .mapToObj(offset -> new OffHeapRingBuffer.RawEvent(offset,
+                                                                                                ("remote-" + offset).getBytes(UTF_8),
+                                                                                                0L))
+                                             .toList());
+        }
+
+        private static Promise<Unit> record(List<Long> delivered, long offset) {
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private static void awaitSize(List<Long> delivered, int size) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 2_000;
+
+            while (delivered.size() < size && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
         }
     }
 

@@ -17,6 +17,7 @@ import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.nio.file.Path;
@@ -114,16 +115,58 @@ class StreamPartitionManagerOrderedAppendTest {
             .containsExactlyElementsOf(LongStream.range(0, total).boxed().toList());
     }
 
+    /// #1244 (#1277 review N1): the REPLICA path shares the section, so concurrent `appendRecovered` on one
+    /// WAL-backed partition leaves the WAL in offset order with each frame carrying the payload the ring
+    /// holds at that offset, and one barrier commits them all. With the frame write moved after the section
+    /// a slower appender's frame is refused as an offset regression and the next success overwrites the
+    /// recorded failure, so the barrier resolves over a WAL with holes — and no single-threaded test sees it.
+    @RepeatedTest(10)
+    void appendRecovered_walFileOrderEqualsOffsetOrder_underConcurrentAppends() {
+        var threads = 16;
+        var perThread = 250;
+        var total = threads * perThread;
+        var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+        createStream(manager);
+
+        var byOffset = indexByOffset(appendConcurrently((payload, timestamp) -> manager.appendRecovered(STREAM,
+                                                                                                        PARTITION,
+                                                                                                        payload,
+                                                                                                        timestamp),
+                                                        threads,
+                                                        perThread));
+        var fsyncsBefore = fsyncCount(manager);
+
+        manager.syncReplicated(STREAM, PARTITION).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(fsyncCount(manager) - fsyncsBefore).as("one barrier commits everything").isBetween(1L, 2L);
+        manager.close();
+
+        var records = replayAll(walDir.resolve(STREAM).resolve(PARTITION + ".wal"));
+
+        assertThat(records.stream().map(WalRecord::offset).toList())
+            .as("WAL file order must be offset order on the REPLICA path")
+            .containsExactlyElementsOf(LongStream.range(0, total).boxed().toList());
+        records.forEach(record -> assertThat(new String(record.payload(), UTF_8)).as("frame payload at offset %d", record.offset())
+                                                                               .isEqualTo(byOffset.get(record.offset())));
+    }
+
     // === helpers ===
 
     private static void createStream(StreamPartitionManager manager) {
         manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
     }
 
-    /// Fires `threads × perThread` publishes released together by one latch; returns every (offset,
-    /// payload) the manager acked. A failed publish is itself a defect (a torn concurrent append can
-    /// surface as a guarded-access failure), so it fails the test.
     private static List<Acked> publishConcurrently(StreamPartitionManager manager, int threads, int perThread) {
+        return appendConcurrently((payload, timestamp) -> manager.publishLocal(STREAM, PARTITION, payload, timestamp),
+                                  threads,
+                                  perThread);
+    }
+
+    /// Fires `threads × perThread` appends released together by one latch; returns every (offset,
+    /// payload) the manager acked. A failed append is itself a defect (a torn concurrent append can
+    /// surface as a guarded-access failure), so it fails the test.
+    private static List<Acked> appendConcurrently(Appender append, int threads, int perThread) {
         var acked = new ConcurrentLinkedQueue<Acked>();
         var failures = new ConcurrentLinkedQueue<String>();
         var start = new CountDownLatch(1);
@@ -132,32 +175,43 @@ class StreamPartitionManagerOrderedAppendTest {
         for (int t = 0; t < threads; t++) {
             var thread = t;
 
-            pool.submit(() -> publishBatch(manager, thread, perThread, start, acked, failures));
+            pool.submit(() -> appendBatch(append, thread, perThread, start, acked, failures));
         }
 
         start.countDown();
         pool.shutdown();
         awaitTermination(pool);
 
-        assertThat(failures).as("no concurrent publish may fail").isEmpty();
+        assertThat(failures).as("no concurrent append may fail").isEmpty();
         return new ArrayList<>(acked);
     }
 
-    private static void publishBatch(StreamPartitionManager manager,
-                                     int thread,
-                                     int perThread,
-                                     CountDownLatch start,
-                                     ConcurrentLinkedQueue<Acked> acked,
-                                     ConcurrentLinkedQueue<String> failures) {
+    private static void appendBatch(Appender append,
+                                    int thread,
+                                    int perThread,
+                                    CountDownLatch start,
+                                    ConcurrentLinkedQueue<Acked> acked,
+                                    ConcurrentLinkedQueue<String> failures) {
         awaitLatch(start);
 
         for (int i = 0; i < perThread; i++) {
             var payload = "t" + thread + "-" + i;
 
-            manager.publishLocal(STREAM, PARTITION, payload.getBytes(UTF_8), 1000L + i)
-                   .onSuccess(offset -> acked.add(new Acked(offset, payload)))
-                   .onFailure(cause -> failures.add(cause.message()));
+            append.append(payload.getBytes(UTF_8), 1000L + i)
+                  .onSuccess(offset -> acked.add(new Acked(offset, payload)))
+                  .onFailure(cause -> failures.add(cause.message()));
         }
+    }
+
+    private static long fsyncCount(StreamPartitionManager manager) {
+        return manager.walSnapshot()
+                      .streams()
+                      .stream()
+                      .flatMap(view -> view.partitions().stream())
+                      .filter(view -> view.partition() == PARTITION)
+                      .flatMap(view -> view.wal().stream())
+                      .mapToLong(PartitionWal.WalStats::fsyncCount)
+                      .sum();
     }
 
     private static Map<Long, String> indexByOffset(List<Acked> acked) {
@@ -208,6 +262,11 @@ class StreamPartitionManagerOrderedAppendTest {
 
     private record Acked(long offset, String payload) {}
 
+    @FunctionalInterface
+    private interface Appender {
+        Result<Long> append(byte[] payload, long timestamp);
+    }
+
     /// Records the offset of every `replicateEvent` in invocation order; everything else is a no-op.
     private static final class RecordingReplicationManager implements ReplicationManager {
         private final ConcurrentLinkedQueue<Long> sentOffsets = new ConcurrentLinkedQueue<>();
@@ -237,5 +296,19 @@ class StreamPartitionManagerOrderedAppendTest {
         public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
             return Promise.unitPromise();
         }
+
+        @Override
+        public long replicatedThrough(String streamName, int partition, int minAcks) {
+            return Long.MAX_VALUE;
+        }
+
+        @Override
+        public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+            return Long.MAX_VALUE;
+        }
+
+        @Contract
+        @Override
+        public void observeAcks(AckObserver observer) {}
     }
 }

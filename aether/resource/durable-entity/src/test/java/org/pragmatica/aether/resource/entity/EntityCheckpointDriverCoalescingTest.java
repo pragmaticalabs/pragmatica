@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntPredicate;
 
 import com.sun.management.ThreadMXBean;
 
@@ -34,6 +35,8 @@ class EntityCheckpointDriverCoalescingTest {
     private static final int KEYS = 1_000;
     private static final int VALUE_BYTES = 10 * 1024;
     private static final long IDLE_TICK_BUDGET = 64 * 1024;
+    /// The owner gate (#1302) only scopes the lag report; every checkpoint here runs on an owned partition.
+    private static final IntPredicate OWNS_EVERY_PARTITION = _ -> true;
 
     /// About 10 MB of folded state and no appends between two ticks: the second has nothing to record, and
     /// must find that out BEFORE copying anything. Measured as bytes allocated by the ticking thread, which
@@ -44,7 +47,7 @@ class EntityCheckpointDriverCoalescingTest {
         var fold = populatedFold(substrate);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
 
-        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.register(KEYSPACE, 1, fold, substrate, OWNS_EVERY_PARTITION);
         driver.tick();
 
         assertThat(substrate.saves.get()).as("the first tick checkpoints the populated fold").isEqualTo(1);
@@ -69,7 +72,7 @@ class EntityCheckpointDriverCoalescingTest {
         var fold = populatedFold(substrate);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
 
-        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.register(KEYSPACE, 1, fold, substrate, OWNS_EVERY_PARTITION);
         driver.tick();
         driver.tick();
 
@@ -85,7 +88,7 @@ class EntityCheckpointDriverCoalescingTest {
         var fold = populatedFold(substrate);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
 
-        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.register(KEYSPACE, 1, fold, substrate, OWNS_EVERY_PARTITION);
 
         for (var tick = 0; tick < EntityCheckpointDriver.IN_FLIGHT_BOUND_TICKS; tick++) {
             driver.tick();
@@ -107,7 +110,7 @@ class EntityCheckpointDriverCoalescingTest {
         var fold = populatedFold(substrate);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
 
-        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.register(KEYSPACE, 1, fold, substrate, OWNS_EVERY_PARTITION);
 
         for (var tick = 0; tick <= EntityCheckpointDriver.IN_FLIGHT_BOUND_TICKS; tick++) {
             driver.tick();
@@ -133,7 +136,7 @@ class EntityCheckpointDriverCoalescingTest {
         var fold = populatedFold(substrate);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
 
-        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.register(KEYSPACE, 1, fold, substrate, OWNS_EVERY_PARTITION);
         driver.tick();
 
         for (var i = KEYS; i < 2 * KEYS; i++) {
@@ -177,7 +180,7 @@ class EntityCheckpointDriverCoalescingTest {
         var fold = populatedFold(substrate);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
 
-        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.register(KEYSPACE, 1, fold, substrate, OWNS_EVERY_PARTITION);
         driver.tick();
         driver.tick();
 
@@ -199,7 +202,7 @@ class EntityCheckpointDriverCoalescingTest {
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
 
         substrate.throwOnNextSave();
-        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.register(KEYSPACE, 1, fold, substrate, OWNS_EVERY_PARTITION);
         driver.tick();
         driver.tick();
 

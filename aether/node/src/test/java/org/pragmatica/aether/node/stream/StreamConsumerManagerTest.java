@@ -4,41 +4,63 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.stream;
 
+import org.pragmatica.aether.slice.stream.PublishOutcome;
+import org.pragmatica.aether.slice.StreamPublisher;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
+import org.pragmatica.aether.node.stream.StreamConsumerManager.AssignmentAuthority;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionOwnership;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.SlicePlacement;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
+import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
+import org.pragmatica.aether.slice.topic.ContextualEvent;
+import org.pragmatica.aether.slice.topic.MessageContext;
+import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
+import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
+import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -47,6 +69,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -97,6 +120,9 @@ class StreamConsumerManagerTest {
     /// Wide enough that HRW concentrating every partition on one of three candidates has probability
     /// 3 x (1/3)^32 — the point at which a distribution assertion stops being a coin flip.
     private static final int WIDE_PARTITION_COUNT = 32;
+    private static final Epoch EPOCH_1 = Epoch.epoch(1L, 1L);
+    private static final Epoch EPOCH_2 = Epoch.epoch(1L, 2L);
+    private static final Epoch EPOCH_3 = Epoch.epoch(1L, 3L);
 
     private StreamConsumerRegistry registry;
     private RecordingRuntime runtime;
@@ -104,9 +130,14 @@ class StreamConsumerManagerTest {
     private SliceInvoker invoker;
     private MutableOwnership ownership;
     private MutablePlacement placement;
+    /// #1271: the committed consumer assignments every manager in a test reads — the stand-in for the
+    /// consensus KV. Writes land synchronously, so a leader's reconcile commits its computed assignment
+    /// and admits itself in the same pass, exactly the steady state the pre-#1271 tests describe.
+    private Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments;
 
     @BeforeEach
     void setUp() {
+        committedAssignments = new ConcurrentHashMap<>();
         registry = StreamConsumerRegistry.streamConsumerRegistry();
         runtime = new RecordingRuntime();
         invocationHandler = mock(InvocationHandler.class);
@@ -121,14 +152,83 @@ class StreamConsumerManagerTest {
     }
 
     private StreamConsumerManager managerFor(NodeId self, StreamConsumerRuntime consumerRuntime) {
+        return managerFor(self, consumerRuntime, ownership);
+    }
+
+    private StreamConsumerManager managerFor(NodeId self,
+                                             StreamConsumerRuntime consumerRuntime,
+                                             PartitionOwnership nodeOwnership) {
+        return managerFor(self, consumerRuntime, nodeOwnership, true);
+    }
+
+    private StreamConsumerManager managerFor(NodeId self,
+                                             StreamConsumerRuntime consumerRuntime,
+                                             PartitionOwnership nodeOwnership,
+                                             boolean leader) {
         return StreamConsumerManager.streamConsumerManager(registry,
                                                            consumerRuntime,
                                                            invoker,
                                                            invocationHandler,
                                                            FrameworkCodecs.frameworkCodecs(),
+                                                           nodeOwnership,
+                                                           placement,
+                                                           self,
+                                                           authority(leader));
+    }
+
+    /// The committed-assignment authority over [#committedAssignments]; `leader` gates its writer the
+    /// way the node's leadership does.
+    private AssignmentAuthority authority(boolean leader) {
+        ConsumerAssignmentWriter.CommittedAssignments committed = (stream, partition, group) -> Option.option(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                           partition,
+                                                                                                                                                                           group)));
+
+        return AssignmentAuthority.assignmentAuthority(committed,
+                                                       ConsumerAssignmentWriter.consumerAssignmentWriter(() -> leader,
+                                                                                                         () -> 1L,
+                                                                                                         HlcClock.hlcClock(SELF),
+                                                                                                         committed),
+                                                       this::applyAssignments);
+    }
+
+    private Promise<Unit> applyAssignments(List<KVCommand<AetherKey>> commands) {
+        commands.forEach(this::applyAssignment);
+
+        return Promise.unitPromise();
+    }
+
+    private void applyAssignment(KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.Put<?, ?> put && put.key() instanceof ConsumerAssignmentKey key && put.value() instanceof ConsumerAssignmentValue value) {
+            committedAssignments.put(key, value);
+        }
+    }
+
+    /// Commit an assignment directly — a leader elsewhere reassigning the partition.
+    private void commitAssignment(int partition, NodeId assignee, Epoch epoch) {
+        committedAssignments.put(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP), assignmentRecord(assignee, epoch));
+    }
+
+    private static ConsumerAssignmentValue assignmentRecord(NodeId assignee, Epoch epoch) {
+        return ConsumerAssignmentValue.consumerAssignmentValue(assignee, epoch, epoch.localCounter(), HlcTimestamp.ZERO);
+    }
+
+    /// The same seam for the committed-assignment reader: a record that moves BETWEEN two reads of one
+    /// pass. Follower writer, so the pass itself commits nothing.
+    private StreamConsumerManager managerReading(ConsumerAssignmentWriter.CommittedAssignments committed) {
+        return StreamConsumerManager.streamConsumerManager(registry,
+                                                           runtime,
+                                                           invoker,
+                                                           invocationHandler,
+                                                           FrameworkCodecs.frameworkCodecs(),
                                                            ownership,
                                                            placement,
-                                                           self);
+                                                           SELF,
+                                                           AssignmentAuthority.assignmentAuthority(committed,
+                                                                                                   ConsumerAssignmentWriter.consumerAssignmentWriter(() -> false,
+                                                                                                                                                     () -> 1L,
+                                                                                                                                                     HlcClock.hlcClock(SELF),
+                                                                                                                                                     committed),
+                                                                                                   this::applyAssignments));
     }
 
     /// A seam for a registry whose answer changes BETWEEN reads — a KV notification landing while a
@@ -142,7 +242,8 @@ class StreamConsumerManagerTest {
                                                            FrameworkCodecs.frameworkCodecs(),
                                                            ownership,
                                                            placement,
-                                                           SELF);
+                                                           SELF,
+                                                           authority(true));
     }
 
     private void declare(String eventType, boolean batchMode) {
@@ -960,7 +1061,8 @@ class StreamConsumerManagerTest {
                                                                ownership,
                                                                placement,
                                                                SELF,
-                                                               topicGroups);
+                                                               topicGroups,
+                                                               authority(true));
         }
     }
 
@@ -1021,9 +1123,233 @@ class StreamConsumerManagerTest {
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
+        /// #1266 and rev1272 F7 follow-up: every non-delivering state reaches the per-partition status
+        /// the declarative-consumers route renders, each from its OWN snapshot field — set one at a time
+        /// so a swapped or dropped mapping shows.
+        @Test
+        void statuses_carryEachNonDeliveringState_fromItsOwnSnapshotField() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.reconcile();
+            runtime.states(true, false, false);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isTrue();
+                                                                                                 assertThat(cursor.retryInFlight()).isFalse();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isFalse();
+                                                                                             }));
+            runtime.states(false, true, false);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isFalse();
+                                                                                                 assertThat(cursor.retryInFlight()).isTrue();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isFalse();
+                                                                                             }));
+            runtime.states(false, false, true);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isFalse();
+                                                                                                 assertThat(cursor.retryInFlight()).isFalse();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isTrue();
+                                                                                             }));
+        }
+
         @Test
         void statuses_areEmpty_whenNothingDeclared() {
             assertThat(manager().statuses()).isEmpty();
+        }
+    }
+
+    /// #1271: consumer-group partition assignment must be FENCED. Two nodes whose local views of the
+    /// partition's owner disagree — each believing it is the assignee — must not both attach: only the
+    /// node named by the COMMITTED assignment record may deliver. Before the fix each node decided from
+    /// its own view alone, so both attached, both delivered, and both wrote the cursor.
+    @Nested
+    class FencedAssignment {
+        @Test
+        void reconcile_attachesAtMostOneNode_whenTwoNodesViewsOfTheOwnerDisagree() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var selfView = new MutableOwnership();
+            var peerView = new MutableOwnership();
+
+            selfView.ownedBy(SELF, 0);
+            peerView.ownedBy(PEER, 0);
+            var selfRuntime = new RecordingRuntime();
+            var peerRuntime = new RecordingRuntime();
+
+            // One cluster, one leader: SELF's node leads and commits the assignment; PEER follows. Both
+            // compute themselves as the consumer of partition 0 from their own views.
+            managerFor(SELF, selfRuntime, selfView, true).reconcile();
+            managerFor(PEER, peerRuntime, peerView, false).reconcile();
+
+            var attached = Stream.of(selfRuntime, peerRuntime)
+                                 .filter(nodeRuntime -> nodeRuntime.subscribedPartitions()
+                                                                   .contains(0))
+                                 .count();
+
+            assertThat(attached).describedAs("divergent owner views must not produce two consumers of one (group, partition)")
+                                .isLessThanOrEqualTo(1L);
+        }
+
+        /// The follower whose OWN view names itself still attaches nothing: its view is not the authority.
+        @Test
+        void reconcile_attachesOnlyWhereTheCommittedRecordNamesThisNode_evenAgainstItsOwnView() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var peerView = new MutableOwnership();
+
+            peerView.ownedBy(PEER, 0, 1, 2, 3);
+            commitAssignment(0, SELF, EPOCH_1);
+            commitAssignment(1, PEER, EPOCH_1);
+            var peerRuntime = new RecordingRuntime();
+
+            managerFor(PEER, peerRuntime, peerView, false).reconcile();
+
+            assertThat(peerRuntime.subscribedPartitions()).describedAs("committed: 0→SELF, 1→PEER, 2 and 3 → none")
+                                                          .containsExactly(1);
+        }
+
+        /// rev1335 M12: `attach` re-reads the committed record instead of trusting the desired set computed a
+        /// moment earlier in the same pass. On a first pass partition 0's record is read exactly twice — once
+        /// into the desired set, once at attach — so a reader that names this node on its first read and PEER
+        /// from the second on is a reassignment landing between the two, and it must attach nothing.
+        @Test
+        void attach_reReadsTheCommittedRecord_andAttachesNothing_whenItMovedSinceTheDesiredSetWasComputed() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var readsOfPartition0 = new AtomicInteger();
+            ConsumerAssignmentWriter.CommittedAssignments movingAway = (_, partition, _) -> partition == 0 && readsOfPartition0.getAndIncrement() == 0
+                                                                                           ? Option.some(assignmentRecord(SELF, EPOCH_1))
+                                                                                           : Option.some(assignmentRecord(PEER, EPOCH_2));
+
+            managerReading(movingAway).reconcile();
+
+            assertThat(readsOfPartition0.get()).describedAs("precondition: the desired set's read and the attach re-read")
+                                               .isEqualTo(2);
+            assertThat(runtime.subscribedPartitions()).describedAs("by the time attach re-read it, the record named PEER")
+                                                      .isEmpty();
+        }
+
+        @Test
+        void reconcile_attachesNothing_whenNoAssignmentIsCommitted() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            ownership.ownedBySelf(0, 1, 2, 3);
+
+            managerFor(SELF, runtime, ownership, false).reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("admitting on absence is exactly the unfenced behaviour")
+                                                      .isEmpty();
+        }
+
+        @Test
+        void attach_carriesTheCommittedEpoch_andTheFenceTracksTheCommittedRecord() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+
+            managerFor(SELF, runtime, ownership, false).reconcile();
+            var fence = runtime.fenceOf(0);
+
+            assertThat(fence.map(ConsumerFence::epoch)).isEqualTo(Option.some(EPOCH_1));
+            assertThat(fence.map(ConsumerFence::admitted)).isEqualTo(Option.some(true));
+            commitAssignment(0, PEER, EPOCH_2);
+            assertThat(fence.map(ConsumerFence::admitted)).describedAs("delivery pauses at the next pass once the mirror shows the move")
+                                                          .isEqualTo(Option.some(false));
+        }
+
+        @Test
+        void reconcile_abandonsWithoutFlush_whenTheAssignmentMovesAway() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            commitAssignment(0, PEER, EPOCH_2);
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+            assertThat(runtime.abandoned).describedAs("the loser detaches without the final flush").containsExactly(0);
+            assertThat(runtime.gracefullyUnsubscribed).isEmpty();
+        }
+
+        @Test
+        void reconcile_detachesWithFlush_whenStillTheAssignee() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            undeclare();
+            manager.reconcile();
+
+            assertThat(runtime.gracefullyUnsubscribed).describedAs("still the assignee: the final flush is the cursor's last word")
+                                                      .containsExactly(0);
+            assertThat(runtime.abandoned).isEmpty();
+        }
+
+        /// A→B→A between two reconciles: the subscription from the first tenure is abandoned and replaced
+        /// by one under the current epoch — its cursor state predates B's tenure.
+        @Test
+        void reconcile_reattachesUnderTheCurrentEpoch_afterAnAwayAndBackMove() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            commitAssignment(0, PEER, EPOCH_2);
+            commitAssignment(0, SELF, EPOCH_3);
+            manager.reconcile();
+
+            assertThat(runtime.abandoned).containsExactly(0);
+            assertThat(runtime.fenceOf(0).map(ConsumerFence::epoch)).isEqualTo(Option.some(EPOCH_3));
+        }
+
+        @Test
+        void abandonAll_detachesEverySubscriptionWithoutFlush() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            commitAssignment(1, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            manager.abandonAll();
+
+            assertThat(manager.activeSubscriptionCount()).isZero();
+            assertThat(runtime.abandoned).containsExactlyInAnyOrder(0, 1);
+            assertThat(runtime.gracefullyUnsubscribed).isEmpty();
+        }
+
+        /// The quorum-loss listener stops delivery BEFORE the drain chain runs — the drain ends in a halt
+        /// that may be seconds away.
+        @Test
+        void abandoningOnQuorumLoss_abandonsConsumersBeforeTheDrainChain() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+            var seenByChain = new ArrayList<Integer>();
+
+            manager.reconcile();
+            StreamConsumerManager.<String>abandoningOnQuorumLoss(_ -> seenByChain.add(manager.activeSubscriptionCount()),
+                                                                 manager)
+                                 .accept("quorum-lost");
+
+            assertThat(seenByChain).describedAs("the drain chain runs, and it runs after the consumers are gone")
+                                   .containsExactly(0);
+            assertThat(runtime.abandoned).containsExactly(0);
         }
     }
 
@@ -1113,10 +1439,46 @@ class StreamConsumerManagerTest {
         private record StreamPartition(String streamName, int partition) {}
 
         private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
+        private final Map<StreamPartition, ConsumerFence> fences = new ConcurrentHashMap<>();
+        private final List<Integer> abandoned = new CopyOnWriteArrayList<>();
+        private final List<Integer> gracefullyUnsubscribed = new CopyOnWriteArrayList<>();
         private int subscribeCalls;
+        private volatile boolean deadLetterHold;
+        private volatile boolean retryHold;
+        private volatile boolean awaitingCursorFetch;
         // Runs on the unsubscribing thread after each unsubscribe — lets a test trigger a pass from INSIDE
         // the stop sweep, while that thread holds the pass lock. Inert by default.
         private volatile Runnable afterUnsubscribe = () -> {};
+
+        void states(boolean deadLetter, boolean retry, boolean awaitingFetch) {
+            deadLetterHold = deadLetter;
+            retryHold = retry;
+            awaitingCursorFetch = awaitingFetch;
+        }
+
+        Option<ConsumerFence> fenceOf(int partition) {
+            return Option.option(fences.get(new StreamPartition(STREAM, partition)));
+        }
+
+        @Override
+        public Result<Unit> subscribe(String streamName,
+                                      int partition,
+                                      ConsumerConfig config,
+                                      ConsumerCallback callback,
+                                      IdlePolicy idlePolicy,
+                                      ConsumerFence fence) {
+            fences.put(new StreamPartition(streamName, partition), fence);
+
+            return subscribe(streamName, partition, config, callback, idlePolicy);
+        }
+
+        @Override
+        public Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
+            abandoned.add(partition);
+            subscriptions.remove(new StreamPartition(streamName, partition));
+
+            return Result.unitResult();
+        }
 
         List<Integer> subscribedPartitions() {
             return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
@@ -1152,6 +1514,7 @@ class StreamConsumerManagerTest {
 
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
+            gracefullyUnsubscribed.add(partition);
             subscriptions.remove(new StreamPartition(streamName, partition));
             afterUnsubscribe.run();
 
@@ -1183,7 +1546,11 @@ class StreamConsumerManagerTest {
                                                                        0L,
                                                                        false,
                                                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
-                                                                       Option.none()))
+                                                                       Option.none(),
+                                                                       deadLetterHold,
+                                                                       retryHold,
+                                                                       awaitingCursorFetch,
+                                                                       RewindEpoch.NONE))
                                 .toList();
         }
 
@@ -1209,6 +1576,8 @@ class StreamConsumerManagerTest {
         private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
         private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
         private static final String TOPIC_GROUP = "org.example:orders#" + METHOD.name();
+        private static final MethodName ON_PLACED = MethodName.methodName("onPlaced").unwrap();
+        private static final MethodName ON_PLACED_WITH_CONTEXT = MethodName.methodName("onPlacedWithContext").unwrap();
 
         private org.pragmatica.aether.endpoint.TopicSubscriptionRegistry topicRegistry;
         private CapturingRuntime capturingRuntime;
@@ -1223,10 +1592,14 @@ class StreamConsumerManagerTest {
         }
 
         private void subscribeTopic(Artifact artifact) {
+            subscribeTopic(artifact, METHOD);
+        }
+
+        private void subscribeTopic(Artifact artifact, MethodName method) {
             var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
             var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address,
                                                                                                               artifact,
-                                                                                                              METHOD);
+                                                                                                              method);
             var value = org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF);
 
             topicRegistry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
@@ -1243,7 +1616,8 @@ class StreamConsumerManagerTest {
                                                                SELF,
                                                                TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
                                                                                                                        name -> ownership.partitionCount(name)
-                                                                                                                                        .isPresent()));
+                                                                                                                                        .isPresent()),
+                                                               authority(true));
         }
 
         private void deployDecodingSliceLocally() {
@@ -1294,36 +1668,240 @@ class StreamConsumerManagerTest {
         }
 
         /// The unwrap seam end to end at the delivery boundary: the captured callback receives a
-        /// node-codec-encoded [TopicEventEnvelope]; the slice's invoker must see the DECODED
-        /// application payload — never the envelope, never raw bytes.
+        /// node-codec-encoded [TopicEventEnvelope]; the slice must be handed the APPLICATION payload —
+        /// never the envelope — together with the envelope's delivery context (#1295: before it, the
+        /// node decoded the payload and invoked with the bare event, so no context ever existed). The
+        /// subscribing slice's own bridge decodes the payload bytes.
         @Test
-        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayload() {
+        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayloadAndContext() {
             subscribeTopic(ARTIFACT);
             deployDecodingSliceLocally();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
-            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
             topicManager().reconcile();
-            var appEvent = new AppEvent("order-42");
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var appPayload = sliceCodec.encode(new AppEvent("order-42"));
+            var envelope = new TopicEventEnvelope("msg-1", 1234L, appPayload);
+
+            capturingRuntime.callbackFor(TOPIC_STREAM, 0)
+                            .onEvent(3L,
+                                     topicAwareCodec.encode(envelope),
+                                     1234L)
+                            .await()
+                            .onFailure(cause -> fail(cause.message()));
+            var payload = org.mockito.ArgumentCaptor.forClass(byte[].class);
+            var context = org.mockito.ArgumentCaptor.forClass(MessageContext.class);
+
+            org.mockito.Mockito.verify(invoker)
+                               .invokeLocalWithContext(org.mockito.ArgumentMatchers.eq(ARTIFACT),
+                                                       org.mockito.ArgumentMatchers.eq(METHOD),
+                                                       payload.capture(),
+                                                       context.capture());
+            assertThat(payload.getValue()).isEqualTo(appPayload);
+            assertThat(context.getValue()).isEqualTo(MessageContext.messageContext("msg-1", TOPIC_ADDRESS, 0, 3L));
+        }
+
+        /// #1295, end to end at the node boundary: a REAL [DurableTopicPublisher]
+        /// stamps the envelope's messageId; the manager's dispatch delivers it through a REAL
+        /// [DefaultSliceBridge] holding a 1-arg subscriber and a 2-arg subscriber
+        /// in the exact adapter shape the slice processor generates, both on the SAME topic. The 2-arg
+        /// subscriber must observe the PUBLISHER's messageId with the topic, partition and offset of the
+        /// delivery; the 1-arg subscriber must receive the bare event, as before. Before #1295 the 2-arg
+        /// subscriber failed every delivery with a ClassCastException and never saw anything.
+        @Test
+        void delivery_givesTwoArgSubscriberThePublishersMessageId_andOneArgSubscriberTheBareEvent() {
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var bare = new AtomicReference<Object>();
+            var contextual = new AtomicReference<ContextualEvent>();
+            var subscriber = DefaultSliceBridge.defaultSliceBridge(ARTIFACT,
+                                                                                                () -> List.of(bareSubscriber(bare),
+                                                                                                              contextualSubscriber(contextual)),
+                                                                                                sliceCodec);
+
+            subscribeTopic(ARTIFACT, ON_PLACED);
+            subscribeTopic(ARTIFACT, ON_PLACED_WITH_CONTEXT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(call -> subscriber.invokeWithContext(call.<MethodName> getArgument(1)
+                                                                                                                                  .name(),
+                                                                                                                              call.getArgument(2),
+                                                                                                                              call.getArgument(3))
+                                                                                                                          .mapToUnit());
+            topicManager().reconcile();
+
+            var published = publishThroughTheRealPublisher(sliceCodec, new AppEvent("order-42"));
+
+            deliver(ON_PLACED, published, 5L);
+            deliver(ON_PLACED_WITH_CONTEXT, published, 5L);
+
+            assertThat(bare.get()).isEqualTo(new AppEvent("order-42"));
+            assertThat(contextual.get()).isEqualTo(ContextualEvent.contextualEvent(new AppEvent("order-42"),
+                                                                                                                      MessageContext.messageContext(published.messageId(),
+                                                                                                                                                                                      TOPIC_ADDRESS,
+                                                                                                                                                                                      0,
+                                                                                                                                                                                      5L)));
+        }
+
+        private void deliver(MethodName method,
+                             TopicEventEnvelope envelope,
+                             long offset) {
+            capturingRuntime.callbackFor(TOPIC_STREAM,
+                                         0,
+                                         DurableGroupIdentity.groupId(ARTIFACT, method))
+                            .onEvent(offset, topicAwareCodec.encode(envelope), 1234L)
+                            .await()
+                            .onFailure(cause -> fail(method.name() + " delivery failed: "
+                                                                                      + cause.message()));
+        }
+
+        private static TopicEventEnvelope publishThroughTheRealPublisher(SliceCodec sliceCodec,
+                                                                                                            AppEvent event) {
+            var captured = new AtomicReference<TopicEventEnvelope>();
+
+            new DurableTopicPublisher<AppEvent>(sliceCodec, capturingPublisher(captured))
+                .publish(event)
+                .await();
+
+            return captured.get();
+        }
+
+        /// #1342 made `publishBatch` abstract; only the single form is exercised here, so the batch form
+        /// answers each event as published and is never reached.
+        private static StreamPublisher<TopicEventEnvelope> capturingPublisher(AtomicReference<TopicEventEnvelope> captured) {
+            return new StreamPublisher<>() {
+                @Override
+                public Promise<Unit> publish(TopicEventEnvelope envelope) {
+                    return capture(captured, envelope);
+                }
+
+                @Override
+                public Promise<List<PublishOutcome>> publishBatch(List<TopicEventEnvelope> events) {
+                    return Promise.success(IntStream.range(0, events.size())
+                                                    .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                    .toList());
+                }
+            };
+        }
+
+        private static Promise<Unit> capture(AtomicReference<TopicEventEnvelope> captured,
+                                             TopicEventEnvelope envelope) {
+            captured.set(envelope);
+            return Promise.unitPromise();
+        }
+
+        private static SliceMethod<Unit, AppEvent> bareSubscriber(AtomicReference<Object> seen) {
+            return new SliceMethod<>(ON_PLACED,
+                                                                 event -> record(seen, event),
+                                                                 new TypeToken<Unit>() {},
+                                                                 new TypeToken<AppEvent>() {});
+        }
+
+        /// The exact adapter `FactoryClassGenerator` emits for `onPlacedWithContext(AppEvent, MessageContext)`.
+        private static SliceMethod<Unit, ContextualEvent> contextualSubscriber(AtomicReference<ContextualEvent> seen) {
+            return new SliceMethod<>(ON_PLACED_WITH_CONTEXT,
+                                                                 contextual -> record(seen,
+                                                                                      ContextualEvent.contextualEvent((AppEvent) contextual.event(),
+                                                                                                                                                        contextual.context())),
+                                                                 new TypeToken<Unit>() {},
+                                                                 new TypeToken<ContextualEvent>() {});
+        }
+
+        private static <T> Promise<Unit> record(AtomicReference<T> seen, T value) {
+            seen.set(value);
+            return Promise.unitPromise();
+        }
+
+        /// #1238: the runtime runs ONE serial delivery loop per (group, partition), so a handler that
+        /// never resolves must not hold that partition forever — the declarative path bounds each
+        /// invocation, and the timeout surfaces as a delivery failure for the error strategy to handle.
+        /// The bound is shortened through the constructor seam; production uses
+        /// [StreamConsumerManager.ManagerState#HANDLER_TIMEOUT].
+        @Test
+        void delivery_failsWithTimeout_whenTheSliceHandlerNeverResolves() throws InterruptedException {
+            subscribeTopic(ARTIFACT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            // The durable-topic path invokes through invokeLocalWithContext (#1295); the never-resolving
+            // promise is the hung handler this pin bounds.
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            new StreamConsumerManager.ManagerState(registry,
+                                                   capturingRuntime,
+                                                   invoker,
+                                                   invocationHandler,
+                                                   topicAwareCodec,
+                                                   ownership,
+                                                   placement,
+                                                   SELF,
+                                                   TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
+                                                                                                           name -> ownership.partitionCount(name)
+                                                                                                                            .isPresent()),
+                                                   StreamConsumerManager.CommittedEpochSource.none(),
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis(),
+                                                   authority(true)).reconcile();
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
             var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
                                                                                      1234L,
-                                                                                     sliceCodec.encode(appEvent));
+                                                                                     sliceCodec.encode(new AppEvent("order-42")));
+            var settled = new java.util.concurrent.CountDownLatch(1);
+            var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
 
             capturingRuntime.callbackFor(TOPIC_STREAM, 0)
                             .onEvent(0L,
                                      topicAwareCodec.encode(envelope),
                                      1234L)
-                            .await()
-                            .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            var payload = org.mockito.ArgumentCaptor.forClass(Object.class);
+                            .onResult(result -> {
+                                          outcome.set(result);
+                                          settled.countDown();
+                                      });
+            assertThat(settled.await(2, java.util.concurrent.TimeUnit.SECONDS)).describedAs("a hung handler must end its delivery, not hold the partition's loop forever")
+                      .isTrue();
+            assertThat(outcome.get().isFailure()).describedAs("a timed-out invocation is a delivery failure")
+                      .isTrue();
+        }
 
-            org.mockito.Mockito.verify(invoker)
-                               .invokeLocal(org.mockito.ArgumentMatchers.eq(ARTIFACT),
-                                            org.mockito.ArgumentMatchers.eq(METHOD),
-                                            payload.capture(),
-                                            any());
-            assertThat(payload.getValue()).isEqualTo(appEvent);
+        /// rev1285d F2: the declarative `[streams.X]` twin of the pin above. That pin moved to
+        /// `invokeLocalWithContext` with #1295, which left `invokeConsumer`'s own `.timeout(handlerTimeout)`
+        /// on the `invokeLocal` path unpinned — removing it kept all 1,533 node tests green. Same seam,
+        /// same 200ms bound, the never-resolving promise stubbed on `invokeLocal` instead.
+        @Test
+        void delivery_failsWithTimeout_whenTheDeclarativeSliceHandlerNeverResolves() throws InterruptedException {
+            declare(APP_EVENT_TYPE, false);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            new StreamConsumerManager.ManagerState(registry,
+                                                   capturingRuntime,
+                                                   invoker,
+                                                   invocationHandler,
+                                                   topicAwareCodec,
+                                                   ownership,
+                                                   placement,
+                                                   SELF,
+                                                   TopicGroupDeclarationSource.none(),
+                                                   StreamConsumerManager.CommittedEpochSource.none(),
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis(),
+                                                   authority(true)).reconcile();
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var settled = new java.util.concurrent.CountDownLatch(1);
+            var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
+
+            assertThat(capturingRuntime.callbackFor(STREAM, 0)).describedAs("control: the declarative consumer attached to orders[0]")
+                      .isNotNull();
+            capturingRuntime.callbackFor(STREAM, 0)
+                            .onEvent(0L, sliceCodec.encode(new AppEvent("order-42")), 1234L)
+                            .onResult(result -> {
+                                          outcome.set(result);
+                                          settled.countDown();
+                                      });
+            assertThat(settled.await(2, java.util.concurrent.TimeUnit.SECONDS)).describedAs("a hung declarative handler must end its delivery, not hold the partition's loop forever")
+                      .isTrue();
+            assertThat(outcome.get().isFailure()).describedAs("a timed-out declarative invocation is a delivery failure")
+                      .isTrue();
+            verify(invoker).invokeLocal(any(), any(), any(), any());
         }
 
         private record DecodingBridge(SliceCodec codec) implements SliceBridge {
@@ -1370,11 +1948,17 @@ class StreamConsumerManagerTest {
 
         private static final class CapturingRuntime implements StreamConsumerRuntime {
             private final Map<String, ConsumerCallback> callbacks = new ConcurrentHashMap<>();
+            private final Map<String, ConsumerCallback> callbacksByGroup = new ConcurrentHashMap<>();
             private final Map<String, ConsumerConfig> byKey = new ConcurrentHashMap<>();
             private final Map<String, Integer> subscribeCalls = new ConcurrentHashMap<>();
 
             ConsumerCallback callbackFor(String streamName, int partition) {
                 return callbacks.get(streamName + "[" + partition + "]");
+            }
+
+            /// Two topic groups share one `stream[partition]` key; this resolves a group's own callback.
+            ConsumerCallback callbackFor(String streamName, int partition, String groupId) {
+                return callbacksByGroup.get(streamName + "[" + partition + "]#" + groupId);
             }
 
             List<String> streams() {
@@ -1420,6 +2004,7 @@ class StreamConsumerManagerTest {
 
                 subscribeCalls.merge(key, 1, Integer::sum);
                 callbacks.put(key, callback);
+                callbacksByGroup.put(key + "#" + config.groupId(), callback);
                 byKey.put(key, config);
 
                 return Result.unitResult();

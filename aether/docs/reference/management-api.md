@@ -757,6 +757,10 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint **
 }
 ```
 
+`rejectedStreamBindings` (#1336) appears only when the publish accepted the blueprint WITHOUT binding one
+or more `[streams.*]` declarations — it is **omitted when empty**, so read it as absent-or-list. Shape and
+rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy).
+
 > **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
 
 ### GET /api/v1/blueprints
@@ -939,9 +943,37 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
   "targetInstances": 5,
   "activeInstances": 0,
   "failedInstances": 0,
-  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0"
+  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0",
+  "rejectedStreamBindings": [
+    {
+      "field": "[streams.audit-events]",
+      "rule": "version-and-source-mutually-exclusive",
+      "message": "Stream resource 'audit-events' must not set both 'source' and 'version'"
+    }
+  ]
 }
 ```
+
+#1336 — **`rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
+blueprint WITHOUT binding**, each by its TOML `field` (the section the parser refused, `[streams.<alias>]`),
+the `rule` it failed and the diagnostic. **Omitted when every declaration bound** — the key is absent, not
+`[]`. The other declarations are bound as usual; a slice that uses a
+rejected alias fails to load naming that alias (`UnboundStreamAlias`), and this list is where the
+operator learns why, at the point where it is actionable. The same shape is returned by
+[`POST /api/v1/blueprints`](#post-apiv1blueprints) and `POST /api/v1/blueprints/publish`. Rules
+whose violation leaves nothing to bind refuse the publish outright with **`422`**; the error body is the
+usual problem document, whose `detail` is the text `Stream resource validation failed (N errors):` followed
+by one `[rule] field — message` line per failure (not the structured triples above): a `resources.toml` that does not parse
+(`resources-toml-parse`), a blueprint whose own namespace cannot be derived
+(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, and an
+`External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
+exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
+the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
+`partitions-over-ceiling`, `replication-invalid`, `source-address-invalid`, `namespace-invalid`,
+`stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
+names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
+derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
+declarations included.
 
 #759 — `status` is earned off the deployment map at response time, not assumed from a successful
 publish; deployment is asynchronous, so **`pending` is the normal, expected response for a
@@ -2289,7 +2321,8 @@ the view actionable (see recovery below).
       "violation": ""
     }
   ],
-  "walRecoveryHeadGapsAccepted": 0
+  "walRecoveryHeadGapsAccepted": 0,
+  "walReclamationHeldBackTicks": 0
 }
 ```
 
@@ -2297,6 +2330,7 @@ the view actionable (see recovery below).
 |-------|-------------|
 | `walTotalBytes` | Total live WAL bytes across every partition on this node — the same number the `streams` storage instance reports as `wal.totalBytes` (both derive from one snapshot) |
 | `walRecoveryHeadGapsAccepted` | WAL recoveries on this node, since process start, that accepted a gap BEFORE a WAL file's first record as reclaimed history (the partition's sealed segments were removed by retention after the WAL was compacted). Each one is also logged at WARN, naming the stream, partition and offset range. Expected after retention reclaimed a partition's every sealed segment; otherwise the records in that range are lost. A gap BETWEEN records, or a duplicate offset, is never accepted: it refuses the stream on the node with an ERROR |
+| `walReclamationHeldBackTicks` | Consecutive WAL-truncation ticks (30 s each) in which some partition's sealed watermark ON DISK — the refs in the latest streams metadata snapshot, which is the only bound truncation may use (#1345) — sat below its live watermark without advancing. `0` while the snapshot keeps up. Climbing means WAL reclamation is halted because the streams snapshot cannot be written or read (disk full, permissions, a torn newest file); the WAL grows, bounded by the disk. The tick WARNs from the second such tick and every 10 after, naming the partitions and their WAL bytes. Recovery: make the streams snapshot directory writable and `LATEST` readable; the next snapshot advances the bound and the counter resets |
 | `partitions[]` | One row per `(stream, partition)` this node holds anything for — materialized (ring/WAL) or held only as sealed segments — sorted by stream, then partition |
 | `stream` / `partition` | The partition coordinate (`entity:`-prefixed streams are durable-entity logs) |
 | `wal` | The partition's live WAL counters; `null` when it has no WAL (non-durable path, or a segment-only row) |
@@ -4183,6 +4217,8 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/cluster/storage/{name}` | Storage (cluster-wide) |
 | GET | `/api/v1/entity/checkpoints` | Durable Entities (per-node) |
 | GET | `/api/v1/entity/keyspaces` | Durable Entities |
+| GET | `/api/v1/topics/{namespace}/{topic}/{version}/groups` | Durable Topics (per-node) |
+| POST | `/api/v1/topics/{namespace}/{topic}/{version}/rebuild/{group}` | Durable Topics (per-node) |
 | GET | `/api/v1/logging/levels` | Log Level Management |
 | POST | `/api/v1/logging/levels` | Log Level Management |
 | DELETE | `/api/v1/logging/levels/{logger}` | Log Level Management |
@@ -5097,6 +5133,18 @@ this node has never folded is ABSENT from `checkpointedThrough` rather than repo
 say about it" and "checkpointed through offset 0" are different claims. An empty `keyspaces` list means
 this node hosts no durable-entity keyspace — a true answer, not an error.
 
+**Checkpoint lag (#1302).** `checkpointLag` is, per partition this node folds, the log head offset minus the
+COMMITTED checkpoint in consensus KV — the pointer the retention floor and every recovery use: how far a
+recovery of that partition would have to replay. It is reported only for partitions this node OWNS, and is
+ABSENT (never 0) for the rest: a replica's fold is a read-side cache whose checkpoints the cluster refuses,
+and a released partition leaves the map. The baseline is never this node's own recorded save — a fenced
+save still resolves success, so a local record can claim coverage the cluster never committed — which is
+also why a takeover raises no spurious alert: the previous owner's committed checkpoint is the baseline
+from the first tick. The node's largest value is published as the metric `entity.checkpoint.lag.max` and evaluated
+by the threshold alert path, with a default threshold of WARNING 5,000 / CRITICAL 10,000 records
+(`[alerts] entity_checkpoint_lag_warning` / `entity_checkpoint_lag_critical`, overridable per cluster with
+`POST /api/v1/thresholds`). The alert names the node; this map names the partition.
+
 Assembled ON REQUEST from counters the checkpoint tick already maintains; no hot-path accounting is added.
 
 **Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The dashboard is
@@ -5118,7 +5166,8 @@ Revisit if a cluster-wide "keyspaces with stalled checkpointing" alert is wanted
       "partitionCount": 8,
       "writes": 214,
       "failures": 0,
-      "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}
+      "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502},
+      "checkpointLag": {"0": 59, "3": 12, "5": 0}
     }
   ]
 }
@@ -5286,8 +5335,8 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
       "sliceDeployedLocally": true,
       "eventTypePublishable": true,
       "assignedPartitions": [
-        {"partition": 0, "committedOffset": 42, "stalled": false, "lastCursorCommitFailure": ""},
-        {"partition": 2, "committedOffset": 17, "stalled": false, "lastCursorCommitFailure": ""}
+        {"partition": 0, "committedOffset": 42, "stalled": false, "lastCursorCommitFailure": "", "deadLetterInFlight": false, "retryInFlight": false, "awaitingCursorFetch": false},
+        {"partition": 2, "committedOffset": 17, "stalled": false, "lastCursorCommitFailure": "", "deadLetterInFlight": false, "retryInFlight": false, "awaitingCursorFetch": false}
       ],
       "partitionAssignments": [
         {"partition": 0, "consumerNode": "node-1", "ownerNode": "node-1"},
@@ -5318,12 +5367,98 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | `consumers[].eventType` | Declared event type |
 | `consumers[].sliceDeployedLocally` | Whether the declaring slice is loaded on THIS node |
 | `consumers[].eventTypePublishable` | Whether the slice's own codec registry knows the event type (#526). **Absent when this node cannot know** — the probe needs the slice's codec, which only a node hosting the slice has |
-| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled`, `lastCursorCommitFailure` (this partition's most recent cursor commit failure detail while attached; empty when its last commit succeeded, #654; prefixed `local commit:` when the node-local write itself failed or `checkpoint publish:` when the local write succeeded but the consensus checkpoint publish was the one recovered, #654 round 2) |
+| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled`, `lastCursorCommitFailure` (this partition's most recent cursor commit failure detail while attached; empty when its last commit succeeded, #654; prefixed `local commit:` when the node-local write itself failed or `checkpoint publish:` when the local write succeeded but the consensus checkpoint publish was the one recovered, #654 round 2), `deadLetterInFlight` and `retryInFlight` (#1266: the partition's delivery loop is HELD behind an outstanding dead-letter append or a scheduled retry of the head event; a frozen `committedOffset` with both `false` is a quiet partition, not a held one. A dead-letter append that has not settled is bounded at 30s, then retried with backoff; the hold clears when the append lands), and `awaitingCursorFetch` (the consumer has not STARTED: its cursor fetch keeps failing and is being retried with backoff, so it delivers nothing while looking like a quiet partition) |
 | `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
 | `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
 | `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies — including a #545 cross-artifact group collision, which names every colliding artifact, the stream, and the group on BOTH entries; empty when the consumer is healthy and reading locally |
 
 An empty `consumers` list means no slice in the cluster declares a `[streams.X]` consumer — the honest answer; rows are never fabricated.
+
+### Durable Topic Groups
+
+```
+GET /api/v1/topics/{namespace}/{topic}/{version}/groups
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (per-node)
+
+**CLI:** `aether topics groups <namespace:topic:version>`
+
+The consumer groups over a durable topic's backing stream (`topic:<namespace:topic:version>`), one per durable subscriber method, identified the way the runtime identifies them: `artifactBase#method` (durable-pubsub-spec §6 — the version is stripped so a redeploy keeps its cursor). The projection facade's own `name` is NOT the group; only the runtime's identity appears here (#1333).
+
+Three kinds of fact sit in one row, with three different scopes, so read each column for what it is:
+
+- **Cluster facts, identical from every node:** `consumerNode` / `ownerNode` (the #535 assignment, computed locally and identically everywhere), and `committedCursor` / `committedEpoch` — the group's consensus-committed checkpoint read from KV. `committedEpoch` is the rewind epoch the checkpoint was committed under, `0/0` for a group never rewound; after a rebuild it equals the token the rebuild answered with.
+- **This node's facts:** `heldHere`, `liveCursor`, `liveEpoch`, `lastCursorCommitFailure` — the consumer THIS node runs for the partition. Present only where `heldHere` is `true`. `committedCursor` can LAG `liveCursor`, or be ABSENT while `liveCursor` is not: checkpoints are requested from an ack on the 500 ms / 1000-event cadence, so a partition that goes quiet keeps its committed cursor at the last cadence-triggered commit — or has none, when every event landed within 500 ms of the attach — until the next event or a graceful detach `[verified: DurableProjectionRebuildForgeTest measured 3 committed against 7 live, and none against 7, on a quiet single-partition topic]`. The lag bounds redelivery after an ungraceful move; it is not a stall.
+- **The hosted projection's facts:** `projection` (its name) and, per partition, `replayState` with `nextReplayOffset` / `replayThroughOffset` while `REBUILDING`. `replayState` is `UNKNOWN` on a node that hosts no projection for the group — the store's status lives inside the slice, and a node that does not run the slice cannot see it. Ask the node named in `consumerNode`.
+
+`cursorReportFailures` counts, node-wide since boot, the committed-cursor reports a hosted projection refused or threw on; a non-zero value with a projection stuck `REBUILDING` is the first thing to look at.
+
+**Response:**
+```json
+{
+  "topic": "com.example:projection-events:1.0.0",
+  "topicStream": "topic:com.example:projection-events:1.0.0",
+  "node": "node-2",
+  "cursorReportFailures": 0,
+  "groups": [
+    {
+      "consumerGroup": "com.example:orders-slice#onProjectionEvent",
+      "artifact": "com.example:orders-slice:1.0.0",
+      "method": "onProjectionEvent",
+      "sliceDeployedLocally": true,
+      "projection": "order-totals",
+      "partitions": [
+        {"partition": 0, "consumerNode": "node-2", "ownerNode": "node-2", "committedCursor": 6, "committedEpoch": "1/1",
+         "heldHere": true, "liveCursor": 6, "liveEpoch": "1/1", "lastCursorCommitFailure": "", "replayState": "LIVE"}
+      ],
+      "diagnostic": ""
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `groups[].consumerGroup` | The runtime's group id, `artifactBase#method` — what `rebuild` takes and what dead-letter entries are attributed to |
+| `groups[].projection` | Name of the projection attached for this group ON THIS NODE; empty when this node hosts none |
+| `groups[].partitions[].committedCursor` / `committedEpoch` | Consensus-committed checkpoint (next offset to read) and the rewind epoch it carries. Absent / `""` before the first checkpoint |
+| `groups[].partitions[].heldHere`, `liveCursor`, `liveEpoch`, `lastCursorCommitFailure` | This node's consumer for the partition, when it runs one; `lastCursorCommitFailure` as on [Declarative Stream Consumers](#declarative-stream-consumers) |
+| `groups[].partitions[].replayState` | `LIVE`, `REBUILDING`, or `UNKNOWN` (no projection for the group hosted here). While `REBUILDING`: `nextReplayOffset` (the next offset the store will admit) and `replayThroughOffset` (the captured head it goes LIVE past) |
+| `groups[].unassignedPartitions`, `diagnostic` | As on Declarative Stream Consumers |
+
+### Rebuild Projection
+
+```
+POST /api/v1/topics/{namespace}/{topic}/{version}/rebuild/{group}
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (per-node) — POST to the node that consumes the group's partitions (`consumerNode` above); any other node answers `409`
+
+**CLI:** `aether topics rebuild <namespace:topic:version> <group>`
+
+`{group}` is the runtime's group id, `artifactBase#method`, with the `#` percent-encoded (`%23`) — bare, an HTTP client treats it as a URI fragment and never sends it. The CLI encodes it.
+
+Rebuilds the read model behind one consumer group's projection (durable-pubsub-spec §10, #1333), in the facade's three ordered steps: **capture** what will be replayed (per partition, the earliest retained offset through the last visible one, read from the ring this node holds), **reset** the projection store to a new generation — model cleared, REBUILDING over the captured range, in one step — then **rewind** the group's committed cursor to the start of each partition's range under a fresh rewind epoch. The rewind token is minted from the group's COMMITTED checkpoints — strictly newer than every epoch found, never a store-local counter, so a fresh store after a restart or an assignee move still mints past what the cluster holds. The rewind is a fenced KV put: `StreamCursorCheckpointValue` carries the epoch, the rewind record MINTS it (refused by the applier unless strictly newer — two rebuilds racing on the same committed state cannot both succeed; the loser's request fails), and the applier refuses any later checkpoint stamped with an older one, so a consumer still committing its pre-rewind position cannot undo the rewind `[mechanism: EpochBearing fence in KVStore.staleEpochWrite; pinned by DurableProjectionRebuildTest zombieCheckpoint_atTheOldEpoch_isRefusedByTheApplier]`. The rewound consumer is restarted by the node that runs it (on the committed checkpoint's notification, and on every 5 s reconcile pass) and resumes at the rewound position under the new epoch; every cursor it commits from then on is reported to the projection stamped with that epoch, which is what lets the store skip a replay offset that was dead-lettered and take the partition LIVE once the cursor passes the captured head.
+
+**Response** — the new generation, the rewind token (equal to the `committedEpoch` the groups route will show) and the captured range per partition:
+```json
+{
+  "topicStream": "topic:com.example:projection-events:1.0.0",
+  "consumerGroup": "com.example:orders-slice#onProjectionEvent",
+  "projection": "order-totals",
+  "generation": 1,
+  "token": {"generation": 1, "rewind": 1},
+  "partitions": {"0": {"nextOffset": 0, "throughOffset": 5}},
+  "state": "REBUILDING"
+}
+```
+
+A partition with nothing visible is absent from `partitions` and LIVE from the start. `state` is `LIVE` when the captured range was empty everywhere. After a clean replay the rewound consumer checkpoints its catch-up at the head, so `committedCursor` reaches the rebuilt head without a further event.
+
+**Refusals.** `409` when no projection for the group is attached on this node, or when this node consumes none of the group's partitions (a slice-hosting node that is not the assignee holds a projection store that never sees deliveries; rebuilding it would rewind the consuming node into a store that is not rebuilding) — the message names the node consuming each partition; also `409` when a projection on the topic exists here but cannot be attributed to the group (the slice has two durable subscribers on the topic and attached without naming the method — name it with `ProjectionRuntime.attach(projection, "method")`). A capture that cannot be answered from this node's rings, and a rewind whose put the applier refused (the projection store's generation is behind the cluster's — an in-memory store after a node restart), surface as their own causes, and nothing is touched in the first case: the capture precedes the reset by construction.
+
+**What it does not do.** It does not redrive the dead-letter queue: a replay offset that dead-letters again is skipped on the committed cursor and stays absent from the rebuilt model until redriven (§9 redrive is a separate surface). It does not rebuild on more than one node: a projection whose store is per node (the in-memory backing) is coherent only for a single-assignee group `[design intent — unverified for a shared ProjectionStore backing, which does not exist yet]`.
 
 ### Create Stream
 
@@ -5593,13 +5728,16 @@ writes untyped bytes with no event class to read a key from, so an explicit `par
 the operator naming a target directly. A `partition` outside `[0, partitionCount)` for the stream
 is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
 never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
-dispatch]`
+dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
+`NOT_ATTEMPTED` with `200` — see below.
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
 cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
-ProblemResponses HttpStatusAware dispatch]`
+ProblemResponses HttpStatusAware dispatch]` The batch form answers the same way: a stream-level `409` (or a
+reserved-name `400`) is the batch's own status, checked once before any item is written; per-item
+`NOT_ATTEMPTED` is partition-level only — see below.
 
 The auto-create never fabricates a stream under a reserved stream-kind prefix: a publish to a `topic`
 or `entity` namespace address with no committed config is refused with `400 Bad Request`
@@ -5612,12 +5750,32 @@ failure (a reserved name `400`, or an unavailable stream `409`) fails the whole 
 status and writes nothing. An empty batch publishes nothing and creates no stream. `[mechanism:
 publishMany runs ensureStreamExists before the per-item fan-out, and only when there are items]`
 
-**Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
-concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
-it) may already be durably written before the batch call fails. The response on failure names only
-the first invalid item — it does not report which of the other items committed. `[mechanism:
-publishMany fires every item concurrently via Promise.allOf with no short-circuit, then
-Result.allOf surfaces only the first Result failure]`
+**Batch publish is not atomic, and the response says per item what happened (#1342).** `publish-batch`
+validates and writes each item independently and concurrently. **`200` means the batch RAN, not that
+every event landed — read `notPublished`.** The top-level `published` / `notPublished` counts and one
+outcome per item, in request order, come back for every batch that ran, partial included. "Ran" means
+the route processed the batch past the stream-level check above: a batch in which NO item passed the
+PARTITION-level admission still answers `200` with `published: 0` and every item `NOT_ATTEMPTED`; a stream-level
+refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the all-rejected case answered `500`).
+
+```json
+{"address":"acme:orders:1.0.0","published":1,"notPublished":1,
+ "outcomes":[{"index":0,"status":"PUBLISHED","offset":41},
+             {"index":1,"status":"NOT_ATTEMPTED","cause":"Partition 4 is out of range; this stream has partitions [0, 4)"}]}
+```
+
+- `PUBLISHED`: durably in the log at `offset`.
+- `NOT_ATTEMPTED`: rejected before any write for a partition-level reason (out of range) — not in the log,
+  safe to retry.
+- `OUTCOME_UNKNOWN`: the write was refused or timed out, before or after the local append (#1236) — the
+  caller cannot tell which, so it may be in the log; retrying it can duplicate.
+
+A client that treats `200` as "every event landed" misreads a partial batch; check `notPublished`. Before
+#1342 the response on a partial batch was the first failure alone, and the offsets of the items that had
+landed were discarded. `[mechanism: publishMany fires every item concurrently via Promise.allOf with no
+short-circuit; each item's Result becomes its own PublishItemOutcome]` `[verified:
+StreamApiRoutesPublishBatchTest.partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset —
+the real route through ManagementRouter, asserting the written status and JSON]`
 
 ### Delete Stream Version
 
@@ -5722,10 +5880,9 @@ streams exist.
 
 Blueprints are covered as well. A `[streams.X]` section whose `source` names a `topic` or `entity`
 namespace address would otherwise make the slice's stream factories mint that stream. The blueprint
-validator rejects such a section under rule `source-reserved-kind`, so the stream is never minted. What
-an operator sees today is coarser. The deploy path swallows validator failures and publishes EMPTY
-stream bindings for the whole blueprint, so every stream alias in it fails later with a generic
-`UnboundStreamAlias`, including valid ones, and the typed rule is not shown (#1336). A
+validator rejects such a section under rule `source-reserved-kind`, so the stream is never minted, and
+since #1336 the deploy refuses the blueprint with `422` naming that rule and section — the same typed
+refusal as the routes above, instead of the earlier silent empty-bindings publish. A
 `system`-namespace source is unaffected, because its engine key is the bare name.
 
 Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config

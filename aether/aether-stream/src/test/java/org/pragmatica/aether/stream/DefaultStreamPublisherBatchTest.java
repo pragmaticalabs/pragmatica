@@ -111,15 +111,14 @@ class DefaultStreamPublisherBatchTest {
 
         var manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication.get());
 
-        manager.createStream(config(1)).onFailure(cause -> fail(cause.message()));
+        manager.createStream(replicatedConfig()).onFailure(cause -> fail(cause.message()));
         var publisher = streamPublisher(manager,
                                         identitySerializer(),
                                         STREAM,
                                         1,
                                         Option.<java.util.function.Function<byte[], Object>> none(),
                                         ConsistencyMode.EVENTUAL,
-                                        Option.none(),
-                                        2);
+                                        Option.none());
 
         publisher.publishBatch(events(100)).await().onFailure(cause -> fail(cause.message()));
 
@@ -171,7 +170,7 @@ class DefaultStreamPublisherBatchTest {
         var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
 
         manager.createStream(config(1)).onFailure(cause -> fail(cause.message()));
-        var gate = StreamPartitionManagerSectionReentrancyTest.GatedForceChannel.inject(StreamPartitionManagerSectionReentrancyTest.walOf(manager,
+        var gate = GatedWalFsync.inject(GatedWalFsync.walOf(manager,
                                                                                                                                             STREAM,
                                                                                                                                             0));
         var publisher = streamPublisher(manager, identitySerializer(), STREAM, 1, Option.<java.util.function.Function<byte[], Object>> none());
@@ -209,15 +208,14 @@ class DefaultStreamPublisherBatchTest {
                                                                                                 largestMessage)));
         var manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication.get());
 
-        manager.createStream(config(1)).onFailure(cause -> fail(cause.message()));
+        manager.createStream(replicatedConfig()).onFailure(cause -> fail(cause.message()));
         var publisher = streamPublisher(manager,
                                         identitySerializer(),
                                         STREAM,
                                         1,
                                         Option.<java.util.function.Function<byte[], Object>> none(),
                                         ConsistencyMode.EVENTUAL,
-                                        Option.none(),
-                                        2);
+                                        Option.none());
         var oneMegabyte = 1024 * 1024;
         var total = (long) oneMegabyte * 40;
 
@@ -255,7 +253,7 @@ class DefaultStreamPublisherBatchTest {
         var batchResult = batchPublisher.publishBatch(payloads).await();
         var perEventResults = payloads.stream().map(payload -> perEventPublisher.publish(payload).await()).toList();
 
-        assertThat(batchResult.isSuccess()).as("batch outcome: %s", batchResult)
+        assertThat(batchResult.unwrap().stream().allMatch(org.pragmatica.aether.slice.stream.PublishOutcome.Published.class::isInstance)).as("batch outcome: %s", batchResult)
                                          .isEqualTo(perEventResults.stream().allMatch(Result::isSuccess));
         var batchRing = batchManager.partitionBuffer(STREAM, 0).unwrap();
         var perEventRing = perEventManager.partitionBuffer(STREAM, 0).unwrap();
@@ -322,6 +320,12 @@ class DefaultStreamPublisherBatchTest {
                           10,
                           TimeUnit.MILLISECONDS);
         }
+    }
+
+    private static StreamConfig replicatedConfig() {
+        var base = config(1);
+        return StreamConfig.streamConfig(base.name(), base.partitions(), base.retention(), base.autoOffsetReset(),
+            base.maxEventSizeBytes(), base.consistencyMode(), 2, 2, base.compression(), base.encryptionKeyId());
     }
 
     private static StreamConfig config(int partitions) {

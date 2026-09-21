@@ -16,6 +16,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.deployment.cluster.PublishedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.http.ContentType;
@@ -160,15 +161,15 @@ class BlueprintPublishConflictStatusTest {
     /// `SchemaVersionKey("database")` record is already owned by `billing-app`.
     private static BlueprintService refusingBlueprintService() {
         return new BlueprintService() {
-            @Override public Promise<ExpandedBlueprint> publish(String dsl) {
+            @Override public Promise<PublishedBlueprint> publish(String dsl) {
                 return CONFLICT.promise();
             }
 
-            @Override public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
+            @Override public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords) {
                 return CONFLICT.promise();
             }
 
-            @Override public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords,
+            @Override public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords,
                                                                             boolean registerOnly) {
                 return CONFLICT.promise();
             }

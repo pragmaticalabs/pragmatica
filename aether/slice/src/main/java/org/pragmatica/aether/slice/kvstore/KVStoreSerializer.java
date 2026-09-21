@@ -28,10 +28,11 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionAssignmentValue.PartitionAssignment;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -186,7 +187,7 @@ public final class KVStoreSerializer {
             case AbTestRoutingKey _ -> "ab-test-routing";
             case StreamMetadataKey _ -> "stream-meta";
             case StreamConfigKey _ -> "stream-config";
-            case StreamPartitionAssignmentKey _ -> "stream-assign";
+            case ConsumerAssignmentKey _ -> "consumer-assign";
             case StreamCursorCheckpointKey _ -> "stream-cursor";
             case StreamRegistrationKey _ -> "stream-reg";
             case EntityKeyspaceRegistrationKey _ -> "entity-keyspace";
@@ -262,7 +263,7 @@ public final class KVStoreSerializer {
             case AbTestRoutingValue v -> serializeAbTestRouting(v);
             case StreamMetadataValue v -> serializeStreamMetadata(v);
             case StreamConfigValue v -> serializeStreamConfig(v);
-            case StreamPartitionAssignmentValue v -> serializeStreamPartitionAssignment(v);
+            case ConsumerAssignmentValue v -> serializeConsumerAssignment(v);
             case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
             case StreamRegistrationValue v -> serializeStreamRegistration(v);
             case EntityKeyspaceRegistrationValue v -> serializeEntityKeyspaceRegistration(v);
@@ -668,7 +669,7 @@ public final class KVStoreSerializer {
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             case "stream-config" -> parseStreamConfigEntry(identity, rawValue);
             case "stream-meta" -> parseStreamMetadataEntry(identity, rawValue);
-            case "stream-assign" -> parseStreamPartitionAssignmentEntry(identity, rawValue);
+            case "consumer-assign" -> parseConsumerAssignmentEntry(identity, rawValue);
             case "stream-cursor" -> parseStreamCursorCheckpointEntry(identity, rawValue);
             case "stream-reg" -> parseStreamRegistrationEntry(identity, rawValue);
             case "entity-keyspace" -> parseEntityKeyspaceRegistrationEntry(identity, rawValue);
@@ -1389,22 +1390,24 @@ public final class KVStoreSerializer {
         return v.streamName() + PIPE + v.partitionCount() + PIPE + v.retention() + PIPE + v.retentionValue() + PIPE + v.maxEventSize() + PIPE + v.backpressure() + PIPE + v.owningBlueprint() + PIPE + v.createdAt();
     }
 
-    private static String serializeStreamPartitionAssignment(StreamPartitionAssignmentValue v) {
-        var sb = new StringBuilder();
-
-        for (var a : v.assignments()) {
-            if (!sb.isEmpty()) {
-                sb.append(';');
-            }
-
-            sb.append(a.partition()).append(':').append(a.consumerNode().id());
-        }
-
-        return sb + PIPE + v.updatedAt();
+    private static String serializeConsumerAssignment(ConsumerAssignmentValue v) {
+        return v.assignee()
+                .id() + PIPE + v.epoch()
+                                .rabiaTerm() + PIPE + v.epoch()
+                                                       .localCounter() + PIPE + v.assignmentTerm() + PIPE + v.assignedAt()
+                                                                                                             .packed() + PIPE + v.assignedAt()
+                                                                                                                                 .nodeId()
+                                                                                                                                 .id();
     }
 
     private static String serializeStreamCursorCheckpoint(StreamCursorCheckpointValue v) {
-        return v.committedOffset() + PIPE + v.commitTimestamp();
+        return v.committedOffset() + PIPE + v.commitTimestamp() + PIPE + v.token()
+                                                                          .assignee()
+                                                                          .id() + PIPE + v.token()
+                                                                                          .epoch()
+                                                                                          .rabiaTerm() + PIPE + v.token()
+                                                                                                                 .epoch()
+                                                                                                                 .localCounter() + PIPE + v.rewindGeneration() + PIPE + v.rewindSequence() + PIPE + v.rewind();
     }
 
     private static String serializeStreamRegistration(StreamRegistrationValue v) {
@@ -1660,64 +1663,77 @@ public final class KVStoreSerializer {
                                        Long.parseLong(parts[7]));
     }
 
-    /// Mirror of [#serializeStreamPartitionAssignment]. Wire form (2 fields, pipe-delimited):
-    /// `assignments|updatedAt`, where `assignments` is a semicolon-joined list of
-    /// `partition:consumerNodeId` pairs and renders as the empty string when no partition is
-    /// assigned — reconstructed as an empty list, mirroring [#parseNamedAddresses].
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamPartitionAssignmentEntry(String identity,
-                                                                                                 String raw) {
+    /// Mirror of [#serializeConsumerAssignment]. Wire form (6 fields, pipe-delimited):
+    /// `assignee|rabiaTerm|localCounter|assignmentTerm|assignedAtPacked|assignedAtNodeId` (#1271). The
+    /// record is the authority the cursor-checkpoint guard reads, so it MUST survive a snapshot
+    /// round-trip: a restore that dropped it would refuse every consumer's checkpoint until the leader's
+    /// writer re-mints it.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseConsumerAssignmentEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 2) {
-            return parseFailure("stream-assign value requires 2 fields, got " + parts.length);
+        if (parts.length != 6) {
+            return parseFailure("consumer-assign value requires 6 fields, got " + parts.length);
         }
 
-        return StreamPartitionAssignmentKey.streamPartitionAssignmentKey("stream-assign/" + identity).flatMap(key -> buildStreamPartitionAssignmentValue(parts).map(value -> entry(key,
-                                                                                                                                                                                   value)));
+        return ConsumerAssignmentKey.consumerAssignmentKey("consumer-assign/" + identity).flatMap(key -> buildConsumerAssignmentValue(parts).map(value -> entry(key,
+                                                                                                                                                                value)));
     }
 
-    private static Result<AetherValue> buildStreamPartitionAssignmentValue(String[] parts) {
-        return parsePartitionAssignments(parts[0]).map(assignments -> new StreamPartitionAssignmentValue(assignments,
-                                                                                                         Long.parseLong(parts[1])));
+    private static Result<AetherValue> buildConsumerAssignmentValue(String[] parts) {
+        return Result.all(NodeId.nodeId(parts[0]),
+                          Number.parseLong(parts[1]),
+                          Number.parseLong(parts[2]),
+                          Number.parseLong(parts[3]),
+                          Number.parseLong(parts[4]))
+                     .map((assignee, rabiaTerm, localCounter, assignmentTerm, packed) -> ConsumerAssignmentValue.consumerAssignmentValue(assignee,
+                                                                                                                                         Epoch.epoch(rabiaTerm,
+                                                                                                                                                     localCounter),
+                                                                                                                                         assignmentTerm,
+                                                                                                                                         new HlcTimestamp(packed,
+                                                                                                                                                          new NodeId(parts[5]))));
     }
 
-    private static Result<List<PartitionAssignment>> parsePartitionAssignments(String raw) {
-        if (raw.isEmpty()) {
-            return success(List.of());
-        }
-
-        var results = Arrays.stream(raw.split(";")).map(KVStoreSerializer::parsePartitionAssignment).toList();
-
-        return Result.allOf(results);
-    }
-
-    private static Result<PartitionAssignment> parsePartitionAssignment(String token) {
-        var colon = token.indexOf(':');
-
-        if (colon <= 0 || colon == token.length() - 1) {
-            return parseFailure("stream-assign entry requires partition:nodeId, got: " + token);
-        }
-
-        return Result.all(Number.parseInt(token.substring(0, colon)),
-                          NodeId.nodeId(token.substring(colon + 1)))
-                     .map(PartitionAssignment::new);
-    }
-
-    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (2 fields, pipe-delimited):
-    /// `committedOffset|commitTimestamp`. Consensus-visible consumer checkpoints (#488):
-    /// a declarative consumer resumes from the cluster cursor when a partition's owner changes, so
-    /// the entry MUST survive a snapshot round-trip.
+    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (8 fields, pipe-delimited):
+    /// `committedOffset|commitTimestamp|assignee|rabiaTerm|localCounter|rewindGeneration|rewindSequence|rewind`
+    /// — fields 3–5 are the [AssignmentToken] the checkpoint was written under (#1271), fields 6–8 its
+    /// rewind epoch and rewind-record flag (#1333). Consensus-visible consumer checkpoints (#488): a
+    /// declarative consumer resumes from the cluster cursor when a partition's owner changes, so the entry
+    /// MUST survive a snapshot round-trip — including its rewind epoch, which is what fences a zombie's
+    /// post-restore checkpoint.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamCursorCheckpointEntry(String identity,
                                                                                               String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 2) {
-            return parseFailure("stream-cursor value requires 2 fields, got " + parts.length);
+        if (parts.length != 8) {
+            return parseFailure("stream-cursor value requires 8 fields, got " + parts.length);
         }
 
-        return StreamCursorCheckpointKey.streamCursorCheckpointKey("stream-cursor/" + identity).map(key -> entry(key,
-                                                                                                                 new StreamCursorCheckpointValue(Long.parseLong(parts[0]),
-                                                                                                                                                 Long.parseLong(parts[1]))));
+        return StreamCursorCheckpointKey.streamCursorCheckpointKey("stream-cursor/" + identity).flatMap(key -> buildStreamCursorCheckpointValue(parts).map(value -> entry(key,
+                                                                                                                                                                          value)));
+    }
+
+    private static Result<AetherValue> buildStreamCursorCheckpointValue(String[] parts) {
+        return Result.all(Number.parseLong(parts[0]),
+                          Number.parseLong(parts[1]),
+                          parseAssignmentToken(parts[2], parts[3], parts[4]),
+                          Number.parseLong(parts[5]),
+                          Number.parseLong(parts[6]))
+                     .map((offset, timestamp, token, rewindGeneration, rewindSequence) -> new StreamCursorCheckpointValue(offset,
+                                                                                                                          timestamp,
+                                                                                                                          token,
+                                                                                                                          rewindGeneration,
+                                                                                                                          rewindSequence,
+                                                                                                                          Boolean.parseBoolean(parts[7])));
+    }
+
+    private static Result<AssignmentToken> parseAssignmentToken(String assignee,
+                                                                String rabiaTerm,
+                                                                String localCounter) {
+        return Result.all(NodeId.nodeId(assignee),
+                          Number.parseLong(rabiaTerm),
+                          Number.parseLong(localCounter))
+                     .map((node, term, counter) -> AssignmentToken.assignmentToken(node,
+                                                                                   Epoch.epoch(term, counter)));
     }
 
     /// Mirror of [#serializeStreamRegistration]. Declarative stream-consumer registrations have been

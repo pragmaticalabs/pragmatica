@@ -13,8 +13,10 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
@@ -53,6 +55,19 @@ public interface StreamForwardClient {
                                                   int maxEvents,
                                                   ReadPreference preference) {
         return readRemote(replicaId, streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// #1235: forward a REPLICATION read — a replica catching up, or a new owner pulling from a survivor —
+    /// which the serving node answers up to its APPENDED head instead of its visible position. The default
+    /// forwards plainly; it matters only on the production transport ({@link DefaultStreamForwardClient}),
+    /// which stamps `catchup` into the {@link ReadForward} message. Test fakes and {@link #NOOP} inherit the
+    /// plain forward.
+    default Promise<ReadForwardResult> readRemoteCatchup(NodeId sourceId,
+                                                         String streamName,
+                                                         int partition,
+                                                         long fromOffset,
+                                                         int maxEvents) {
+        return readRemote(sourceId, streamName, partition, fromOffset, maxEvents);
     }
 
     @MessageReceiver
@@ -98,14 +113,32 @@ public interface StreamForwardClient {
         return new DefaultStreamForwardClient(selfNodeId, transport, publishTimeout, readTimeout, metrics);
     }
 
-    record ReadForwardResult(List<RawEventDto> events, boolean truncated) {
+    /// `bounds` (#1333): the serving node's visible span of the partition at answer time; none when it held
+    /// no ring, or from a client that does not carry it.
+    record ReadForwardResult(List<RawEventDto> events, boolean truncated, Option<VisibleBounds> bounds) {
         public ReadForwardResult {
             events = List.copyOf(events);
+        }
+
+        public ReadForwardResult(List<RawEventDto> events, boolean truncated) {
+            this(events, truncated, Option.none());
         }
 
         public static ReadForwardResult readForwardResult(List<RawEventDto> events, boolean truncated) {
             return new ReadForwardResult(events, truncated);
         }
+    }
+
+    /// #1333: the owner's visible bounds of a partition this node holds no ring for — a `ReadForward` that
+    /// asks for no events (`maxEvents = 0`, from beyond any head so retention can never refuse it) and keeps
+    /// only the bounds the response carries. Fails when the serving node holds no ring either.
+    default Promise<VisibleBounds> boundsRemote(NodeId ownerId, String streamName, int partition) {
+        return readRemote(ownerId, streamName, partition, Long.MAX_VALUE, 0).flatMap(result -> result.bounds()
+                                                                                                     .toResult(new StreamForwardError.ReadForwardFailed("Node " + ownerId.id()
+                                                                                                                                                       + " holds no ring for " + streamName
+                                                                                                                                                       + "[" + partition
+                                                                                                                                                       + "]"))
+                                                                                                     .async());
     }
 
     private static StreamForwardClient noOpClient() {
@@ -207,30 +240,51 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                                  long fromOffset,
                                                  int maxEvents,
                                                  ReadPreference preference) {
+        return sendRead(replicaId,
+                        readForward(selfNodeId,
+                                    UUID.randomUUID().toString(),
+                                    streamName,
+                                    partition,
+                                    fromOffset,
+                                    maxEvents,
+                                    preference == ReadPreference.LINEARIZABLE),
+                        preference.name());
+    }
+
+    @Override
+    public Promise<ReadForwardResult> readRemoteCatchup(NodeId sourceId,
+                                                        String streamName,
+                                                        int partition,
+                                                        long fromOffset,
+                                                        int maxEvents) {
+        return sendRead(sourceId,
+                        readForward(selfNodeId,
+                                    UUID.randomUUID().toString(),
+                                    streamName,
+                                    partition,
+                                    fromOffset,
+                                    maxEvents,
+                                    false,
+                                    true),
+                        "CATCHUP");
+    }
+
+    private Promise<ReadForwardResult> sendRead(NodeId target, ReadForward message, String readClass) {
         metrics.recordAttempt();
-        var correlationId = UUID.randomUUID().toString();
         Promise<ReadForwardResult> promise = Promise.promise();
 
-        pendingReads.put(correlationId, promise);
-        SharedScheduler.schedule(() -> timeoutRead(correlationId),
+        pendingReads.put(message.correlationId(), promise);
+        SharedScheduler.schedule(() -> timeoutRead(message.correlationId()),
                                  Deadline.current().bounded(readTimeout));
-        var message = readForward(selfNodeId,
-                                  correlationId,
-                                  streamName,
-                                  partition,
-                                  fromOffset,
-                                  maxEvents,
-                                  preference == ReadPreference.LINEARIZABLE);
-
-        transport.send(replicaId, message);
+        transport.send(target, message);
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
-                  replicaId,
-                  streamName,
-                  partition,
-                  fromOffset,
-                  maxEvents,
-                  correlationId,
-                  preference);
+                  target,
+                  message.streamName(),
+                  message.partition(),
+                  message.fromOffset(),
+                  message.maxEvents(),
+                  message.correlationId(),
+                  readClass);
 
         return promise;
     }
@@ -275,7 +329,7 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     private void resolveFromReadResponse(Promise<ReadForwardResult> promise, ReadForwardResponse response) {
         if (response.success()) {
             metrics.recordSuccess();
-            promise.succeed(new ReadForwardResult(response.events(), response.truncated()));
+            promise.succeed(new ReadForwardResult(response.events(), response.truncated(), response.bounds()));
         } else {
             promise.resolve(new StreamForwardError.ReadForwardFailed(response.errorMessage()).result());
         }
