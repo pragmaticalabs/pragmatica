@@ -24,6 +24,7 @@ import org.pragmatica.aether.worker.mutation.WorkerMutation;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -194,6 +195,31 @@ class WorkerDeploymentManagerTest {
         assertThat(failed).hasSize(1);
         assertThat(failed.getFirst().fatal()).isFalse();
         assertThat(failed.getFirst().failureReason().unwrap()).contains("Artifact not found in any repository: org.example:slice:1.0.0");
+    }
+
+    /// The declared disposition is what decides an UNTYPED cause (#930): PERMANENT here, as on the FSM's
+    /// load path, because an unrecognised load failure re-runs the same deterministic work on retry.
+    @Test
+    void untypedLoadFailure_isForwardedAsPermanent() {
+        var forwarded = mock(MutationForwarder.class);
+        var sliceStore = mock(SliceStore.class);
+
+        when(sliceStore.loadSlice(any())).thenReturn(Causes.cause("unrecognised").promise());
+        when(sliceStore.loaded()).thenReturn(List.of());
+        var manager = WorkerDeploymentManager.workerDeploymentManager(SELF,
+                                                                      sliceStore,
+                                                                      forwarded,
+                                                                      new ConcurrentHashMap<>(),
+                                                                      List.of(SELF),
+                                                                      () -> "default:local");
+
+        manager.onDirectivePut(WorkerSliceDirectiveValue.workerSliceDirectiveValue(ARTIFACT, 1, "any"));
+
+        var failed = forwardedFailures(forwarded);
+
+        assertThat(failed).hasSize(1);
+        assertThat(failed.getFirst().fatal()).isTrue();
+        assertThat(failed.getFirst().failureReason().unwrap()).contains("unrecognised");
     }
 
     private static List<NodeArtifactValue> forwardedFailures(MutationForwarder forwarder) {
