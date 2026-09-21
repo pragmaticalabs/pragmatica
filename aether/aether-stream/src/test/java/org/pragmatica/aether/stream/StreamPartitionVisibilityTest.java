@@ -14,11 +14,15 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -40,6 +44,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -481,6 +486,42 @@ class StreamPartitionVisibilityTest {
             assertThat(readAll(manager)).containsExactly("e0", "e1", "e2");
         }
 
+        /// The committed-config hydration path (`onStreamConfigPut`) rebuilds the ring the same way a create
+        /// does, so it restores visibility the same way — with no peer barrier, the whole tail.
+        @Test
+        void walReplay_onHydration_isVisibleAtOnce() {
+            manager = replicatingWalManager(ReplicationManager.NONE, walDir);
+            createStream(manager, 1, 1);
+            publishMany(manager, 3);
+            manager.close();
+
+            manager = replicatingWalManager(ReplicationManager.NONE, walDir);
+            manager.onStreamConfigPut(streamConfigPut(streamConfig(1, 1)));
+
+            assertThat(readAll(manager)).containsExactly("e0", "e1", "e2");
+        }
+
+        /// The lazy per-partition path (a `NONE` role resolving to OWNER after a metadata-only hydration,
+        /// then the reconcile hook) rebuilds the ring the same way too.
+        @Test
+        void walReplay_onLazyMaterialize_isVisibleAtOnce() {
+            manager = replicatingWalManager(ReplicationManager.NONE, walDir);
+            createStream(manager, 1, 1);
+            publishMany(manager, 3);
+            manager.close();
+
+            var role = new AtomicReference<>(ReplicaSetController.Role.NONE);
+            manager = replicatingWalManager(ReplicationManager.NONE, walDir);
+            manager.placementRoleSupplier((_, _) -> role.get());
+            manager.onStreamConfigPut(streamConfigPut(streamConfig(1, 1)));
+            assertThat(manager.partitionBuffer(STREAM, PARTITION).isPresent()).as("metadata-only until the role resolves")
+                                                                              .isFalse();
+            role.set(ReplicaSetController.Role.OWNER);
+            manager.materializePartition(STREAM, PARTITION).onFailure(cause -> fail(cause.message()));
+
+            assertThat(readAll(manager)).containsExactly("e0", "e1", "e2");
+        }
+
         /// Replica control: a replica's visible position is its OWN durability (#1235 replica side), never
         /// the owner's acks — a blind registry must not hold its replayed tail back.
         @Test
@@ -622,18 +663,27 @@ class StreamPartitionVisibilityTest {
     }
 
     private static void createStream(StreamPartitionManager manager, int replicas, int minSyncReplicas) {
-        var config = StreamConfig.streamConfig(STREAM,
-                                               1,
-                                               RetentionPolicy.retentionPolicy(),
-                                               "earliest",
-                                               1_048_576L,
-                                               ConsistencyMode.EVENTUAL,
-                                               replicas,
-                                               minSyncReplicas,
-                                               StreamCompression.NONE,
-                                               Option.none());
+        manager.createStream(streamConfig(replicas, minSyncReplicas)).onFailure(cause -> fail(cause.message()));
+    }
 
-        manager.createStream(config).onFailure(cause -> fail(cause.message()));
+    private static StreamConfig streamConfig(int replicas, int minSyncReplicas) {
+        return StreamConfig.streamConfig(STREAM,
+                                         1,
+                                         RetentionPolicy.retentionPolicy(),
+                                         "earliest",
+                                         1_048_576L,
+                                         ConsistencyMode.EVENTUAL,
+                                         replicas,
+                                         minSyncReplicas,
+                                         StreamCompression.NONE,
+                                         Option.none());
+    }
+
+    /// The committed-config notification `AetherNode` routes to `onStreamConfigPut`.
+    private static ValuePut<StreamConfigKey, StreamConfigValue> streamConfigPut(StreamConfig config) {
+        var put = new KVCommand.Put<>(StreamConfigKey.streamConfigKey(config.name()), StreamConfigValue.streamConfigValue(config));
+
+        return new ValuePut<>(put, Option.none());
     }
 
     private static AtomicInteger listen(StreamPartitionManager manager) {
