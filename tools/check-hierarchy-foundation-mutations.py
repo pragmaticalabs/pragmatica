@@ -26,6 +26,8 @@ output.mkdir(parents=True, exist_ok=True)
 mutations = [
     ('read-set', 'return witness.expected()\n                      .equals(Option.option(storage.get(witness.key())));',
      'return true;', 'KVStoreLeaderTransactionTest'),
+    ('epoch-mint', 'incoming.mintsEpoch() || differentOwner(incoming, stored)',
+     'differentOwner(incoming, stored)', 'KVStoreOwnerFenceTest#mintRequiresSuccessorEpoch_evenForTheSameOwner'),
     ('owner-remove', '((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0',
      '((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) >= 0', 'KVStoreOwnerFenceTest'),
     ('canonical-snapshot', 'serializer.canonical()', 'serializer', 'KVStoreCanonicalSnapshotTest'),
