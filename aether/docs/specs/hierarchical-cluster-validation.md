@@ -296,3 +296,45 @@ all KV-store tests, facade/rebuild behavior, binary/TOML cursor round trips, act
 read forwarding/bounds and both wire-registry gates. The complete six-step rebuild also passed.
 The dedicated CI selector now includes `DurableProjectionRebuildForgeTest`, raising the expected
 live matrix from 49 to 50 cases; its new-head artifact must include the added case without skips.
+
+
+## Review corrections: checkpoint-only recovery, scoped metrics and durable refusal
+
+Implementation `c4f4a2592`, with prerequisite histories integrated at `4ae759b0a`, fixes the
+checkpoint-only restart path, metrics coverage baseline contamination, durable refusal recovery,
+operator scope, and node assembly evidence described in the reconciliation. The final six-step
+build passed with no formatting drift (`/private/tmp/review-runtime-build-final.log`).
+
+The configuration suite passed 435 cases. The initial full consensus suite ran 858 cases;
+one retry-cache assertion counted the required initial lazy-recovery write as a retry. After
+priming that recovery before measuring repeated requests, all 44 selected consensus cases
+passed. The other 857 full-suite cases had passed; this is not represented as a second full
+consensus run. The corrected selector was:
+
+```sh
+env -u HCLOUD_TOKEN mvn -pl integrations/consensus test -Dtest='RabiaDurableRestartTest,RabiaHierarchySafetyTest,RabiaVoterRecoveryTest,RabiaSyncAdoptionQuorumTest'
+```
+
+The complete affected downstream suites passed with zero failures/errors: metrics 270,
+deployment 1,370, control 120, TTM 43, and node 1,745 (one existing skipped case).
+Logs: `/private/tmp/review-runtime-tests.log`, `/private/tmp/review-runtime-tests-rest.log`.
+
+```sh
+env -u HCLOUD_TOKEN mvn -T2 -pl aether/aether-metrics,aether/aether-control,aether/aether-ttm,aether/aether-deployment,aether/node test -Djbct.skip=true
+```
+
+Two targeted sensitivity checks failed through assertions when their guards were removed:
+checkpoint-only recovery returned frontier 0 instead of 1, and incomplete coverage polluted
+history so unchanged returning load produced factor 1.6857142857142855 instead of 1.0.
+Both sources were restored byte-for-byte and the selected tests passed afterward. These
+checks establish sensitivity to those defects; they are not power-loss or production-load tests.
+
+The complete 24-class hierarchy selector in `.github/workflows/hierarchy-review.yml` passed
+**50 live cases, zero failures/errors/skips**, in 1,597 seconds on implementation `4ae759b0a`.
+The freshness gate examined all 70 runtime dependencies: 70 fresh, none missing or stale.
+Log: `/private/tmp/review-runtime-forge-final.log`. No runtime build/install ran during Forge.
+This includes the loaded three-worker movement, voter resize, restart, governor report loss,
+reconnect, ordered replay, projection rebuild, declarative consumers and invocation paths.
+The only subsequent runtime change records this validation; executable sources are unchanged.
+New-head CI must independently validate its generated merge revision. Historical green
+checkpoints above are not substituted for that evidence.
