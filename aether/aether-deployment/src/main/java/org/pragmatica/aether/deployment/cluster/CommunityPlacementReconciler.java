@@ -41,6 +41,8 @@ import org.pragmatica.lang.Unit;
 /// replacement readiness precedes drain, and drain acknowledgement precedes termination.
 public interface CommunityPlacementReconciler {
     Promise<Unit> reconcile();
+    /// Compatibility seam for legacy isolated actuator fixtures only.
+    /// Production worker retirement is exclusively driven by normalized community intent.
     Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry expectedTopology);
     Promise<Boolean> onDrainCompleted(NodeId sender, String operationId);
 
@@ -359,18 +361,20 @@ record PlacementReconciler(NodeId self,
                   .isEmpty()) {
             return uncertain(operation,
                              leader,
-                             PlacementOperationPhase.BLOCKED,
-                             "Source identity changed or disappeared");
+                             operation.phase(),
+                             "Source identity changed or disappeared; restore the recorded binding to resume");
         }
 
         return switch (operation.phase()) {
             case RESERVED -> beginCreate(config, operation, leader);
-            case CREATE_REQUESTED -> observedTarget(operation).isPresent()
-                                     ? createAccepted(config, operation, leader)
-                                     : uncertain(operation,
-                                                 leader,
-                                                 PlacementOperationPhase.CREATE_UNCERTAIN,
-                                                 "Create outcome was not committed; reconcile provider inventory before resuming");
+            case CREATE_REQUESTED -> refusedTarget(operation)
+                                     ? capacityRefused(config, operation, leader)
+                                     : observedTarget(operation).isPresent()
+                                       ? createAccepted(config, operation, leader)
+                                       : uncertain(operation,
+                                                   leader,
+                                                   PlacementOperationPhase.CREATE_UNCERTAIN,
+                                                   "Create outcome was not committed; reconcile provider inventory before resuming");
             case AWAITING_READY -> targetReady(operation)
                                    ? beginDrain(operation, leader)
                                    : readinessExpired(config, operation)
@@ -389,14 +393,30 @@ record PlacementReconciler(NodeId self,
                                       : Promise.unitPromise();
             case DRAINED -> beginTerminate(operation, leader);
             case TERMINATING -> finishTermination(operation, leader);
-            case CREATE_UNCERTAIN -> observedTarget(operation).isPresent()
-                                     ? createAccepted(config, operation, leader)
-                                     : Promise.unitPromise();
+            case CREATE_UNCERTAIN -> refusedTarget(operation)
+                                     ? capacityRefused(config, operation, leader)
+                                     : observedTarget(operation).isPresent()
+                                       ? createAccepted(config, operation, leader)
+                                       : Promise.unitPromise();
             case READINESS_DELAYED -> targetReady(operation)
                                       ? beginDrain(operation, leader)
                                       : Promise.unitPromise();
-            case COMPLETE, DRAIN_UNCERTAIN, BLOCKED, UNKNOWN -> Promise.unitPromise();
+            case BLOCKED -> observedTarget(operation).isPresent()
+                            ? createAccepted(config, operation, leader)
+                            : Promise.unitPromise();
+            case COMPLETE, DRAIN_UNCERTAIN, UNKNOWN -> Promise.unitPromise();
         };
+    }
+
+    private boolean refusedTarget(CommunityPlacementOperationValue operation) {
+        return store.getTyped(new AetherKey.CapacityReservationKey(operation.targetNode()),
+                              AetherValue.CapacityReservationValue.class)
+                    .filter(value -> value.phase() == AetherValue.CapacityReservationPhase.RELEASED
+                                     && value.sourceName()
+                                             .equals(operation.targetSource())
+                                     && value.sourceBinding()
+                                             .equals(operation.sourceBinding()))
+                    .isPresent();
     }
 
     private boolean readinessExpired(ClusterBootstrapConfig config, CommunityPlacementOperationValue operation) {
@@ -649,7 +669,16 @@ record PlacementReconciler(NodeId self,
                        .flatMap(safe -> safe && targetReady(operation) && currentLeader().filter(leader::equals)
                                                                                        .isPresent()
                                         ? commitDrain(operation, leader)
-                                        : Promise.unitPromise());
+                                        : retirementDelayed(operation, leader));
+    }
+
+    private Promise<Unit> retirementDelayed(CommunityPlacementOperationValue operation, LeaderValue leader) {
+        return System.currentTimeMillis() - operation.phaseChangedAt() > drainTimeout.millis()
+               ? uncertain(operation,
+                           leader,
+                           PlacementOperationPhase.READINESS_DELAYED,
+                           "Previous worker evacuation is delayed; retirement safety proof is still required")
+               : Promise.unitPromise();
     }
 
     private Promise<Unit> commitDrain(CommunityPlacementOperationValue operation, LeaderValue leader) {
@@ -701,6 +730,8 @@ record PlacementReconciler(NodeId self,
                                     LeaderValue leader,
                                     PlacementOperationPhase phase,
                                     String reason) {
+        if (operation.phase() == phase && operation.detail().equals(reason)) return Promise.unitPromise();
+
         var uncertain = operation.withPhase(phase, leader, reason);
 
         return transition(operation, uncertain).onSuccess(accepted -> {
@@ -1101,9 +1132,16 @@ record PlacementReconciler(NodeId self,
 
         snapshot.keySet()
                 .stream()
+                .filter(_ -> !snapshot.containsKey(AetherKey.CapacityLedgerKey.INSTANCE))
                 .filter(AetherKey.NodePlacementKey.class::isInstance)
                 .map(AetherKey.NodePlacementKey.class::cast)
                 .map(AetherKey.NodePlacementKey::nodeId)
+                .forEach(nodes::add);
+        snapshot.keySet()
+                .stream()
+                .filter(AetherKey.CapacityReservationKey.class::isInstance)
+                .map(AetherKey.CapacityReservationKey.class::cast)
+                .map(AetherKey.CapacityReservationKey::nodeId)
                 .forEach(nodes::add);
         snapshot.values()
                 .stream()

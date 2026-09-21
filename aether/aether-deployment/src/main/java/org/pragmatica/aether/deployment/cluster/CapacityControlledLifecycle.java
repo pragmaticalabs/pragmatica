@@ -87,7 +87,29 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     public Promise<Unit> reconcileInventory() {
         if (leader().isEmpty() || !inventoryReconciling.compareAndSet(false, true)) return Promise.unitPromise();
 
-        return configuredInventory().fold(this::completeInventory);
+        return reconcileRefusals().flatMap(_ -> configuredInventory())
+                                .fold(this::completeInventory);
+    }
+
+    private Promise<Unit> reconcileRefusals() {
+        return ReconciliationBatch.reconcile(reservations().entrySet()
+                                                         .stream()
+                                                         .filter(entry -> entry.getValue()
+                                                                               .phase() == CapacityReservationPhase.RELEASED && !hasActivePlacement(entry.getKey()))
+                                                         .toList(),
+                                             4,
+                                             org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds(),
+                                             entry -> SourceName.sourceName(entry.getValue().sourceName())
+                                                                .async()
+                                                                .flatMap(source -> release(entry.getKey(),
+                                                                                           source,
+                                                                                           entry.getValue()
+                                                                                                .sourceBinding(),
+                                                                                           CapacityReservationPhase.RELEASED)),
+                                             (entry, cause) -> org.slf4j.LoggerFactory.getLogger(CapacityControlledLifecycle.class)
+                                                                                      .warn("Refused capacity release for {} deferred: {}",
+                                                                                            entry.getKey(),
+                                                                                            cause.message()));
     }
 
     private Promise<Unit> completeInventory(org.pragmatica.lang.Result<Unit> result) {
@@ -182,7 +204,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                  .intendedRole()
                                                  .equalsIgnoreCase(role))
                            .filter(entry -> entry.getValue()
-                                                 .phase() != CapacityReservationPhase.RETIRING)
+                                                 .phase() != CapacityReservationPhase.RETIRING && entry.getValue()
+                                                                                                       .phase() != CapacityReservationPhase.RELEASED)
                            .map(Map.Entry::getKey)
                            .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
@@ -280,10 +303,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return delegate.provisionNode(spec, binding)
                        .fold(result -> result.fold(cause -> {
                                                        if (cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded) {
-                                                       return release(node,
-                                                                      spec.context().sourceName(),
-                                                                      binding,
-                                                                      CapacityReservationPhase.DISPATCHED).flatMap(_ -> cause.promise());
+                                                       return recordRefusal(node,
+                                                                            spec.context().sourceName(),
+                                                                            binding).flatMap(_ -> releaseRefusal(node,
+                                                                                                                 spec.context()
+                                                                                                                     .sourceName(),
+                                                                                                                 binding).fold(_ -> cause.promise()));
                                                    }
 
                                                        return cause.promise();
@@ -291,6 +316,66 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                    instance -> observeBound(List.of(instance),
                                                                             spec.context().sourceName(),
                                                                             binding).map(_ -> instance)));
+    }
+
+    private Promise<Unit> releaseRefusal(NodeId node, SourceName source, String binding) {
+        return hasActivePlacement(node)
+               ? Promise.unitPromise()
+               : release(node, source, binding, CapacityReservationPhase.RELEASED);
+    }
+
+    private boolean hasActivePlacement(NodeId node) {
+        Map<?, ?> snapshot = store.snapshot();
+
+        return snapshot.values()
+                       .stream()
+                       .filter(AetherValue.CommunityPlacementOperationValue.class::isInstance)
+                       .map(AetherValue.CommunityPlacementOperationValue.class::cast)
+                       .anyMatch(operation -> operation.active() && operation.targetNode()
+                                                                             .equals(node));
+    }
+
+    /// Persist no-create evidence independently of the contended fleet counter.
+    /// FER: a failed counter release retains RELEASED for the next inventory pass.
+    private Promise<Unit> recordRefusal(NodeId node, SourceName source, String binding) {
+        var key = new AetherKey.CapacityReservationKey(node);
+
+        return store.getTyped(key, CapacityReservationValue.class)
+                    .filter(value -> value.phase() == CapacityReservationPhase.DISPATCHED
+                                     && value.sourceName()
+                                             .equals(source.value())
+                                     && value.sourceBinding()
+                                             .equals(binding))
+                    .fold(() -> HierarchyStateWriter.Refusal.CONFLICT.promise(),
+                          before -> persistRefusal(key, before));
+    }
+
+    private Promise<Unit> persistRefusal(AetherKey.CapacityReservationKey key, CapacityReservationValue before) {
+        return leader().fold(() -> HierarchyStateWriter.Refusal.CONFLICT.promise(),
+                             current -> {
+                                 var id = UUID.randomUUID().toString();
+                                 var after = new CapacityReservationValue(before.sourceName(),
+                                                                          before.sourceBinding(),
+                                                                          before.intendedRole(),
+                                                                          CapacityReservationPhase.RELEASED);
+                                 var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                               Option.some(before),
+                                                                                               Option.some(after));
+                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                                       id,
+                                                                                                       current,
+                                                                                                       List.of(),
+                                                                                                       List.of(mutation));
+
+                                 return apply.apply(List.of(command))
+                                             .flatMap(results -> results.stream()
+                                                                        .filter(KVCommand.TransactionResult.class::isInstance)
+                                                                        .map(KVCommand.TransactionResult.class::cast)
+                                                                        .anyMatch(result -> result.transactionId()
+                                                                                                  .equals(id) && result.accepted())
+                                                                 ? Promise.unitPromise()
+                                                                 : HierarchyStateWriter.Refusal.CONFLICT.promise());
+                             });
     }
 
     private Option<LeaderValue> leader() {
@@ -526,11 +611,27 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                               new CapacityLedgerValue(current.allocated() - 1,
                                                                                                       current.version() + 1,
                                                                                                       current.inventoryComplete()),
-                                                                              List.of(new KVCommand.Mutation<>(key,
-                                                                                                               Option.some(existing),
-                                                                                                               Option.none()))).flatMap(accepted -> accepted
-                                                                                                                                                    ? Promise.unitPromise()
-                                                                                                                                                    : Causes.cause("Capacity release conflicted; retry absence confirmation").promise())));
+                                                                              releaseMutations(node, key, existing)).flatMap(accepted -> accepted
+                                                                                                                                         ? Promise.unitPromise()
+                                                                                                                                         : Causes.cause("Capacity release conflicted; retry absence confirmation").promise())));
+    }
+
+    private List<KVCommand.Mutation<AetherKey, AetherValue>> releaseMutations(NodeId node,
+                                                                              AetherKey.CapacityReservationKey key,
+                                                                              CapacityReservationValue existing) {
+        var changes = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+
+        changes.add(new KVCommand.Mutation<>(key, Option.some(existing), Option.none()));
+        if (existing.phase() != CapacityReservationPhase.RELEASED) {
+            var placementKey = new AetherKey.NodePlacementKey(node);
+
+            store.get(placementKey)
+                 .onPresent(value -> changes.add(new KVCommand.Mutation<>(placementKey,
+                                                                          Option.some(value),
+                                                                          Option.none())));
+        }
+
+        return changes;
     }
 
     @Override

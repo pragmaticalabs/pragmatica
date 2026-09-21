@@ -114,6 +114,33 @@ class CapacityControlledLifecycleTest {
     }
 
     @Test
+    void unresolvedIdentityCannotBeReusedEvenWithSpareFleetCapacity() {
+        initialize(0);
+        lifecycle.provisionNode(spec("first", "east")).await();
+        var recovered = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
+            commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 10);
+        var failure = recovered.provisionNode(spec("first", "east")).await().fold(cause -> cause.message(), _ -> "success");
+        assertThat(failure).contains("Existing capacity reservation");
+        assertThat(creates.get()).isEqualTo(1);
+        assertThat(ledger().allocated()).isEqualTo(1);
+    }
+
+    @Test
+    void confirmedProviderAbsenceRemovesStalePlacementAlongsideReservation() {
+        initialize(1);
+        var node = new NodeId("dead-worker");
+        var key = new AetherKey.CapacityReservationKey(node);
+        seed(new KVCommand.LeaderTransaction<>(key, "seed-observed", LEADER, List.of(), List.of(
+            new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(
+                new AetherValue.CapacityReservationValue("east", "binding", "worker", AetherValue.CapacityReservationPhase.OBSERVED))))));
+        seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(node), new AetherValue.NodePlacementValue("east", Option.none(), "instance")));
+        lifecycle.instancesForNode(node, SourceName.sourceName("east").unwrap()).await().unwrap();
+        assertThat(store.get(key).isEmpty()).isTrue();
+        assertThat(store.get(new AetherKey.NodePlacementKey(node)).isEmpty()).isTrue();
+        assertThat(ledger().allocated()).isZero();
+    }
+
+    @Test
     void emptyInventory_doesNotReleaseAnUncertainCreate() {
         initialize(0);
         lifecycle.provisionNode(spec("first", "east")).await();

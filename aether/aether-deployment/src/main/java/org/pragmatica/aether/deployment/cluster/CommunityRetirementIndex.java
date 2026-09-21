@@ -35,8 +35,8 @@ public final class CommunityRetirementIndex {
 
     private static Unit update(Map<String, NodeId> target, CommunityPlacementOperationValue operation) {
         var prepared = switch (operation.phase()) {
-            case AWAITING_READY, DRAIN_REQUESTED, DRAINED, TERMINATING, DRAIN_UNCERTAIN -> true;
-            default -> false;
+            case AWAITING_READY, READINESS_DELAYED, DRAIN_REQUESTED, DRAINED, TERMINATING, DRAIN_UNCERTAIN -> true;
+            case RESERVED, CREATE_REQUESTED, CREATE_UNCERTAIN, COMPLETE, BLOCKED, UNKNOWN -> false;
         };
 
         if (prepared && operation.previousNode().isPresent()) {

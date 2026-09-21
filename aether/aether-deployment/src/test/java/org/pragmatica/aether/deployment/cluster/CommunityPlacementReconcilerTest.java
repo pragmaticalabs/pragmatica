@@ -159,6 +159,32 @@ class CommunityPlacementReconcilerTest {
     }
 
     @Test
+    void readyDestinationCannotDrainBeforeEvacuationAndDelayedProofEscalates() {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        reconciler.reconcile().await().unwrap();
+        replacementReady();
+        safeToRetire = false;
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+        assertThat(effects).containsExactly("create");
+        var before = current();
+        var aged = new CommunityPlacementOperationValue(before.operationId(), before.communityId(), before.targetNode(),
+            before.targetSource(), before.targetZone(), before.sourceBinding(), before.previousNode(), before.previousSource(),
+            before.phase(), before.issuer(), before.startedAt(), 0, "");
+        var key = new AetherKey.CommunityPlacementOperationKey("stable");
+        seed(new KVCommand.LeaderTransaction<>(key, "age", before.issuer(), List.of(),
+            List.of(new KVCommand.Mutation<>(key, Option.some(before), Option.some(aged)))));
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.READINESS_DELAYED);
+        assertThat(escalations).hasSize(1);
+        assertThat(effects).containsExactly("create");
+        safeToRetire = true;
+        reconciler.reconcile().await().unwrap();
+        assertThat(effects).containsExactly("create", "drain");
+    }
+
+    @Test
     void delayedReadinessResumesWithoutReplacingTheReservedIdentity() {
         initialize();
         reconciler.reconcile().await().unwrap();
@@ -441,9 +467,13 @@ class CommunityPlacementReconcilerTest {
         var reserved = current();
         binding = "different-provider-account";
         controller(10, 60_000).reconcile().await().unwrap();
-        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.BLOCKED);
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.RESERVED);
         assertThat(current().sourceBinding()).isEqualTo(reserved.sourceBinding());
         assertThat(effects).isEmpty();
+        binding = "binding";
+        controller(10, 60_000).reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+        assertThat(effects).containsExactly("create");
     }
 
     @Test

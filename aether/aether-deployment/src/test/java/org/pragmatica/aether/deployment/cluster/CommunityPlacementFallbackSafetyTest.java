@@ -144,6 +144,22 @@ class CommunityPlacementFallbackSafetyTest {
     }
 
     @Test
+    void refusalCannotFallbackWhileReservationStillClaimsPossibleCreate() {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        var reserved = current();
+        var key = new AetherKey.CapacityReservationKey(reserved.targetNode());
+        seed(new KVCommand.LeaderTransaction<>(key, "unresolved", reserved.issuer(), List.of(), List.of(
+            new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(
+                new AetherValue.CapacityReservationValue(reserved.targetSource(), reserved.sourceBinding(), "worker", AetherValue.CapacityReservationPhase.DISPATCHED))))));
+        createOutcome = org.pragmatica.aether.environment.EnvironmentError.capacityUnavailable("new", new IllegalStateException("refused")).promise();
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.CREATE_UNCERTAIN);
+        assertThat(store.get(preferredAvailabilityKey()).isEmpty()).isTrue();
+        assertThat(providerOperations).hasSize(1);
+    }
+
+    @Test
     void restartAfterExplicitRefusalUsesOnlyAllowedAlternateWithoutDuplicatingUnknownCreate() {
         createRefused();
         var refused = providerOperations.getFirst();

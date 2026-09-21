@@ -30,8 +30,15 @@ when durable pending allocations cover an otherwise observed deficit. Metrics go
 useful for prompt observations; it is no longer the only recovery source.
 
 DISPATCHED means the create might have happened. An empty list, timeout, or deletion request
-cannot release it. A definitive provider capacity refusal can release it; a matching provider
-observation advances it to OBSERVED. Unknown create outcomes without matching observations
+cannot release it. A definitive provider capacity refusal first records RELEASED as durable no-create evidence in a
+leader-guarded reservation-only transaction. This does not decrement the fleet counter. An active
+movement consumes that evidence into its availability/COMPLETE transaction before periodic
+inventory releases the reservation and decrements the ledger. A conflicting counter release
+retains the evidence for subsequent passes and leader restart; it cannot overwrite the original
+provider refusal with an ambiguous-create diagnosis. An identity with a retained RELEASED reservation cannot be reused.
+A refusal before this evidence reaches consensus remains conservatively uncertain if authority
+is lost: no process can promise durable delivery of an uncommitted provider response.
+A matching provider observation advances it to OBSERVED. Unknown create outcomes without matching observations
 remain reserved; this change does not invent provider evidence or retry them under new identities.
 
 ## Retirement
@@ -43,7 +50,8 @@ retaining the original callback. Source and provider/account binding remain unch
 RETIRING also vetoes core candidate admission, including historical voter and trusted local admission paths.
 
 Core retries must re-evaluate the existing installed-voter, workload and local authority guards.
-Auto-heal disable also holds automatic departed-core deletion to preserve diagnostic evidence.
+Auto-heal disable also holds automatic departed-core deletion and retries of already-RETIRING
+core allocations, including a previously operator-requested retirement, to preserve diagnostic evidence.
 This is not a new cluster-wide freeze API or a change to operator-issued placement policies.
 
 The core orphan sweep runs periodically, takes two observations separated by the existing grace,
@@ -52,7 +60,8 @@ activation cannot suppress its successor or clear its successor's guard. Both pe
 and orphan rediscovery survive transient inventory/deletion failure under a stable leader.
 
 Provider deletion acknowledgement does not release capacity. Source-bound absence confirmation
-releases an OBSERVED or RETIRING allocation atomically with the ledger decrement. An unconfirmed
+releases an OBSERVED or RETIRING allocation atomically with the ledger decrement and removal
+of its stale NodePlacement. Membership departure alone does not establish provider absence. An unconfirmed
 create cannot be converted to retirement merely to circumvent uncertainty retention.
 
 ## Continuing inventory
@@ -64,7 +73,8 @@ remain reserved even if both observations are empty. Failed or partial listings 
 
 Initial admission still requires complete configured-source inventory. Each process inventories
 again before its first admission, and changes to committed configuration invalidate its cached
-inventory completion. Reservation commits witness the configuration used for admission.
+inventory completion. Creates defer during this inventory pause (bounded by the default
+replacement ceiling of ten minutes). Reservation commits witness the configuration used for admission.
 Out-of-band cloud administration remains outside transactional fleet-cap enforcement.
 
 ## Worker policies and scheduling
@@ -82,7 +92,8 @@ helpers remain available to isolated test fixtures; production installs the comm
 
 Independent community and source-inventory work runs in four lanes. An item has a bounded
 observation deadline, reports failure, and leaves its durable state for the next pass; one failure
-cannot short-circuit the remaining identities. Each item reads fresh state. Create admission is
+cannot short-circuit the remaining identities. A stalled item still delays later identities in
+its lane by up to the thirty-second observation deadline. Each item reads fresh state. Create admission is
 limited to four active source bindings and one call per binding in a process. Existing global
 committed capacity admission protects allocations across leadership change. These process-local
 limits do not claim cancellation of an already-issued provider request or global provider rate quotas.
@@ -94,8 +105,21 @@ have been dispatched, its durable uncertainty cannot be downgraded to a pre-disp
 
 READINESS_DELAYED distinguishes missed readiness deadlines from changed identity/policy
 preconditions. It preserves identity and allocation, emits the existing operation escalation, and
-resumes when the same target becomes ready. BLOCKED binding/precondition conflicts and
-CREATE_UNCERTAIN/DRAIN_UNCERTAIN retain the hierarchy specification's evidence requirements.
+resumes when the same target becomes ready and evacuation is safe. The previous worker remains
+excluded from allocation throughout this phase. A ready target with unsafe evacuation also
+escalates into READINESS_DELAYED after the drain deadline; later safety evidence resumes it.
+A source binding outage preserves the exact interrupted phase and reports its blocking reason;
+restoring the recorded binding resumes that phase without duplicating create or retirement.
+BLOCKED operations can recover through a matching target observation, still subject to readiness,
+assignment, evacuation and drain-acknowledgement guards. CREATE_UNCERTAIN can recover through
+matching inventory or committed RELEASED evidence; DRAIN_UNCERTAIN requires its matching ack.
+[limit: operator-resolution] There is no force-clear/cancel API for genuinely ambiguous creates
+or missing drain acknowledgements. Retain the resource/operation and investigate source inventory
+or worker drain delivery; neither policy edits nor elapsed time authorize destructive resolution.
+[limit: provider-mapping] Definitive cloud-capacity fallback is mapped for AWS and Hetzner.
+GCP and Azure generic provision failures remain uncertain; Azure allocation failure may leave a
+resource, so code must not infer absence from a generic error. Expanding mappings requires provider-
+specific no-create evidence and tests.
 
 ## Verification and limits
 

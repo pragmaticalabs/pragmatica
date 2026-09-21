@@ -19,6 +19,20 @@ import org.pragmatica.lang.Option;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class CommunityRetirementIndexTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(PlacementOperationPhase.class)
+    void everyPhaseExplicitlyPinsRetirementProtection(PlacementOperationPhase phase) {
+        var index = CommunityRetirementIndex.communityRetirementIndex();
+        var previous = new NodeId("previous");
+        var operation = operation("community", previous);
+        index.put(operation.withPhase(phase, operation.issuer(), ""));
+        boolean expected = switch (phase) {
+            case AWAITING_READY, READINESS_DELAYED, DRAIN_REQUESTED, DRAINED, TERMINATING, DRAIN_UNCERTAIN -> true;
+            case RESERVED, CREATE_REQUESTED, CREATE_UNCERTAIN, COMPLETE, BLOCKED, UNKNOWN -> false;
+        };
+        assertThat(index.including(Set.of()).contains(previous)).isEqualTo(expected);
+    }
+
     @Test
     void snapshotReplacementNeverPublishesPartiallyRestoredProtection() throws InterruptedException {
         var index = CommunityRetirementIndex.communityRetirementIndex();

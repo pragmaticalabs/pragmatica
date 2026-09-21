@@ -1667,6 +1667,14 @@ class ClusterTopologyManagerActuatorTest {
                    .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
         }
 
+        @Test
+        void disabledAutoHealHoldsDepartedDeletion() {
+            var reaper = activeCtm(SLOW_GRACE);
+            reaper.setAutoHealEnabled(false, "operator hold").await().unwrap();
+            reaper.onMembershipDecision(removedD());
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
         /// A genuinely departed node — no evidence of life — is reaped at once, with no added delay, and once.
         @Test
         void nodeRemoved_genuinelyDeparted_reapedImmediatelyOnce() {
