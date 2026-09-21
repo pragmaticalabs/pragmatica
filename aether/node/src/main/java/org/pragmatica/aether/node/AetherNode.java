@@ -4980,7 +4980,7 @@ public interface AetherNode extends ManageableNode {
         Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
                                                                                                                                                         AetherValue.StreamCursorCheckpointValue.class);
         Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = commands -> switchableCluster.apply(commands)
-                                                                                                    .mapToUnit();
+                                                                                                          .mapToUnit();
         var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
                                                                                                                                    config.self(),
                                                                                                                                    committedCursorReader,
@@ -4988,7 +4988,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                    cursorCommandWriter,
                                                                                                                                    () -> switchableCluster.current() instanceof ForwardingClusterNode),
                                                                                              projectionRegistry);
-
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a

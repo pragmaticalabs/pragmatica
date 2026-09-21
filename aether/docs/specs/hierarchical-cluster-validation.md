@@ -268,3 +268,24 @@ env -u HCLOUD_TOKEN mvn -T1 -pl aether/slice test
 
 All **829 cases passed, zero failures/errors/skips**
 (`/private/tmp/hierarchy-review-slice-full2.log`).
+
+## Completed rc4 checkpoint and projection integration
+
+At runtime `0756e148b` on rc4 `93a5e3089`, the full 145-module local reactor passed
+(`env -u HCLOUD_TOKEN mvn -T4 install -B -pl '!examples'`,
+`/private/tmp/hierarchy-review-final-reactor.log`, 23m38s). Repository CI
+[35551119868](https://github.com/pragmaticalabs/pragmatica/actions/runs/35551119868) passed.
+The published hierarchy artifact from
+[35551119857](https://github.com/pragmaticalabs/pragmatica/actions/runs/35551119857)
+contains **49 actual cases, zero failures/errors/skips**, four envelope records, runner hardware,
+and three real worker connection evictions with continued core commits. It records PR head
+`0756e148bbffd23cf0cde81ff48828f5ad3f53fd` and tested merge
+`9bea31ef46ae815c38b883f3e41f2db68d0d3098`; GitHub confirms that merge's parents are the
+PR head and rc4 `93a5e30896ac13c12fbc15ec0ac80459f96b5518`.
+
+rc4 then added durable projections in `0002e2194`. Its integration retains both epoch-mint
+strictness and same-epoch owner fencing (`KVStoreOwnerFenceTest` pins their interaction),
+and keeps `ProjectionAwareCursorStore` around the cluster cursor store while directing its
+command writer through `switchableCluster`. `WorkerRuntimeCommitWiringTest` traverses that
+actual wrapper and pins the worker forwarding path. The integrated head's targeted checks,
+live projection/consumer gates and CI must pass independently of the preceding checkpoint.

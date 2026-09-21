@@ -5,8 +5,9 @@ not a claim that final-head CI or physical-scale acceptance has completed. This 
 named local checkpoints from `/private/tmp/pragmatica-hierarchy-runtime-pr`: targeted tests at
 `c5f3f2a1`, authority regressions and capacity fallback at `2a175cecf`, and corrected live authority
 acceptance at `1bf7ff14d`. The 20-class Forge matrix at `1bf7ff14d` passed 38 cases (zero failures/errors);
-its compiled fixture predates the corrections identified below. The strengthened Decision replay notification proof is
-newer than the matrix's compiled fixture and still requires a rerun. The
+its compiled fixture predates the corrections identified below. The strengthened Decision replay notification proof
+subsequently passed in the 49-case CI matrix at `0756e148b`; the validation ledger records the
+published artifact and tested merge parents. The
 [implementation plan](hierarchical-cluster-implementation-plan.md) owns commands and the execution
 ledger; final-head runtime CI remains a separate merge requirement.
 
