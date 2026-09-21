@@ -167,6 +167,10 @@ class DurableTopicDeliveryForgeTest {
     /// Per gate attempt: id, publish start and return instants, outcome — for the `SETUP SHAPE` line.
     private final List<String> warmupTimeline = new ArrayList<>();
 
+    /// The assignee reading taken at the end of [#setUp] ([#orderGroupSitsOnItsOwner]), for the arm's
+    /// message and the `SETUP SHAPE` line.
+    private String assigneeReading = "";
+
     /// Order-events gate publishes that neither returned success nor could be resolved from the owner's
     /// head offset, each with the readings that failed to resolve it. Excluded from every verdict: such
     /// an event may or may not be in the log, and a retry of it that lands after the consumer attached
@@ -211,6 +215,14 @@ class DurableTopicDeliveryForgeTest {
     /// `(namespace, stream, version)` management route can address it (`Namespace` admits no colon);
     /// the one read route that takes the raw name is `STREAM_REPLICAS_LOCAL`.
     private static final String ORDER_EVENTS_TOPIC_STREAM = "topic:" + TestArtifacts.streamEngineKey(BLUEPRINT_ID, "order-events");
+    private static final String POISON_EVENTS_TOPIC_STREAM = "topic:" + TestArtifacts.streamEngineKey(BLUEPRINT_ID, "poison-events");
+    private static final Pattern HRW_OWNER = Pattern.compile("\"hrwOwner\"\\s*:\\s*\"([^\"]*)\"");
+
+    /// Consumer groups the fixture declares: one on `order-events`, two on `poison-events`. The
+    /// assignee check in [#orderGroupSitsOnItsOwner] counts `attachedSubscriptions` per node against
+    /// this shape.
+    private static final int POISON_GROUPS = 2;
+    private static final int TOTAL_GROUPS = 1 + POISON_GROUPS;
     private static final Pattern QUOTED = Pattern.compile("\"([^\"]*)\"");
 
     private EmberCluster cluster;
@@ -288,13 +300,20 @@ class DurableTopicDeliveryForgeTest {
                .failFast(this::failIfSliceFailed)
                .until(() -> unchangedSinceLastSample(lastPoisonSample, failingAttemptsFor(WARMUP_ID)));
 
+        // The push-mode precondition, checked on the settled cluster: an id established while the owner's
+        // instance was ACTIVE should have attached on the owner; if the group sits elsewhere the arm
+        // has nothing to say and skips with the reading.
+        if (preAttachOrderId.isPresent() && !orderGroupSitsOnItsOwner()) {
+            preAttachOrderId = Option.none();
+        }
+
         LOG.log(System.Logger.Level.INFO,
-                "SETUP SHAPE: preAttachOrderId={0} ({1}); attachedSubscriptions now {2}; warm-up attempts {3}; excluded {4}; setUp done at {5}",
+                "SETUP SHAPE: preAttachOrderId={0} ({1}); assignee: {2}; warm-up attempts {3}; excluded {4}; setUp done at {5}",
                 preAttachOrderId.or("none"),
                 preAttachEvidence.isEmpty()
                 ? "not established"
                 : preAttachEvidence,
-                attachedSubscriptionsClusterWide(),
+                assigneeReading,
                 warmupTimeline,
                 excludedWarmupIds,
                 Instant.now());
@@ -355,8 +374,9 @@ class DurableTopicDeliveryForgeTest {
                     + " the log before the attach — the first publish that returned success did so with"
                     + " attachedSubscriptions=" + attachedWhenWarmupSucceeded + " across the nodes, and the"
                     + " unknown-outcome attempts could not be resolved from the owner's head offset:"
-                    + " " + excludedWarmupIds + ". Nothing this run can say about the backlog read at"
-                    + " subscribe — see the class doc for why this is a named skip, not a red"));
+                    + " " + excludedWarmupIds + "; assignee: " + assigneeReading + ". Nothing this run can"
+                    + " say about the backlog read at subscribe — see the class doc for why this is a named"
+                    + " skip, not a red"));
 
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
@@ -837,8 +857,9 @@ class DurableTopicDeliveryForgeTest {
     /// (`min_sync_replicas = 2` here, so one peer); the owner's own row is substituted with its raw head
     /// and is excluded. Owner-side durability has no management surface and is assumed to precede or
     /// closely follow the peer ack `[unverified: no black-box read of the owner's durable offset]`.
-    /// Sampling continues while the append is not yet peer-acked, stops at the first qualifying sample
-    /// or when the call returns, and is empty when no sample qualified.
+    /// Sampling continues while the append is not yet peer-acked or the owner's instance is not yet
+    /// ACTIVE (see [#establishPreAttachId] for why the owner must be able to run the slice), stops at the
+    /// first qualifying sample or when the call returns, and is empty when no sample qualified.
     private Option<String> observeAppendBeforeAttach(Thread publisher, long headBefore) {
         var samples = 0;
 
@@ -848,7 +869,9 @@ class DurableTopicDeliveryForgeTest {
             var head = view.flatMap(DurableTopicDeliveryForgeTest::ownerHeadOffset).or(-1L);
             var visible = headBefore >= 0 && head == headBefore + 1 && view.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false);
 
-            if (visible) {
+            var ownerActive = visible && view.flatMap(DurableTopicDeliveryForgeTest::hrwOwner).map(this::instanceActiveOn).or(false);
+
+            if (visible && ownerActive) {
                 var attached = attachedSubscriptionsClusterWide();
 
                 if (attached == 0) {
@@ -867,14 +890,92 @@ class DurableTopicDeliveryForgeTest {
         return Option.none();
     }
 
+    /// Establishes `id` when nobody is attached AND the partition owner's instance is already ACTIVE.
+    /// The second condition decides WHICH node attaches first: the committed assignment is "the HRW
+    /// owner when it can run the slice, else HRW over the nodes that can" (`ConsumerAssignmentWriter`).
+    /// A non-owner assignee has no local ring and POLLS through forwarded reads, which read the backlog
+    /// on every tick — the subscribe-time kick is never on the stack, and the arm is green under a
+    /// runtime that never reads the backlog at subscribe (rev1341 F8, measured under M1). Only an owner
+    /// assignee attaches in push mode, where #1238(c) lives. With the owner's instance ACTIVE before the
+    /// first attach, the first assignee is the owner; [#orderGroupSitsOnItsOwner] checks the outcome.
     private void establishPreAttachId(String id, int attached, String how) {
-        if (attached == 0 && preAttachOrderId.isEmpty()) {
-            preAttachOrderId = Option.some(id);
-            preAttachEvidence = how + (how.startsWith("in-flight")
-                                       ? ""
-                                       : ", and attachedSubscriptions read 0 on every node afterwards");
+        if (attached != 0 || preAttachOrderId.isPresent()) {
+            return;
         }
+
+        var owner = ownerReplicaView().flatMap(DurableTopicDeliveryForgeTest::hrwOwner);
+        var ownerActive = owner.map(this::instanceActiveOn).or(false);
+
+        if (!ownerActive) {
+            if (excludedWarmupIds.stream().noneMatch(entry -> entry.startsWith(id + "("))) {
+                excludedWarmupIds.add(id + "(nobody attached, but the partition owner " + owner.or("<unresolved>")
+                                      + "'s instance was not yet ACTIVE, so the first assignee would poll, not push)");
+            }
+
+            return;
+        }
+
+        excludedWarmupIds.removeIf(entry -> entry.startsWith(id + "("));
+        preAttachOrderId = Option.some(id);
+        preAttachEvidence = how + (how.startsWith("in-flight")
+                                   ? ""
+                                   : ", and attachedSubscriptions read 0 on every node afterwards")
+                            + "; the owner " + owner.or("?") + "'s instance was ACTIVE, so the first assignee is the owner (push mode)";
     }
+
+    private boolean instanceActiveOn(String nodeId) {
+        return cluster.slicesStatus()
+                      .stream()
+                      .filter(slice -> slice.artifact().equals(DURABLE_TOPIC_SLICE))
+                      .flatMap(slice -> slice.instances().stream())
+                      .anyMatch(instance -> nodeId.equals(instance.nodeId()) && "ACTIVE".equals(instance.state()));
+    }
+
+    private static Option<String> hrwOwner(String body) {
+        var matcher = HRW_OWNER.matcher(body);
+
+        return matcher.find()
+               ? Option.some(matcher.group(1))
+               : Option.none();
+    }
+
+    /// After setUp, whether the `order-events` group is attached on its partition's owner — the push-mode
+    /// precondition of [PreAttachBacklog], checked from the outside. Durable-topic groups are not rows of
+    /// `GET /api/v1/streams/declarative-consumers` (its rows come from the `[streams.X]` registry; the
+    /// COUNT includes them), so the group's node is derived from per-node `attachedSubscriptions`
+    /// against the fixture's shape: the order-events owner must carry 1 (+ the two poison groups when it
+    /// also owns `poison-events`), and the cluster total must be [#TOTAL_GROUPS]. Any other distribution
+    /// means the group sits elsewhere, or the shape is not the one counted, and the arm cannot claim the
+    /// kick path; it then skips with these readings.
+    private boolean orderGroupSitsOnItsOwner() {
+        var orderOwner = ownerReplicaView().flatMap(DurableTopicDeliveryForgeTest::hrwOwner);
+        var poisonOwner = ownerReplicaViewOf(POISON_EVENTS_TOPIC_STREAM).flatMap(DurableTopicDeliveryForgeTest::hrwOwner);
+        var perNode = cluster.status()
+                             .nodes()
+                             .stream()
+                             .collect(Collectors.toMap(EmberCluster.NodeStatus::id,
+                                                       node -> attachedSubscriptions(httpGet(node.mgmtPort(), "/api/v1/streams/declarative-consumers")),
+                                                       (first, _) -> first,
+                                                       java.util.TreeMap::new));
+        var total = perNode.values().stream().mapToInt(Integer::intValue).sum();
+        var expectedAtOrderOwner = 1 + (orderOwner.isPresent() && orderOwner.equals(poisonOwner)
+                                        ? POISON_GROUPS
+                                        : 0);
+        var atOrderOwner = orderOwner.map(owner -> perNode.getOrDefault(owner, -1)).or(-1);
+        var sits = total == TOTAL_GROUPS && atOrderOwner == expectedAtOrderOwner;
+
+        assigneeReading = "order-events owner=%s, poison-events owner=%s, attachedSubscriptions per node=%s (expected %d at the order-events owner, %d in total): %s".formatted(orderOwner.or("<unresolved>"),
+                                                                                                                                                                            poisonOwner.or("<unresolved>"),
+                                                                                                                                                                            perNode,
+                                                                                                                                                                            expectedAtOrderOwner,
+                                                                                                                                                                            TOTAL_GROUPS,
+                                                                                                                                                                            sits
+                                                                                                                                                                            ? "the order-events group sits on its owner (push mode)"
+                                                                                                                                                                            : "the order-events group is NOT on its owner (poll mode, not the #1238(c) path)");
+
+        return sits;
+    }
+
 
     /// The order-events partition's replica view as answered by its OWNER (`servedByOwner=true`); empty
     /// until some node is the owner. Read per node over `GET /api/v1/streams/{name}/{partition}/replicas-local`,
@@ -883,10 +984,14 @@ class DurableTopicDeliveryForgeTest {
     /// `ownerHeadOffset` (next-expected offset, i.e. events appended so far) and one row per replica
     /// with its acked watermark.
     private Option<String> ownerReplicaView() {
+        return ownerReplicaViewOf(ORDER_EVENTS_TOPIC_STREAM);
+    }
+
+    private Option<String> ownerReplicaViewOf(String topicStream) {
         return cluster.status()
                       .nodes()
                       .stream()
-                      .map(node -> httpGet(node.mgmtPort(), "/api/v1/streams/" + ORDER_EVENTS_TOPIC_STREAM + "/0/replicas-local"))
+                      .map(node -> httpGet(node.mgmtPort(), "/api/v1/streams/" + topicStream + "/0/replicas-local"))
                       .filter(body -> SERVED_BY_OWNER.matcher(body).find())
                       .findFirst()
                       .map(Option::some)
