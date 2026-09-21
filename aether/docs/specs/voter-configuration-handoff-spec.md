@@ -199,9 +199,16 @@ contains no application commands. Its prepared checkpoint is cached at that slot
 pending requests cannot enlarge an already admitted barrier.
 
 Pending batches are uncommitted recovery hints. If their inclusion exceeds the bound, the
-transfer omits them; the originating node retains its pending requests and promises, and
-normal stop/failure or caller retry semantics still apply. Omission never acknowledges a
-request. If committed checkpoint state itself does not fit, reconfiguration fails visibly
+transfer omits them. Omission never acknowledges a request. An originating node retains
+its pending requests while it keeps the same committed frontier. On adoption of a snapshot
+that advances its frontier, however, its old queue is no longer safe to replay: the skipped
+slots may already contain those requests. Both ordinary synchronization and voter handoff
+must retain only batches explicitly pending in the adopted checkpoint, merge their local
+request correlations, and discard other pre-adoption pending entries. Affected local callers
+receive `SnapshotOutcomeUnknown`; this means the outcome is ambiguous, not that execution
+failed. Callers must reconcile the operation's result before retrying. Equal-frontier adoption
+preserves local-only pending requests because it skips no decisions. Uncommitted hints are
+not a durable exactly-once request ledger. If committed checkpoint state itself does not fit, reconfiguration fails visibly
 with `STATE_TRANSFER_TOO_LARGE` before proposing the barrier. A receiver refuses an
 unprepared oversized barrier rather than reopening a decided old epoch.
 
