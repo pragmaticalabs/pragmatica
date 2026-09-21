@@ -26,10 +26,12 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -164,6 +166,34 @@ class StreamCreateCatalogRegistrationTest {
         }
     }
 
+    /// The catalog put's third outcome: consensus never answers. `register` bounds the wait at 10 s
+    /// (`KvBackedStreamRegistry.REGISTER_TIMEOUT`, the same bound the stream-config commit has) and the
+    /// request fails with `CoreError.Timeout` — not `HttpStatusAware`, so `ProblemResponses.resolveStatus`
+    /// renders it `500`. The ring stays materialized (its own config commit is the stub's success path
+    /// here), so a retry registers it. Costs ~10 s wall-clock by construction; that is the bound under
+    /// test, not fixture slack.
+    @Test
+    void legacyCreate_catalogPutNeverCompletes_timesOutAsFailure_andRingStays() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        var namespacesService = hangingNamespaces();
+        try {
+            var started = System.nanoTime();
+            var result = legacyCreate(manager, namespacesService, new StreamCreateRequest(ADDRESS, 1));
+            var elapsedSeconds = (System.nanoTime() - started) / 1_000_000_000L;
+
+            result.onSuccess(response -> fail("catalog put never completed, yet the response was: " + response));
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(CoreError.Timeout.class);
+                assertThat(cause).as("a Timeout is not HttpStatusAware, so it renders as 500").isNotInstanceOf(HttpStatusAware.class);
+            });
+            assertThat(elapsedSeconds).as("the wait is bounded at REGISTER_TIMEOUT (10 s), not indefinite").isBetween(9L, 30L);
+            assertThat(manager.streamInfo(ADDRESS).isPresent()).as("the ring stays materialized for the retry").isTrue();
+            assertThat(namespacesService.lookup(address()).isEmpty()).isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
     /// Same refusal on #1229's catalog-addressed route: its test drove `StreamNamespacesService.inMemory()`,
     /// whose register is synchronous, and so could not see the fire-and-forget put.
     @Test
@@ -224,6 +254,38 @@ class StreamCreateCatalogRegistrationTest {
         var registry = new KvBackedStreamRegistry(switchableClusterNode(store, accepting), store);
 
         return new StreamNamespacesService(registry, new SystemStreamBootstrap(registry));
+    }
+
+    /// A registry whose consensus apply never resolves — the never-answers seam for the timeout branch.
+    private static StreamNamespacesService hangingNamespaces() {
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        var registry = new KvBackedStreamRegistry(hangingClusterNode(), store);
+
+        return new StreamNamespacesService(registry, new SystemStreamBootstrap(registry));
+    }
+
+    private static ClusterNode<KVCommand<AetherKey>> hangingClusterNode() {
+        return new ClusterNode<>() {
+            @Override public NodeId self() {
+                return NodeId.nodeId("test-node").unwrap();
+            }
+
+            @Override public TopologyManager topologyManager() {
+                return null;
+            }
+
+            @Override public Promise<Unit> start() {
+                return Promise.unitPromise();
+            }
+
+            @Override public Promise<Unit> stop() {
+                return Promise.unitPromise();
+            }
+
+            @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+                return Promise.promise();
+            }
+        };
     }
 
     private static ClusterNode<KVCommand<AetherKey>> switchableClusterNode(KVStore<AetherKey, AetherValue> store,
