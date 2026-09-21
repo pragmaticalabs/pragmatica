@@ -807,7 +807,14 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void registerBatch(Batch<C> batch, Consumer<Batch<C>> onBatchPrepared) {
-        pendingBatches.put(batch.id(), batch);
+        // #958: the id is a content hash, so a second local submission of identical commands
+        // must merge its correlationId into the already-pending batch, exactly as
+        // doHandleNewBatch does for a remote one. A plain put() replaced the pending batch,
+        // dropping the first caller's correlationId; commitChanges() then completed only the
+        // survivor and the first caller saw ApplyTimeout although its command had applied.
+        pendingBatches.compute(batch.id(),
+                               (_, existing) -> Option.option(existing).fold(() -> batch,
+                                                                             current -> stateMachine.merge(current, batch)));
         metrics.updatePendingBatches(self, pendingBatches.size());
         onBatchPrepared.accept(batch);
         triggerPhaseIfNeeded();
