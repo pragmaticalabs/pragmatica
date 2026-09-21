@@ -42,8 +42,10 @@ import static org.awaitility.Awaitility.await;
 /// The fixture is `ProjectionSlice` (test-durable-topic): a `Projection` over the single-partition
 /// durable topic `projection-events`, attached through the provisioned `ProjectionRuntime`, folding
 /// `state * 10 + seq`. One partition and the slice on every node means exactly one node consumes the
-/// group, and its in-process store is the one that fills — the others stay empty by construction, which
-/// is why every model read below scans the nodes and takes the one that holds a model.
+/// group, and its in-process store is the one that fills. Every model read below is taken from THAT node
+/// — the one the committed assignment names at the time (`awaitConsumerNode`) — never collected across
+/// nodes: a node that held the assignment earlier and lost it keeps serving the model of its own tenure,
+/// which says nothing about the rebuild (the per-node-store limitation the docs state; rev1369 MEDIUM-3).
 ///
 /// Scenario: seq 1..6 → model `123456`. Arm poison for seq 3 on every node. `POST …/rebuild/{group}` on
 /// the node the groups route names as the consumer. The rewound consumer replays every retained offset
@@ -185,8 +187,9 @@ class DurableProjectionRebuildForgeTest {
             publish(seq);
         }
 
-        awaitModel(MODEL_BEFORE);
         var consumerNode = awaitConsumerNode();
+
+        awaitModelOn(consumerNode.appPort(), MODEL_BEFORE);
         // The committed columns are NOT asserted before the rebuild: checkpoints are requested only from an
         // ack on the 500ms cadence, so a partition whose events all land within 500ms of the attach and then
         // goes quiet has NO committed checkpoint at all (measured: attach at .349, warm-up at .375, seq 1..6 by
@@ -240,7 +243,7 @@ class DurableProjectionRebuildForgeTest {
         assertThat(token.find()).describedAs("the rewind token is answered: %s", rebuild.body()).isTrue();
         var tokenEpoch = token.group(1) + "/" + token.group(2);
 
-        awaitModel(MODEL_AFTER_REBUILD);
+        awaitModelOn(consumerNode.appPort(), MODEL_AFTER_REBUILD);
         await().atMost(DELIVERY_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
              .failFast(this::failIfSliceFailed)
@@ -275,7 +278,7 @@ class DurableProjectionRebuildForgeTest {
                             });
         cluster.getAvailableAppHttpPorts().forEach(port -> armPoison(port, -1));
         publish(7);
-        awaitModel(MODEL_AFTER_LIVE_PUBLISH);
+        awaitModelOn(consumerNode.appPort(), MODEL_AFTER_LIVE_PUBLISH);
         var afterLive = deltas(attemptsBefore, attempts(consumerNode.appPort()));
 
         assertThat(afterLive.get(7)).describedAs("a live event after LIVE is admitted first time").isEqualTo(1);
@@ -317,8 +320,10 @@ class DurableProjectionRebuildForgeTest {
                                 assertThat(seen.size() >= 3 && seen.subList(seen.size() - 3, seen.size()).stream().distinct().count() == 1)
                                           .describedAs("the assignment is stable across one reconcile interval: %s", seen)
                                           .isTrue();
-                                assertThat(consumerAppPort()).describedAs("the model lives on the node that holds the partition")
-                                          .isEqualTo(Option.some(found.getFirst().appPort()));
+                                // The holder's store holds a model. NOT "the first node with a model is the holder": a
+                                // node that lost the assignment keeps its stale store (rev1369 MEDIUM-3).
+                                assertThat(model(found.getFirst().appPort()) >= 0).describedAs("the node that holds the partition holds a model")
+                                          .isTrue();
                                 holder[0] = found.getFirst();
                             });
 
@@ -335,16 +340,18 @@ class DurableProjectionRebuildForgeTest {
                       .orElseGet(Option::none);
     }
 
-    private void awaitModel(long expected) {
+    /// The model is read from ONE node — the one the committed assignment names (`awaitConsumerNode`) —
+    /// never collected from every node. The store is per node: a node that held the assignment earlier and
+    /// lost it (rev1369 MEDIUM-3: an ACTIVATING→ACTIVE move between the warm-up and the POST) keeps serving
+    /// the model it built in its tenure, and that stale value is not evidence about the rebuild — it is
+    /// the per-node-store limitation the docs state. Folding all nodes' models into one assertion read
+    /// `[12456, 123456]` on a run whose rebuild was correct.
+    private void awaitModelOn(int appPort, long expected) {
         await().atMost(DELIVERY_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
              .failFast(this::failIfSliceFailed)
-             .untilAsserted(() -> assertThat(cluster.getAvailableAppHttpPorts()
-                                                    .stream()
-                                                    .map(this::model)
-                                                    .filter(model -> model >= 0)
-                                                    .toList()).describedAs("the consuming node's model")
-                                            .containsExactly(expected));
+             .untilAsserted(() -> assertThat(model(appPort)).describedAs("the consuming node's model (app port %d)", appPort)
+                                                            .isEqualTo(expected));
     }
 
     private long model(int appPort) {
