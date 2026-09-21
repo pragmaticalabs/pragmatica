@@ -51,8 +51,10 @@ class NodeUserDataRendererTest {
     ///
     /// It is asserted ON THE `java` TOKEN, ahead of the operator's `jvm_args`, because the operator's
     /// args are the part a deployment replaces wholesale; a flag carried inside them would be dropped
-    /// by the first override. The `-jar` assertion is the control: it proves the string examined is
-    /// the launcher line and not some other mention of `java`.
+    /// by the first override. What is pinned is ORDER, not immunity: HotSpot takes the last occurrence,
+    /// so an operator's `-XX:-ExitOnOutOfMemoryError` in `jvm_args` (or `_JAVA_OPTIONS` in the
+    /// environment) still disables it — that is their explicit opt-out. The `-jar` assertion is the
+    /// control: it proves the string examined is the launcher line and not some other mention of `java`.
     @Nested
     class ExitOnOutOfMemoryIsPinned {
         @Test
@@ -61,7 +63,7 @@ class NodeUserDataRendererTest {
         }
 
         @Test
-        void render_jvmLauncher_operatorJvmArgs_followTheFlagAndCannotDisplaceIt() {
+        void render_jvmLauncher_operatorJvmArgs_comeAfterTheFlag_onTheSameExecLine() {
             var script = renderJvm("jvm_args = \"-Xmx2g -XX:+UseZGC\"");
 
             assertExitOnOomIsOnTheJavaToken(script);

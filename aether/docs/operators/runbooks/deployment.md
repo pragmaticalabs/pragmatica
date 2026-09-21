@@ -97,12 +97,13 @@
    [Service]
    Type=simple
    User=aether
-   ExecStart=/usr/bin/java -Xmx4g -jar /opt/aether/aether-node.jar \
+   ExecStart=/usr/bin/java -XX:+ExitOnOutOfMemoryError -Xmx4g -jar /opt/aether/aether-node.jar \
      --node-id=${HOSTNAME} \
      --port=8090 \
      --peers=node1:8090,node2:8090,node3:8090
-   Restart=always
-   RestartSec=10
+   # Restart must stay "no": a crashed node must not rejoin under the same id.
+   # Recovery is a replacement with a NEW node id — see deployment-recovery.md §1 and §4.5.
+   Restart=no
 
    [Install]
    WantedBy=multi-user.target

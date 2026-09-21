@@ -14,28 +14,32 @@
   operators replace those wholesale (`docker-compose.yml` sets `JAVA_OPTS: "-Xmx256m -XX:+UseZGC"`),
   and a flag carried inside them would be dropped by the first override. Forge launchers are unchanged
   on purpose — Forge runs a whole simulated cluster in one JVM, and one OOM would kill every node in it.
-- **What the flag guarantees:** on the first Java-heap or Metaspace allocation HotSpot cannot satisfy
-  after GC, the VM `_exit(3)`s from inside `report_java_out_of_memory` — before the error is delivered
-  to any `catch`, event loop or `runGuarded`, and shutdown hooks are skipped (so the #838
-  exit-inside-a-hook deadlock class cannot engage). The node is then dead the way `kill -9` makes it
-  dead, and the existing path runs: unanswered pings → SUSPECT → FAULTY (~11 s) → terminal removal →
-  deficit → auto-heal under a new node id. [verified:
+- **What the flag guarantees:** whenever HotSpot itself reports an out-of-memory condition — a Java-heap or
+  Metaspace allocation it cannot satisfy after GC, or `Requested array size exceeds VM limit` — the VM
+  `_exit(3)`s from inside `report_java_out_of_memory`, before the error is delivered to any `catch`, event
+  loop or `runGuarded`, and shutdown hooks are skipped (so the #838 exit-inside-a-hook deadlock class cannot
+  engage). The node is then dead the way `kill -9` makes it dead, and the existing path runs: unanswered
+  pings → SUSPECT → FAULTY (~11 s) → terminal removal → deficit → auto-heal under a new node id where a
+  compute provider exists (otherwise the operator starts a replacement with a new id; §4.5). [verified:
   `aether/node/src/test/java/org/pragmatica/aether/OomExitProbeTest.java` — a child JVM at `-Xmx32m`
   exhausts its heap inside a `catch (Throwable)` loop: with the flag it exits 3 within the deadline,
   prints the VM's own `Terminating due to java.lang.OutOfMemoryError: Java heap space`, and its
   `catch` never runs; the control without the flag catches the OOM and is still alive after 3 s, killed
-  by the test] [verified: one text pin per launcher —
-  `NodeLauncherExitOnOomPinnedTest` (8 file launchers, each with a same-line `-jar` control and a
-  no-flag assertion on the forge wrappers), `NodeUserDataRendererTest.ExitOnOutOfMemoryIsPinned`,
-  `LocalGeneratorTest.ExitOnOutOfMemoryIsPinned` — deleting the flag from one site reddens exactly that
-  site's pin]
-- **Not covered, and stated as a limit:** an `OutOfMemoryError` thrown from Java code — direct/`Unsafe`
-  memory exhaustion, or an explicit `throw new OutOfMemoryError()` — does not route through the VM's
-  out-of-memory report and behaves exactly as before; a JVM that thrashes in GC without ever throwing is
-  not detected. [unverified: which OOM kinds beyond heap and Metaspace Temurin 25 routes through
-  `report_java_out_of_memory`; that the rc3 incident's 44 OOMs were heap rather than direct memory —
-  the kind was never extracted from those logs]. GC-thrash detection is a heap watchdog on the
-  `jvmExit` seam, post-GA.
+  by the test] [verified: rev1422's `OomKinds` probe — heap, Metaspace and array-size each exit 3 with
+  the flag; direct, `Unsafe`, explicit-throw and native-thread each stay alive with it] [verified: one
+  text pin per launcher — `NodeLauncherExitOnOomPinnedTest` (8 file launchers, each with a same-line
+  `-jar` control and a no-flag assertion on the forge wrappers),
+  `NodeUserDataRendererTest.ExitOnOutOfMemoryIsPinned`, `LocalGeneratorTest.ExitOnOutOfMemoryIsPinned` —
+  deleting the flag from one site reddens exactly that site's pin]
+- **Limits, each its own kind:** [limit: an `OutOfMemoryError` thrown from Java code rather than reported
+  by the VM does not exit — direct/`Unsafe` memory exhaustion, `unable to create native thread`, and an
+  explicit `throw new OutOfMemoryError()` all behave exactly as before] [limit: a JVM that thrashes in GC
+  without ever throwing is not detected — a heap watchdog on the `jvmExit` seam is post-GA] [limit: the
+  flag is `{product}` and HotSpot takes the last occurrence, so `-XX:-ExitOnOutOfMemoryError` in
+  `JAVA_OPTS`/`AETHER_JAVA_OPTS`/`jvm_args`, or `_JAVA_OPTIONS` in the environment, disables it — no
+  shipped template does; it is the operator's explicit opt-out] [unverified: that the rc3 incident's 44
+  OOMs were heap — the kind was never extracted from those logs; the ticket's `ZHeap used 510M, capacity
+  512M` with GC idle points at heap]
 - **Blast radius:** a single over-large allocation now kills the node and costs a replacement
   (~50–63 s on cloud) where today it is swallowed; peers see FAULTY rather than a graceful departure,
   so the CRITICAL alert fires — intended. `Restart=no` is unchanged; recovery is CTM auto-heal, not a
@@ -43,5 +47,7 @@
   all four-per-run copies of `OffHeapRingBufferNotifierTest`'s injected `throw new OutOfMemoryError`
   inside the surefire JVM, and zero `Java heap space` / `Metaspace` / `Terminating due to` lines — no
   CI node currently OOMs-and-survives, so nothing in CI starts dying.
-- `aether/docs/operators/deployment-recovery.md` §4.5 documents exit code 3: what produced it, that
-  auto-heal has replaced the node under a new id, and that it must not be restarted under the old one.
+- `aether/docs/operators/deployment-recovery.md` §4.5 documents exit code 3: what produced it, that a cluster
+  with a compute provider auto-heals under a new id while a provider-less install needs the operator to
+  start a replacement with a new id, and the opt-out. `runbooks/deployment.md`'s verbatim systemd unit now
+  carries the flag and `Restart=no` (it shipped `Restart=always`, contradicting §1).
