@@ -81,9 +81,31 @@ public sealed interface BootstrapAdminKeyLeg {
             return LegError.notLeader().promise();
         }
 
-        return hasActiveAdminKey(kvStore)
-               ? Promise.success(Option.none())
+        if (hasActiveAdminKey(kvStore)) {
+            return Promise.success(Option.none());
+        }
+
+        return bootstrapRecordExists(kvStore)
+               ? refuseToResurrect()
                : generateAndCommit(applier, clusterSecret);
+    }
+
+    /// #1020 — a `bootstrap-admin` record that EXISTS but is not valid for auth is the operator's
+    /// revocation (or expiry), restored from `[backup]` after a full restart. Minting over it would
+    /// resurrect a credential the operator killed — fail OPEN on exactly the restart the revocation
+    /// was meant to survive. The check above admits any OTHER active ADMIN key; this one refuses when
+    /// the only thing on record is the tombstone.
+    private static boolean bootstrapRecordExists(KVStore<AetherKey, AetherValue> kvStore) {
+        return kvStore.get(ApiKeyKey.apiKeyKey(KEY_ID)).isPresent();
+    }
+
+    private static Promise<Option<String>> refuseToResurrect() {
+        LOG.warn("Bootstrap admin key: a '{}' record exists and is not valid for authentication (revoked or expired) — "
+                 + "NOT minting a replacement, because that would resurrect a credential the operator retired. "
+                 + "The cluster has no active ADMIN key: provision one via [app-http.api-keys.<key>] or AETHER_API_KEYS.",
+                 KEY_ID);
+
+        return Promise.success(Option.none());
     }
 
     private static boolean hasActiveAdminKey(KVStore<AetherKey, AetherValue> kvStore) {

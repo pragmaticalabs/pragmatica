@@ -85,6 +85,44 @@ class BootstrapAdminKeyLegTest {
         assertThat(captured).as("no commands committed when a key already exists").isEmpty();
     }
 
+    /// #1020 — a REVOKED `bootstrap-admin` restored from `[backup]` after a full restart must stay
+    /// revoked: the leg refuses to mint over the tombstone. Before this, `hasActiveAdminKey` saw no
+    /// valid ADMIN key and committed a fresh record under the same id — the operator's revocation was
+    /// undone by the restart it was meant to survive.
+    @Test
+    void leg_revokedBootstrapRecord_isNotResurrected() {
+        var revoked = ApiKeyValue.apiKeyValue(BootstrapAdminKeyLeg.KEY_ID, "deadbeef", 0L, AuthorizationRole.ADMIN.name())
+                                 .withRevoked(0L);
+
+        commit(List.of(castPut(new KVCommand.Put<>(ApiKeyKey.apiKeyKey(BootstrapAdminKeyLeg.KEY_ID), revoked))));
+        captured.clear();
+        var leg = BootstrapAdminKeyLeg.bootstrapAdminKeyLeg(() -> kvStore, () -> true, this::applyAndSeed, secret());
+
+        var plaintext = await(leg.get());
+
+        assertThat(plaintext.isEmpty()).as("nothing to print: no key was minted").isTrue();
+        assertThat(captured).as("no commands committed over the revoked record").isEmpty();
+        var stored = (ApiKeyValue) kvStore.get(ApiKeyKey.apiKeyKey(BootstrapAdminKeyLeg.KEY_ID)).unwrap();
+        assertThat(stored.isValidForAuth()).as("the tombstone stands").isFalse();
+    }
+
+    /// CONTROL — the refusal is keyed on the RECORD, not on the absence of an active key: an empty
+    /// store still mints (`leg_emptyStore_…` above), and a revoked bootstrap record beside another
+    /// active ADMIN key is the ordinary no-op.
+    @Test
+    void leg_revokedBootstrapRecord_besideAnActiveAdminKey_isNoOp() {
+        var revoked = ApiKeyValue.apiKeyValue(BootstrapAdminKeyLeg.KEY_ID, "deadbeef", 0L, AuthorizationRole.ADMIN.name())
+                                 .withRevoked(0L);
+
+        commit(List.of(castPut(new KVCommand.Put<>(ApiKeyKey.apiKeyKey(BootstrapAdminKeyLeg.KEY_ID), revoked))));
+        seedAdminKey();
+        captured.clear();
+        var leg = BootstrapAdminKeyLeg.bootstrapAdminKeyLeg(() -> kvStore, () -> true, this::applyAndSeed, secret());
+
+        assertThat(await(leg.get()).isEmpty()).isTrue();
+        assertThat(captured).isEmpty();
+    }
+
     @Test
     void leg_notLeader_failsWithoutWriting() {
         var leg = BootstrapAdminKeyLeg.bootstrapAdminKeyLeg(() -> kvStore, () -> false, this::applyAndSeed, secret());
