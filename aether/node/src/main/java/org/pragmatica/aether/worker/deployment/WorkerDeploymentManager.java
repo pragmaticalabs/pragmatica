@@ -154,6 +154,13 @@ public interface WorkerDeploymentManager {
                 }
             }
 
+            /// Load-phase boundary: an unrecognised load failure is `PERMANENT` (#930, as
+            /// `NodeDeploymentState.handleLoadingFailure`), because retrying re-runs the same
+            /// deterministic work on the same artifact. Typed causes pass through unchanged.
+            private static Cause classifyLoadFailure(Cause cause) {
+                return SliceLoadingFailure.classify(cause, SliceLoadingFailure.Unrecognised.PERMANENT);
+            }
+
             private static boolean needsDeploy(Option<WorkerSliceDeployment> current) {
                 return current.map(c -> c.state() == DeploymentState.IDLE)
                               .or(true);
@@ -169,6 +176,7 @@ public interface WorkerDeploymentManager {
 
                 forwardSliceStateUpdate(sliceKey, SliceState.LOADING);
                 sliceStore.loadSlice(artifact)
+                          .mapError(workerDeploymentManager::classifyLoadFailure)
                           .flatMap(_ -> transitionToLoaded(artifact, sliceKey))
                           .flatMap(_ -> sliceStore.activateSlice(artifact))
                           .flatMap(_ -> transitionToActive(artifact, sliceKey))
@@ -205,9 +213,18 @@ public interface WorkerDeploymentManager {
             /// failed and whether a retry can help. Before, this site forwarded a bare `FAILED` with
             /// no reason and `fatal=false`, so a permanent refusal (a shared-loader version conflict,
             /// a parameter mismatch, a class not on the classpath) read as retryable and its reason
-            /// lived only in this worker's log. `PERMANENT` for an unrecognised cause mirrors the
-            /// FSM path's `handleLoadingFailure` (#930); a cause typed at its raise site classifies
-            /// the same way regardless.
+            /// lived only in this worker's log.
+            ///
+            /// The disposition of an UNTYPED cause is decided per PHASE, as the FSM decides it
+            /// (#930): the load phase is classified `PERMANENT` at its boundary
+            /// ([#classifyLoadFailure], mirroring `NodeDeploymentState.handleLoadingFailure`),
+            /// so what reaches this handler from that phase is already typed; everything after it —
+            /// activation (`materializeAll()` resource connects, `slice.start()`) and publication —
+            /// is `RETRY`, mirroring `handleActivationFailure`, the site that closes #923. One
+            /// disposition for both phases is wrong in both directions: `RETRY` alone re-drives a
+            /// deterministic load failure, `PERMANENT` alone rolls a blueprint back for a database
+            /// that was unreachable for a second. A cause typed at its raise site classifies the
+            /// same way regardless of the phase.
             private void handleDeploymentFailure(Artifact artifact, SliceNodeKey sliceKey, Cause cause) {
                 log.error("Failed to deploy slice {} on worker {}: {}", artifact, self.id(), cause.message());
                 updateDeploymentState(artifact, DeploymentState.FAILED);
@@ -287,7 +304,7 @@ public interface WorkerDeploymentManager {
             private void forwardSliceFailure(SliceNodeKey sliceKey, Cause cause) {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var nodeArtifactValue = NodeArtifactValue.failedNodeArtifactValue(cause,
-                                                                                  SliceLoadingFailure.Unrecognised.PERMANENT);
+                                                                                  SliceLoadingFailure.Unrecognised.RETRY);
                 var correlationId = nextCorrelationId("state-failed");
 
                 forwardPut(nodeArtifactKey, nodeArtifactValue, correlationId);
