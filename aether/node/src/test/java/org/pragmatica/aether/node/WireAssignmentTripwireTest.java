@@ -41,11 +41,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 ///
 /// The ruling on which shape changes fail is READ OFF THE GENERATOR, not assumed.
 /// `CodecClassGenerator.generateRecordCodec` walks `getRecordComponents()` in declaration order and
-/// emits a **bare positional concatenation** — there is no field count, no field-name table, no
-/// per-field length, and no skip metadata. The per-field type byte that IS written is **discarded**
-/// by the reader (`buf.readByte();` with the value unused), so it cannot support a tolerant or
-/// skipping decode. `SliceCodec.write`/`read` add only the compact type tag ahead of that body.
-/// Therefore:
+/// emits a **bare positional concatenation** — there is no field count, no field-name table, and
+/// **no per-field length anywhere**, which is the property that decides everything below: without a
+/// length, an unrecognised field cannot be skipped even in principle, whatever else is on the wire.
+///
+/// A per-field discriminator IS written, and what the reader does with it varies by field kind —
+/// worth stating exactly, because "the type byte is ignored" is true of most kinds and false of two:
+/// `writeRecordWriteBody` emits `buf.writeByte(SliceCodec.TAG_*)` for 8 kinds (BYTE, SHORT, CHAR,
+/// INT, LONG, FLOAT, DOUBLE, STRING) and `writeRecordReadBody` answers each with a bare
+/// `buf.readByte();` — no assignment, no comparison, **discarded**, 8 sites to 8. CODEC_TYPE writes
+/// a compact tag and reads it back into `SliceCodec.readCompact(buf);`, equally discarded, then
+/// dispatches **statically** to the compile-time codec. Only BOOLEAN (where the byte IS the value)
+/// and DISPATCHED (where `codec.read` looks the tag up) actually consume it.
+///
+/// `SliceCodec.write`/`read` add only the compact type tag ahead of that body. Therefore:
 ///
 /// - **ADDING a component FAILS.** There is no "unknown field" path to fall into. A reader built
 ///   against the old shape stops N components early: at the top of a length-delimited frame the
