@@ -492,6 +492,27 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           durableSealedOffset);
     }
 
+    /// As above, with a [ReplicationManager] instead of the explicit durable bound — the seal → WAL →
+    /// recovery chain behind a REAL min-sync acknowledgement gate, which is the only wiring in which a
+    /// restart's visibility watermark is observable (#1387). An RF=1 or no-replication setup cannot see it:
+    /// [org.pragmatica.aether.stream.replication.ReplicationManager#replicatedThrough] answers
+    /// `Long.MAX_VALUE` for `minSyncReplicas <= 1`, so visible and durable coincide there.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                ReplicationManager replicationManager,
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          replicationManager,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero(),
+                                          walBaseDir,
+                                          lastSealedOffset,
+                                          DurableSealedOffsetSource.same(lastSealedOffset));
+    }
+
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode) {
         return new StreamPartitionManager(maxTotalBytes,
