@@ -30,6 +30,15 @@ import io.netty.buffer.ByteBufUtil;
 
 
 public interface SliceCodec extends Serializer, Deserializer {
+    default boolean canonicalCollections() {
+        return false;
+    }
+
+    @Override
+    default SliceCodec canonical() {
+        return new CanonicalSliceCodec(this);
+    }
+
     // --- Wire format tag constants ---
     int TAG_UNIT = 0;
     int TAG_NONE = 1;
@@ -638,5 +647,56 @@ final class CodecHolder implements SliceCodec {
     @Override
     public String toString() {
         return "CodecHolder[byClass=%s, tagCount=%d]".formatted(byClass.keySet(), classCache.size());
+    }
+}
+
+/// Stateless view: generated writers recurse through this view, including collection fields.
+record CanonicalSliceCodec(SliceCodec delegate) implements SliceCodec {
+    @Override
+    public Map<Class<?>, TypeCodec<?>> registeredTypes() {
+        return delegate.registeredTypes();
+    }
+
+    @Override
+    public boolean canonicalCollections() {
+        return true;
+    }
+
+    @Override
+    public SliceCodec canonical() {
+        return this;
+    }
+
+    @Override
+    public TypeCodec<?> lookupByClass(Class<?> type) {
+        return delegate.lookupByClass(type);
+    }
+
+    @Override
+    public TypeCodec<?> lookupByTag(int tag) {
+        return delegate.lookupByTag(tag);
+    }
+
+    /// Serializer boundary: Java null has a dedicated wire tag and cannot be replaced by Option.
+    @Override
+    @org.pragmatica.lang.Contract
+    @SuppressWarnings({"unchecked", "JBCT-RET-06"})
+    public <T> void write(ByteBuf buffer, T value) {
+        if (value == null) {
+            SliceCodec.writeCompact(buffer, SliceCodec.TAG_NULL);
+
+            return;
+        }
+
+        var codec = (TypeCodec<T>) lookupByClass(value.getClass());
+
+        SliceCodec.writeCompact(buffer,
+                                codec.tagMapper().tagFor(value));
+        codec.writer().writeBody(this, buffer, value);
+    }
+
+    @Override
+    public <T> T read(ByteBuf buffer) {
+        return delegate.read(buffer);
     }
 }
