@@ -1393,6 +1393,11 @@ class StreamConsumerManagerTest {
         private static final String LOGGER_NAME = StreamConsumerManager.class.getName();
         private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
         private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
+        /// The ONE place the follow-up ticket number lives, so citing it is a one-line change rather
+        /// than a sweep. Referenced by the tripwire's failure message and its `@Disabled` inverse.
+        /// The earlier name for this, "#1389 item 3", was retired: once the defect is its own ticket,
+        /// "item 3" names nothing that exists anywhere.
+        private static final String UNDECLARE_TICKET = "the node-less TopicSubscriptionKey follow-up ticket (number pending — CTO is filing it)";
 
         private CapturingAppender appender;
         private LoggerConfig loggerConfig;
@@ -1586,11 +1591,15 @@ class StreamConsumerManagerTest {
                                                                 .isEqualTo(1L);
         }
 
-        /// Ticket item 2, "state which": the writer RE-ASSIGNS when the instance disappears, it does not
-        /// refuse up front — and "disappears" means the deployment map stops saying ACTIVE, which
-        /// `handleUnloading` and `performDeactivation` both write BEFORE unregistering the bridge. This
-        /// pins the existing repair, which is what makes the fault report above honest about the descale
-        /// case being someone else's job.
+        /// Ticket item 2, "state which", ARM 1 OF 2 — the repair, for the paths that transition placement.
+        /// The writer RE-ASSIGNS when the instance disappears, it does not refuse up front; "disappears"
+        /// means the deployment map stops saying ACTIVE, which `handleUnloading` and `performDeactivation`
+        /// both write BEFORE unregistering the bridge.
+        ///
+        /// Read this together with [#reconcile_staysParkedAndNeverReassigns_whenTheBridgeGoesWithoutLeavingActive]
+        /// below. The two differ in EXACTLY ONE input — whether `placement` transitions — and they reach
+        /// opposite outcomes. That pair is the whole of item 2: the repair exists, and it is conditional on
+        /// a write that two production paths do not make.
         @Test
         void reconcile_reassignsToARemainingCandidate_whenTheAssigneeLeavesActive() {
             declareStringConsumer();
@@ -1622,8 +1631,75 @@ class StreamConsumerManagerTest {
             assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
         }
 
-        /// TRIPWIRE for the producer of the M1 stall this ticket was filed from (#1389, item 3 — a
-        /// separate defect in a separate subsystem): `TopicSubscriptionKey` is `(address, artifact,
+        /// Ticket item 2, ARM 2 OF 2 — THE PERSISTENT PARK, and the reason the report is not cosmetic.
+        ///
+        /// Identical to the arm above except for ONE input: `placement` is NOT transitioned. That models
+        /// `NodeDeploymentState.handleReactivationFailure` (:2151) and the quorum-loss `suspendSlice`
+        /// (:2102), both of which call `unregisterSliceFromInvocation` WITHOUT transitioning the
+        /// deployment away from ACTIVE — unlike `handleUnloading` (:1656) and `performDeactivation`
+        /// (:991), which commit UNLOADING / DEACTIVATING first.
+        ///
+        /// The consequence is the one an operator has to live with: `candidateNodes` reads the map, the
+        /// map still says ACTIVE here, so this node stays the computed assignee and the leader rewrites
+        /// NOTHING — the record keeps naming a node that cannot consume, for as long as the map is wrong.
+        /// Extra passes are driven deliberately: the point is not that it reports once, it is that the
+        /// state does not clear and the report does not go stale.
+        ///
+        /// This also bounds the claim in the arm above. "The assignment step never picks a node holding
+        /// no instance" is true of the map's INTENDED contents, not of the computation, which trusts the
+        /// map. Two paths break the map, and this test is what makes that difference checkable rather
+        /// than a comment.
+        @Test
+        void reconcile_staysParkedAndNeverReassigns_whenTheBridgeGoesWithoutLeavingActive() {
+            declareStringConsumer();
+            placement.activeOn(SELF, PEER);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("precondition: the leader committed itself and attached")
+                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            appender.clear();
+
+            // The bridge is unregistered with NO placement transition — the :2151 / :2102 shape. Note what
+            // is NOT written here: `placement.activeOn(...)` is deliberately left saying SELF and PEER.
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.none());
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("nothing is consuming here any more")
+                                                      .isEmpty();
+            for (var partition : List.of(0, 1, 2, 3)) {
+                var record = committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP));
+
+                assertThat(record.assignee()).describedAs("partition %s is STILL committed to the node that cannot consume it — the map says ACTIVE, so the leader recomputes this node and rewrites nothing",
+                                                          partition)
+                                             .isEqualTo(SELF);
+                assertThat(record.assignmentTerm()).describedAs("no rewrite happened at all")
+                                                   .isEqualTo(1L);
+            }
+            assertThat(appender.warns()).describedAs("so the WARN is the ONLY observable; captured: %s", appender.all())
+                                        .hasSize(1);
+            assertThat(manager.attachSkippedNoLocalSliceCount()).isEqualTo(1L);
+
+            manager.reconcile();
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("PERSISTENT, not transient: further passes do not clear it")
+                                                      .isEmpty();
+            assertThat(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, 0, GROUP))
+                                           .assignee()).describedAs("and no later pass reassigns it either")
+                                                       .isEqualTo(SELF);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic().or("")).describedAs("the fault stays in the status for as long as the state lasts")
+                                                     .contains("[0, 1, 2, 3]")
+                                                     .contains(SELF.id()));
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("one entry, however long it lasts")
+                                                                .isEqualTo(1L);
+        }
+
+        /// TRIPWIRE for the producer of the M1 stall this ticket was filed from — a SEPARATE defect in a
+        /// separate subsystem, tracked by its own ticket (see [#UNDECLARE_TICKET]): `TopicSubscriptionKey` is `(address, artifact,
         /// method)` with NO node component, so every instance writes the same KV entry and ONE instance's
         /// unload `Remove`s the record every OTHER instance's durable group is declared from. The group is
         /// un-declared cluster-wide, the consumer detaches on the next pass, and no diagnosis can report
@@ -1634,7 +1710,7 @@ class StreamConsumerManagerTest {
         /// This asserts that CURRENT behaviour so it goes red the moment the key becomes node-scoped or
         /// re-asserted — then delete it and enable the inverse below.
         @Test
-        void tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_untilItem3IsFixed() {
+        void tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_untilTheSharedKeyIsNodeScoped() {
             var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
             var key = topicSubscriptionKey();
             var group = DurableGroupIdentity.groupId(ARTIFACT, METHOD);
@@ -1659,7 +1735,8 @@ class StreamConsumerManagerTest {
             topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
             manager.reconcile();
 
-            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("TRIPWIRE (#1389 item 3): SELF still hosts the slice and is still the committed assignee, yet the group is un-declared here and its consumer detached. If this assertion fails, the node-less TopicSubscriptionKey defect is fixed — delete this test and enable `descaleOfAnotherInstance_leavesThisNodeAttached` below")
+            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("TRIPWIRE (%s): SELF still hosts the slice and is still the committed assignee, yet the group is un-declared here and its consumer detached. If you are reading this because the assertion FAILED, the node-less TopicSubscriptionKey defect is fixed: delete me and enable the inverse below (`descaleOfAnotherInstance_leavesThisNodeAttached`)",
+                                                                              UNDECLARE_TICKET)
                                                                   .isEmpty();
             assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("TRIPWIRE: no declaration, so no status, so no diagnostic — the stall is unreported")
                                                                 .isEmpty();
@@ -1674,7 +1751,7 @@ class StreamConsumerManagerTest {
         /// enabled failing test is noise, not a tripwire. The tripwire is what guarantees this one gets
         /// enabled.
         @Test
-        @Disabled("#1389 item 3: enable when TopicSubscriptionKey is node-scoped or re-asserted; the tripwire above goes red at that moment")
+        @Disabled("Enable when TopicSubscriptionKey becomes node-scoped or is re-asserted; the tripwire above goes red at that moment and its failure message says to delete it and enable this. Tracked by the node-less TopicSubscriptionKey follow-up ticket (number pending).")
         void descaleOfAnotherInstance_leavesThisNodeAttached() {
             var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
             var key = topicSubscriptionKey();
