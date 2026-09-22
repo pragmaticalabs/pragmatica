@@ -1607,6 +1607,12 @@ owns it — reads are forwarded to the owner whenever those differ — and is co
 node, so one call answers "who consumes partition 3". `unassignedPartitions` is the gap worth alerting
 on: partitions no node can consume because the declaring slice is `ACTIVE` nowhere.
 
+`attachSkippedNoLocalSliceCount` (#1389) is the second gap: partitions committed to THIS node while the
+declaring slice is not loaded here, so nothing here consumes them. It counts state entries, not
+partitions, and the matching `diagnostic` names the group, stream, partitions, node and slice. Rising
+while `attachedSubscriptions` stays flat means the group is assigned and consumed nowhere — redeploy or
+unload the slice on this node so the leader stops naming it.
+
 A `diagnostic` naming more than one artifact for a single entry means two different artifacts declared
 the same stream and consumer group (#545) — neither is consuming until the group is renamed or one of
 the declarations is removed. This is unrelated to `aether blueprints status`: that command reports
