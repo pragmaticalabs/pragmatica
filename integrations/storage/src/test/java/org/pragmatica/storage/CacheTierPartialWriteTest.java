@@ -202,7 +202,7 @@ class CacheTierPartialWriteTest {
         assertThat(tier.usedBytes()).as("a failed write keeps no reservation").isZero();
         assertThat(partialFiles(dir)).isEmpty();
         assertThat(Files.isDirectory(squat)).as("nothing at the block path was removed").isTrue();
-        assertThat(Files.readString(occupant)).as("the squatter's contents are untouched").isEqualTo("not a block");
+        assertThat(occupant).as("the squatter's contents are untouched").hasContent("not a block");
     }
 
     /// #1144: the release is a dependent action on the put's promise, so it has run by the time the
