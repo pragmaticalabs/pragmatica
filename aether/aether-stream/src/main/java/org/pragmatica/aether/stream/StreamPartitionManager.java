@@ -492,6 +492,27 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           durableSealedOffset);
     }
 
+    /// As above, with a [ReplicationManager] instead of the explicit durable bound — the seal → WAL →
+    /// recovery chain behind a REAL min-sync acknowledgement gate, which is the only wiring in which a
+    /// restart's visibility watermark is observable (#1387). An RF=1 or no-replication setup cannot see it:
+    /// [org.pragmatica.aether.stream.replication.ReplicationManager#replicatedThrough] answers
+    /// `Long.MAX_VALUE` for `minSyncReplicas <= 1`, so visible and durable coincide there.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                ReplicationManager replicationManager,
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          replicationManager,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero(),
+                                          walBaseDir,
+                                          lastSealedOffset,
+                                          DurableSealedOffsetSource.same(lastSealedOffset));
+    }
+
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode) {
         return new StreamPartitionManager(maxTotalBytes,
@@ -1434,7 +1455,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void restoreVisible(StreamConfig config, StreamEntry entry) {
-        entry.materialized().forEach((partition, materialized) -> restoreVisible(config, partition, materialized.ring()));
+        entry.materialized()
+             .forEach((partition, materialized) -> restoreVisible(config,
+                                                                  partition,
+                                                                  materialized.ring()));
     }
 
     /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).
@@ -2704,7 +2728,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           walBaseDir,
                                           lastSealedOffset)
                           .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
-                          .onSuccess(candidate -> restoreVisible(config, partition, candidate.ring()))
+                          .onSuccess(candidate -> restoreVisible(config,
+                                                                 partition,
+                                                                 candidate.ring()))
                           .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
     }
 
@@ -3726,7 +3752,9 @@ public final class StreamPartitionManager implements AutoCloseable {
             var expected = ring.headOffset() + 1;
 
             return record.offset() == expected
-                   ? ring.appendOrdered(record.payload(), record.timestampMillis(), Result::success)
+                   ? ring.appendOrdered(record.payload(),
+                                        record.timestampMillis(),
+                                        Result::success)
                          .onSuccess(ring::markDurable)
                          .mapToUnit()
                    : new StreamError.WalReplayMismatch(streamName, partition, walFile, expected, record.offset()).result();
