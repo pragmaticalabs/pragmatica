@@ -25,7 +25,6 @@ import org.slf4j.LoggerFactory;
 
 public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEvent> {
     Logger LOG = LoggerFactory.getLogger(AppHttpState.class);
-
     AppHttpContext ctx();
 
     record Stopped(AppHttpContext ctx) implements AppHttpState {
@@ -34,7 +33,9 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
         public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
             switch (event) {
                 case StartRequested _ -> tx.transitionTo(ctx.starting());
-                case H1Ready(HttpServer server) -> tx.handle(() -> stopOrphanedServer(ctx, Option.some(server), Option.none()));
+                case H1Ready(HttpServer server) -> tx.handle(() -> stopOrphanedServer(ctx,
+                                                                                      Option.some(server),
+                                                                                      Option.none()));
                 case H3Ready(HttpServer h3) -> tx.handle(() -> stopOrphanedServer(ctx, Option.none(), Option.some(h3)));
                 default -> tx.ignore();
             }

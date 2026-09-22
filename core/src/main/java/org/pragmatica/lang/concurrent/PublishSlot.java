@@ -69,23 +69,29 @@ public final class PublishSlot<T> {
     }
 
     private static <T> SlotState<T> advance(SlotState<T> current, T value) {
-        return current instanceof SlotState.Closed<T> ? current : new SlotState.Published<>(value);
+        return current instanceof SlotState.Closed<T>
+               ? current
+               : new SlotState.Published<>(value);
     }
 
     private static <T> SlotState<T> vacate(SlotState<T> current) {
-        return current instanceof SlotState.Closed<T> ? current : new SlotState.Empty<>();
+        return current instanceof SlotState.Closed<T>
+               ? current
+               : new SlotState.Empty<>();
     }
 
     private static <T> Option<T> reclaimed(SlotState<T> previous, T value) {
         return switch (previous) {
-            case SlotState.Closed<T> _ -> some(value);
+            case SlotState.Closed<T>_ -> some(value);
             case SlotState.Published<T>(var held) -> some(held);
-            case SlotState.Empty<T> _ -> none();
+            case SlotState.Empty<T>_ -> none();
         };
     }
 
     private static <T> Option<T> published(SlotState<T> current) {
-        return current instanceof SlotState.Published<T>(var held) ? some(held) : none();
+        return current instanceof SlotState.Published<T>(var held)
+               ? some(held)
+               : none();
     }
 
     private sealed interface SlotState<T> {

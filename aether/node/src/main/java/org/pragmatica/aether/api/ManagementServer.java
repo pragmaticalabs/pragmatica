@@ -494,7 +494,8 @@ class ManagementServerImpl implements ManagementServer {
     /// Closing from the losing publisher's own thread needs no wait at all.
     private Promise<Unit> registerStartedH1Server(HttpServer server) {
         return serverSlot.publishOrReclaim(server)
-                         .fold(() -> activateH1Server(server), ManagementServerImpl::stopOrphanedServer);
+                         .fold(() -> activateH1Server(server),
+                               ManagementServerImpl::stopOrphanedServer);
     }
 
     private Promise<Unit> activateH1Server(HttpServer server) {
@@ -505,7 +506,8 @@ class ManagementServerImpl implements ManagementServer {
 
     private Promise<Unit> registerStartedH3Server(HttpServer server) {
         return h3ServerSlot.publishOrReclaim(server)
-                           .fold(() -> logH3ServerStarted(server), ManagementServerImpl::stopOrphanedServer);
+                           .fold(() -> logH3ServerStarted(server),
+                                 ManagementServerImpl::stopOrphanedServer);
     }
 
     private static Promise<Unit> logH3ServerStarted(HttpServer server) {

@@ -184,6 +184,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private final PublishSlot<Channel> serverChannel = PublishSlot.publishSlot();
     private volatile EventLoopGroup eventLoopGroup;
     private volatile boolean ownsEventLoop;
+
     /// #1456 test seam: runs between the bind completing and the just-bound channel being published,
     /// so a test can call `stop()` from inside that window. The window is sub-millisecond in
     /// production, which is why the race is only reachable deterministically from here. No-op unless

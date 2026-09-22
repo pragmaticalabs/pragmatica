@@ -284,6 +284,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final TimeSpan requestBudget;
     private volatile boolean quorumEstablished;
     private final AtomicLong routeNotReadyRejections = new AtomicLong();
+
     /// #1456 test seam: runs between the bind completing and the just-bound server being published to
     /// the FSM, so a test can hold a start inside that window and call `stop()` there. The window is
     /// sub-millisecond in production, which is why the race is only reachable deterministically from
