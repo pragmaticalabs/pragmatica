@@ -103,6 +103,29 @@ class DerivedGossipKeyDayRolloverTest {
                            "#1164: D+2 is within a D+3 node's window only if A now encrypts under D+2");
         }
 
+        /// #256 must survive the rebuild, not only the boot build. Every other test here exercises
+        /// the window [SwimGossipEncryptors] builds at CONSTRUCTION; a node that has rolled over even
+        /// once — i.e. every node up longer than a day, which is this ticket's whole population —
+        /// runs on the window `ProviderKeyedGossipEncryptor.current` REBUILDS instead. Dropping
+        /// either side there un-does the midnight overlap for exactly those nodes while every
+        /// boot-window test stays green. Asserted one-directionally, against the rolled-over node's
+        /// own accept set, so each side of the window reds on its own assertion.
+        @Test
+        void rolledOverNode_stillAcceptsPreviousAndNextDay() {
+            var clock = new MutableClock(DAY_D);
+            var rolledOver = encryptor(clock);
+
+            clock.advance(Duration.ofDays(1));
+            rolledOver.encrypt(PROBE).unwrap();
+
+            assertDecrypts(rolledOver,
+                           encryptor(new MutableClock(DAY_D)),
+                           "#256 after a rebuild: a rolled-over node still accepts the PREVIOUS day");
+            assertDecrypts(rolledOver,
+                           encryptor(new MutableClock(DAY_D.plus(Duration.ofDays(2)))),
+                           "#256 after a rebuild: a rolled-over node still accepts the NEXT day");
+        }
+
         /// #683 precedence: a KV rotation replaces the derived scheme, and the day rollover must not
         /// undo it. Two rotated nodes still agree after the day changes.
         @Test
