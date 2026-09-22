@@ -165,7 +165,6 @@ public interface StreamConsumerManager {
     /// failed or did not settle within their shutdown bound. Delegates to the underlying
     /// [org.pragmatica.aether.stream.StreamConsumerRuntime#cursorCommitFailureCount].
     long cursorCommitFailureCount();
-
     /// #1389: node-wide count of times this node was named for partitions it could not consume for lack
     /// of a local slice — the two sites that emit the corresponding WARN, and nothing else:
     ///   - a declaration ENTERING the parked state (the committed record names this node, the pass still
