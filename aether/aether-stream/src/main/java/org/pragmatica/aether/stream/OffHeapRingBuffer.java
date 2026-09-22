@@ -361,6 +361,24 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return notifyingAfter(appendVisible(payload, timestamp));
     }
 
+    /// Replay sibling of [#append] (#1387): the record IS durable — the WAL held it across the restart, which
+    /// is why it is being replayed at all — but the min-sync acknowledgement that made it VISIBLE did not
+    /// survive, and `visible = min(durable, acknowledged)` must survive a restart. So the record is marked
+    /// durable and NOT made visible here; recovery recomputes the visible watermark once, from the live
+    /// acknowledgement state, after the whole tail is placed
+    /// ([StreamPartitionManager.StreamEntry#restoreVisibleWatermark]). Using [#append] instead promoted
+    /// "durable on the owner, unacknowledged by min-sync" to "visible" for every replayed offset.
+    ///
+    /// No listener is notified for it either, for the same reason [#appendOrdered] notifies none: a consumer
+    /// must never be woken for an event it may not see.
+    public Result<Long> appendDurable(byte[] payload, long timestamp) {
+        return appendOrdered(payload, timestamp, this::markedDurable);
+    }
+
+    private Result<Long> markedDurable(long offset) {
+        return success(offset).onSuccess(this::markDurable);
+    }
+
     /// The visible advance is queued INSIDE the section, so concurrent plain appends are notified once
     /// each, in offset order (#1258 R2-1); the notifier starts only after the section is released.
     private Result<Long> appendVisible(byte[] payload, long timestamp) {

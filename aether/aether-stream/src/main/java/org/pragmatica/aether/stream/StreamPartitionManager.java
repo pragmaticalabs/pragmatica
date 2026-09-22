@@ -851,7 +851,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       partition -> shouldMaterialize(config.name(),
                                                                      partition),
                                       walBaseDir,
-                                      lastSealedOffset)
+                                      lastSealedOffset,
+                                      this::acknowledgedThrough)
                           .onFailure(_ -> release(floorBytes))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
     }
@@ -1150,7 +1151,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       partition -> shouldMaterialize(config.name(),
                                                                      partition),
                                       walBaseDir,
-                                      lastSealedOffset)
+                                      lastSealedOffset,
+                                      this::acknowledgedThrough)
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
                           .or((StreamEntry) null);
@@ -1443,6 +1445,15 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private long peerAcknowledgedThrough(String streamName, int partition) {
         return replicationManager.replicatedThrough(streamName, partition, minSyncReplicasFor(streamName) - 1);
+    }
+
+    /// [AcknowledgedOffsetSource] bound to this node's replication manager, for recovery (#1387). The sibling
+    /// of [#peerAcknowledgedThrough] that takes `minSyncReplicas` as an argument instead of reading it from
+    /// the `streams` map: while `StreamEntry.fromConfig` recovers a partition the entry is NOT in that map,
+    /// so [#minSyncReplicasFor] would answer `0` — "no acknowledgement required" — and make the whole
+    /// replayed tail visible. The config being materialized is the authority at that moment.
+    private long acknowledgedThrough(String streamName, int partition, int minSyncReplicas) {
+        return replicationManager.replicatedThrough(streamName, partition, minSyncReplicas - 1);
     }
 
     /// Frozen-ring drop handling (#1233). The ring reports [StreamError.General#EVENT_DROPPED] BEFORE the
@@ -2695,7 +2706,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           bytes -> reserveForGrowth(config, bytes),
                                           this::release,
                                           walBaseDir,
-                                          lastSealedOffset)
+                                          lastSealedOffset,
+                                          this::acknowledgedThrough)
                           .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
                           .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
     }
@@ -3360,13 +3372,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               LongConsumer release,
                                               IntPredicate shouldMaterialize,
                                               Option<Path> walBaseDir,
-                                              LastSealedOffsetSource lastSealedOffset) {
+                                              LastSealedOffsetSource lastSealedOffset,
+                                              AcknowledgedOffsetSource acknowledged) {
             var selected = selectedPartitions(config, shouldMaterialize);
             var ringResults = buildRings(config, selected, listener, reserve, release);
 
             return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(rings -> openEntryWals(config, selected, rings, walBaseDir, lastSealedOffset))
+                         .flatMap(rings -> openEntryWals(config, selected, rings, walBaseDir, lastSealedOffset, acknowledged))
                          .onFailure(_ -> closeBuilt(ringResults));
         }
 
@@ -3434,30 +3447,35 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                             LongPredicate reserve,
                                                             LongConsumer release,
                                                             Option<Path> walBaseDir,
-                                                            LastSealedOffsetSource lastSealedOffset) {
+                                                            LastSealedOffsetSource lastSealedOffset,
+                                                            AcknowledgedOffsetSource acknowledged) {
             return buildRing(config, partition, listener, reserve, release).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                            .flatMap(ring -> openAndRecoverOne(config, partition, ring, walBaseDir, lastSealedOffset));
+                            .flatMap(ring -> openAndRecoverOne(config, partition, ring, walBaseDir, lastSealedOffset, acknowledged));
         }
 
         private static Result<MaterializedPartition> openAndRecoverOne(StreamConfig config,
                                                                        int partition,
                                                                        OffHeapRingBuffer ring,
                                                                        Option<Path> walBaseDir,
-                                                                       LastSealedOffsetSource lastSealedOffset) {
+                                                                       LastSealedOffsetSource lastSealedOffset,
+                                                                       AcknowledgedOffsetSource acknowledged) {
             return openWal(config, partition, walBaseDir).onFailure(_ -> ring.closeWithoutRelease())
-                          .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset));
+                          .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset, acknowledged));
         }
 
         private static Result<MaterializedPartition> recoverOne(StreamConfig config,
                                                                 int partition,
                                                                 OffHeapRingBuffer ring,
                                                                 Option<PartitionWal> wal,
-                                                                LastSealedOffsetSource lastSealedOffset) {
+                                                                LastSealedOffsetSource lastSealedOffset,
+                                                                AcknowledgedOffsetSource acknowledged) {
             return recoverPartition(config.name(),
                                     partition,
                                     ring,
                                     wal,
-                                    lastSealedOffset).map(_ -> new MaterializedPartition(ring, wal))
+                                    lastSealedOffset,
+                                    acknowledged,
+                                    config.minSyncReplicas()).map(_ -> new MaterializedPartition(ring, wal))
                                    .onFailure(_ -> closeRingAndWal(ring, wal));
         }
 
@@ -3493,12 +3511,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                          List<Integer> selected,
                                                          List<OffHeapRingBuffer> rings,
                                                          Option<Path> walBaseDir,
-                                                         LastSealedOffsetSource lastSealedOffset) {
+                                                         LastSealedOffsetSource lastSealedOffset,
+                                                         AcknowledgedOffsetSource acknowledged) {
             return openWals(config, selected, walBaseDir).flatMap(wals -> recoverWals(config,
                                                                                       selected,
                                                                                       rings,
                                                                                       wals,
-                                                                                      lastSealedOffset))
+                                                                                      lastSealedOffset,
+                                                                                      acknowledged))
                            .map(wals -> entryOf(config, selected, rings, wals));
         }
 
@@ -3511,11 +3531,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                       List<Integer> selected,
                                                                       List<OffHeapRingBuffer> rings,
                                                                       List<Option<PartitionWal>> wals,
-                                                                      LastSealedOffsetSource lastSealedOffset) {
+                                                                      LastSealedOffsetSource lastSealedOffset,
+                                                                      AcknowledgedOffsetSource acknowledged) {
             var results = new ArrayList<Result<Unit>>(rings.size());
 
             for (int i = 0; i < rings.size(); i++) {
-                results.add(recoverPartition(config.name(), selected.get(i), rings.get(i), wals.get(i), lastSealedOffset));
+                results.add(recoverPartition(config.name(),
+                                             selected.get(i),
+                                             rings.get(i),
+                                             wals.get(i),
+                                             lastSealedOffset,
+                                             acknowledged,
+                                             config.minSyncReplicas()));
             }
 
             return Result.allOf(results)
@@ -3531,10 +3558,37 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                      int partition,
                                                      OffHeapRingBuffer ring,
                                                      Option<PartitionWal> wal,
-                                                     LastSealedOffsetSource lastSealedOffset) {
+                                                     LastSealedOffsetSource lastSealedOffset,
+                                                     AcknowledgedOffsetSource acknowledged,
+                                                     int minSyncReplicas) {
             return wal.onPresent(ring::attachWal)
                       .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
-                      .or(() -> success(unit()));
+                      .or(() -> success(unit()))
+                      .onSuccess(_ -> restoreVisibleWatermark(ring, streamName, partition, acknowledged, minSyncReplicas));
+        }
+
+        /// Restore `visible = min(durable, acknowledged)` after replay (#1387) with the SAME expression the
+        /// live path uses ([StreamPartitionManager#refreshVisible]). [OffHeapRingBuffer#appendDurable] left
+        /// the replayed tail durable-but-invisible, so this is what decides how much of it a reader may see,
+        /// and it decides it from the acknowledgement state that actually exists now.
+        ///
+        /// [OffHeapRingBuffer#advanceVisible] is monotonic, so the `seedHead` floor — the durable sealed
+        /// prefix, already visible before the restart — is never LOWERED by this: a restart hides nothing a
+        /// reader could see before it. With min-sync >= 2 and no peer acknowledgement yet the tail stays
+        /// invisible until the peers re-acknowledge, which is the pre-restart verdict restored, not a new
+        /// refusal. With `minSyncReplicas <= 1` the source answers `Long.MAX_VALUE` and the whole tail
+        /// becomes visible at once, as it must: durable alone is the watermark there.
+        ///
+        /// Runs on the no-WAL branch too, where the fresh ring's `durable` is `-1` and the advance is a
+        /// no-op — one shape for both branches rather than a conditional that can be wired to only one.
+        @Contract
+        private static void restoreVisibleWatermark(OffHeapRingBuffer ring,
+                                                    String streamName,
+                                                    int partition,
+                                                    AcknowledgedOffsetSource acknowledged,
+                                                    int minSyncReplicas) {
+            ring.advanceVisible(Math.min(ring.durableOffset(),
+                                         acknowledged.acknowledgedThrough(streamName, partition, minSyncReplicas)));
         }
 
         /// Place the WAL's un-sealed tail (records above the durable last-sealed offset `base`) at its
@@ -3714,8 +3768,8 @@ public final class StreamPartitionManager implements AutoCloseable {
             var expected = ring.headOffset() + 1;
 
             return record.offset() == expected
-                   ? ring.append(record.payload(),
-                                 record.timestampMillis())
+                   ? ring.appendDurable(record.payload(),
+                                       record.timestampMillis())
                          .mapToUnit()
                    : new StreamError.WalReplayMismatch(streamName, partition, walFile, expected, record.offset()).result();
         }

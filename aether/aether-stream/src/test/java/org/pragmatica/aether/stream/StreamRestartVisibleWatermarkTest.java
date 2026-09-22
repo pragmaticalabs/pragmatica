@@ -107,10 +107,10 @@ class StreamRestartVisibleWatermarkTest {
         assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("the sealed floor was rebuilt from the refs")
                                                              .isEqualTo(SEALED_THROUGH);
         assertThat(durable()).as("the whole WAL tail is durable again").isEqualTo(PUBLISHED - 1L);
-        assertThat(visible()).as("no acknowledgement survived the restart, so visibility stops at the sealed floor")
-                             .isEqualTo(SEALED_THROUGH);
         assertThat(fetch(0)).as("a replayed but unacknowledged offset is not served to a reader")
                             .containsExactly(0L, 1L, 2L);
+        assertThat(visible()).as("no acknowledgement survived the restart, so visibility stops at the sealed floor")
+                             .isEqualTo(SEALED_THROUGH);
     }
 
     /// Positive control for the test above: the reader's `[0,1,2]` is the acknowledgement state talking, not a
