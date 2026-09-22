@@ -135,6 +135,9 @@ public final class SystemStreamRegistrar {
         // once the config is committed it stays committed across re-elections (idempotent), so a
         // re-elected leader only re-attempts a leg that never completed.
         nextBackoff.set(INITIAL_BACKOFF);
+        // The armed/not-armed answer is deliberately discarded here: unlike scheduleRetry, this call
+        // consumes no backoff step, and every `false` path (a pass already pending, a lost CAS, a
+        // leadership loss in the window) is a correct no-op for a leader-gain.
         schedulePass(FIRST_PASS_DELAY);
     }
 
