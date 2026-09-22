@@ -68,7 +68,8 @@
   KV entry and ONE instance's unload `Remove`s the record every OTHER instance's durable group is
   declared from; the group is un-declared cluster-wide, every node detaches on its next pass, and no
   diagnosis can report it because a dropped declaration has no status row.
-  `tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_untilTheSharedKeyIsNodeScoped` asserts
-  that behaviour and goes red the moment the key becomes node-scoped or re-asserted, telling its reader
-  to delete it and enable the `@Disabled` inverse beside it. Tracked by its own ticket.
+  `tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_until1448IsFixed` asserts that
+  behaviour and goes red the moment the key becomes node-scoped or re-asserted, telling its reader to
+  delete it and enable the `@Disabled` inverse beside it. **Tracked as #1448** (`severity:blocking`,
+  rc4), which also carries the premise correction to #1389's own Mechanism paragraph.
   [design intent — unverified; induced at unit level only, not on a cluster]

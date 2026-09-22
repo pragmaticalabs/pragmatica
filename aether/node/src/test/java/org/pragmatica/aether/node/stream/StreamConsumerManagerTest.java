@@ -1393,11 +1393,10 @@ class StreamConsumerManagerTest {
         private static final String LOGGER_NAME = StreamConsumerManager.class.getName();
         private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
         private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
-        /// The ONE place the follow-up ticket number lives, so citing it is a one-line change rather
-        /// than a sweep. Referenced by the tripwire's failure message and its `@Disabled` inverse.
-        /// The earlier name for this, "#1389 item 3", was retired: once the defect is its own ticket,
-        /// "item 3" names nothing that exists anywhere.
-        private static final String UNDECLARE_TICKET = "the node-less TopicSubscriptionKey follow-up ticket (number pending — CTO is filing it)";
+        /// The ONE place #1448 is cited from, so the reference is a one-line change rather than a sweep.
+        /// Referenced by the tripwire's failure message and its `@Disabled` inverse. The earlier name for
+        /// this, "#1389 item 3", was retired when the defect got its own ticket: "item 3" named nothing.
+        private static final String UNDECLARE_TICKET = "#1448";
 
         private CapturingAppender appender;
         private LoggerConfig loggerConfig;
@@ -1699,7 +1698,7 @@ class StreamConsumerManagerTest {
         }
 
         /// TRIPWIRE for the producer of the M1 stall this ticket was filed from — a SEPARATE defect in a
-        /// separate subsystem, tracked by its own ticket (see [#UNDECLARE_TICKET]): `TopicSubscriptionKey` is `(address, artifact,
+        /// separate subsystem, tracked by its own blocking ticket #1448: `TopicSubscriptionKey` is `(address, artifact,
         /// method)` with NO node component, so every instance writes the same KV entry and ONE instance's
         /// unload `Remove`s the record every OTHER instance's durable group is declared from. The group is
         /// un-declared cluster-wide, the consumer detaches on the next pass, and no diagnosis can report
@@ -1710,7 +1709,7 @@ class StreamConsumerManagerTest {
         /// This asserts that CURRENT behaviour so it goes red the moment the key becomes node-scoped or
         /// re-asserted — then delete it and enable the inverse below.
         @Test
-        void tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_untilTheSharedKeyIsNodeScoped() {
+        void tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_until1448IsFixed() {
             var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
             var key = topicSubscriptionKey();
             var group = DurableGroupIdentity.groupId(ARTIFACT, METHOD);
@@ -1735,7 +1734,8 @@ class StreamConsumerManagerTest {
             topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
             manager.reconcile();
 
-            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("TRIPWIRE (%s): SELF still hosts the slice and is still the committed assignee, yet the group is un-declared here and its consumer detached. If you are reading this because the assertion FAILED, the node-less TopicSubscriptionKey defect is fixed: delete me and enable the inverse below (`descaleOfAnotherInstance_leavesThisNodeAttached`)",
+            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("TRIPWIRE (%s): SELF still hosts the slice and is still the committed assignee, yet the group is un-declared here and its consumer detached. If you are reading this because the assertion FAILED, the node-less TopicSubscriptionKey defect is fixed: delete me and enable the inverse below (`descaleOfAnotherInstance_leavesThisNodeAttached`). Do not delete me silently — %s says so too",
+                                                                              UNDECLARE_TICKET,
                                                                               UNDECLARE_TICKET)
                                                                   .isEmpty();
             assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("TRIPWIRE: no declaration, so no status, so no diagnostic — the stall is unreported")
@@ -1751,7 +1751,7 @@ class StreamConsumerManagerTest {
         /// enabled failing test is noise, not a tripwire. The tripwire is what guarantees this one gets
         /// enabled.
         @Test
-        @Disabled("Enable when TopicSubscriptionKey becomes node-scoped or is re-asserted; the tripwire above goes red at that moment and its failure message says to delete it and enable this. Tracked by the node-less TopicSubscriptionKey follow-up ticket (number pending).")
+        @Disabled("#1448: enable when TopicSubscriptionKey becomes node-scoped or is re-asserted. The tripwire above goes red at that moment and its failure message says to delete it and enable this.")
         void descaleOfAnotherInstance_leavesThisNodeAttached() {
             var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
             var key = topicSubscriptionKey();
