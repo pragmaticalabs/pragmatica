@@ -56,6 +56,34 @@ class GitBackedPersistenceTest {
         );
     }
 
+    /// #1020 — a configured `[backup] path` that does not exist yet must be CREATED, not assumed.
+    /// It used to fail every save while the node ran on as though persistence were switched off, so
+    /// a cluster configured for durability kept nothing at all and came back empty after a restart —
+    /// this ticket's symptom, reached by a different route. The other half of the same guarantee is
+    /// that `RabiaEngine#applyRestoredState` now reports a save that fails; a save that cannot land
+    /// and a failure nobody hears produce the identical silence.
+    @Test
+    void save_backupDirectoryDoesNotExist_createsItAndWritesTheState() {
+        var missingDir = tempDir.resolve("absent").resolve("backup");
+        RabiaPersistence<TestCommand> intoMissingDir = RabiaPersistence.gitBacked(
+            missingDir,
+            Option.none(),
+            GitBackedPersistenceTest::snapshotToToml,
+            GitBackedPersistenceTest::tomlToSnapshot
+        );
+
+        assertThat(Files.exists(missingDir)).as("precondition: the configured backup dir must NOT exist, or this test pins nothing")
+                  .isFalse();
+
+        stateMachine.setSnapshot(new byte[]{1, 2, 3});
+        intoMissingDir.save(stateMachine, Phase.phase(7), List.of())
+                      .onFailure(cause -> fail("a backup dir that does not exist must be created, not fail the save: " + cause.message()));
+
+        assertThat(missingDir.resolve("state.toml")).exists();
+        assertThat(intoMissingDir.load().isPresent()).as("the state written into the created dir must read back")
+                  .isTrue();
+    }
+
     @Test
     void save_validState_writesTomlAndCommitsToGit() {
         stateMachine.setSnapshot(new byte[]{1, 2, 3});
