@@ -15,7 +15,12 @@
   is left in place, exactly as a non-empty one already did. `CacheTierPartialWriteTest` (#1095) pinned the
   opposite — "the JDK removes it before the rename" — which specified the unlink step as a feature; the
   fixture was wrong, not the fix, because that step is the one that made every real replace observably
-  absent. The reservation is released and no partial is left, as before.
+  absent. The reservation is released and no partial is left, as before. [verified: the non-empty half is
+  `CacheTierPartialWriteTest.localDiskTier_failedWrite_releasesTheReservation`, named rather than alluded to,
+  and now asserts BOTH halves of the shared outcome (put fails AND the squatter survives untouched) so the
+  parity the empty-squatter test cites is actually checkable; it previously pinned the failure alone. Only
+  the EMPTY case discriminates the two move implementations — `rename(file, non-empty-dir)` is refused under
+  both — which is why the empty one is the test H1 reddens]
 - **#1190 `FileOps.writeBytesDurable(path, bytes)` (new, `core`): one channel writes the bytes and
   `force(true)`s them (data + inode), then the PARENT DIRECTORY is opened and `force(true)`d so the entry
   naming the file is on the device too. `EncryptingStorageTier.writeMarker` uses it.** `FileOps.writeBytes`
@@ -26,7 +31,12 @@
   (threshold 0, emitted by `FileChannelImpl.force` itself) records a force for the marker path and one for
   its directory while `commitMarker` runs, with a plain `writeBytes` control emitting none; the base recorded
   `[]`; dropping either force reddens `FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning`
-  and `EncryptionMarkerDurabilityTest`]
+  and `EncryptionMarkerDurabilityTest`. Both observers also pin the two properties the guarantee actually
+  rests on, not merely that a force occurred against each path: the ORDER (`containsSubsequence`, file then
+  directory — the events are sorted by start time, so the assertion is about issue order) and the METADATA
+  flag (`metaData == true`, i.e. `force(true)`/fsync, not `force(false)`/fdatasync). Each is reddened by its
+  own mutation — reordering the two forces, and `force(true)` → `force(false)` — and both mutations left the
+  previous unordered, path-only assertions fully green]
 - **Crash-window truth after the fix.** Before `commitMarker` returns: the marker may be absent or torn. Torn
   is safe (presence is the signal). Absent is fail-safe: the guard only arms a marker write over an EMPTY
   directory, and `StorageFactory.createAll` hands out the tiers only after every marker has committed, so no
