@@ -1358,7 +1358,20 @@ public class RabiaEngine<C extends Command> {
                                               ? existing
                                               : state.lastCommittedPhase());
         state.pendingBatches().forEach(batch -> pendingBatches.put(batch.id(), batch));
-        persistence.save(stateMachine, currentPhase.get(), pendingBatches.values());
+        // #1020 — the ONE save whose failure nobody used to hear. The other three call sites (pause,
+        // reconfigure, stop) all log on failure, and `GitBackedPersistence` carries no logger of its
+        // own, so a discarded `Result` here was silent end to end — while the INFO line below
+        // announced success regardless. This save is what makes the restored state durable for the
+        // NEXT restart: if it fails, the node is correct in memory and stale on disk, and the very
+        // defect this ticket closes returns one restart later with no diagnostic anywhere.
+        persistence.save(stateMachine,
+                         currentPhase.get(),
+                         pendingBatches.values())
+                   .onFailure(cause -> log.error("Node {} restored state but FAILED to persist it: {}. The restore is "
+                                                + "in memory ONLY — this node's disk still holds its previous checkpoint, "
+                                                + "so a restart will lose the restored history and serve a stale store.",
+                                                 self,
+                                                 cause));
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
 
