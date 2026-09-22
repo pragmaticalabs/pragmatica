@@ -179,6 +179,13 @@ class CacheTierPartialWriteTest {
     /// SF-2 on the real `LocalDiskTier` with the real writer: a non-empty directory squatting on
     /// the block path makes the rename fail after the reservation; the reservation must be released
     /// and nothing left behind.
+    ///
+    /// This is the NON-EMPTY half of the pair whose empty half is
+    /// `localDiskTier_emptyDirectorySquattingTheBlockPath_failsThePut_andIsLeftInPlace`, and that
+    /// test cites this one for the parity. Both halves of the shared outcome are therefore asserted
+    /// here too -- the put fails AND the squatter survives untouched -- because the citation is only
+    /// checkable if this test actually pins what it is cited for. It previously pinned the failure
+    /// alone.
     @Test
     @SuppressWarnings("JBCT-EX-01")
     void localDiskTier_failedWrite_releasesTheReservation() throws Exception {
@@ -187,12 +194,15 @@ class CacheTierPartialWriteTest {
         var content = block(2048);
         var id = BlockId.blockId(content).unwrap();
         var squat = blockPath(dir, id);
+        var occupant = squat.resolve("occupant");
 
         Files.createDirectories(squat);
-        Files.writeString(squat.resolve("occupant"), "not a block");
+        Files.writeString(occupant, "not a block");
         tier.put(id, content).await().onSuccess(_ -> fail("writing over a non-empty directory must fail"));
         assertThat(tier.usedBytes()).as("a failed write keeps no reservation").isZero();
         assertThat(partialFiles(dir)).isEmpty();
+        assertThat(Files.isDirectory(squat)).as("nothing at the block path was removed").isTrue();
+        assertThat(Files.readString(occupant)).as("the squatter's contents are untouched").isEqualTo("not a block");
     }
 
     /// #1144: the release is a dependent action on the put's promise, so it has run by the time the
@@ -241,6 +251,12 @@ class CacheTierPartialWriteTest {
     /// partial is left. (Until #1169 this test pinned the opposite -- "the JDK removes it before
     /// the rename" -- which specified the non-atomic move's unlink step as a feature; that step
     /// is the one that left the block path observably ABSENT during every real replace.)
+    ///
+    /// The non-empty sibling this claims parity with is
+    /// `localDiskTier_failedWrite_releasesTheReservation` above -- named, because an unnamed "the
+    /// sibling test" is a citation no reader can check. Emptiness is what differs and what does
+    /// not matter: `moveAtomic` refuses `rename(file, dir)` for any directory target, so neither
+    /// squatter is ever unlinked.
     @Test
     @SuppressWarnings("JBCT-EX-01")
     void localDiskTier_emptyDirectorySquattingTheBlockPath_failsThePut_andIsLeftInPlace() throws Exception {

@@ -121,6 +121,9 @@ public sealed interface FileOps {
     /// force fails and this returns a failure rather than a silently weaker guarantee; Linux and
     /// macOS honour both forces.]
     static Result<Unit> writeBytesDurable(Path path, byte[] content) {
+        // The order is the guarantee, not an accident of composition: the directory force must come
+        // AFTER the file exists, or the entry naming it is never the thing that got synced. Pinned
+        // by FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
         return writeAndForce(path, content).flatMap(_ -> forceParentDirectory(path));
     }
 
@@ -131,14 +134,18 @@ public sealed interface FileOps {
                                                                 StandardOpenOption.CREATE,
                                                                 StandardOpenOption.TRUNCATE_EXISTING,
                                                                 StandardOpenOption.WRITE)) {
-                               var buffer = ByteBuffer.wrap(content);
+                                   var buffer = ByteBuffer.wrap(content);
 
-                               while (buffer.hasRemaining()) {
-                               file.write(buffer);
-                           }
+                                   while (buffer.hasRemaining()) {
+                                       file.write(buffer);
+                                   }
 
-                               file.force(true);
-                           }
+                                   // force(true), not force(false): a freshly created file's size and
+                                   // link count live in the inode, so fdatasync alone can leave the
+                                   // bytes durable and the file itself not. Pinned by
+                                   // FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
+                                   file.force(true);
+                               }
 
                                return unit();
                            });
@@ -149,8 +156,8 @@ public sealed interface FileOps {
                            () -> {
                                try (var directory = FileChannel.open(path.toAbsolutePath().getParent(),
                                                                      StandardOpenOption.READ)) {
-                               directory.force(true);
-                           }
+                                   directory.force(true);
+                               }
 
                                return unit();
                            });

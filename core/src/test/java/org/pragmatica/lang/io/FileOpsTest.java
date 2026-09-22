@@ -14,6 +14,7 @@ import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordingFile;
 
+import static java.util.Comparator.comparing;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.pragmatica.lang.io.FileOps.*;
@@ -67,21 +68,33 @@ class FileOpsTest {
             assertThat(readString(file).unwrap()).isEqualTo("replaced");
         }
 
-        /// #1190: durable means the JDK issued `force(true)` on the file AND on its parent
+        /// #1190: durable means the JDK issued `force(true)` on the file AND THEN on its parent
         /// directory before the call returned -- observed through JFR's `jdk.FileForce`, emitted
         /// by `FileChannelImpl.force` itself. `writeBytes` is the control: same bytes, no force.
+        ///
+        /// Three properties, and the two beyond mere occurrence are the ones #1190 is about, so
+        /// each is asserted rather than implied:
+        /// - WHICH paths were forced -- the file and the directory that names it;
+        /// - the ORDER (`containsSubsequence`, not an unordered `contains`): forcing the directory
+        ///   BEFORE the write syncs an entry that does not name the file yet, which is the defect
+        ///   restored while every path-only assertion stays green;
+        /// - the METADATA flag (`force(true)`, not `force(false)`): `fdatasync` on a freshly
+        ///   created file need not make its inode -- size, link count -- durable.
         @Test
         void writeBytesDurable_forcesFileAndParentDirectory_beforeReturning() {
             var file = tempDir.resolve("durable.bin");
             var plain = tempDir.resolve("plain.bin");
 
-            var forced = forcedPathsDuring(() -> {
+            var forced = forcedFilesDuring(() -> {
                 assertThat(writeBytesDurable(file, new byte[]{7, 8, 9}).isSuccess()).isTrue();
                 assertThat(writeBytes(plain, new byte[]{7, 8, 9}).isSuccess()).isTrue();
             });
 
             assertThat(readBytes(file).unwrap()).containsExactly(7, 8, 9);
-            assertThat(forced).contains(file.toAbsolutePath(), tempDir.toAbsolutePath())
+            assertThat(forced).as("the file forced with its metadata, THEN the directory naming it")
+                              .containsSubsequence(new ForcedFile(file.toAbsolutePath(), true),
+                                                   new ForcedFile(tempDir.toAbsolutePath(), true));
+            assertThat(forced.stream().map(ForcedFile::path).toList()).as("writeBytes forces nothing")
                               .doesNotContain(plain.toAbsolutePath());
         }
 
@@ -386,9 +399,12 @@ class FileOpsTest {
         }
     }
 
-    /// Every `jdk.FileForce` the JVM emits while `action` runs. Threshold zero: the default
-    /// profile drops forces shorter than 20 ms, which is every fsync on a warm disk.
-    static List<Path> forcedPathsDuring(Runnable action) {
+    /// Every `jdk.FileForce` the JVM emits while `action` runs, in the order the JDK issued them.
+    /// Threshold zero: the default profile drops forces shorter than 20 ms, which is every fsync on
+    /// a warm disk. Sorted by start time explicitly, so callers may assert ORDER without depending
+    /// on the order `RecordingFile` happens to replay a chunk in. `metaData` is the event's own
+    /// field: `true` for `force(true)`/fsync, `false` for `force(false)`/fdatasync.
+    static List<ForcedFile> forcedFilesDuring(Runnable action) {
         try (var recording = new Recording()) {
             recording.enable("jdk.FileForce").withThreshold(Duration.ZERO);
             recording.start();
@@ -403,7 +419,8 @@ class FileOpsTest {
                 return RecordingFile.readAllEvents(dump)
                                     .stream()
                                     .filter(event -> event.getEventType().getName().equals("jdk.FileForce"))
-                                    .map(FileOpsTest::forcedPath)
+                                    .sorted(comparing(RecordedEvent::getStartTime))
+                                    .map(FileOpsTest::forcedFile)
                                     .toList();
             } finally {
                 Files.deleteIfExists(dump);
@@ -413,7 +430,11 @@ class FileOpsTest {
         }
     }
 
-    private static Path forcedPath(RecordedEvent event) {
-        return Path.of(event.getString("path")).toAbsolutePath();
+    private static ForcedFile forcedFile(RecordedEvent event) {
+        return new ForcedFile(Path.of(event.getString("path")).toAbsolutePath(), event.getBoolean("metaData"));
     }
+
+    /// One `jdk.FileForce`: what was forced, and whether the force carried the file's metadata
+    /// (`force(true)`) or only its contents (`force(false)`).
+    record ForcedFile(Path path, boolean metaData) {}
 }

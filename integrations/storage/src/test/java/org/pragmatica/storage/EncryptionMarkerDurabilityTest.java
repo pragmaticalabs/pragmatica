@@ -22,6 +22,7 @@ import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordingFile;
 
+import static java.util.Comparator.comparing;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -30,9 +31,10 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// on its presence. A crash after `commitMarker` returned but before the create reached the device
 /// left the marker absent while ciphertext blocks existed, and the next plain boot mounted a plain
 /// tier over ciphertext. A crash cannot be induced in-process, so the pinned mechanism is what the
-/// JDK actually issued: `FileChannel.force(true)` on the marker file (its bytes and inode) AND on
-/// the parent directory (the directory entry that makes the marker findable), both before
-/// `commitMarker` returns -- observed through JFR's `jdk.FileForce` event, which the JDK emits
+/// JDK actually issued: `FileChannel.force(true)` on the marker file (its bytes and inode) AND THEN
+/// on the parent directory (the directory entry that makes the marker findable), both before
+/// `commitMarker` returns -- the ORDER and the `force(true)` are each load-bearing and each
+/// asserted -- observed through JFR's `jdk.FileForce` event, which the JDK emits
 /// from `FileChannelImpl.force` itself, recorded at threshold ZERO (the default profile's 20 ms
 /// would drop every warm-disk fsync). On the unmodified base the recording held zero events. The
 /// plain-JUnit control beside it pins that the marker exists with the key id, so the JFR observer
@@ -42,16 +44,21 @@ class EncryptionMarkerDurabilityTest {
     @TempDir
     Path tempDir;
 
+    /// The ORDER and the METADATA flag are both asserted, not just that a force happened against
+    /// each path: forcing the directory BEFORE the marker is created syncs an entry that does not
+    /// name the marker yet -- #1190's defect exactly -- and `force(false)` (fdatasync) need not
+    /// make a freshly created file's inode durable. An unordered, path-only assertion is green
+    /// under both.
     @Test
     void commitMarker_forcesTheMarkerFileAndItsDirectory_beforeReturning() {
         var armed = armedOverFreshDirectory();
         var marker = tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME);
-        var forced = forcedPathsDuring(() -> armed.commitMarker()
+        var forced = forcedFilesDuring(() -> armed.commitMarker()
                                                   .unwrap());
 
         assertThat(forced).as("jdk.FileForce events recorded while commitMarker ran")
-                  .contains(marker.toAbsolutePath(),
-                            tempDir.toAbsolutePath());
+                  .containsSubsequence(new ForcedFile(marker.toAbsolutePath(), true),
+                                       new ForcedFile(tempDir.toAbsolutePath(), true));
     }
 
     /// Plain control, no JFR: the marker exists and carries the active key id once `commitMarker`
@@ -77,9 +84,14 @@ class EncryptionMarkerDurabilityTest {
         return armed;
     }
 
-    /// Records every `jdk.FileForce` the JVM emits while `action` runs. Threshold zero: the
-    /// default profile drops forces shorter than 20 ms, which is every fsync on a warm disk.
-    static List<Path> forcedPathsDuring(Runnable action) {
+    /// Records every `jdk.FileForce` the JVM emits while `action` runs, in the order the JDK
+    /// issued them. Threshold zero: the default profile drops forces shorter than 20 ms, which is
+    /// every fsync on a warm disk. Sorted by start time explicitly, so the caller may assert ORDER
+    /// without depending on the order `RecordingFile` happens to replay a chunk in. `metaData` is
+    /// the event's own field: `true` for `force(true)`/fsync, `false` for `force(false)`/fdatasync.
+    /// (Deliberate twin of `FileOpsTest.forcedFilesDuring` -- different modules, not shareable;
+    /// a change to either belongs in both.)
+    static List<ForcedFile> forcedFilesDuring(Runnable action) {
         try (var recording = new Recording()) {
             recording.enable("jdk.FileForce").withThreshold(Duration.ZERO);
             recording.start();
@@ -95,7 +107,8 @@ class EncryptionMarkerDurabilityTest {
                                     .filter(event -> event.getEventType()
                                                           .getName()
                                                           .equals("jdk.FileForce"))
-                                    .map(EncryptionMarkerDurabilityTest::forcedPath)
+                                    .sorted(comparing(RecordedEvent::getStartTime))
+                                    .map(EncryptionMarkerDurabilityTest::forcedFile)
                                     .toList();
             } finally {
                 Files.deleteIfExists(dump);
@@ -105,28 +118,24 @@ class EncryptionMarkerDurabilityTest {
         }
     }
 
-    private static Path forcedPath(RecordedEvent event) {
-        return Path.of(event.getString("path")).toAbsolutePath();
+    private static ForcedFile forcedFile(RecordedEvent event) {
+        return new ForcedFile(Path.of(event.getString("path")).toAbsolutePath(), event.getBoolean("metaData"));
     }
+
+    /// One `jdk.FileForce`: what was forced, and whether the force carried the file's metadata
+    /// (`force(true)`) or only its contents (`force(false)`).
+    record ForcedFile(Path path, boolean metaData) {}
 
     private static EncryptionKeyring singleKeyRing(String keyId) {
         var key = new byte[32];
 
         new SecureRandom().nextBytes(key);
-        var encryptor = BlockEncryptor.aesGcm(key, keyId).fold(c -> {
-                                                                   fail("encryptor creation failed: " + c.message());
+        var encryptor = BlockEncryptor.aesGcm(key, keyId)
+                                      .fold(c -> fail("encryptor creation failed: " + c.message()),
+                                            e -> e);
 
-                                                                   return null;
-                                                               },
-                                                               e -> e);
-
-        return EncryptionKeyring.encryptionKeyring(Map.of(keyId, encryptor),
-                                                   keyId)
-                                .fold(c -> {
-                                          fail("keyring creation failed: " + c.message());
-
-                                          return null;
-                                      },
+        return EncryptionKeyring.encryptionKeyring(Map.of(keyId, encryptor), keyId)
+                                .fold(c -> fail("keyring creation failed: " + c.message()),
                                       k -> k);
     }
 }

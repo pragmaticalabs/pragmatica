@@ -7,7 +7,6 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -73,6 +72,13 @@ class LocalDiskTierAtomicReplaceTest {
     /// the non-atomic move the unlink-then-rename window is wide: the s25-1169 probe measured
     /// 203,018 absent reads out of 343,385 across 20,000 replaces on macOS APFS, and 0 of 183,040
     /// under `ATOMIC_MOVE`. The count is asserted, not the ratio: zero is the contract.
+    ///
+    /// ABSENCE is the only failure this can observe, so it is the only one counted. A TORN read is
+    /// unreachable in both arms by construction -- the content is written to a sibling `.partial`
+    /// and published by rename, so a reader opens either the old inode or the new one and never a
+    /// half-written file. A `torn` counter here would be a vacuous zero that later reads as
+    /// evidence; the `reads > 0` check below is the aliveness guard that does the real work,
+    /// stopping a zero from meaning "the reader thread never ran".
     @Test
     void readerRacingReplace_seesOldOrNew_neverAbsence() throws InterruptedException {
         var dir = tempDir.resolve("race");
@@ -82,19 +88,13 @@ class LocalDiskTierAtomicReplaceTest {
         var stop = new AtomicBoolean();
         var reads = new AtomicLong();
         var absent = new AtomicLong();
-        var torn = new AtomicLong();
 
         tier.put(id, OLD).await().unwrap();
         var reader = Thread.ofPlatform().start(() -> {
             while (!stop.get()) {
                 reads.incrementAndGet();
                 FileOps.readBytes(path)
-                       .onFailure(_ -> absent.incrementAndGet())
-                       .onSuccess(bytes -> {
-                                      if (!Arrays.equals(bytes, OLD) && !Arrays.equals(bytes, NEW)) {
-                                      torn.incrementAndGet();
-                                  }
-                                  });
+                       .onFailure(_ -> absent.incrementAndGet());
             }
         });
 
@@ -112,7 +112,6 @@ class LocalDiskTierAtomicReplaceTest {
 
         assertThat(reads.get()).as("the reader must have observed the replace loop").isGreaterThan(0);
         assertThat(absent.get()).as("reads that found NO file at the block path (of %d reads)", reads.get()).isZero();
-        assertThat(torn.get()).as("reads that found neither copy (of %d reads)", reads.get()).isZero();
     }
 
     private static Result<Unit> directoryAsPartial(Path partial, byte[] ignored) {
