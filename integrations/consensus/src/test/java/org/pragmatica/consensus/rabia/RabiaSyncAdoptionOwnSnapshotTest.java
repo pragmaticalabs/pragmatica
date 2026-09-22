@@ -170,6 +170,42 @@ class RabiaSyncAdoptionOwnSnapshotTest {
                   .isEqualTo(Phase.phase(99));
     }
 
+    /// CONTROL for the guard's EQUALITY boundary — the test is `persisted > live`, never `>=`, and
+    /// that one character is load-bearing. `reconfigure` persists the live, NON-EMPTY state-machine
+    /// snapshot under `Phase.ZERO` and only then calls `stateMachine.reset()` — the comment there
+    /// calls it "empty state", which is true of the phase and false of the snapshot. So a node's disk
+    /// can hold a non-empty snapshot whose phase EQUALS the live phase, and at equality the process
+    /// is already at that history: installing the disk copy would resurrect the previous membership's
+    /// state over a slate that was cleared on purpose. With `>` it is refused; with `>=` it comes back.
+    ///
+    /// Reaching equality takes two rounds. First adopt a live majority AT the persisted phase, which
+    /// leaves live == persisted == 5. Then force a resync and answer with a majority BEHIND, so the
+    /// floor refuses every response and the node activates on its own state with the two arms exactly
+    /// equal — the one configuration where `>` and `>=` disagree.
+    @Test
+    void resyncFromActive_ownDiskSnapshotAtTheLivePhase_isNotInstalled() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = coldStarted(5, stateMachine, durableAt(OWN_PHASE, OWN_SNAPSHOT));
+
+        engine.processSyncResponse(live(NODE_2, OWN_PHASE, PEER_SNAPSHOT));
+        engine.processSyncResponse(live(NODE_3, OWN_PHASE, PEER_SNAPSHOT));
+        engine.processSyncResponse(live(NODE_4, OWN_PHASE, PEER_SNAPSHOT));
+        assertThat(awaitActive(engine)).isTrue();
+        assertThat(engine.currentPhaseForTesting()).as("the live phase must now EQUAL the persisted phase — that is the boundary under test")
+                  .isEqualTo(OWN_PHASE);
+        stateMachine.forgetRestored();
+        // Far-future Propose: `MAX_PHASE_AHEAD` past the live phase → triggerResync → Syncing.
+        engine.processPropose(new Propose<>(NODE_2, Phase.phase(205), farFutureBatch()));
+        assertThat(awaitCondition(() -> !engine.isActive())).as("far-future Propose forces a resync").isTrue();
+        engine.processSyncResponse(live(NODE_2, Phase.phase(1), PEER_SNAPSHOT));
+        engine.processSyncResponse(live(NODE_3, Phase.phase(1), PEER_SNAPSHOT));
+        engine.processSyncResponse(live(NODE_4, Phase.phase(1), PEER_SNAPSHOT));
+        assertThat(awaitActive(engine)).as("the node re-activates on its own state").isTrue();
+        assertThat(stateMachine.lastRestored()).as("persisted phase EQUALS the live phase: `>` must refuse it, `>=` would resurrect a reconfigured-away state")
+                  .isNull();
+        assertThat(engine.currentPhaseForTesting()).isEqualTo(OWN_PHASE);
+    }
+
     /// CONTROL — an amnesiac self (in-memory persistence, nothing on disk) behaves exactly as before:
     /// the cold rule adopts the response, whatever its phase.
     @Test
