@@ -301,14 +301,13 @@ class WireAssignmentTripwireTest {
 
     @Test
     void theStructuralBlindSpot_didNotGrow() {
-        var unpinnable = allCodecs().map(SliceCodec.TypeCodec::type)
-                                    .filter(type -> !type.isEnum() && !type.isRecord())
-                                    .map(Class::getName)
+        var unpinnable = allCodecs().filter(codec -> structurallyUnpinnable(codec.type()))
+                                    .map(codec -> codec.type().getName())
                                     .distinct()
                                     .sorted()
                                     .toList();
 
-        assertEquals(String.join("\n", STRUCTURALLY_UNPINNABLE.stream().sorted().toList()),
+        assertEquals(String.join("\n", STRUCTURALLY_UNPINNABLE),
                      String.join("\n", unpinnable),
                      """
                      The set of registered types whose byte layout this tripwire cannot derive has changed.
@@ -318,6 +317,12 @@ class WireAssignmentTripwireTest {
                      NOTHING about it. If you added one, the wire format it carries is pinned by no \
                      automated check at all — add a hand-written pin, or accept the gap deliberately by \
                      naming it in STRUCTURALLY_UNPINNABLE with the reason.""");
+    }
+
+    /// A type whose byte layout reflection cannot state: neither a record (components) nor an enum
+    /// (constants), so its codec body is hand-written and nothing here can pin it.
+    private static boolean structurallyUnpinnable(Class<?> type) {
+        return !type.isEnum() && !type.isRecord();
     }
 
     /// Every `@Codec` enum in the system registries must carry the sentinel, and it must be LAST.
