@@ -3,11 +3,17 @@ package org.pragmatica.net.tcp.security;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.CertificateFactory;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.HexFormat;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -114,6 +120,114 @@ class SelfSignedCertificateProviderTest {
             provider.previousGossipKey()
                     .onPresent(previous -> provider.nextGossipKey()
                                                    .onPresent(next -> assertKeysDiffer(previous, next)));
+        }
+    }
+
+    /// #1164: the day-derived keys follow the clock's day at access time, not the construction
+    /// day. A node up for two days must hold exactly the keys a node booted today holds, or the two
+    /// cannot decrypt each other (the accept window is one day either side).
+    @Nested
+    class DayRollover {
+        private static final Instant DAY_D = Instant.parse("2026-09-21T12:00:00Z");
+
+        @Test
+        void keysFollowTheClockDay_notTheBootDay() {
+            var clock = new MutableClock(DAY_D);
+            var longRunning = provider(clock);
+
+            clock.advance(Duration.ofDays(2));
+            var bootedToday = provider(new MutableClock(DAY_D.plus(Duration.ofDays(2))));
+
+            assertThat(keyId(longRunning.currentGossipKey())).as("#1164: a provider up for two days must encrypt under TODAY's key, i.e. the key a "
+                                                                + "provider booted today derives — otherwise the two never share a key")
+                      .isEqualTo(keyId(bootedToday.currentGossipKey()));
+            assertThat(keyId(longRunning.previousGossipKey())).isEqualTo(keyId(bootedToday.previousGossipKey()));
+            assertThat(keyId(longRunning.nextGossipKey())).isEqualTo(keyId(bootedToday.nextGossipKey()));
+        }
+
+        /// The window SLIDES by one day: today's `next` is tomorrow's `current`, today's `current`
+        /// is tomorrow's `previous`. Pins that the rollover moves the window rather than widening it.
+        @Test
+        void oneDayLater_windowSlidesByOneDay() {
+            var clock = new MutableClock(DAY_D);
+            var provider = provider(clock);
+            var currentOnD = keyId(provider.currentGossipKey());
+            var nextOnD = keyId(provider.nextGossipKey());
+
+            clock.advance(Duration.ofDays(1));
+            assertThat(keyId(provider.previousGossipKey())).isEqualTo(currentOnD);
+            assertThat(keyId(provider.currentGossipKey())).isEqualTo(nextOnD);
+        }
+
+        @Test
+        void withinTheSameDay_keysAreStable() {
+            var clock = new MutableClock(DAY_D);
+            var provider = provider(clock);
+            var currentOnD = provider.currentGossipKey().or((GossipKey) null);
+
+            clock.advance(Duration.ofHours(11));
+            var later = provider.currentGossipKey().or((GossipKey) null);
+
+            assertThat(later.keyId()).isEqualTo(currentOnD.keyId());
+            assertThat(later.key()).isEqualTo(currentOnD.key());
+        }
+
+        /// The day label is read in the clock's zone: the one-argument factory uses the system
+        /// default zone, so this pins only that the seam's zone is honoured, not which zone
+        /// production uses.
+        @Test
+        void dayBoundary_isTheClockZonesMidnight() {
+            var clock = new MutableClock(Instant.parse("2026-09-21T23:59:59Z"));
+            var provider = provider(clock);
+            var beforeMidnight = keyId(provider.currentGossipKey());
+            var nextBeforeMidnight = keyId(provider.nextGossipKey());
+
+            clock.advance(Duration.ofSeconds(1));
+            assertThat(keyId(provider.currentGossipKey())).as("one second across UTC midnight rolls the current key to yesterday's next")
+                      .isEqualTo(nextBeforeMidnight)
+                      .isNotEqualTo(beforeMidnight);
+        }
+
+        private static CertificateProvider provider(Clock clock) {
+            return selfSignedCertificateProvider(CLUSTER_SECRET, clock).or((CertificateProvider) null);
+        }
+
+        private static int keyId(Result<GossipKey> key) {
+            return key.or((GossipKey) null)
+                      .keyId();
+        }
+
+        private static int keyId(Option<GossipKey> key) {
+            return key.or((GossipKey) null)
+                      .keyId();
+        }
+    }
+
+    /// A UTC clock the test moves by hand.
+    static final class MutableClock extends Clock {
+        private Instant now;
+
+        MutableClock(Instant start) {
+            this.now = start;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
         }
     }
 
