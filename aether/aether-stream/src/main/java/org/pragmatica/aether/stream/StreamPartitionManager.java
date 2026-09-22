@@ -3379,7 +3379,12 @@ public final class StreamPartitionManager implements AutoCloseable {
 
             return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(rings -> openEntryWals(config, selected, rings, walBaseDir, lastSealedOffset, acknowledged))
+                         .flatMap(rings -> openEntryWals(config,
+                                                         selected,
+                                                         rings,
+                                                         walBaseDir,
+                                                         lastSealedOffset,
+                                                         acknowledged))
                          .onFailure(_ -> closeBuilt(ringResults));
         }
 
@@ -3450,7 +3455,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                             LastSealedOffsetSource lastSealedOffset,
                                                             AcknowledgedOffsetSource acknowledged) {
             return buildRing(config, partition, listener, reserve, release).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                            .flatMap(ring -> openAndRecoverOne(config, partition, ring, walBaseDir, lastSealedOffset, acknowledged));
+                            .flatMap(ring -> openAndRecoverOne(config,
+                                                               partition,
+                                                               ring,
+                                                               walBaseDir,
+                                                               lastSealedOffset,
+                                                               acknowledged));
         }
 
         private static Result<MaterializedPartition> openAndRecoverOne(StreamConfig config,
@@ -3769,7 +3779,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
             return record.offset() == expected
                    ? ring.appendDurable(record.payload(),
-                                       record.timestampMillis())
+                                        record.timestampMillis())
                          .mapToUnit()
                    : new StreamError.WalReplayMismatch(streamName, partition, walFile, expected, record.offset()).result();
         }

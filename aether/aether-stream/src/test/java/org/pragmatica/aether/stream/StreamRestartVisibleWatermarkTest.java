@@ -2,14 +2,12 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.stream;
 
-import io.netty.buffer.ByteBuf;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.function.Function;
+
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
@@ -27,13 +25,13 @@ import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
 
-import java.nio.file.Path;
-import java.util.List;
-import java.util.function.Function;
+import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.PartitionedStreamAccess.streamAccess;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
@@ -42,6 +40,9 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #1387: `visible = min(durable, acknowledged)` must survive a restart. WAL replay used to make every
 /// replayed record visible at once — `seedHead` set `visibleOffset` to the sealed floor and `placeRecord`
@@ -80,7 +81,9 @@ class StreamRestartVisibleWatermarkTest {
     @BeforeEach
     void setUp() {
         metadataStore = MetadataStore.inMemoryMetadataStore("restart-visible");
-        storage = StorageInstance.storageInstance("restart-visible", List.of(MemoryTier.memoryTier(ONE_GB)), metadataStore);
+        storage = StorageInstance.storageInstance("restart-visible",
+                                                  List.of(MemoryTier.memoryTier(ONE_GB)),
+                                                  metadataStore);
     }
 
     @AfterEach
@@ -98,19 +101,16 @@ class StreamRestartVisibleWatermarkTest {
         publish(PUBLISHED);
         awaitSealedThrough(SEALED_THROUGH);
         replication.handleAck(replicateAck(PEER, STREAM, PARTITION, SEALED_THROUGH));
-
         assertThat(visible()).as("min(durable 4, acknowledged 2)").isEqualTo(SEALED_THROUGH);
         assertThat(fetch(0)).as("honest before the restart").containsExactly(0L, 1L, 2L);
-
         restartOwner(2);
-
         assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("the sealed floor was rebuilt from the refs")
-                                                             .isEqualTo(SEALED_THROUGH);
+                  .isEqualTo(SEALED_THROUGH);
         assertThat(durable()).as("the whole WAL tail is durable again").isEqualTo(PUBLISHED - 1L);
         assertThat(fetch(0)).as("a replayed but unacknowledged offset is not served to a reader")
-                            .containsExactly(0L, 1L, 2L);
+                  .containsExactly(0L, 1L, 2L);
         assertThat(visible()).as("no acknowledgement survived the restart, so visibility stops at the sealed floor")
-                             .isEqualTo(SEALED_THROUGH);
+                  .isEqualTo(SEALED_THROUGH);
     }
 
     /// Positive control for the test above: the reader's `[0,1,2]` is the acknowledgement state talking, not a
@@ -122,12 +122,10 @@ class StreamRestartVisibleWatermarkTest {
         awaitSealedThrough(SEALED_THROUGH);
         replication.handleAck(replicateAck(PEER, STREAM, PARTITION, SEALED_THROUGH));
         restartOwner(2);
-
         replication.handleAck(replicateAck(PEER, STREAM, PARTITION, PUBLISHED - 1L));
-
         assertThat(visible()).as("the re-acknowledgement advances the watermark").isEqualTo(PUBLISHED - 1L);
         assertThat(fetch(0)).as("the replayed tail is intact and served once it is acknowledged")
-                            .containsExactly(0L, 1L, 2L, 3L, 4L);
+                  .containsExactly(0L, 1L, 2L, 3L, 4L);
     }
 
     /// The over-hiding guard, NOT a control for the defect (see the class note: min-sync 1 cannot observe it).
@@ -138,17 +136,13 @@ class StreamRestartVisibleWatermarkTest {
         startOwner(1);
         publish(PUBLISHED);
         awaitSealedThrough(SEALED_THROUGH);
-
         assertThat(visible()).as("min-sync 1: visible tracks durable").isEqualTo(PUBLISHED - 1L);
-
         restartOwner(1);
-
         assertThat(visible()).as("nothing to wait for, so nothing is withheld").isEqualTo(PUBLISHED - 1L);
         assertThat(fetch(0)).containsExactly(0L, 1L, 2L, 3L, 4L);
     }
 
     // ---- fixture -------------------------------------------------------------------------------------------
-
     /// A fresh owner over the SAME WAL directory and the SAME storage, with a fresh segment index rebuilt from
     /// the surviving refs and a fresh replica registry holding no acknowledgements — a restart, as recovery
     /// sees one.
@@ -179,7 +173,7 @@ class StreamRestartVisibleWatermarkTest {
                               identityDeserializer(),
                               STREAM,
                               1,
-                              Option.<Function<byte[], Object>>none(),
+                              Option.<Function<byte[], Object>> none(),
                               noopCheckpointWriter(),
                               tieredStreamReader(segmentIndex, storage));
     }
@@ -214,23 +208,31 @@ class StreamRestartVisibleWatermarkTest {
         return access.fetch(PARTITION, fromOffset, 10)
                      .await()
                      .onFailure(cause -> fail("fetch(" + fromOffset + ") failed: " + cause.message()))
-                     .or(List.<StreamEvent<byte[]>>of())
+                     .or(List.<StreamEvent<byte[]>> of())
                      .stream()
                      .map(StreamEvent::offset)
                      .toList();
     }
 
     private long visible() {
-        return manager.partitionBuffer(STREAM, PARTITION).map(OffHeapRingBuffer::visibleOffset).or(Long.MIN_VALUE);
+        return manager.partitionBuffer(STREAM, PARTITION)
+                      .map(OffHeapRingBuffer::visibleOffset)
+                      .or(Long.MIN_VALUE);
     }
 
     private long durable() {
-        return manager.partitionBuffer(STREAM, PARTITION).map(OffHeapRingBuffer::durableOffset).or(Long.MIN_VALUE);
+        return manager.partitionBuffer(STREAM, PARTITION)
+                      .map(OffHeapRingBuffer::durableOffset)
+                      .or(Long.MIN_VALUE);
     }
 
     private void publish(int count) {
         for (var i = 0; i < count; i++) {
-            manager.publishLocal(STREAM, PARTITION, "e".getBytes(UTF_8), 1L).onFailure(cause -> fail("publish failed: " + cause.message()));
+            manager.publishLocal(STREAM,
+                                 PARTITION,
+                                 "e".getBytes(UTF_8),
+                                 1L)
+                   .onFailure(cause -> fail("publish failed: " + cause.message()));
         }
     }
 
@@ -241,6 +243,7 @@ class StreamRestartVisibleWatermarkTest {
         while (index.lastSealedOffset(STREAM, PARTITION) < offset && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
+
         assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("sealed through %d", offset).isEqualTo(offset);
     }
 
@@ -273,6 +276,7 @@ class StreamRestartVisibleWatermarkTest {
                 var bytes = new byte[byteBuf.readableBytes()];
 
                 byteBuf.readBytes(bytes);
+
                 return (T) bytes;
             }
         };
