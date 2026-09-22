@@ -5,7 +5,14 @@
 package org.pragmatica.aether.stream;
 
 import java.util.function.Function;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.stream.LongStream;
 
+import org.pragmatica.aether.slice.stream.PublishOutcome;
+import org.pragmatica.aether.slice.StreamPublisher.StreamPublisherError;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -108,6 +115,109 @@ public final class StreamWriteRouter {
         return partitionManager.ensureWritableConsistency(streamName)
                                .async()
                                .flatMap(_ -> routePublish(streamName, partition, payload, timestamp));
+    }
+
+    /// Batch uses the same authority routing and live min-sync configuration as a single write.
+    /// Every local run event is attempted before its cumulative replication barrier; if that barrier
+    /// fails all its outcomes are unknown. Remote/fallback runs stop after the first failed event.
+    public Promise<List<PublishOutcome>> publishBatch(String streamName,
+                                                      int partition,
+                                                      List<byte[]> payloads,
+                                                      long timestamp) {
+        if (payloads.isEmpty()) {
+            return Promise.success(List.of());
+        }
+
+        if (ownerResolver.resolve(streamName, partition).filter(this::isRemote).isPresent() && forwardClient.isPresent()) {
+            return publishEach(streamName, partition, payloads, timestamp);
+        }
+
+        return partitionManager.ensureWritableConsistency(streamName)
+                               .fold(_ -> publishEach(streamName, partition, payloads, timestamp),
+                                     _ -> publishLocalBatch(streamName, partition, payloads, timestamp));
+    }
+
+    private Promise<List<PublishOutcome>> publishLocalBatch(String streamName,
+                                                            int partition,
+                                                            List<byte[]> payloads,
+                                                            long timestamp) {
+        var minSyncReplicas = partitionManager.minSyncReplicasFor(streamName);
+
+        return partitionManager.publishLocalBatchAtFloor(streamName, partition, payloads, timestamp, minSyncReplicas - 1)
+                               .fold(cause -> recoverBatchRefusal(cause, streamName, partition, payloads, timestamp),
+                                     lastOffset -> awaitMinSync(streamName, partition, lastOffset, minSyncReplicas).fold(result -> Promise.success(result.fold(cause -> unknownOutcomes(payloads.size(),
+                                                                                                                                                                                        cause),
+                                                                                                                                                               _ -> publishedOffsets(lastOffset,
+                                                                                                                                                                                     payloads.size())))));
+    }
+
+    private Promise<List<PublishOutcome>> recoverBatchRefusal(Cause cause,
+                                                              String streamName,
+                                                              int partition,
+                                                              List<byte[]> payloads,
+                                                              long timestamp) {
+        // These refusals occur before any append. Retrying as individual writes preserves redirect
+        // handling and per-event oversized/drop outcomes without replaying an uncertain local run.
+        return cause == StreamError.General.RUN_DOES_NOT_FIT || cause instanceof StreamError.NotOwnerAppend || cause instanceof StreamError.EventTooLarge
+               ? publishEach(streamName, partition, payloads, timestamp)
+               : Promise.success(unknownOutcomes(payloads.size(), cause));
+    }
+
+    private static List<PublishOutcome> publishedOffsets(long lastOffset, int count) {
+        return LongStream.rangeClosed(lastOffset - count + 1, lastOffset)
+                         .mapToObj(offset -> (PublishOutcome) new PublishOutcome.Published(offset))
+                         .toList();
+    }
+
+    private static List<PublishOutcome> unknownOutcomes(int count, Cause cause) {
+        return Collections.nCopies(count, new PublishOutcome.OutcomeUnknown(cause));
+    }
+
+    private Promise<List<PublishOutcome>> publishEach(String streamName,
+                                                      int partition,
+                                                      List<byte[]> payloads,
+                                                      long timestamp) {
+        var chain = Promise.success(List.<PublishOutcome> of());
+
+        for (var payload : payloads) {
+            chain = chain.flatMap(outcomes -> publishNext(outcomes, streamName, partition, payload, timestamp));
+        }
+
+        return chain;
+    }
+
+    private Promise<List<PublishOutcome>> publishNext(List<PublishOutcome> outcomes,
+                                                      String streamName,
+                                                      int partition,
+                                                      byte[] payload,
+                                                      long timestamp) {
+        return precedingFailure(outcomes).map(cause -> Promise.success(appended(outcomes,
+                                                                                new PublishOutcome.NotAttempted(cause instanceof StreamPublisherError.PrecedingEventFailed
+                                                                                                                ? cause
+                                                                                                                : StreamPublisherError.PrecedingEventFailed.precedingEventFailed(partition,
+                                                                                                                                                                                 cause)))))
+                               .or(() -> publish(streamName, partition, payload, timestamp).fold(result -> Promise.success(appended(outcomes,
+                                                                                                                                    PublishOutcome.attempted(result)))));
+    }
+
+    private static Option<Cause> precedingFailure(List<PublishOutcome> outcomes) {
+        if (outcomes.isEmpty()) {
+            return Option.none();
+        }
+
+        return switch (outcomes.getLast()) {
+            case PublishOutcome.Published _ -> Option.none();
+            case PublishOutcome.OutcomeUnknown(var cause) -> Option.some(cause);
+            case PublishOutcome.NotAttempted(var cause) -> Option.some(cause);
+        };
+    }
+
+    private static List<PublishOutcome> appended(List<PublishOutcome> outcomes, PublishOutcome outcome) {
+        var next = new ArrayList<>(outcomes);
+
+        next.add(outcome);
+
+        return List.copyOf(next);
     }
 
     private Promise<Long> routePublish(String streamName, int partition, byte[] payload, long timestamp) {

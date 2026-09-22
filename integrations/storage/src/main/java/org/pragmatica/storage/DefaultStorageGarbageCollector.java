@@ -66,7 +66,7 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
                                      .filter(BlockLifecycle::isOrphaned)
                                      .filter(lc -> lc.orphanedAt() <= cutoff)
                                      .limit(config.batchSize())
-                                     .map(lc -> deleteBlock(lc.blockId()))
+                                     .map(this::deleteBlock)
                                      .reduce(0, Integer::sum);
 
         stats.updateAndGet(s -> s.withCollected(collected, now));
@@ -86,9 +86,20 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
     /// #250: uses [StorageInstance#deleteFromPrivateTiers], never [StorageInstance#delete] --
     /// orphan status here comes from THIS node's local metadata, which is not authoritative
     /// for a cluster-shared tier (another node may still hold a live reference).
-    private int deleteBlock(BlockId blockId) {
-        return instance.deleteFromPrivateTiers(blockId)
+    ///
+    /// #801: passes the record AS SCANNED, not just its id. The scan is a snapshot, and a
+    /// deduplicating put can land on the block between the scan and this call; the instance
+    /// deletes only if the record still equals the scanned one, and reports `false` otherwise,
+    /// which is not a collection.
+    private int deleteBlock(BlockLifecycle orphan) {
+        return instance.deleteFromPrivateTiers(orphan)
                        .await()
-                       .fold(_ -> 0, _ -> 1);
+                       .fold(_ -> 0, DefaultStorageGarbageCollector::countOf);
+    }
+
+    private static int countOf(boolean collected) {
+        return collected
+               ? 1
+               : 0;
     }
 }

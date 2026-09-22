@@ -25,8 +25,10 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.ArrayList;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -74,11 +76,17 @@ class TopicPublisherTest {
         return resourceAddress(topicName).asString();
     }
 
+    private static final String PUBLISHER_SLICE = "org.example:order-publisher:1.0.0";
+
+    private TopicPublisher<String> publisher(String topicName, String topicAddress, SliceInvoker invoker) {
+        return new TopicPublisher<>(topicName, topicAddress, PUBLISHER_SLICE, registry, invoker);
+    }
+
     @Nested
     class Publish {
         @Test
         void publish_noSubscribers_returnsUnitPromise() {
-            var publisher = new TopicPublisher<>(routingKey("orders"), registry, stubInvoker);
+            var publisher = publisher("orders", routingKey("orders"), stubInvoker);
 
             var result = publisher.publish("test-message").await();
 
@@ -86,10 +94,51 @@ class TopicPublisherTest {
                   .onSuccess(unit -> assertEquals(Unit.unit(), unit));
         }
 
+        /// #1216: the empty-subscriber branch returned success with no log line, which is exactly
+        /// what hid a release-long address mismatch. The contract (success, zero deliveries) is kept
+        /// by the test above; this one pins that the branch is now LOUD, naming the three things an
+        /// operator needs to compare against the `topic-sub/` keys: topic, resolved address, publisher.
+        @Test
+        void publish_noSubscribers_isObservable() {
+            var warnings = new ArrayList<String>();
+            var detach = LogCapture.warningsOf(TopicPublisher.class, warnings);
+
+            try {
+                publisher("orders", routingKey("orders"), stubInvoker).publish("test-message").await();
+            } finally {
+                detach.run();
+            }
+
+            assertThat(warnings).describedAs("one WARN per undelivered publish").hasSize(1);
+            assertThat(warnings.getFirst()).contains("'orders'")
+                                           .contains(routingKey("orders"))
+                                           .contains(PUBLISHER_SLICE)
+                                           .contains("no subscribers");
+            assertThat(invocations).isEmpty();
+        }
+
+        /// The control for the pin above: a delivered publish must not WARN, or the line would be
+        /// noise rather than signal.
+        @Test
+        void publish_withSubscriber_doesNotWarn() {
+            registerSubscription("orders", artifact, method, nodeA);
+            var warnings = new ArrayList<String>();
+            var detach = LogCapture.warningsOf(TopicPublisher.class, warnings);
+
+            try {
+                publisher("orders", routingKey("orders"), stubInvoker).publish("order-1").await();
+            } finally {
+                detach.run();
+            }
+
+            assertThat(warnings).isEmpty();
+            assertEquals(1, invocations.size());
+        }
+
         @Test
         void publish_singleSubscriber_invokesSliceInvoker() {
             registerSubscription("orders", artifact, method, nodeA);
-            var publisher = new TopicPublisher<>(routingKey("orders"), registry, stubInvoker);
+            var publisher = publisher("orders", routingKey("orders"), stubInvoker);
 
             var result = publisher.publish("order-123").await();
 
@@ -108,7 +157,7 @@ class TopicPublisherTest {
             registerSubscription("orders", artifact, method, nodeA);
             registerSubscription("orders", artifact2, method2, nodeB);
 
-            var publisher = new TopicPublisher<>(routingKey("orders"), registry, stubInvoker);
+            var publisher = publisher("orders", routingKey("orders"), stubInvoker);
 
             var result = publisher.publish("order-456").await();
 
@@ -121,7 +170,7 @@ class TopicPublisherTest {
             // allOf collects results without propagating individual failures
             registerSubscription("orders", artifact, method, nodeA);
             var failingInvoker = new StubSliceInvoker(invocations, Option.some(SUBSCRIBER_FAILED));
-            var publisher = new TopicPublisher<>(routingKey("orders"), registry, failingInvoker);
+            var publisher = publisher("orders", routingKey("orders"), failingInvoker);
 
             var result = publisher.publish("order-789").await();
 
@@ -139,7 +188,7 @@ class TopicPublisherTest {
             registerSubscriptionAt(nsA, artifactA, method, nodeA);
             registerSubscriptionAt(nsB, artifactB, method, nodeB);
 
-            var publisher = new TopicPublisher<>(nsA.asString(), registry, stubInvoker);
+            var publisher = publisher("events", nsA.asString(), stubInvoker);
 
             var result = publisher.publish("event-1").await();
 

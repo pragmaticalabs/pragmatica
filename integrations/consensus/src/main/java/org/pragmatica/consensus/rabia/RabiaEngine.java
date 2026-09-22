@@ -167,6 +167,8 @@ public class RabiaEngine<C extends Command> {
     /// not-yet-caught-up replacement leader (#329).
     private final AtomicReference<Phase> highestObservedClusterPhase = new AtomicReference<>(Phase.ZERO);
     private final AtomicReference<EngineState> engineState = new AtomicReference<>(new EngineState.Stopped());
+    private final AtomicBoolean stopping = new AtomicBoolean();
+    private final Promise<Unit> stoppedCompletion = Promise.promise();
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
     // Per Rabia spec: after a decision, the next phase inherits this value for round 1 vote
     private final AtomicReference<Option<StateValue>> lockedValue = new AtomicReference<>(Option.none());
@@ -589,7 +591,10 @@ public class RabiaEngine<C extends Command> {
     ///
     /// Replaying the same membership is a no-op — no state is wiped if `newConfig` already
     /// matches the engine's current view. Returns success on no-op too.
-    public Promise<Unit> reconfigure(ClusterConfig newConfig) {
+    public synchronized Promise<Unit> reconfigure(ClusterConfig newConfig) {
+        if (stopping.get()) {
+            return new ConsensusError.NodeInactive(self).promise();
+        }
         var promise = Promise.<Unit> promise();
 
         safeExecute(() -> doReconfigure(newConfig, promise));
@@ -759,7 +764,7 @@ public class RabiaEngine<C extends Command> {
                        _ -> {});
     }
 
-    private Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared) {
+    private synchronized Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared) {
         if (log.isDebugEnabled()) {
             var caller = Thread.currentThread().getStackTrace();
             var callerInfo = caller.length > 3
@@ -767,6 +772,10 @@ public class RabiaEngine<C extends Command> {
                              : "unknown";
 
             log.debug("Node {} submitting {} command(s): {} [caller: {}]", self, commands.size(), commands, callerInfo);
+        }
+
+        if (stopping.get()) {
+            return new ConsensusError.NodeInactive(self).result();
         }
 
         return validateSubmission(commands).map(_ -> prepareBatch(commands))
@@ -827,8 +836,14 @@ public class RabiaEngine<C extends Command> {
         return startPromise.get();
     }
 
-    public Promise<Unit> stop() {
-        return Promise.promise(this::performStop);
+    public synchronized Promise<Unit> stop() {
+        if (stopping.compareAndSet(false, true)) {
+            Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
+                        () -> executor.execute(() -> performStop(stoppedCompletion)))
+                  .onFailure(stoppedCompletion::fail);
+        }
+
+        return stoppedCompletion;
     }
 
     private void performStop(Promise<Unit> promise) {
@@ -839,9 +854,8 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         notifyConsensusStateTransition();
-        // Synchronously fail in-flight promises BEFORE executor.shutdown(); otherwise
-        // shutdownAndReset() may execute concurrently with the DiscardPolicy and leave
-        // callers (e.g. publisher.runApply) waiting on cluster.apply(...) Promises forever.
+        // Admission is closed; all previously admitted apply tasks have finished.
+        // Snapshot contents and the phase frontier therefore describe the same state.
         correlationMap.forEach((_, p) -> p.fail(new ConsensusError.NodeInactive(self)));
         correlationMap.clear();
         shutdownAndReset();
@@ -857,7 +871,11 @@ public class RabiaEngine<C extends Command> {
     /// the swallow semantics the live KV dispatch already has (MessageRouter.dispatchOne): the worker
     /// survives to process subsequent rounds; the failed round is abandoned and re-driven by the
     /// sender's retry. Errors (non-RuntimeException Throwable) are intentionally left to propagate.
-    private void safeExecute(Runnable task) {
+    private synchronized void safeExecute(Runnable task) {
+        if (stopping.get()) {
+            return;
+        }
+
         executor.execute(() -> {
             var start = System.nanoTime();
 

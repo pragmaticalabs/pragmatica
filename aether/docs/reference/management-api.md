@@ -3317,7 +3317,7 @@ sources, "scale cores to 7" does not say where the new nodes go.
 | `source` | Source name. Blank asks the server to infer it, which succeeds only when exactly one source declares `role`. |
 | `role` | `core`, `worker` or `spot`. Blank defaults to `core`. |
 | `count` | Target node count for this source and role. |
-| `expectedVersion` | Config version read from `GET /api/v1/cluster/config`; the request is rejected if it no longer matches. |
+| `expectedVersion` | Config version read from `GET /api/v1/cluster/config`; the request is rejected if it no longer matches. Required: an omitted or `null` field is refused at decode time (HTTP 400, `Type mismatch: expected long`). An explicit `0` is not a wildcard: against a stored config it is refused as an unfenced overwrite (#1086). |
 
 **Response:**
 ```json
@@ -3344,7 +3344,14 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
 
 **Conflicts** (HTTP 409):
 
-- `expectedVersion` no longer matches the stored config version (checked before the write).
+- `expectedVersion` no longer matches the stored config version (checked first, before validation
+  and before the write).
+- `expectedVersion` is an explicit `0` against a stored config — `UnfencedOverwrite`, the same #289
+  fence `POST /api/v1/cluster/config` applies. Every stored config a scale can reach carries a
+  version of at least 1, so `0` never means "fresh cluster" here; it is a mismatch. Unlike a stale
+  non-zero version, it is checked at the write, after validation, so a request the validator would
+  refuse still answers with the validator's own cause (#1086). An omitted or `null` field is neither
+  case: it fails decoding with HTTP 400.
 - The write itself lost a concurrent race (RFC-0018): the KV applier rejects a config write built on
   a stale read, and the route confirms the requested count actually landed before reporting success.
   A `VersionConflict` here means another writer — an operator or the auto-heal reconciler — advanced

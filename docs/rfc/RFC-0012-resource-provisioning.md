@@ -141,8 +141,8 @@ public interface ConfigService {
     <T> Promise<T> configAsync(String section, Class<T> configClass);
     boolean hasSection(String section);
     Option<String> getString(String key);
-    Option<Integer> getInt(String key);
-    Option<Boolean> getBoolean(String key);
+    Result<Option<Integer>> getInt(String key);   // #1098: absent → Success(None); malformed → TypeMismatch
+    Result<Option<Boolean>> getBoolean(String key);
 
     static Option<ConfigService> instance();
     static void setInstance(ConfigService service);

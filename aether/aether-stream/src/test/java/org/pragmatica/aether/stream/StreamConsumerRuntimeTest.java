@@ -13,6 +13,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
@@ -1408,26 +1409,6 @@ class StreamConsumerRuntimeTest {
         /// for the same `(group, stream, partition)` key are two DISTINCT calls into `commit(...)`, so
         /// this hands back a different promise per call instead of [#committing]'s single fixed one —
         /// the shape D1 needed to reproduce two commits sharing one [ConsumerRuntimeState.ConsumerState].
-        private static ConsumerCursorStore committingSequence(List<Promise<CommitOutcome>> commitResults, CountDownLatch commitsIssued) {
-            var index = new AtomicInteger(0);
-
-            return new ConsumerCursorStore() {
-                @Override
-                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
-                    var i = Math.min(index.getAndIncrement(), commitResults.size() - 1);
-
-                    commitsIssued.countDown();
-
-                    return commitResults.get(i);
-                }
-
-                @Override
-                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
-                    return Promise.success(none());
-                }
-            };
-        }
-
         @Test
         void close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound() throws Exception {
             createTestStream("orders");
@@ -1577,6 +1558,14 @@ class StreamConsumerRuntimeTest {
                                           });
                 manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
                 assertThat(firstLatch.await(5, TimeUnit.SECONDS)).isTrue();
+                // #1401: the handler counts the latch down before the pass advances the cursor
+                // (`deliverySucceeded` runs after the handler's promise settles), and the detach flush
+                // commits the cursor AS IT STANDS — an unsubscribe issued in that gap commits 0 (CI: `but
+                // was: 0L`). The property under test is the flush of an ACCOUNTED delivery, so await the
+                // runtime's own accounting before detaching, under the same 5 s deadline.
+                assertThat(awaitCursor(observedRuntime, "orders", 0, "group-1", 1L, 5_000))
+                          .describedAs("the runtime accounted the delivery before the detach")
+                          .isEqualTo(1L);
                 observedRuntime.unsubscribe("orders", 0, "group-1");
                 assertThat(committed.get()).describedAs("committed offset is one past the last delivered offset")
                           .isEqualTo(1L);
@@ -2003,43 +1992,57 @@ class StreamConsumerRuntimeTest {
         /// the two to be reported ever incremented the counter and the other's later resolution logged
         /// ERROR without incrementing — one incident silently discarded. Round 4 gives each commit its
         /// own [ConsumerRuntimeState.TrackedCommit#reported] token: the bound must count both.
+        ///
+        /// #1401 rewrite on the #1393 seams. The earlier shape let the store return a pending promise, so the
+        /// periodic commit's own 5 s timeout was armed BEFORE `close()` and raced the shutdown bound: when it
+        /// fired first (CI run 35548028994: `unsettled at the bound` for the final at 06.1993, `(local) failed:
+        /// timed out` for the periodic at 06.1996), the bound rightly skipped the already-settled periodic and
+        /// its increment arrived on an async Promise event handler 0.3 ms later — after `close()` had returned
+        /// and the test had read 1. Now the periodic's store call is HELD until after `close()` returns: its
+        /// timeout cannot be armed before the bound, both commits are provably in flight while `close()`
+        /// waits, and the bound reports both synchronously on the closing thread. The late half is kept: once
+        /// released, the periodic's genuine failure must not add a second increment.
         @Test
         void close_countsBothUnsettledCommits_whenPeriodicAndFinalCommitShareOneConsumer() throws InterruptedException {
             createTestStream("orders");
             Promise<CommitOutcome> periodicPending = Promise.promise();
-            Promise<CommitOutcome> finalPending = Promise.promise();
-            var commitsIssued = new CountDownLatch(1);
-            var store = committingSequence(List.of(periodicPending, finalPending), commitsIssued);
-            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var entered = new CountDownLatch(1);
+            var gate = new CountDownLatch(1);
+            var runtimeRef = new AtomicReference<ConsumerRuntimeState>();
+            var inFlightAtStoreCall = new AtomicInteger(-1);
+            var store = heldThenPending(entered, gate, periodicPending, () -> inFlightAtStoreCall.set(runtimeRef.get().inFlightCommitCount()));
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
             var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
-            var delivered = new CountDownLatch(1);
 
-            observedRuntime.subscribe("orders",
-                                      0,
-                                      config,
-                                      (offset, payload, ts) -> {
-                                          delivered.countDown();
-
-                                          return Promise.unitPromise();
-                                      });
+            runtimeRef.set(observedRuntime);
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
             // The 10ms checkpoint interval elapses before the first event, so the very first successful
-            // delivery already trips checkpointIfNeeded's time-based branch, putting the PERIODIC commit
-            // in flight before close() issues the second, final commit for the same key.
+            // delivery already trips checkpointIfNeeded's time-based branch and issues the PERIODIC commit.
             Thread.sleep(50);
             manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
-            assertThat(delivered.await(5, TimeUnit.SECONDS)).isTrue();
-            assertThat(commitsIssued.await(2, TimeUnit.SECONDS))
-                      .describedAs("the periodic checkpoint commit must be in flight before close() issues the final commit for the same key")
-                      .isTrue();
+            assertThat(entered.await(5, TimeUnit.SECONDS)).describedAs("the periodic commit's store call is in progress").isTrue();
+            assertThat(inFlightAtStoreCall.get()).describedAs("the periodic commit is registered before its own store call").isEqualTo(1);
 
-            // #1388: `commitsIssued` fires inside the store call, and since #1388 the periodic commit is registered
-            // in the runtime's in-flight set BEFORE that call — so the latch is a sufficient condition for the
-            // snapshot close() takes to hold both commits. The held-store test below pins the ordering itself.
-            observedRuntime.close();
+            var returned = new CountDownLatch(1);
+            var countAtClose = new AtomicLong(-1);
 
-            assertThat(observedRuntime.cursorCommitFailureCount())
-                      .describedAs("two distinct unsettled commits for one consumer at the bound must count as two incidents, not one")
-                      .isEqualTo(2L);
+            Thread.ofPlatform().start(() -> {
+                observedRuntime.close();
+                countAtClose.set(observedRuntime.cursorCommitFailureCount());
+                returned.countDown();
+            });
+            awaitUntil(() -> observedRuntime.inFlightCommitCount() == 2, "close() issued the FINAL commit beside the held periodic one");
+            assertThat(returned.await(300, TimeUnit.MILLISECONDS)).describedAs("close() is waiting on both at the bound").isFalse();
+            assertThat(observedRuntime.inFlightCommitCount()).describedAs("both commits are still in flight while close() waits").isEqualTo(2);
+
+            try {
+                assertThat(returned.await(10, TimeUnit.SECONDS)).describedAs("close() returned at the bound").isTrue();
+                assertThat(countAtClose.get())
+                          .describedAs("two distinct unsettled commits for one consumer at the bound must count as two incidents, not one")
+                          .isEqualTo(2L);
+            } finally {
+                gate.countDown();
+            }
 
             var lateResolution = new CountDownLatch(1);
 
@@ -2052,6 +2055,110 @@ class StreamConsumerRuntimeTest {
             assertThat(observedRuntime.cursorCommitFailureCount())
                       .describedAs("the periodic commit's token already won at the bound; its later genuine failure must not add a second increment")
                       .isEqualTo(2L);
+        }
+
+        /// #1401 product pin: a commit's incident is counted BEFORE its handle settles, in the same frame. The
+        /// periodic commit's store promise is failed on the test thread; the runtime's `with*()` actions run inline
+        /// in that frame in attachment order — count, unregister, settle the handle — and, through the periodic
+        /// slot, the FINAL commit's store call follows in the same frame. That store call is the observer: it
+        /// reads the count with no thread boundary and no wait. With the increment on an async `onFailure` it
+        /// reads 0, deterministically. The final fails synchronously so `close()` returns as soon as both
+        /// handles settle — inside the bound — with both counted. The CI shape this guards (run 35548028994: the
+        /// periodic failed by its own bound δ before the shutdown bound, its increment on an async handler after
+        /// the closing thread had read 1) cannot itself discriminate the async variant — the closing thread's
+        /// wake-up loses to the executor — which is why the observer here sits inside the resolve frame.
+        @Test
+        void commitFails_incidentIsCountedBeforeItsHandleSettles_observedFromTheSameResolveFrame() throws InterruptedException {
+            createTestStream("orders");
+            Promise<CommitOutcome> periodicPending = Promise.promise();
+            var runtimeRef = new AtomicReference<ConsumerRuntimeState>();
+            var issued = new CountDownLatch(1);
+            var countAtFinalStoreCall = new AtomicLong(-1);
+            var inFlightAtFinalStoreCall = new AtomicInteger(-1);
+            var store = new ConsumerCursorStore() {
+                private final AtomicInteger calls = new AtomicInteger();
+
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (calls.getAndIncrement() == 0) {
+                        issued.countDown();
+
+                        return periodicPending;
+                    }
+                    // Inside the frame that resolves the periodic commit: its count must already be there.
+                    countAtFinalStoreCall.set(runtimeRef.get().cursorCommitFailureCount());
+                    inFlightAtFinalStoreCall.set(runtimeRef.get().inFlightCommitCount());
+
+                    return StreamError.General.BUFFER_EMPTY.promise();
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            runtimeRef.set(observedRuntime);
+            observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            assertThat(issued.await(5, TimeUnit.SECONDS)).describedAs("the periodic commit was issued").isTrue();
+
+            var returned = new CountDownLatch(1);
+            var countAtClose = new AtomicLong(-1);
+
+            Thread.ofPlatform().start(() -> {
+                observedRuntime.close();
+                countAtClose.set(observedRuntime.cursorCommitFailureCount());
+                returned.countDown();
+            });
+            awaitUntil(() -> observedRuntime.inFlightCommitCount() == 2, "close() registered the final commit behind the pending periodic one");
+            assertThat(returned.getCount()).describedAs("close() is waiting on both").isEqualTo(1L);
+
+            periodicPending.fail(StreamError.General.BUFFER_EMPTY);
+
+            assertThat(countAtFinalStoreCall.get())
+                      .describedAs("the periodic commit's incident was counted before its handle settled — read from inside the same resolve frame, no wait")
+                      .isEqualTo(1L);
+            assertThat(inFlightAtFinalStoreCall.get()).describedAs("the periodic commit was unregistered before its handle settled; the final is the one left")
+                                                      .isEqualTo(1);
+            assertThat(returned.await(2, TimeUnit.SECONDS)).describedAs("close() returned once both handles settled, inside the bound").isTrue();
+            assertThat(countAtClose.get()).describedAs("both incidents were counted as of close() returning").isEqualTo(2L);
+        }
+
+        /// The first `commit` runs `onEntry`, counts down `entered`, parks inside the call until `gate` opens, and
+        /// then returns `first`; every later commit returns a fresh promise that never settles.
+        private static ConsumerCursorStore heldThenPending(CountDownLatch entered,
+                                                            CountDownLatch gate,
+                                                            Promise<CommitOutcome> first,
+                                                            Runnable onEntry) {
+            var calls = new AtomicInteger();
+
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (calls.getAndIncrement() > 0) {
+                        return Promise.promise();
+                    }
+
+                    onEntry.run();
+                    entered.countDown();
+                    try {
+                        gate.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+
+                    return first;
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
         }
 
         /// #1388 (CI run 35515972207, `expected: 2L but was: 1L`): the periodic commit's store call is STILL IN
@@ -2133,6 +2240,21 @@ class StreamConsumerRuntimeTest {
             assertThat(returned.await(2, TimeUnit.SECONDS)).describedAs("close() returned once the store settled, well inside the 5 s bound").isTrue();
             assertThat((System.nanoTime() - started) / 1_000_000).isLessThan(3_000L);
             assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("settled inside the bound: no incident").isZero();
+        }
+
+        private static long awaitCursor(StreamConsumerRuntime runtime,
+                                        String streamName,
+                                        int partition,
+                                        String group,
+                                        long expected,
+                                        long timeoutMillis) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMillis;
+
+            while (runtime.cursorPosition(streamName, partition, group).or(-1L) != expected && System.currentTimeMillis() < deadline) {
+                Thread.sleep(5);
+            }
+
+            return runtime.cursorPosition(streamName, partition, group).or(-1L);
         }
 
         /// Every `commit` returns a fresh pending promise, recorded so the test can settle it.

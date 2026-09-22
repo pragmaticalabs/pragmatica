@@ -26,6 +26,10 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ProvisioningDiagnostics;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -201,8 +205,14 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
 
     @BeforeAll
     @TerminalOperation
-    void setUp() {
+    void setUp(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
+        var consensusDirectory = directory.resolve("consensus");
+        // The production backup adapter expects provisioned directories, including the scale-up control's new node.
+        org.pragmatica.lang.Result.allOf(java.util.stream.IntStream.rangeClosed(1, RAISED_CORES)
+            .mapToObj(index -> org.pragmatica.lang.io.FileOps.createDirectories(consensusDirectory.resolve(NODE_PREFIX + "-" + index))))
+            .unwrap();
+        cluster.withConsensusBaseDir(consensusDirectory);
         cluster.withComputeProviderDecorator(recorder::wrap);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         expectStarted(allConfiguredIds(), "FORMATION-1 start");
@@ -365,11 +375,29 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     }
 
     // ----- restart mechanics -----
+    /// Membership callbacks run inside a consensus apply, before its phase advances. A leader and
+    /// full observed membership therefore do not prove applied history is ready to checkpoint.
+    /// Commit an inert probe marker and observe it on every node before exercising the restart.
+    @TerminalOperation
+    private void awaitAppliedHistory() {
+        var key = ConfigKey.forKey("forge.slowjoin.applied-history");
+        var value = ConfigValue.configValue(key.key(), "ready");
+        KVCommand<AetherKey> marker = new KVCommand.Put<>(key, value);
+        cluster.allNodes().getFirst().<Object>apply(List.of(marker))
+               .await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failScenario);
+        await().alias("all nodes have applied the pre-restart history marker")
+               .atMost(FORM_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy)
+               .until(() -> cluster.allNodes().stream()
+                                   .allMatch(node -> node.kvStore().get(key).filter(value::equals).isPresent()));
+        recordMilestone("RESTART precondition: applied-history marker visible on every configured node");
+    }
+
     /// Full-cluster restart with [#HELD_BACK] deferred. Modelled on
-    /// `MultiPartitionCrashDurabilityTest.restartCluster()`, minus the stream/slice/data-dir concerns
-    /// this probe has none of: membership, not durability, is the question here.
+    /// `MultiPartitionCrashDurabilityTest.restartCluster()`. Consensus state persists across restart:
+    /// otherwise these PARTICIPATED identities are amnesiac and cannot count themselves toward recovery.
     @TerminalOperation
     private void restartWithHeldBackMembers() {
+        awaitAppliedHistory();
         LifecycleAwait.settled("cluster stop in restartWithHeldBackMembers()", cluster, cluster.stop());
         recordMilestone("RESTART: cluster stopped");
         // Nothing is expected alive between stop() and the restart completing.
