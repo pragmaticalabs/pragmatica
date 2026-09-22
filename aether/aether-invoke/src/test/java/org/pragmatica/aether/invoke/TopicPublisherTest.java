@@ -27,6 +27,10 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -79,7 +83,18 @@ class TopicPublisherTest {
     private static final String PUBLISHER_SLICE = "org.example:order-publisher:1.0.0";
 
     private TopicPublisher<String> publisher(String topicName, String topicAddress, SliceInvoker invoker) {
-        return new TopicPublisher<>(topicName, topicAddress, PUBLISHER_SLICE, registry, invoker);
+        return TopicPublisher.topicPublisher(topicName, topicAddress, PUBLISHER_SLICE, registry, invoker, Option.none());
+    }
+
+    /// A publisher whose WARN rate limit runs on a clock the test advances by hand.
+    private TopicPublisher<String> publisher(String topicName, AtomicLong clockNanos, Option<MeterRegistry> meters) {
+        return TopicPublisher.topicPublisher(topicName,
+                                             routingKey(topicName),
+                                             PUBLISHER_SLICE,
+                                             registry,
+                                             stubInvoker,
+                                             meters,
+                                             clockNanos::get);
     }
 
     @Nested
@@ -109,12 +124,74 @@ class TopicPublisherTest {
                 detach.run();
             }
 
-            assertThat(warnings).describedAs("one WARN per undelivered publish").hasSize(1);
+            assertThat(warnings).describedAs("one WARN for the first undelivered publish").hasSize(1);
             assertThat(warnings.getFirst()).contains("'orders'")
                                            .contains(routingKey("orders"))
                                            .contains(PUBLISHER_SLICE)
-                                           .contains("no subscribers");
+                                           .contains("no subscribers")
+                                           .contains("0 more undelivered");
             assertThat(invocations).isEmpty();
+        }
+
+        /// rev1421 MEDIUM-1: 10,000 undelivered publishes produced 10,000 identical WARN lines. The
+        /// limit is one line per publisher per [TopicPublisher#WARN_PERIOD]; the publishes it
+        /// suppresses are counted into the next line, so nothing is lost, only compressed.
+        @Test
+        void publish_repeatedUndelivered_warnsOncePerPeriod_andReportsTheSuppressedCount() {
+            var clock = new AtomicLong();
+            var publisher = publisher("orders", clock, Option.none());
+            var warnings = new ArrayList<String>();
+            var detach = LogCapture.warningsOf(TopicPublisher.class, warnings);
+
+            try {
+                publisher.publish("m1").await();
+                publisher.publish("m2").await();
+                publisher.publish("m3").await();
+                assertThat(warnings).describedAs("three publishes inside one period: one WARN").hasSize(1);
+
+                clock.addAndGet(TopicPublisher.WARN_PERIOD.nanos() - 1);
+                publisher.publish("m4").await();
+                assertThat(warnings).describedAs("still inside the period").hasSize(1);
+
+                clock.addAndGet(1);
+                publisher.publish("m5").await();
+            } finally {
+                detach.run();
+            }
+
+            assertThat(warnings).describedAs("the period elapsed: a second WARN").hasSize(2);
+            assertThat(warnings.get(1)).contains("3 more undelivered");
+        }
+
+        /// rev1421 MEDIUM-2: the node's `MeterRegistry` reaches the publisher through provisioning, so
+        /// every undelivered publish counts — the rate-limited WARN compresses, the counter does not.
+        @Test
+        void publish_noSubscribers_incrementsTheUndeliveredCounter() {
+            var meters = new SimpleMeterRegistry();
+            var publisher = publisher("orders", new AtomicLong(), Option.some(meters));
+
+            publisher.publish("m1").await();
+            publisher.publish("m2").await();
+            publisher.publish("m3").await();
+
+            var counter = meters.find(TopicPublisher.UNDELIVERED_COUNTER)
+                                .tags("topic", "orders", "address", routingKey("orders"), "slice", PUBLISHER_SLICE)
+                                .counter();
+
+            assertThat(counter).describedAs("counter registered with topic, address and slice tags").isNotNull();
+            assertThat(counter.count()).isEqualTo(3.0);
+        }
+
+        @Test
+        void publish_withSubscriber_doesNotCount() {
+            registerSubscription("orders", artifact, method, nodeA);
+            var meters = new SimpleMeterRegistry();
+            var publisher = publisher("orders", new AtomicLong(), Option.some(meters));
+
+            publisher.publish("m1").await();
+
+            assertThat(meters.find(TopicPublisher.UNDELIVERED_COUNTER).counter().count()).isZero();
+            assertEquals(1, invocations.size());
         }
 
         /// The control for the pin above: a delivered publish must not WARN, or the line would be
