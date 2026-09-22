@@ -57,12 +57,19 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
                                 spec -> provisionDurable(config, spec, context));
     }
 
+    /// The slice-id extension is absent only outside a deployment (unit tests, minimal runtimes);
+    /// the placeholder keeps the #1216 WARN honest about that rather than naming a slice it never had.
+    static final String UNSCOPED_PUBLISHER = "<no slice id in provisioning context>";
+
     private Promise<Publisher> provisionEphemeral(TopicConfig config, ProvisioningContext context) {
         var topicAddress = resolveTopicAddress(config, context);
+        var publisherSlice = context.extension(String.class).or(UNSCOPED_PUBLISHER);
 
         return context.extension(TopicSubscriptionRegistry.class)
                       .flatMap(registry -> context.extension(SliceInvoker.class)
-                                                  .map(invoker -> (Publisher) new TopicPublisher<>(topicAddress,
+                                                  .map(invoker -> (Publisher) new TopicPublisher<>(config.topicName(),
+                                                                                                   topicAddress,
+                                                                                                   publisherSlice,
                                                                                                    registry,
                                                                                                    invoker)))
                       .async();

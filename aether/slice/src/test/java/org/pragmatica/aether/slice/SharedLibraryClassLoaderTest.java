@@ -46,7 +46,7 @@ class SharedLibraryClassLoaderTest {
         var version = Version.version("1.0.0").unwrap();
         var dummyUrl = new URL("file:///dummy.jar");
 
-        loader.addArtifact("org.example", "my-lib", version, dummyUrl);
+        loader.addArtifact("org.example", "my-lib", version, dummyUrl, "test-slice");
 
         assertThat(loader.isLoaded("org.example", "my-lib")).isTrue();
         var loadedVersion = loader.getLoadedVersion("org.example", "my-lib");
@@ -60,11 +60,65 @@ class SharedLibraryClassLoaderTest {
         var version2 = Version.version("2.0.0").unwrap();
         var dummyUrl = new URL("file:///dummy.jar");
 
-        loader.addArtifact("org.example", "my-lib", version1, dummyUrl);
-        loader.addArtifact("org.example", "my-lib", version2, dummyUrl);
+        loader.addArtifact("org.example", "my-lib", version1, dummyUrl, "test-slice");
+        loader.addArtifact("org.example", "my-lib", version2, dummyUrl, "test-slice");
 
         // First version wins
         assertThat(loader.getLoadedVersion("org.example", "my-lib").unwrap()).isEqualTo(version1);
+    }
+
+    /// #1184 — the held version still wins, but the caller is told so, with both requesters named.
+    /// Before #1184 this returned success after a WARN, which is how an `[infra]` version conflict
+    /// inside the check-to-add window became a silent downgrade.
+    @Test
+    void addArtifact_refusesADifferentVersion_namingBothVersionsAndRequesters() throws Exception {
+        var version1 = Version.version("1.0.0").unwrap();
+        var version2 = Version.version("2.0.0").unwrap();
+
+        loader.addArtifact("org.example", "my-lib", version1, new URL("file:///lib-1.0.0.jar"), "slice-a");
+        var refused = loader.addArtifact("org.example", "my-lib", version2, new URL("file:///lib-2.0.0.jar"), "slice-b");
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(SliceLoadingFailure.Fatal.SharedLoaderVersionConflict.class);
+            assertThat(cause.message()).contains("slice slice-b requires org.example:my-lib:2.0.0 but org.example:my-lib:1.0.0 is already loaded by slice-a");
+        });
+        assertThat(loader.getLoadedVersion("org.example", "my-lib").unwrap()).isEqualTo(version1);
+        assertThat(loader.loadedBy("org.example", "my-lib").unwrap()).isEqualTo("slice-a");
+        assertThat(loader.getURLs()).containsExactly(new URL("file:///lib-1.0.0.jar"));
+    }
+
+    /// M2 (rev1416): the guard's equality includes the qualifier — `1.0.0-SNAPSHOT` is not `1.0.0`.
+    @Test
+    void addArtifact_refusesTheSameBaseVersionWithADifferentQualifier() throws Exception {
+        loader.addArtifact("org.example", "my-lib", Version.version("1.0.0").unwrap(), new URL("file:///lib-1.0.0.jar"), "slice-a");
+        var refused = loader.addArtifact("org.example", "my-lib", Version.version("1.0.0-SNAPSHOT").unwrap(), new URL("file:///lib-1.0.0-SNAPSHOT.jar"), "slice-b");
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause.message()).contains("requires org.example:my-lib:1.0.0-SNAPSHOT but org.example:my-lib:1.0.0 is already loaded by slice-a"));
+        assertThat(loader.getURLs()).containsExactly(new URL("file:///lib-1.0.0.jar"));
+    }
+
+    @Test
+    void addArtifact_acceptsTheSameVersionAgain_asANoOp() throws Exception {
+        var version = Version.version("1.0.0").unwrap();
+
+        loader.addArtifact("org.example", "my-lib", version, new URL("file:///lib-1.0.0.jar"), "slice-a");
+        var again = loader.addArtifact("org.example", "my-lib", version, new URL("file:///lib-1.0.0-copy.jar"), "slice-b");
+
+        assertThat(again.isSuccess()).isTrue();
+        assertThat(loader.loadedBy("org.example", "my-lib").unwrap()).isEqualTo("slice-a");
+        assertThat(loader.getURLs()).containsExactly(new URL("file:///lib-1.0.0.jar"));
+    }
+
+    @Test
+    void registerRuntimeProvided_recordsTheFirstRequesterOnly() {
+        var version = Version.version("1.0.0").unwrap();
+
+        loader.registerRuntimeProvided("org.example", "my-lib", version, "slice-a");
+        loader.registerRuntimeProvided("org.example", "my-lib", version, "slice-b");
+
+        assertThat(loader.loadedBy("org.example", "my-lib").unwrap()).isEqualTo("slice-a");
     }
 
     @Test
@@ -80,7 +134,7 @@ class SharedLibraryClassLoaderTest {
     void checkCompatibility_returns_compatible_when_pattern_matches() throws Exception {
         var version = Version.version("1.5.0").unwrap();
         var dummyUrl = new URL("file:///dummy.jar");
-        loader.addArtifact("org.example", "my-lib", version, dummyUrl);
+        loader.addArtifact("org.example", "my-lib", version, dummyUrl, "test-slice");
 
         var dependency = ArtifactDependency.artifactDependency("org.example:my-lib:^1.0.0").unwrap();
         var result = loader.checkCompatibility(dependency);
@@ -93,7 +147,7 @@ class SharedLibraryClassLoaderTest {
     void checkCompatibility_returns_conflict_when_pattern_does_not_match() throws Exception {
         var version = Version.version("1.0.0").unwrap();
         var dummyUrl = new URL("file:///dummy.jar");
-        loader.addArtifact("org.example", "my-lib", version, dummyUrl);
+        loader.addArtifact("org.example", "my-lib", version, dummyUrl, "test-slice");
 
         var dependency = ArtifactDependency.artifactDependency("org.example:my-lib:^2.0.0").unwrap();
         var result = loader.checkCompatibility(dependency);
@@ -106,7 +160,7 @@ class SharedLibraryClassLoaderTest {
     void checkCompatibility_with_individual_parameters() throws Exception {
         var version = Version.version("1.5.0").unwrap();
         var dummyUrl = new URL("file:///dummy.jar");
-        loader.addArtifact("org.example", "my-lib", version, dummyUrl);
+        loader.addArtifact("org.example", "my-lib", version, dummyUrl, "test-slice");
 
         var pattern = VersionPattern.parse("^1.0.0").unwrap();
         var result = loader.checkCompatibility("org.example", "my-lib", pattern);
@@ -118,9 +172,9 @@ class SharedLibraryClassLoaderTest {
     @Test
     void getLoadedArtifacts_returns_all_registered_artifacts() throws Exception {
         var dummyUrl = new URL("file:///dummy.jar");
-        loader.addArtifact("org.example", "lib1", Version.version("1.0.0").unwrap(), dummyUrl);
-        loader.addArtifact("org.example", "lib2", Version.version("2.0.0").unwrap(), dummyUrl);
-        loader.addArtifact("com.other", "lib3", Version.version("3.0.0").unwrap(), dummyUrl);
+        loader.addArtifact("org.example", "lib1", Version.version("1.0.0").unwrap(), dummyUrl, "test-slice");
+        loader.addArtifact("org.example", "lib2", Version.version("2.0.0").unwrap(), dummyUrl, "test-slice");
+        loader.addArtifact("com.other", "lib3", Version.version("3.0.0").unwrap(), dummyUrl, "test-slice");
 
         var artifacts = loader.getLoadedArtifacts();
 
@@ -133,7 +187,7 @@ class SharedLibraryClassLoaderTest {
     @Test
     void getLoadedArtifacts_returns_immutable_copy() throws Exception {
         var dummyUrl = new URL("file:///dummy.jar");
-        loader.addArtifact("org.example", "lib1", Version.version("1.0.0").unwrap(), dummyUrl);
+        loader.addArtifact("org.example", "lib1", Version.version("1.0.0").unwrap(), dummyUrl, "test-slice");
 
         var artifacts = loader.getLoadedArtifacts();
 
@@ -147,7 +201,7 @@ class SharedLibraryClassLoaderTest {
     @Test
     void close_clears_loaded_artifacts() throws Exception {
         var dummyUrl = new URL("file:///dummy.jar");
-        loader.addArtifact("org.example", "lib1", Version.version("1.0.0").unwrap(), dummyUrl);
+        loader.addArtifact("org.example", "lib1", Version.version("1.0.0").unwrap(), dummyUrl, "test-slice");
 
         assertThat(loader.getLoadedArtifacts()).isNotEmpty();
 

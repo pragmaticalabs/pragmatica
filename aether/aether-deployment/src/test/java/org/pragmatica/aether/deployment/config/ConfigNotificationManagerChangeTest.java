@@ -87,12 +87,12 @@ class ConfigNotificationManagerChangeTest {
         @Override
         public org.pragmatica.lang.Option<String> getString(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getString(section, key); }
         @Override
-        public org.pragmatica.lang.Option<Integer> getInt(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getInt(section, key); }
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Integer>> getInt(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getInt(section, key); }
         @Override
-        public org.pragmatica.lang.Option<Long> getLong(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getLong(section, key); }
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Long>> getLong(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getLong(section, key); }
         @Override
-        public org.pragmatica.lang.Option<Double> getDouble(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getDouble(section, key); }
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Double>> getDouble(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getDouble(section, key); }
         @Override
-        public org.pragmatica.lang.Option<Boolean> getBoolean(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getBoolean(section, key); }
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Boolean>> getBoolean(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getBoolean(section, key); }
     }
 }

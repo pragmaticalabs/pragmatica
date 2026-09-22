@@ -3707,9 +3707,17 @@ seed_cluster_config() {
         if [ -n "$toml_max" ] && [ -n "$stored_max" ] \
            && [ "$stored_max" -lt "$toml_max" ] 2>/dev/null; then
             log_info "Reconciling cluster config: stored coreMax=${stored_max} < TOML max=${toml_max} (configVersion=${stored_version:-?})"
+            # #1086 (rev1412 NIT-5): never substitute 0 for an unreadable configVersion. Against a
+            # stored config the server refuses 0 as an unfenced overwrite (#289), so the fallback
+            # could only ever hide WHY the reconcile failed. The 200 body that yielded coreMax
+            # carries configVersion in the same record; an empty read here is a parser defect.
+            if [ -z "$stored_version" ]; then
+                log_warn "Cluster config reconcile NOT attempted: coreMax=${stored_max} was read but configVersion was not (body: $(printf '%s' "$body" | head -c 300))"
+                return 1
+            fi
             local escaped_toml json_body
             escaped_toml=$(escape_json "$toml_content")
-            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version:-0}}"
+            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version}}"
             local apply_out
             apply_out=$(leader_api_post "/api/v1/cluster/config" "$json_body" 2>&1) || true
             # Surface VersionConflict / ImmutableFieldChange rather than masking them:
@@ -4248,10 +4256,24 @@ scale_cluster() {
     # already works for docker/remote.
     local scale_ep
     scale_ep=$(_resolve_live_endpoint)
+    # #1086: `expectedVersion:0` is no longer a bypass on the scale route — against a populated
+    # config the server refuses it with 409 UnfencedOverwrite, the same #289 fence apply-config has.
+    # Read the committed configVersion and fence with it (what `aether cluster scale` does). An
+    # unreadable version is a failure here, never a silent 0: a 0 would now be refused anyway, and
+    # substituting it would hide WHY the scale did not happen behind the fence's message.
+    local stored_version
+    stored_version=$(curl -sk -m 30 -H "X-API-Key: ${API_KEY}" "${scale_ep}/api/v1/cluster/config" 2>/dev/null \
+        | grep -oE '"configVersion"[[:space:]]*:[[:space:]]*[0-9]+' \
+        | head -1 | grep -oE '[0-9]+$')
+    if [ -z "$stored_version" ]; then
+        rm -f "$body_file"
+        log_warn "scale_cluster: could not read configVersion from GET ${scale_ep}/api/v1/cluster/config — the cluster was NOT rescaled (a scale needs the committed version to fence with, #1086)"
+        return 1
+    fi
     url="${scale_ep}/api/v1/cluster/scale"
     http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
                       -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":0}" "$url")
+                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":${stored_version}}" "$url")
     rc=$?
     local body
     body=$(head -c 500 "$body_file" 2>/dev/null)

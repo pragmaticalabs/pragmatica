@@ -757,10 +757,14 @@ public class AetherCli implements Runnable {
         return formatErrorResponse(response);
     }
 
+    /// A non-2xx is an error whatever its body says. The body is passed through only when it is
+    /// itself an error envelope or a ProblemDetail (so the server's own detail reaches the reader);
+    /// any other body — a gateway's `{"message":"…"}`, HTML, nothing — is wrapped with the status
+    /// (#1033 review: a `500 {"message":"boom"}` used to render as a document, exit 0).
     private static String formatErrorResponse(HttpResult<String> response) {
         var body = response.body();
 
-        if (body != null && body.startsWith("{")) {
+        if (body != null && OutputFormatter.isErrorResponse(body)) {
             return body;
         }
 

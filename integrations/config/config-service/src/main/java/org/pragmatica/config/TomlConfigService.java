@@ -18,6 +18,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.parse.TimeSpan;
 
@@ -86,18 +87,22 @@ public final class TomlConfigService implements ConfigService {
         return document.getString(parts.section(), parts.key());
     }
 
+    // #1098: parsed from the raw string rather than through TomlDocument's own typed getters, whose
+    // "empty if not found or not an integer" still conflates malformed with absent.
     @Override
-    public Option<Integer> getInt(String key) {
-        var parts = splitKey(key);
-
-        return document.getInt(parts.section(), parts.key());
+    public Result<Option<Integer>> getInt(String key) {
+        return getString(key).fold(() -> success(none()),
+                                   raw -> Number.parseInt(raw)
+                                                .map(Option::some)
+                                                .mapError(_ -> ConfigError.typeMismatch(key, "integer", raw)));
     }
 
     @Override
-    public Option<Boolean> getBoolean(String key) {
-        var parts = splitKey(key);
-
-        return document.getBoolean(parts.section(), parts.key());
+    public Result<Option<Boolean>> getBoolean(String key) {
+        return getString(key).fold(() -> success(none()),
+                                   raw -> ConfigSource.parseBoolean(raw)
+                                                      .map(Option::some)
+                                                      .mapError(_ -> ConfigError.typeMismatch(key, "boolean", raw)));
     }
 
     private <T> Result<T> bindToClass(String section, Class<T> configClass) {

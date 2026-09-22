@@ -678,9 +678,13 @@ public interface AetherNode extends ManageableNode {
         return Result.success(Base64.getEncoder().encodeToString(snapshot));
     }
 
-    private static Result<byte[]> base64ToSnapshot(String encoded) {
+    /// Git-backed persistence prepends its phase header before invoking the snapshot decoder.
+    /// Remove exactly that envelope; malformed headers and payloads remain typed decode failures.
+    static Result<byte[]> base64ToSnapshot(String encoded) {
+        var payload = encoded.replaceFirst("^# Phase: [0-9]+\\R", "").trim();
+
         return Result.lift(Causes::fromThrowable,
-                           () -> Base64.getDecoder().decode(encoded.trim()));
+                           () -> Base64.getDecoder().decode(payload));
     }
 
     /// NTT reconcile fan-out (membership v2). Fired once per stable presence-sensor membership

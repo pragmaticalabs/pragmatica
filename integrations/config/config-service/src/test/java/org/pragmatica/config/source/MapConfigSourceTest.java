@@ -33,17 +33,20 @@ class MapConfigSourceTest {
 
         var result = source.getInt("port");
 
-        assertThat(result.isPresent()).isTrue();
-        assertThat(result.unwrap()).isEqualTo(8080);
+        assertThat(result.unwrap().isPresent()).isTrue();
+        assertThat(result.unwrap().unwrap()).isEqualTo(8080);
     }
 
+    /// #1098: a present, unparseable value is a refusal naming the key and the value — before
+    /// #1098 this test asserted `returnsEmpty`, i.e. it specified the defect.
     @Test
-    void getInt_returnsEmpty_whenNotInteger() {
+    void getInt_failsNamingKeyAndValue_whenNotInteger() {
         var source = MapConfigSource.mapConfigSource("test", Map.of("port", "not-a-number")).unwrap();
 
         var result = source.getInt("port");
 
-        assertThat(result.isEmpty()).isTrue();
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("port").contains("not-a-number"));
     }
 
     @Test
@@ -52,8 +55,8 @@ class MapConfigSourceTest {
 
         var result = source.getBoolean("enabled");
 
-        assertThat(result.isPresent()).isTrue();
-        assertThat(result.unwrap()).isTrue();
+        assertThat(result.unwrap().isPresent()).isTrue();
+        assertThat(result.unwrap().unwrap()).isTrue();
     }
 
     @Test
@@ -62,17 +65,18 @@ class MapConfigSourceTest {
 
         var result = source.getBoolean("enabled");
 
-        assertThat(result.isPresent()).isTrue();
-        assertThat(result.unwrap()).isFalse();
+        assertThat(result.unwrap().isPresent()).isTrue();
+        assertThat(result.unwrap().unwrap()).isFalse();
     }
 
     @Test
-    void getBoolean_returnsEmpty_whenNotBoolean() {
+    void getBoolean_failsNamingKeyAndValue_whenNotBoolean() {
         var source = MapConfigSource.mapConfigSource("test", Map.of("enabled", "maybe")).unwrap();
 
         var result = source.getBoolean("enabled");
 
-        assertThat(result.isEmpty()).isTrue();
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("enabled").contains("maybe"));
     }
 
     @Test

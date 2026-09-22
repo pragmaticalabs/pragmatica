@@ -298,13 +298,17 @@ public interface DependencyResolver {
                                                                                SliceLoadingContext loadingContext,
                                                                                Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                                Set<String> resolutionPath) {
+        var requester = manifest.artifact().asString();
+
         return SharedDependencyLoader.processSharedDependencies(depFile.shared(),
                                                                 sharedLibraryLoader,
                                                                 repository,
-                                                                location.url())
+                                                                location.url(),
+                                                                requester)
                                      .flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
                                                                                                               sharedLibraryLoader,
-                                                                                                              repository)
+                                                                                                              repository,
+                                                                                                              requester)
                                                                                     .map(_ -> sharedResult))
                                      .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
                                                                                                   sharedResult,
@@ -535,13 +539,17 @@ public interface DependencyResolver {
                                                             SharedLibraryClassLoader sharedLibraryLoader,
                                                             SliceInvokerFacade invokerFacade,
                                                             Set<String> resolutionPath) {
+        var requester = manifest.artifact().asString();
+
         return SharedDependencyLoader.processSharedDependencies(depFile.shared(),
                                                                 sharedLibraryLoader,
                                                                 repository,
-                                                                location.url())
+                                                                location.url(),
+                                                                requester)
                                      .flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
                                                                                                               sharedLibraryLoader,
-                                                                                                              repository)
+                                                                                                              repository,
+                                                                                                              requester)
                                                                                     .map(_ -> sharedResult))
                                      .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
                                                                                                   sharedResult,

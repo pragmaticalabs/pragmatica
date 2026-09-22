@@ -3,12 +3,14 @@ package org.pragmatica.config;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.none;
-import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -20,6 +22,8 @@ import static org.pragmatica.lang.Result.success;
 /// Implementations may load from various sources: environment variables,
 /// system properties, TOML files, JSON files, or in-memory maps.
 public interface ConfigSource {
+    Fn1<Cause, String> NOT_A_BOOLEAN = Causes.forOneValue("Not a boolean: %s");
+
     /// Get a string value from the configuration.
     ///
     /// @param key Dot-separated key path (e.g., "database.host")
@@ -29,33 +33,59 @@ public interface ConfigSource {
     /// Get an integer value from the configuration.
     ///
     /// @param key Dot-separated key path
-    /// @return Option containing the value if present and parseable as integer
-    default Option<Integer> getInt(String key) {
-        return getString(key).flatMap(ConfigSource::safeParseInteger);
+    /// @return `Success(None)` when the key is absent, `Success(Some)` when present and parseable,
+    ///         or a [ConfigError.TypeMismatch] naming the key and the raw value when present but not
+    ///         an integer (#1098 — a malformed value must never read as "not configured")
+    default Result<Option<Integer>> getInt(String key) {
+        return parseOptional(key, "integer", Number::parseInt);
     }
 
     /// Get a long value from the configuration.
     ///
     /// @param key Dot-separated key path
-    /// @return Option containing the value if present and parseable as long
-    default Option<Long> getLong(String key) {
-        return getString(key).flatMap(ConfigSource::safeParseLong);
+    /// @return as [#getInt]: absent → `Success(None)`, malformed → [ConfigError.TypeMismatch]
+    default Result<Option<Long>> getLong(String key) {
+        return parseOptional(key, "long", Number::parseLong);
     }
 
-    /// Get a boolean value from the configuration.
+    /// Get a boolean value from the configuration. Only `true`/`false` (any case) are booleans.
     ///
     /// @param key Dot-separated key path
-    /// @return Option containing the value if present and parseable as boolean
-    default Option<Boolean> getBoolean(String key) {
-        return getString(key).flatMap(ConfigSource::safeParseBoolean);
+    /// @return as [#getInt]: absent → `Success(None)`, malformed → [ConfigError.TypeMismatch]
+    default Result<Option<Boolean>> getBoolean(String key) {
+        return parseOptional(key, "boolean", ConfigSource::parseBoolean);
     }
 
     /// Get a double value from the configuration.
     ///
     /// @param key Dot-separated key path
-    /// @return Option containing the value if present and parseable as double
-    default Option<Double> getDouble(String key) {
-        return getString(key).flatMap(ConfigSource::safeParseDouble);
+    /// @return as [#getInt]: absent → `Success(None)`, malformed → [ConfigError.TypeMismatch]
+    default Result<Option<Double>> getDouble(String key) {
+        return parseOptional(key, "double", Number::parseDouble);
+    }
+
+    /// The one parse discipline every typed reader shares: the raw string is read, and its parse
+    /// failure is replaced by a cause that names the key and the value — `Number.parseX`'s own
+    /// cause is a wrapped `NumberFormatException` with the key nowhere in it.
+    private <T> Result<Option<T>> parseOptional(String key, String expected, Fn1<Result<T>, String> parser) {
+        return getString(key).fold(() -> success(none()),
+                                   raw -> parser.apply(raw)
+                                                .map(Option::some)
+                                                .mapError(_ -> ConfigError.typeMismatch(key, expected, raw)));
+    }
+
+    /// Strict boolean parse: `Boolean.parseBoolean` reads every non-`true` string as `false`, which
+    /// turns `enabled = "yes"` into a silent `false`. Shared with [ProviderBasedConfigService].
+    static Result<Boolean> parseBoolean(String value) {
+        if ("true".equalsIgnoreCase(value)) {
+            return success(true);
+        }
+
+        if ("false".equalsIgnoreCase(value)) {
+            return success(false);
+        }
+
+        return NOT_A_BOOLEAN.apply(value).result();
     }
 
     /// Get all keys available in this source.
@@ -95,29 +125,5 @@ public interface ConfigSource {
     /// @return Result indicating success or failure
     default Result<ConfigSource> reload() {
         return success(this);
-    }
-
-    private static Option<Integer> safeParseInteger(String value) {
-        return Number.parseInt(value).option();
-    }
-
-    private static Option<Long> safeParseLong(String value) {
-        return Number.parseLong(value).option();
-    }
-
-    private static Option<Boolean> safeParseBoolean(String value) {
-        if ("true".equalsIgnoreCase(value)) {
-            return some(true);
-        }
-
-        if ("false".equalsIgnoreCase(value)) {
-            return some(false);
-        }
-
-        return none();
-    }
-
-    private static Option<Double> safeParseDouble(String value) {
-        return Number.parseDouble(value).option();
     }
 }

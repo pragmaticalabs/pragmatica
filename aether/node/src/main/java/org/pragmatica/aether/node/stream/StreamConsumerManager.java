@@ -97,6 +97,12 @@ import org.slf4j.LoggerFactory;
 /// the BOUNDED reassignment overlap below. This is NOT effectively-once, and it is NOT a guarantee of a
 /// single deliverer at every instant.
 ///
+/// Replay after an ungraceful move is bounded by that checkpoint cadence, and the cadence is
+/// DELIVERY-driven, not timer-driven: `ConsumerRuntimeState.checkpointIfNeeded` runs only from
+/// `advanceCursor`, so the time half is evaluated when the NEXT delivery lands. A lone trailing event
+/// stays un-checkpointed until then, and a loser that detaches without a final flush (below) hands it to
+/// the successor again (#1385).
+///
 /// **Assignment fencing (#1271).** Which node delivers a `(group, partition)` is decided by a COMMITTED
 /// record ([ConsumerAssignmentWriter], leader-only), not by each node's own view:
 ///   - **Attach** — a node attaches only where its locally applied committed record names it, under the
