@@ -9,8 +9,11 @@ A kill is credited from a FAILING TEST, not from a failing build, so the suite m
 the first mutation: without that control any pre-existing red inside the target selector is scored
 as a kill, and the score is highest exactly when the module is most broken. The baseline run also
 asserts that every target class actually reported, because a -Dtest selector matching nothing exits
-zero and would otherwise read as a clean baseline.
+zero and would otherwise read as a clean baseline. A target may be a surefire wildcard, which is
+matched as a glob against the classes that reported - a guard that refused a legitimate wildcard row
+would mask exactly the NOT VERIFIED result the harness exists to produce.
 """
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -83,7 +86,8 @@ def run(name, test, timeout):
 baseline_command, baseline, baseline_reports = run('baseline', 'KVStore*Test', 300)
 baseline_failures = count_failures(baseline_reports.values())
 baseline_cases = sum(1 for suite in baseline_reports.values() for _ in suite.iter('testcase'))
-missing = sorted({test.split('#')[0] for _, _, _, test in mutations} - set(baseline_reports))
+missing = sorted(target for target in {test.split('#')[0] for _, _, _, test in mutations}
+                 if not any(fnmatch.fnmatch(reported, target) for reported in baseline_reports))
 if baseline.returncode != 0 or baseline_failures or missing or not baseline_cases:
     sys.exit(f'Refusing to score mutations: the baseline is not a green run of every target class '
              f'(exit={baseline.returncode}, failing tests={baseline_failures}, tests={baseline_cases}, '
