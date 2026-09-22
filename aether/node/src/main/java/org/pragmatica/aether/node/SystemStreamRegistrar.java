@@ -59,7 +59,6 @@ public final class SystemStreamRegistrar {
     private static final Logger LOG = LoggerFactory.getLogger(SystemStreamRegistrar.class);
     static final TimeSpan INITIAL_BACKOFF = TimeSpan.timeSpan(500L).millis();
     static final TimeSpan MAX_BACKOFF = TimeSpan.timeSpan(30L).seconds();
-
     /// #1419 — the first pass is SCHEDULED at zero delay, never run inline on the caller's thread.
     ///
     /// `onLeaderChange` is a `LeaderChange` route, and Rabia delivers that notification from
