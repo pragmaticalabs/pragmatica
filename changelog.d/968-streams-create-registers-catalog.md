@@ -19,6 +19,16 @@
   The seam these pins use is the registry's `ClusterNode`, whose `apply` can fail; a registry that
   registers synchronously (`StreamNamespacesService.inMemory()`, used by #1229's tests) cannot see the
   drop.
+- **`SystemStreamRegistrar` no longer runs its first pass on the thread that delivers the
+  `LeaderChange`** (#1419). Rabia delivers that notification from `RabiaEngine.commitChanges` on its
+  single apply thread, and both registrar legs await a `cluster.apply` that only that thread can
+  commit — so an inline first pass waited for something it was itself preventing, burned the full
+  await bound and froze the node's consensus apply loop on every leader gain. The first pass is now
+  handed to the same scheduler seam every retry pass has always used, at zero delay: it still starts
+  immediately, on a different thread. This removes **two** awaits from the consensus thread — the
+  catalog commit added above and `StreamPartitionManager`'s pre-existing 10 s `StreamConfigKey`
+  commit, which stalls `release-1.0.0-rc4` today
+  `[verified: aether/node/src/test/java/org/pragmatica/aether/node/SystemStreamRegistrarTest.java — OffTheNotificationThread, one test per leg]`.
 - **The contract of `POST /api/v1/streams`, per outcome** (the HTTP status is the handler's):
 
   | Outcome | Status | Body |

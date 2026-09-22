@@ -59,6 +59,9 @@ class SystemStreamRegistrarCatalogCommitTest {
         var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(), bootstrap::bootstrap, scheduler);
 
         registrar.onLeaderChange(gained());
+        // #1419: leader-gain SCHEDULES the first pass rather than running it on the notification
+        // thread, so the real leg runs when the pass is fired.
+        scheduler.fireNext();
 
         assertThat(registrar.isComplete()).as("the bootstrap leg must not latch DONE on a refused catalog put").isFalse();
         assertThat(scheduler.hasPending()).as("a retry must be scheduled for the refused leg").isTrue();
