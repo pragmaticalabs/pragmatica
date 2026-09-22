@@ -33,10 +33,30 @@
   ACTIVE and not for a fresh process whose live store is empty. They now assert that the RESPONDERS' snapshot is not
   installed and self's is — which still reddens if the adoption floor is deleted, the mutation the originals were
   written against.
-- What this does NOT earn, stated so a sweep returns it beside the claim: `GitBackedPersistence` does not create
-  `[backup] path`, so a path that does not exist (the shipped image creates `/data`, not `/data/backups`) fails every
-  save at ERROR while the node runs on — provision the directory. [unverified: not pinned; the harness pre-creates
-  per-node dirs, as #1341's `withConsensusBaseDir` requires] The shipped
+- **The re-persist that follows a restore was the one `save` whose failure nobody heard.**
+  `RabiaEngine.applyRestoredState` discarded its `Result<Unit>` outright, while the other three save sites
+  (pause `:543`, reconfigure `:624`, stop `:654`) all attach `.onFailure(log::error)` and `GitBackedPersistence`
+  carries no logger of its own — so the path was silent end to end while the next line announced `restored state
+  from persistence` at INFO regardless. That save is what makes the restored state durable for the NEXT restart:
+  when it failed the node came up ACTIVE and correct in memory, stale on disk, and reproduced this very ticket one
+  restart later with no diagnostic anywhere. It now logs at ERROR naming the consequence rather than only the
+  cause. [verified: `RabiaRestoredStateSaveFailureLogTest#restoredStateSaveFails_logsAtErrorNamingTheConsequence`
+  — 1 red of 810 when the `.onFailure` is dropped again; its `#restoredStateSaveSucceeds_logsNoFailure` control is
+  green on both arms, which is what separates "nothing to report" from "the appender never worked"]
+- **`GitBackedPersistence` now creates `[backup] path`.** A configured directory that did not exist failed EVERY
+  save while the node ran on as though persistence were switched off — so a cluster configured for durability kept
+  nothing at all and came back empty, this ticket's symptom by another route. `writeTomlFile` creates it before the
+  first write, ahead of `ensureGitInitialized`. This retires limitation (c) as originally written in this PR.
+  [verified: `GitBackedPersistenceTest#save_backupDirectoryDoesNotExist_createsItAndWritesTheState` — 1 red of 810
+  when the directory creation is removed]
+- **The own-snapshot guard's EQUALITY boundary is now pinned.** The test is `persisted > live`, never `>=`:
+  `reconfigure` persists the live, NON-EMPTY state-machine snapshot under `Phase.ZERO` and only then calls
+  `stateMachine.reset()`, so a node's disk can hold a non-empty snapshot whose phase equals the live phase, and at
+  equality installing the disk copy would resurrect the previous membership's state over a slate cleared on
+  purpose. Changing `> 0` to `>= 0` previously left all 806 tests green. [verified:
+  `RabiaSyncAdoptionOwnSnapshotTest#resyncFromActive_ownDiskSnapshotAtTheLivePhase_isNotInstalled` — 1 red of 810
+  under exactly that mutation, `expected: null but was: [111, 119, 110]`]
+- What this does NOT earn, stated so a sweep returns it beside the claim: the shipped
   `aether/docker/docker-compose.yml` and container `aether.toml` carry no `[backup]` section and mount no volume, so
   a deployment made from them still runs `RabiaPersistence.inMemory()` and loses every KV record — every minted key
   and every revocation — on a full restart; the derived `bootstrap-admin` key is re-registered by the fresh leader
