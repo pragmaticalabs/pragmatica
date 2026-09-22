@@ -5325,11 +5325,14 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 
 **Cross-artifact group collision (#545).** `SubscriptionKey`/`ConsumerKey` are `(stream, partition, consumer group)` — deliberately WITHOUT the artifact, because that is the correct identity for "which physical consumer serializes reads for this group." Two DIFFERENT artifacts declaring the same `(stream, consumer group)` therefore collide at that key: sharing one group across different artifacts is not supported in this release, and neither declaration consumes until the collision is resolved (rename the group, or remove one of the conflicting declarations). `diagnostic` on BOTH colliding entries names every artifact involved, the stream, and the group — this endpoint is the only place that names it. Two VERSIONS of the SAME artifact sharing a group is NOT this case — that is the intended blue-green upgrade collapse, and consumption continues uninterrupted through it. **`GET /api/v1/blueprints/status/{id}` carries no hint of this collision**: a slice can be fully `DEPLOYED` while its declarative consumer sits idle on one, since the collision is a stream-registration fact, not a slice-instance fact.
 
+**Assigned here, consumable nowhere (#1389).** A node can be the COMMITTED assignee for partitions while the declaring slice is not loaded on it. Nothing there can consume them, so the group's only observable used to be growing lag. Two things now report it. `attachSkippedNoLocalSliceCount` counts entries into that state, and `diagnostic` on the affected consumer names the group, stream, partitions, this node and the missing slice; the same text is logged once at `WARN` per transition. It is a `WARN` and not an `ERROR` because the usual cause is a descale that the leader repairs: every node-side unload path that transitions the deployment away from `ACTIVE` (`handleUnloading`, `performDeactivation`) makes this node stop being a candidate, and the leader rewrites the record on its next pass. The report is deliberately suppressed for that in-flight case — it fires only while this node is STILL the computed assignee, which is the state no leader pass will repair. **Operator recovery:** confirm the slice's deployment state on this node; if the deployment map still says `ACTIVE` while nothing is loaded — reachable through `handleReactivationFailure` and through the quorum-loss `suspendSlice` path, neither of which transitions the deployment — redeploy or unload the slice here so the leader's candidate set drops this node. A count that keeps rising while `attachedSubscriptions` stays flat is the durable-group liveness gap [verified: `StreamConsumerManagerTest$ParkedAssignment`; `[unverified: not reproduced on a live cluster]`].
+
 **Response:**
 ```json
 {
   "attachedSubscriptions": 2,
   "cursorCommitFailureCount": 0,
+  "attachSkippedNoLocalSliceCount": 0,
   "consumers": [
     {
       "stream": "orders",
@@ -5365,6 +5368,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 |-------|-------------|
 | `attachedSubscriptions` | Subscriptions actually attached ON THIS NODE — the number of partitions assigned here, not the stream's partition count |
 | `cursorCommitFailureCount` | Node-wide count of cursor commits — final flush at detach, or periodic checkpoint — that failed or did not settle within their bound (#654). Monotonic for the life of the node's runtime; keeps counting a failure after the consumer that produced it detaches |
+| `attachSkippedNoLocalSliceCount` | Node-wide count of times this node was named for partitions it could NOT consume because the declaring slice is not loaded here (#1389). Counted once per declaration entering that state, and once per attach that found the slice gone mid-pass — matching the `WARN` lines one for one, NOT a partition count. Monotonic for the life of the node's runtime |
 | `consumers[].stream` | Stream the consumer is declared against |
 | `consumers[].configSection` | The `[streams.X]` section in the slice's `resources.toml` |
 | `consumers[].artifact` | Artifact declaring the consumer |

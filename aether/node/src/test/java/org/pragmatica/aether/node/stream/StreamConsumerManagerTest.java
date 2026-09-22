@@ -21,6 +21,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
@@ -38,8 +39,11 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.topic.ContextualEvent;
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.ConsumerFence;
@@ -64,7 +68,19 @@ import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
+
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -1354,11 +1370,24 @@ class StreamConsumerManagerTest {
     }
 
 
-    /// #1389: a node the COMMITTED record names that has no local slice consumes nothing, and the
-    /// leader keeps naming it for as long as the deployment map still says ACTIVE there. That state
-    /// used to be silent — `desiredFor` returned `[]` without a word, and `attachAdmitted` forgot the
-    /// key without one. Every test here captures the manager's own logger, because "logged at WARN"
-    /// is the claim, and a `diagnostic` field alone does not prove a log line exists.
+    /// #1389: a node the COMMITTED record names, whose deployment is still reported ACTIVE here, while no
+    /// slice is loaded to consume with. Nothing there can consume and no leader pass will move it, and
+    /// that state used to be entirely silent — `desiredFor` returned `[]` without a word and
+    /// `attachAdmitted` forgot the key without one.
+    ///
+    /// Every test here captures the manager's OWN logger, because "logged at WARN" is the claim and a
+    /// `diagnostic` field alone does not prove a log line exists; every test also reads
+    /// `attachSkippedNoLocalSliceCount()`, because "and count it" is the other half of the claim and the
+    /// counter is asserted to move in lockstep with the lines.
+    ///
+    /// The fixtures distinguish the two ways a committed record can name a node that cannot consume:
+    ///   - the PERSISTENT park, which is the fault — placement still reports the slice ACTIVE here, so
+    ///     this pass still computes this node as the assignee, and nothing will repair it; and
+    ///   - a REASSIGNMENT IN FLIGHT, which is not — placement no longer reports the slice here, so the
+    ///     pass computes the partition away and the leader's `Put` is already on its way through
+    ///     consensus. `publishAssignments` does not await that `Put`, so in production the record still
+    ///     names the departing node for at least a round; reporting it would fire on every routine
+    ///     descale.
     @Nested
     class ParkedAssignment {
         private static final String LOGGER_NAME = StreamConsumerManager.class.getName();
@@ -1366,32 +1395,32 @@ class StreamConsumerManagerTest {
         private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
 
         private CapturingAppender appender;
-        private org.apache.logging.log4j.core.config.LoggerConfig loggerConfig;
-        private org.apache.logging.log4j.Level originalLevel;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
 
         @BeforeEach
         void captureLog() {
             appender = new CapturingAppender("ParkedAssignmentCapture");
             appender.start();
-            var ctx = (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+            var ctx = (LoggerContext) LogManager.getContext(false);
             var configuration = ctx.getConfiguration();
             var existing = configuration.getLoggerConfig(LOGGER_NAME);
 
             if (LOGGER_NAME.equals(existing.getName())) {
                 loggerConfig = existing;
             } else {
-                loggerConfig = new org.apache.logging.log4j.core.config.LoggerConfig(LOGGER_NAME, org.apache.logging.log4j.Level.INFO, true);
+                loggerConfig = new LoggerConfig(LOGGER_NAME, Level.INFO, true);
                 configuration.addLogger(LOGGER_NAME, loggerConfig);
             }
             originalLevel = loggerConfig.getLevel();
-            loggerConfig.addAppender(appender, org.apache.logging.log4j.Level.INFO, null);
-            loggerConfig.setLevel(org.apache.logging.log4j.Level.INFO);
+            loggerConfig.addAppender(appender, Level.INFO, null);
+            loggerConfig.setLevel(Level.INFO);
             ctx.updateLoggers();
         }
 
-        @org.junit.jupiter.api.AfterEach
+        @AfterEach
         void releaseLog() {
-            var ctx = (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+            var ctx = (LoggerContext) LogManager.getContext(false);
 
             loggerConfig.removeAppender(appender.getName());
             loggerConfig.setLevel(originalLevel);
@@ -1399,16 +1428,19 @@ class StreamConsumerManagerTest {
             appender.stop();
         }
 
-        /// The parked state itself: the committed records name this node for every partition, the
-        /// deployment map still says ACTIVE here, and the invocation handler has no bridge. Nothing can
-        /// consume, and the leader will not move it — so the node must SAY so, naming what an operator
-        /// needs to find it: group, stream, partitions, this node, the missing slice.
+        /// The fault itself. The committed records name this node for every partition; placement still
+        /// reports the slice ACTIVE here, so this node is the only candidate and this pass computes it
+        /// as the assignee for all four; and the invocation handler has no bridge. Nothing can consume,
+        /// nothing will repair it — so the node must SAY so, naming what an operator needs to find it:
+        /// group, stream, partitions, this node, the missing slice.
+        ///
+        /// PEER owns the partitions while not hosting the slice, which is the #535 forwarding shape. On
+        /// the unfixed code the diagnosis then logged "consuming … forwarded to the owner" for a node
+        /// consuming nothing; the last assertion pins that misleading INFO away.
         @Test
         void reconcile_warnsAndReportsTheParkedPartitions_whenCommittedHereButTheSliceIsNotLoadedHere() {
             declareStringConsumer();
-            placement.activeOn(SELF, PEER);
-            // PEER owns: on the unfixed code the diagnosis then logs "consuming … forwarded to the owner"
-            // for a node that consumes nothing — the misleading INFO the last assertion pins away.
+            placement.activeOn(SELF);
             ownership.ownedBy(PEER, 0, 1, 2, 3);
             for (var partition : List.of(0, 1, 2, 3)) {
                 commitAssignment(partition, SELF, EPOCH_1);
@@ -1435,16 +1467,20 @@ class StreamConsumerManagerTest {
                                         .contains("[0, 1, 2, 3]")
                                         .contains(SELF.id())
                                         .contains(ARTIFACT.asString());
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("one entry into the parked state, four partitions — the unit is reports, not partitions")
+                                                                .isEqualTo(1L);
             assertThat(appender.infos()).describedAs("the misleading 'consuming … forwarded' INFO must not fire for a node that consumes nothing")
                                         .noneMatch(line -> line.contains("forwarded to the owner"));
         }
 
         /// Transition-logged like every other diagnosis: a 5-second tick must not repeat the WARN forever,
-        /// and the `diagnostic` field carries it for as long as the state persists.
+        /// the `diagnostic` field carries it for as long as the state persists, and the counter does NOT
+        /// climb with the ticks — it counts entries into the state, which is what makes a rise in it mean
+        /// something an operator can act on.
         @Test
         void reconcile_warnsOnce_whileTheParkedStatePersists() {
             declareStringConsumer();
-            placement.activeOn(SELF, PEER);
+            placement.activeOn(SELF);
             ownership.ownedBySelf(0, 1, 2, 3);
             commitAssignment(0, SELF, EPOCH_1);
             var manager = managerFor(SELF, runtime, ownership, false);
@@ -1454,6 +1490,8 @@ class StreamConsumerManagerTest {
             manager.reconcile();
 
             assertThat(appender.warns()).hasSize(1);
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("three passes, one entry")
+                                                                .isEqualTo(1L);
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.diagnostic().isPresent()).describedAs("the fault stays visible in the status while it persists")
                                                      .isTrue());
@@ -1474,14 +1512,55 @@ class StreamConsumerManagerTest {
             manager.reconcile();
 
             assertThat(appender.warns()).isEmpty();
+            assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.diagnostic()).isEqualTo(Option.none()));
+        }
+
+        /// The DISCRIMINATOR between the fault and a routine descale, and the reason the report is not
+        /// keyed on the committed record alone.
+        ///
+        /// Here the committed record still names this node for every partition — exactly as it does in
+        /// the first test — but placement no longer reports the slice ACTIVE here, so this pass computes
+        /// every partition onto PEER. That is a reassignment already decided and in flight: in
+        /// production the leader's `Put` travels through consensus without being awaited, so the stale
+        /// record outlives the decision by at least a round, and on every ordinary descale. Reporting it
+        /// would make the WARN fire routinely and mean nothing.
+        ///
+        /// The manager is a FOLLOWER (`leader = false`) so that nothing in the test rewrites the record:
+        /// the stale record is held fixed, which is what isolates the computed half of the predicate as
+        /// the thing being tested.
+        @Test
+        void reconcile_doesNotWarn_whenTheStaleRecordNamesThisNodeButThePassComputesItAway() {
+            declareStringConsumer();
+            placement.activeOn(PEER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            for (var partition : List.of(0, 1, 2, 3)) {
+                commitAssignment(partition, SELF, EPOCH_1);
+            }
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+
+            assertThat(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, 0, GROUP))
+                                           .assignee()).describedAs("control: the stale record really does still name this node, so the committed half of the predicate IS satisfied")
+                                                       .isEqualTo(SELF);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.partitionAssignments()).describedAs("control: and this pass really did compute every partition onto PEER")
+                                                     .allSatisfy(assignment -> assertThat(assignment.consumerNode()).isEqualTo(Option.some(PEER))));
+            assertThat(appender.warns()).describedAs("a reassignment in flight is not a fault; captured: %s", appender.all())
+                                        .isEmpty();
+            assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
         }
 
         /// The literal site the ticket cites: the bridge was there when the desired set was computed and
         /// gone by the time `attach` re-read it. `localSlice` is read exactly twice for one committed
         /// partition — once by `desiredFor`, once by `attachAdmitted` — so consecutive stubbing puts the
         /// unload between them. The key is forgotten (the next pass re-evaluates), but not silently.
+        ///
+        /// This one reports UNCONDITIONALLY, unlike the pass-level report above: it is a within-pass race
+        /// on a node the pass itself just computed as the assignee, so there is no in-flight reassignment
+        /// to confuse it with, and it is rare enough that a line per occurrence costs nothing.
         @Test
         void attach_warns_whenTheSliceVanishesBetweenTheDesiredSetAndTheAttach() {
             declareStringConsumer();
@@ -1489,8 +1568,9 @@ class StreamConsumerManagerTest {
             ownership.ownedBySelf(0, 1, 2, 3);
             commitAssignment(0, SELF, EPOCH_1);
             when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())), Option.none());
+            var manager = managerFor(SELF, runtime, ownership, false);
 
-            managerFor(SELF, runtime, ownership, false).reconcile();
+            manager.reconcile();
 
             verify(invocationHandler, times(2)).localSlice(ARTIFACT);
             assertThat(runtime.subscribedPartitions()).describedAs("control: the attach found no bridge and subscribed nothing")
@@ -1502,12 +1582,15 @@ class StreamConsumerManagerTest {
                                                                            .contains("[0]")
                                                                            .contains(SELF.id())
                                                                            .contains(ARTIFACT.asString()));
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("one dropped subscription key, one count")
+                                                                .isEqualTo(1L);
         }
 
         /// Ticket item 2, "state which": the writer RE-ASSIGNS when the instance disappears, it does not
-        /// refuse up front — and "disappears" means the deployment map stops saying ACTIVE, which every
-        /// node-side unload path writes BEFORE it unregisters the bridge. This pins the existing repair
-        /// so the WARN above is honest about being transient in that case.
+        /// refuse up front — and "disappears" means the deployment map stops saying ACTIVE, which
+        /// `handleUnloading` and `performDeactivation` both write BEFORE unregistering the bridge. This
+        /// pins the existing repair, which is what makes the fault report above honest about the descale
+        /// case being someone else's job.
         @Test
         void reconcile_reassignsToARemainingCandidate_whenTheAssigneeLeavesActive() {
             declareStringConsumer();
@@ -1534,38 +1617,34 @@ class StreamConsumerManagerTest {
                 assertThat(record.assignmentTerm()).describedAs("a rewrite, not a first put")
                                                    .isEqualTo(2L);
             }
-            assertThat(appender.warns()).describedAs("no longer committed here, so nothing is parked here")
+            assertThat(appender.warns()).describedAs("the pass computed the partitions away, so nothing is parked here")
                                         .isEmpty();
+            assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
         }
 
-        /// TRIPWIRE for the producer of the M1 stall (#1389, item 3 — awaiting a ruling on the fix):
-        /// `TopicSubscriptionKey` has no node component, so one instance's unload REMOVES the record every
-        /// other instance's durable group is declared from. The group is un-declared cluster-wide, the
-        /// consumer detaches on the next pass, and no diagnosis exists to report it. This test asserts
-        /// that CURRENT behaviour so the moment the key becomes node-scoped or re-asserted it goes red —
-        /// then delete it and enable the inverse: SELF stays attached and its status stays reported.
+        /// TRIPWIRE for the producer of the M1 stall this ticket was filed from (#1389, item 3 — a
+        /// separate defect in a separate subsystem): `TopicSubscriptionKey` is `(address, artifact,
+        /// method)` with NO node component, so every instance writes the same KV entry and ONE instance's
+        /// unload `Remove`s the record every OTHER instance's durable group is declared from. The group is
+        /// un-declared cluster-wide, the consumer detaches on the next pass, and no diagnosis can report
+        /// it — a dropped declaration has no status row to carry one. That is what a 5-minute
+        /// consumed-nowhere window looks like; the parked report above cannot see it and does not claim
+        /// to.
+        ///
+        /// This asserts that CURRENT behaviour so it goes red the moment the key becomes node-scoped or
+        /// re-asserted — then delete it and enable the inverse below.
         @Test
         void tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_untilItem3IsFixed() {
-            var topics = org.pragmatica.aether.endpoint.TopicSubscriptionRegistry.topicSubscriptionRegistry();
-            var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
-            var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, METHOD);
+            var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var key = topicSubscriptionKey();
             var group = DurableGroupIdentity.groupId(ARTIFACT, METHOD);
 
             deploySliceEverywhere();
             ownership.withPartitionCount(1);
             ownership.ownedBySelf(0);
-            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF)), Option.none()));
-            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(PEER)), Option.none()));
-            var manager = StreamConsumerManager.streamConsumerManager(registry,
-                                                                      runtime,
-                                                                      invoker,
-                                                                      invocationHandler,
-                                                                      FrameworkCodecs.frameworkCodecs(),
-                                                                      ownership,
-                                                                      placement,
-                                                                      SELF,
-                                                                      TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
-                                                                      authority(true));
+            subscribeOn(topics, key, SELF);
+            subscribeOn(topics, key, PEER);
+            var manager = topicGroupManager(topics);
 
             manager.reconcile();
             assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("precondition: SELF consumes the durable group's partition")
@@ -1586,33 +1665,26 @@ class StreamConsumerManagerTest {
                                                                 .isEmpty();
             assertThat(appender.warns()).describedAs("TRIPWIRE: and nothing is logged at WARN about it")
                                         .isEmpty();
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("TRIPWIRE: and #1389's counter cannot see it either — the declaration is gone, so no diagnosis is ever computed")
+                                                               .isZero();
         }
 
         /// The inverse of the tripwire above. `@Disabled` here is deliberate and bounded: enabled today it
-        /// would pass VACUOUSLY only if the registry kept the key, which it does not — it would fail, and
-        /// an enabled failing test is noise, not a tripwire. The tripwire is what guarantees it is enabled.
+        /// would not pass vacuously, it would FAIL, because the registry really does drop the key — and an
+        /// enabled failing test is noise, not a tripwire. The tripwire is what guarantees this one gets
+        /// enabled.
         @Test
-        @org.junit.jupiter.api.Disabled("#1389 item 3: enable when TopicSubscriptionKey is node-scoped or re-asserted; the tripwire above goes red at that moment")
+        @Disabled("#1389 item 3: enable when TopicSubscriptionKey is node-scoped or re-asserted; the tripwire above goes red at that moment")
         void descaleOfAnotherInstance_leavesThisNodeAttached() {
-            var topics = org.pragmatica.aether.endpoint.TopicSubscriptionRegistry.topicSubscriptionRegistry();
-            var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
-            var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address, ARTIFACT, METHOD);
+            var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var key = topicSubscriptionKey();
 
             deploySliceEverywhere();
             ownership.withPartitionCount(1);
             ownership.ownedBySelf(0);
-            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF)), Option.none()));
-            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(PEER)), Option.none()));
-            var manager = StreamConsumerManager.streamConsumerManager(registry,
-                                                                      runtime,
-                                                                      invoker,
-                                                                      invocationHandler,
-                                                                      FrameworkCodecs.frameworkCodecs(),
-                                                                      ownership,
-                                                                      placement,
-                                                                      SELF,
-                                                                      TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
-                                                                      authority(true));
+            subscribeOn(topics, key, SELF);
+            subscribeOn(topics, key, PEER);
+            var manager = topicGroupManager(topics);
 
             manager.reconcile();
             topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
@@ -1621,32 +1693,52 @@ class StreamConsumerManagerTest {
             assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).containsExactly(0);
             assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).hasSize(1);
         }
+
+        private static TopicSubscriptionKey topicSubscriptionKey() {
+            return TopicSubscriptionKey.topicSubscriptionKey(ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap(),
+                                                             ARTIFACT,
+                                                             METHOD);
+        }
+
+        private static void subscribeOn(TopicSubscriptionRegistry topics, TopicSubscriptionKey key, NodeId node) {
+            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, TopicSubscriptionValue.topicSubscriptionValue(node)),
+                                                    Option.none()));
+        }
+
+        private StreamConsumerManager topicGroupManager(TopicSubscriptionRegistry topics) {
+            return StreamConsumerManager.streamConsumerManager(registry,
+                                                               runtime,
+                                                               invoker,
+                                                               invocationHandler,
+                                                               FrameworkCodecs.frameworkCodecs(),
+                                                               ownership,
+                                                               placement,
+                                                               SELF,
+                                                               TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
+                                                               authority(true));
+        }
     }
 
     /// Captures the manager's own log lines by level, so a "logged at WARN" claim is checked against a
     /// line rather than inferred from a status field.
-    private static final class CapturingAppender extends org.apache.logging.log4j.core.appender.AbstractAppender {
-        private final List<org.apache.logging.log4j.core.LogEvent> events = new CopyOnWriteArrayList<>();
+    private static final class CapturingAppender extends AbstractAppender {
+        private final List<LogEvent> events = new CopyOnWriteArrayList<>();
 
         private CapturingAppender(String name) {
-            super(name,
-                  (org.apache.logging.log4j.core.Filter) null,
-                  org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLayout(),
-                  true,
-                  org.apache.logging.log4j.core.config.Property.EMPTY_ARRAY);
+            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
         }
 
         @Override
-        public void append(org.apache.logging.log4j.core.LogEvent event) {
+        public void append(LogEvent event) {
             events.add(event.toImmutable());
         }
 
         List<String> warns() {
-            return lines(org.apache.logging.log4j.Level.WARN);
+            return lines(Level.WARN);
         }
 
         List<String> infos() {
-            return lines(org.apache.logging.log4j.Level.INFO);
+            return lines(Level.INFO);
         }
 
         void clear() {
@@ -1659,7 +1751,7 @@ class StreamConsumerManagerTest {
                          .toList();
         }
 
-        private List<String> lines(org.apache.logging.log4j.Level level) {
+        private List<String> lines(Level level) {
             return events.stream()
                          .filter(event -> event.getLevel().equals(level))
                          .map(event -> event.getMessage().getFormattedMessage())

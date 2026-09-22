@@ -832,8 +832,18 @@ public sealed interface ManagementApiResponses {
     /// failed or did not settle within their shutdown bound; see the redelivery contract on
     /// `org.pragmatica.aether.stream.StreamConsumerRuntime#close`. It is not reset by a redeploy or a
     /// reconcile, only by a node restart.
+    ///
+    /// `attachSkippedNoLocalSliceCount` (#1389) is the node-wide count of times this node was named for
+    /// partitions it could not consume because the slice is not loaded here — counted once per entry into
+    /// that state per declaration, and once per attach that found the bridge gone mid-pass, matching the
+    /// WARN lines one for one. It is NOT a partition count. It rises when a durable group is assigned
+    /// here and consumed nowhere; paired with `attachedSubscriptions` staying flat, that is the liveness
+    /// gap, whose recovery is the leader reassigning the partitions once the deployment map stops naming
+    /// this node ACTIVE, or the slice activating here. Same lifetime as `cursorCommitFailureCount`: only
+    /// a node restart resets it.
     record DeclarativeConsumersResponse(int attachedSubscriptions,
                                         long cursorCommitFailureCount,
+                                        long attachSkippedNoLocalSliceCount,
                                         List<DeclarativeConsumerDetail> consumers) {}
 
     /// One declared `[streams.X]` consumer as this node sees it.

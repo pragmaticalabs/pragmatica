@@ -192,6 +192,7 @@ public final class StreamRoutes implements RouteSource {
 
         return new DeclarativeConsumersResponse(nodeSupplier.get().streamConsumerManager().activeSubscriptionCount(),
                                                 nodeSupplier.get().streamConsumerManager().cursorCommitFailureCount(),
+                                                nodeSupplier.get().streamConsumerManager().attachSkippedNoLocalSliceCount(),
                                                 statuses.stream().map(StreamRoutes::toConsumerDetail).toList());
     }
 
