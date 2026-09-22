@@ -134,18 +134,17 @@ public sealed interface FileOps {
                                                                 StandardOpenOption.CREATE,
                                                                 StandardOpenOption.TRUNCATE_EXISTING,
                                                                 StandardOpenOption.WRITE)) {
-                                   var buffer = ByteBuffer.wrap(content);
+                               var buffer = ByteBuffer.wrap(content);
 
-                                   while (buffer.hasRemaining()) {
-                                       file.write(buffer);
-                                   }
-
-                                   // force(true), not force(false): a freshly created file's size and
-                                   // link count live in the inode, so fdatasync alone can leave the
-                                   // bytes durable and the file itself not. Pinned by
-                                   // FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
-                                   file.force(true);
-                               }
+                               while (buffer.hasRemaining()) {
+                               file.write(buffer);
+                           }
+                               // force(true), not force(false): a freshly created file's size and
+                               // link count live in the inode, so fdatasync alone can leave the
+                               // bytes durable and the file itself not. Pinned by
+                               // FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
+                               file.force(true);
+                           }
 
                                return unit();
                            });
@@ -156,8 +155,8 @@ public sealed interface FileOps {
                            () -> {
                                try (var directory = FileChannel.open(path.toAbsolutePath().getParent(),
                                                                      StandardOpenOption.READ)) {
-                                   directory.force(true);
-                               }
+                               directory.force(true);
+                           }
 
                                return unit();
                            });
