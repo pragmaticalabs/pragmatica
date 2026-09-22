@@ -271,8 +271,8 @@ class SliceFactoryTest {
         var requestedJar = jar("provider-2.0.0", OTHER_PROBE_TYPE, SEAT_SELLABILITY_PROBE);
         var sharedLoader = new SharedLibraryClassLoader(SliceFactoryTest.class.getClassLoader());
 
-        sharedLoader.addArtifact("org.example", "provider", Version.version("1.0.0").unwrap(), servedJar);
-        sharedLoader.addArtifact("org.example", "provider", Version.version("2.0.0").unwrap(), requestedJar);
+        sharedLoader.addArtifact("org.example", "provider", Version.version("1.0.0").unwrap(), servedJar, "test-slice");
+        sharedLoader.addArtifact("org.example", "provider", Version.version("2.0.0").unwrap(), requestedJar, "test-slice");
 
         // Controls, inside the run: the newer jar was refused, so the class is genuinely unreachable
         // and the evidence the message must quote is the version actually loaded.
@@ -518,7 +518,7 @@ class SliceFactoryTest {
     private static SharedLibraryClassLoader sharedLoaderWith(URL providerJar) {
         var sharedLoader = new SharedLibraryClassLoader(SliceFactoryTest.class.getClassLoader());
 
-        sharedLoader.addArtifact("org.example", "provider", Version.version("1.0.0").unwrap(), providerJar);
+        sharedLoader.addArtifact("org.example", "provider", Version.version("1.0.0").unwrap(), providerJar, "test-slice");
 
         return sharedLoader;
     }
