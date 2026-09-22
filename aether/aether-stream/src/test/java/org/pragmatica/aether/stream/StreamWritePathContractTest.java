@@ -248,6 +248,19 @@ class StreamWritePathContractTest {
     }
 
     @Nested
+    class StreamPublisherBatchPath extends Contract {
+        @Override
+        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner, Option<NodeId> leaderFallback) {
+            var publisher = publisher(stream, hrwOwner, leaderFallback, Option.some(SELF), declaredMode(stream));
+            return () -> publisher.publishBatch(List.of("e0".getBytes())).flatMap(outcomes -> switch (outcomes.getFirst()) {
+                case org.pragmatica.aether.slice.stream.PublishOutcome.Published _ -> Promise.unitPromise();
+                case org.pragmatica.aether.slice.stream.PublishOutcome.OutcomeUnknown(var cause) -> cause.promise();
+                case org.pragmatica.aether.slice.stream.PublishOutcome.NotAttempted(var cause) -> cause.promise();
+            });
+        }
+    }
+
+    @Nested
     class StreamAccessPath extends Contract {
         @Override
         Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner, Option<NodeId> leaderFallback) {

@@ -155,12 +155,56 @@ class DeployedConfigFacadeTest {
         void optionalReadsReturnNoneWhenAbsentAndValueWhenPresent() {
             var populated = facade(Map.of(SECTION + ".weight", "7"));
 
-            assertThat(populated.getInt(SECTION, "weight").or(-1)).isEqualTo(7);
-            assertThat(facade(Map.of()).getInt(SECTION, "weight").isPresent()).isFalse();
+            assertThat(populated.getInt(SECTION, "weight")).isEqualTo(Result.success(Option.some(7)));
+            assertThat(facade(Map.of()).getInt(SECTION, "weight")).isEqualTo(Result.success(Option.none()));
             assertThat(facade(Map.of()).getString(SECTION, "host").isPresent()).isFalse();
-            assertThat(facade(Map.of()).getBoolean(SECTION, "secure").isPresent()).isFalse();
-            assertThat(facade(Map.of()).getLong(SECTION, "size").isPresent()).isFalse();
-            assertThat(facade(Map.of()).getDouble(SECTION, "ratio").isPresent()).isFalse();
+            assertThat(facade(Map.of()).getBoolean(SECTION, "secure")).isEqualTo(Result.success(Option.none()));
+            assertThat(facade(Map.of()).getLong(SECTION, "size")).isEqualTo(Result.success(Option.none()));
+            assertThat(facade(Map.of()).getDouble(SECTION, "ratio")).isEqualTo(Result.success(Option.none()));
+        }
+
+        /// #1098 — a PRESENT but UNPARSEABLE value must not read as absent: that is what let the
+        /// slice's default apply and `@ConfigUpdate` run with a state nobody configured. It is a
+        /// failure naming the key, the value and the slice.
+        @Test
+        void optionalReadsRefuseAMalformedValueNamingKeyValueAndSlice() {
+            var config = facade(Map.of(SECTION + ".port", "80x",
+                                        SECTION + ".size", "twelve",
+                                        SECTION + ".ratio", "half",
+                                        SECTION + ".secure", "yes"));
+
+            assertRefused(config.getInt(SECTION, "port"), "port", "80x");
+            assertRefused(config.getLong(SECTION, "size"), "size", "twelve");
+            assertRefused(config.getDouble(SECTION, "ratio"), "ratio", "half");
+            assertRefused(config.getBoolean(SECTION, "secure"), "secure", "yes");
+        }
+
+        private static void assertRefused(Result<?> read, String key, String raw) {
+            assertThat(read.isFailure()).describedAs("%s=\"%s\" must be refused, read %s", key, raw, read)
+                                        .isTrue();
+            read.onFailure(cause -> assertThat(cause.message()).contains(SECTION + "." + key)
+                                                               .contains(raw)
+                                                               .contains(SLICE_ID)
+                                                               .doesNotContain("not found"));
+        }
+
+        /// #1098 — the `require*` twin: a malformed value is not a MISSING key, and the refusal has
+        /// to say which it was, with the value, or the operator goes looking for a key that is there.
+        @Test
+        void requiredReadsNameTheMalformedValueRatherThanReportingItMissing() {
+            var config = facade(Map.of(SECTION + ".port", "80x",
+                                        SECTION + ".secure", "yes"));
+
+            config.requireInt(SECTION, "port")
+                  .onSuccess(v -> org.junit.jupiter.api.Assertions.fail("port=\"80x\" bound as " + v))
+                  .onFailure(cause -> assertThat(cause.message()).contains("80x")
+                                                                 .contains(SECTION + ".port")
+                                                                 .doesNotContain("not found"));
+            config.requireBoolean(SECTION, "secure")
+                  .onSuccess(v -> org.junit.jupiter.api.Assertions.fail("secure=\"yes\" bound as " + v))
+                  .onFailure(cause -> assertThat(cause.message()).contains("yes")
+                                                                 .contains(SECTION + ".secure")
+                                                                 .doesNotContain("not found"));
         }
     }
 

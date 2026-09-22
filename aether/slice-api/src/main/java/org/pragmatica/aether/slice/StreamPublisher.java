@@ -33,6 +33,9 @@ public interface StreamPublisher<T> {
     /// batch is not "nothing was written" (#1236: per-event outcome-unknown), so the outcome travels per event
     /// instead of being folded into one `Unit` that had acknowledged refused events as success. No default:
     /// a batch derived from `publish` could not report the offsets that landed.
+    /// A local partition group may be one storage run with one cumulative replication barrier. A
+    /// failed barrier makes every submitted event outcome-unknown; NotAttempted is reserved for
+    /// events never submitted (such as a stopped remote or oversized-run fallback chain).
     Promise<List<PublishOutcome>> publishBatch(List<T> events);
 
     /// Resolver-side fail-safe: refuse to bind an app `StreamPublisher` for a system address.

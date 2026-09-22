@@ -16,9 +16,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
@@ -33,7 +35,6 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.NOT_ENOUGH_REPLICAS;
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.REPLICATION_TIMEOUT;
-import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
@@ -127,6 +128,14 @@ final class DefaultReplicationManager implements ReplicationManager {
         this.timerScheduler = timerScheduler;
     }
 
+    /// Estimated bytes per `ReplicateEvents` chunk: half the transport frame limit. The other half
+    /// leaves headroom for fixed fields and the envelope; this is a chosen margin, not a measured
+    /// bound on serialized messages. A single event larger than this budget is still sent alone.
+    static final long MAX_REPLICATE_MESSAGE_BYTES = QuicClusterServer.MAX_FRAME_LENGTH / 2;
+    /// Per-event accounting allowance added to payload bytes so tiny events also consume the chunk
+    /// budget. The allowance is not verified here against the complete codec/envelope encoding.
+    static final long PER_EVENT_ENCODING_BYTES = 32;
+
     @Contract
     @Override
     public void replicateEvent(String streamName,
@@ -137,13 +146,64 @@ final class DefaultReplicationManager implements ReplicationManager {
                                Epoch ownerEpoch) {
         // FER: `replicateEvent` is fire-and-forget (void); the only refusal is BATCHER_CLOSED after close(),
         // when this manager is shutting down and no replica may be sent to — logged, then dropped.
-        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp, ownerEpoch)
-                                .onFailure(cause -> log.warn("Event {}[{}]@{} not replicated: {}",
-                                                             streamName,
-                                                             partition,
-                                                             offset,
-                                                             cause.message())))
-               .onEmpty(() -> replicateImmediately(streamName, partition, offset, payload, timestamp, ownerEpoch));
+        batcher.onPresent(b -> addOne(b, streamName, partition, offset, payload, timestamp, ownerEpoch))
+               .onEmpty(() -> replicateImmediately(streamName,
+                                                   partition,
+                                                   offset,
+                                                   List.of(payload),
+                                                   List.of(timestamp),
+                                                   ownerEpoch));
+    }
+
+    /// #1245: a contiguous run goes out in as few `ReplicateEvents` messages per replica as the frame limit
+    /// allows — one, below it (the receive handler already applies multi-record batches and acks their
+    /// last offset). With a batcher wired, the run is handed to it event by event, as single publishes are.
+    @Contract
+    @Override
+    public void replicateEvents(String streamName,
+                                int partition,
+                                long fromOffset,
+                                List<byte[]> payloads,
+                                List<Long> timestamps,
+                                Epoch ownerEpoch) {
+        batcher.onPresent(b -> addRun(b, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch))
+               .onEmpty(() -> replicateImmediately(streamName, partition, fromOffset, payloads, timestamps, ownerEpoch));
+    }
+
+    @Contract
+    private static void addRun(ReplicationBatcher batcher,
+                               String streamName,
+                               int partition,
+                               long fromOffset,
+                               List<byte[]> payloads,
+                               List<Long> timestamps,
+                               Epoch ownerEpoch) {
+        IntStream.range(0,
+                        payloads.size())
+                 .forEach(i -> addOne(batcher,
+                                      streamName,
+                                      partition,
+                                      fromOffset + i,
+                                      payloads.get(i),
+                                      timestamps.get(i),
+                                      ownerEpoch));
+    }
+
+    /// One event into the batcher; its only refusal (BATCHER_CLOSED) is logged and dropped, see [#replicateEvent].
+    @Contract
+    private static void addOne(ReplicationBatcher batcher,
+                               String streamName,
+                               int partition,
+                               long offset,
+                               byte[] payload,
+                               long timestamp,
+                               Epoch ownerEpoch) {
+        batcher.add(streamName, partition, offset, payload, timestamp, ownerEpoch)
+               .onFailure(cause -> log.warn("Event {}[{}]@{} not replicated: {}",
+                                            streamName,
+                                            partition,
+                                            offset,
+                                            cause.message()));
     }
 
     @Contract
@@ -198,9 +258,9 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     private void replicateImmediately(String streamName,
                                       int partition,
-                                      long offset,
-                                      byte[] payload,
-                                      long timestamp,
+                                      long fromOffset,
+                                      List<byte[]> payloads,
+                                      List<Long> timestamps,
                                       Epoch ownerEpoch) {
         var replicas = replicationTargets(streamName, partition);
 
@@ -208,7 +268,7 @@ final class DefaultReplicationManager implements ReplicationManager {
             return;
         }
 
-        sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp, ownerEpoch);
+        sendToAllReplicas(replicas, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch);
     }
 
     /// The set of nodes an owner replicates a published event to: the registered replica set MINUS
@@ -334,22 +394,53 @@ final class DefaultReplicationManager implements ReplicationManager {
                                                  Math::max));
     }
 
+    /// #1287 review K3: one run is sent as consecutive chunks, each at most [#MAX_REPLICATE_MESSAGE_BYTES]
+    /// of payload, so no message exceeds the cluster transport's frame limit. Chunks go out in offset
+    /// order; the receive handler verifies each chunk's `fromOffset`, and the owner still awaits one
+    /// cumulative ack on the run's last offset.
     private void sendToAllReplicas(List<NodeId> replicas,
                                    String streamName,
                                    int partition,
-                                   long offset,
-                                   byte[] payload,
-                                   long timestamp,
+                                   long fromOffset,
+                                   List<byte[]> payloads,
+                                   List<Long> timestamps,
                                    Epoch ownerEpoch) {
-        var message = replicateEvents(governorId,
-                                      streamName,
-                                      partition,
-                                      offset,
-                                      List.of(payload),
-                                      List.of(timestamp),
-                                      ownerEpoch);
+        for (int start = 0; start < payloads.size();) {
+            var end = chunkEnd(payloads, start);
 
+            sendChunk(replicas,
+                      ReplicationMessage.ReplicateEvents.replicateEvents(governorId,
+                                                                         streamName,
+                                                                         partition,
+                                                                         fromOffset + start,
+                                                                         List.copyOf(payloads.subList(start, end)),
+                                                                         List.copyOf(timestamps.subList(start, end)),
+                                                                         ownerEpoch));
+            start = end;
+        }
+    }
+
+    @Contract
+    private void sendChunk(List<NodeId> replicas, ReplicationMessage.ReplicateEvents message) {
         replicas.forEach(replica -> transport.send(replica, message));
+    }
+
+    /// Exclusive end of the chunk starting at `start`: as many events as fit the accounting budget, and at least
+    /// one — a single event above the cap goes out alone, as every event did before batching.
+    private static long encodedSize(byte[] payload) {
+        return payload.length + PER_EVENT_ENCODING_BYTES;
+    }
+
+    private static int chunkEnd(List<byte[]> payloads, int start) {
+        var end = start + 1;
+        var bytes = encodedSize(payloads.get(start));
+
+        while (end < payloads.size() && bytes + encodedSize(payloads.get(end)) <= MAX_REPLICATE_MESSAGE_BYTES) {
+            bytes += encodedSize(payloads.get(end));
+            end++;
+        }
+
+        return end;
     }
 
     /// Resolve every pending await whose awaited offset is at or below `confirmedOffset` for this

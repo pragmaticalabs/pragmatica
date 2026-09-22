@@ -87,8 +87,8 @@ class TomlConfigSourceTest {
 
         var result = source.getInt("server.port");
 
-        assertThat(result.isPresent()).isTrue();
-        assertThat(result.unwrap()).isEqualTo(8080);
+        assertThat(result.unwrap().isPresent()).isTrue();
+        assertThat(result.unwrap().unwrap()).isEqualTo(8080);
     }
 
     @Test
@@ -102,8 +102,8 @@ class TomlConfigSourceTest {
 
         var result = source.getBoolean("features.enabled");
 
-        assertThat(result.isPresent()).isTrue();
-        assertThat(result.unwrap()).isTrue();
+        assertThat(result.unwrap().isPresent()).isTrue();
+        assertThat(result.unwrap().unwrap()).isTrue();
     }
 
     @Test

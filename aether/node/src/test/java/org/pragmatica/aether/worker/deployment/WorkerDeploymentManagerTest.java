@@ -11,20 +11,29 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.SliceStore.LoadedSlice;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
 import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager.DeploymentState;
 import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager.WorkerSliceDeployment;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.worker.mutation.WorkerMutation;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 
@@ -129,6 +138,105 @@ class WorkerDeploymentManagerTest {
         recompute.join(5_000);
         assertThat(recompute.isAlive()).as("recompute finished").isFalse();
         assertThat(deployments.containsKey(ARTIFACT)).as("removed record must not be resurrected").isFalse();
+    }
+
+    /// #1184 (rev N1): a failed load is forwarded WITH its reason and its classified `fatal` flag.
+    /// Before, `handleDeploymentFailure` forwarded `nodeArtifactValue(FAILED)` — no reason, `fatal=false` —
+    /// so a permanent shared-loader version conflict read as retryable cluster-wide and the two slices
+    /// that disagreed were named only in this worker's log.
+    @Test
+    void loadFailure_isForwardedWithItsReasonAndFatalFlag() {
+        var conflict = new SliceLoadingFailure.Fatal.SharedLoaderVersionConflict("org.example:slice:1.0.0",
+                                                                                 "org.example:lib:^2.0.0",
+                                                                                 "org.example:lib:1.0.0",
+                                                                                 "org.example:other:1.0.0");
+        var forwarded = mock(MutationForwarder.class);
+        var sliceStore = mock(SliceStore.class);
+
+        when(sliceStore.loadSlice(any())).thenReturn(conflict.promise());
+        when(sliceStore.loaded()).thenReturn(List.of());
+        var manager = WorkerDeploymentManager.workerDeploymentManager(SELF,
+                                                                      sliceStore,
+                                                                      forwarded,
+                                                                      new ConcurrentHashMap<>(),
+                                                                      List.of(SELF),
+                                                                      () -> "default:local");
+
+        manager.onDirectivePut(WorkerSliceDirectiveValue.workerSliceDirectiveValue(ARTIFACT, 1, "any"));
+
+        var failed = forwardedFailures(forwarded);
+
+        assertThat(failed).as("exactly one FAILED record forwarded").hasSize(1);
+        assertThat(failed.getFirst().fatal()).as("a version conflict is permanent").isTrue();
+        assertThat(failed.getFirst().failureReason().unwrap()).contains("slice org.example:slice:1.0.0 requires org.example:lib:^2.0.0"
+                                                                       + " but org.example:lib:1.0.0 is already loaded by org.example:other:1.0.0");
+    }
+
+    /// Control for the flag: a cause typed Intermittent at its raise site stays retryable on this path.
+    @Test
+    void intermittentLoadFailure_isForwardedAsRetryable() {
+        var notFound = new SliceLoadingFailure.Intermittent.ArtifactNotFound("org.example:slice:1.0.0");
+        var forwarded = mock(MutationForwarder.class);
+        var sliceStore = mock(SliceStore.class);
+
+        when(sliceStore.loadSlice(any())).thenReturn(notFound.promise());
+        when(sliceStore.loaded()).thenReturn(List.of());
+        var manager = WorkerDeploymentManager.workerDeploymentManager(SELF,
+                                                                      sliceStore,
+                                                                      forwarded,
+                                                                      new ConcurrentHashMap<>(),
+                                                                      List.of(SELF),
+                                                                      () -> "default:local");
+
+        manager.onDirectivePut(WorkerSliceDirectiveValue.workerSliceDirectiveValue(ARTIFACT, 1, "any"));
+
+        var failed = forwardedFailures(forwarded);
+
+        assertThat(failed).hasSize(1);
+        assertThat(failed.getFirst().fatal()).isFalse();
+        assertThat(failed.getFirst().failureReason().unwrap()).contains("Artifact not found in any repository: org.example:slice:1.0.0");
+    }
+
+    /// The declared disposition is what decides an UNTYPED cause (#930): PERMANENT here, as on the FSM's
+    /// load path, because an unrecognised load failure re-runs the same deterministic work on retry.
+    @Test
+    void untypedLoadFailure_isForwardedAsPermanent() {
+        var forwarded = mock(MutationForwarder.class);
+        var sliceStore = mock(SliceStore.class);
+
+        when(sliceStore.loadSlice(any())).thenReturn(Causes.cause("unrecognised").promise());
+        when(sliceStore.loaded()).thenReturn(List.of());
+        var manager = WorkerDeploymentManager.workerDeploymentManager(SELF,
+                                                                      sliceStore,
+                                                                      forwarded,
+                                                                      new ConcurrentHashMap<>(),
+                                                                      List.of(SELF),
+                                                                      () -> "default:local");
+
+        manager.onDirectivePut(WorkerSliceDirectiveValue.workerSliceDirectiveValue(ARTIFACT, 1, "any"));
+
+        var failed = forwardedFailures(forwarded);
+
+        assertThat(failed).hasSize(1);
+        assertThat(failed.getFirst().fatal()).isTrue();
+        assertThat(failed.getFirst().failureReason().unwrap()).contains("unrecognised");
+    }
+
+    private static List<NodeArtifactValue> forwardedFailures(MutationForwarder forwarder) {
+        var captor = ArgumentCaptor.forClass(WorkerMutation.class);
+
+        verify(forwarder, atLeastOnce()).forward(captor.capture());
+
+        return captor.getAllValues()
+                     .stream()
+                     .map(WorkerMutation::command)
+                     .filter(KVCommand.Put.class::isInstance)
+                     .map(command -> (KVCommand.Put<?, ?>) command)
+                     .map(KVCommand.Put::value)
+                     .filter(NodeArtifactValue.class::isInstance)
+                     .map(NodeArtifactValue.class::cast)
+                     .filter(value -> value.state() == SliceState.FAILED)
+                     .toList();
     }
 
     private static void await(CountDownLatch latch) {

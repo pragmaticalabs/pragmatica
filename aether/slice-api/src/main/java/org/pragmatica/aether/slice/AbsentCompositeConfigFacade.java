@@ -93,23 +93,23 @@ record AbsentCompositeConfigFacade(String sliceId) implements ConfigFacade {
     }
 
     @Override
-    public Option<Integer> getInt(String section, String key) {
-        return Option.none();
+    public Result<Option<Integer>> getInt(String section, String key) {
+        return Result.success(Option.none());
     }
 
     @Override
-    public Option<Long> getLong(String section, String key) {
-        return Option.none();
+    public Result<Option<Long>> getLong(String section, String key) {
+        return Result.success(Option.none());
     }
 
     @Override
-    public Option<Double> getDouble(String section, String key) {
-        return Option.none();
+    public Result<Option<Double>> getDouble(String section, String key) {
+        return Result.success(Option.none());
     }
 
     @Override
-    public Option<Boolean> getBoolean(String section, String key) {
-        return Option.none();
+    public Result<Option<Boolean>> getBoolean(String section, String key) {
+        return Result.success(Option.none());
     }
 
     private <T> Result<T> refuse(String section, String key) {
