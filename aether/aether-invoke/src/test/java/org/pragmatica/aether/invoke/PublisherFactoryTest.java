@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.ArrayList;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -298,6 +299,34 @@ class PublisherFactoryTest {
 
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
             assertTrue(invocations.isEmpty());
+        }
+
+        /// #1216: the undelivered publish above is the ticket's exact shape, and it used to leave no
+        /// trace. Through the REAL factory, the WARN must carry what the factory alone knows — the
+        /// bare topic name from the config and the publishing slice from the provisioning context —
+        /// plus the address the factory resolved, so an operator can set it against `topic-sub/`.
+        @Test
+        void provision_undeliveredPublish_warnsNamingTopicResolvedAddressAndPublishingSlice() {
+            var expectedAddress = TopicAddressResolver.resolve(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders")
+                                                      .unwrap()
+                                                      .asString();
+            registerBareSubscriptionFor(Option.some(OTHER_BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+            var warnings = new ArrayList<String>();
+            var detach = LogCapture.warningsOf(TopicPublisher.class, warnings);
+
+            try {
+                publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            } finally {
+                detach.run();
+            }
+
+            assertEquals(1, warnings.size(), "one WARN for the one undelivered publish: " + warnings);
+            var line = warnings.getFirst();
+            assertTrue(line.contains("'orders'"), "names the bare topic: " + line);
+            assertTrue(line.contains(expectedAddress), "names the resolved address: " + line);
+            assertTrue(line.contains(PUBLISHER_SLICE.asString()), "names the publishing slice: " + line);
+            assertTrue(!line.contains(PublisherFactory.UNSCOPED_PUBLISHER), "the slice id was in the context, so no placeholder: " + line);
         }
 
         /// A runtime with no resolver registered (unit test, minimal runtime): both ends scope to the
