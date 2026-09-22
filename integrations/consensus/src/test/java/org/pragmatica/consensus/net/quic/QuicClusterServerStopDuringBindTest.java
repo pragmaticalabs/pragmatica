@@ -81,15 +81,17 @@ class QuicClusterServerStopDuringBindTest {
             .isNotNull();
         stopAtGate.get().await(AWAIT_TIMEOUT).onFailure(cause -> fail("stop() failed: " + cause.message()));
 
-        started.onSuccess(_ -> fail("start() must not report a running server when stop() won the race: "
-                                    + "succeeding here is what armed QuicClusterNetwork's reconciler and "
-                                    + "keepalive on a transport that was already stopped"))
-               .onFailure(cause -> assertThat(cause).isEqualTo(QuicTransportError.General.STOPPED_DURING_START));
-
+        // The port claim is checked FIRST, deliberately: it is the primary consequence, and asserting
+        // the start's verdict ahead of it would abort the test before the port was ever read — which
+        // is exactly what a mutation probe on 2026-09-23 did, leaving the port claim unmeasured.
         assertThat(rebindable(port))
             .as("UDP %d must be reclaimable within %d ms: a bind landing after stop() must be closed "
                 + "by whoever publishes it", port, RECLAIM_WAIT_MS)
             .isTrue();
+        started.onSuccess(_ -> fail("start() must not report a running server when stop() won the race: "
+                                    + "succeeding here is what armed QuicClusterNetwork's reconciler and "
+                                    + "keepalive on a transport that was already stopped"))
+               .onFailure(cause -> assertThat(cause).isEqualTo(QuicTransportError.General.STOPPED_DURING_START));
     }
 
     /// Runs between the bind completing and the just-bound channel being published — the window

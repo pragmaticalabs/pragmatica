@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /// #1456 — the slot's whole point is that a publish racing a close hands the resource to EXACTLY ONE
 /// of the two callers, so the loser of the race is the one that releases it. Every assertion below
@@ -133,16 +134,8 @@ class PublishSlotTest {
                 var slot = PublishSlot.<String> publishSlot();
                 var done = new CountDownLatch(2);
 
-                pool.execute(() -> {
-                    awaitBarrier(barrier);
-                    slot.publishOrReclaim(SERVER).onPresent(_ -> releasedByPublisher.incrementAndGet());
-                    done.countDown();
-                });
-                pool.execute(() -> {
-                    awaitBarrier(barrier);
-                    slot.close().onPresent(_ -> releasedByCloser.incrementAndGet());
-                    done.countDown();
-                });
+                pool.execute(() -> publishAtBarrier(slot, barrier, releasedByPublisher, done));
+                pool.execute(() -> closeAtBarrier(slot, barrier, releasedByCloser, done));
 
                 assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
             }
@@ -155,11 +148,33 @@ class PublishSlotTest {
             .isEqualTo(rounds);
     }
 
+    private static void publishAtBarrier(PublishSlot<String> slot,
+                                         CyclicBarrier barrier,
+                                         AtomicInteger released,
+                                         CountDownLatch done) {
+        awaitBarrier(barrier);
+        slot.publishOrReclaim(SERVER).onPresent(_ -> released.incrementAndGet());
+        done.countDown();
+    }
+
+    private static void closeAtBarrier(PublishSlot<String> slot,
+                                       CyclicBarrier barrier,
+                                       AtomicInteger released,
+                                       CountDownLatch done) {
+        awaitBarrier(barrier);
+        slot.close().onPresent(_ -> released.incrementAndGet());
+        done.countDown();
+    }
+
+    /// Throws rather than swallows: a barrier that does not trip would leave the two callers
+    /// unsynchronised, and the exactly-once invariant holds in every interleaving — so a swallowed
+    /// break would quietly degrade this into a test that no longer contends while still passing.
+    /// Throwing skips the round's `countDown`, and its `done.await` assertion then fails and says so.
     private static void awaitBarrier(CyclicBarrier barrier) {
         try {
             barrier.await(10, TimeUnit.SECONDS);
         } catch (Exception e) {
-            throw new IllegalStateException("barrier await failed", e);
+            fail("barrier await failed: " + e);
         }
     }
 }
