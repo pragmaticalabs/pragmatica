@@ -39,10 +39,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// encrypts under its boot-day key and a node booted today hold no key in common: neither can
 /// decrypt the other, and SWIM silently partitions the two.
 ///
-/// Guarantee pinned here: two nodes whose clocks agree to within one day can always decrypt each
-/// other's gossip regardless of uptime, because each encrypts under its own current day's key and
-/// accepts the previous and next day's, and the two current days differ by at most one. The
-/// clock-skew bound is unchanged: two days apart is still rejected ([RealProvider#twoDayClockSkew_isStillRejected]).
+/// Guarantee pinned here: two nodes whose HOST CALENDAR DAYS differ by at most one can always
+/// decrypt each other's gossip regardless of uptime, because each encrypts under its own current
+/// day's key and accepts the previous and next day's. The skew bound is unchanged: two days apart is
+/// still rejected ([RealProvider#twoDayClockSkew_isStillRejected]). The window holds after a rollover
+/// as well as at boot ([RealProvider#rolledOverNode_stillAcceptsPreviousAndNextDay]) — every node up
+/// longer than a day runs on the rebuilt one.
+///
+/// The day label is the host's DEFAULT-ZONE calendar day, not UTC, so agreeing clocks alone do not
+/// imply agreeing keys — two hosts in far-apart zones read one [java.time.Instant] as two different
+/// calendar days. That gap is #1415 and is out of scope here; the clocks below are all UTC
+/// ([MutableClock]), so these tests say nothing about it either way.
 ///
 /// Both sides are built through the production factory ([SwimGossipEncryptors]) — never hand-fed an
 /// expected outcome — so the assertions can falsify the premise rather than restate it.

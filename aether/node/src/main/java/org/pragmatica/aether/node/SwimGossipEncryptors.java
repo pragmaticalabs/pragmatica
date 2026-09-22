@@ -30,9 +30,14 @@ import org.pragmatica.swim.RotatingGossipEncryptor;
 /// provider's current key is the day's key ([org.pragmatica.net.tcp.security.SelfSignedCertificateProvider]
 /// re-derives it on a day change), and [ProviderKeyedGossipEncryptor] rebuilds its AES-GCM
 /// delegate whenever the provider's current key id differs from the one it was built from. So two
-/// nodes whose clocks agree to within one day always share a key, regardless of uptime: each
-/// encrypts under its own current day and accepts the previous and next, and their days differ by
-/// at most one. The accept window itself is unchanged — a two-day skew is still rejected.
+/// nodes whose HOST CALENDAR DAYS differ by at most one always share a key, regardless of uptime:
+/// each encrypts under its own current day and accepts the previous and next. The accept window
+/// itself is unchanged — a two-day skew is still rejected.
+///
+/// The day label is the host's DEFAULT-ZONE calendar day, not UTC (#1415), so agreeing clocks alone
+/// do not imply agreeing keys: two hosts in far-apart zones read the same [java.time.Instant] as two
+/// different calendar days, which this window does not cover. Deliberately unchanged here — #1164
+/// must not move the derivation.
 public sealed interface SwimGossipEncryptors {
     /// Build the cluster gossip encryptor from a certificate provider.
     ///
