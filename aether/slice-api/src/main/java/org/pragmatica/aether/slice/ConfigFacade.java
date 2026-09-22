@@ -10,6 +10,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
+/// A slice's view of its configuration section. `require*` fails on an absent key; `get*` is the
+/// optional twin — but optional in the KEY, not in the parse: the typed `get*` answer
+/// `Result<Option<T>>`, where an absent key is `Success(None)` and a PRESENT but UNPARSEABLE value
+/// is a failure naming the key and the value (#1098). `Option<T>` alone had no failure channel, so
+/// `port = "80x"` read as "not configured" and the slice's default applied silently.
 public interface ConfigFacade {
     Result<String> requireString(String section, String key);
     Result<Integer> requireInt(String section, String key);
@@ -18,8 +23,8 @@ public interface ConfigFacade {
     Result<Boolean> requireBoolean(String section, String key);
     Result<List<String>> requireStringList(String section, String key);
     Option<String> getString(String section, String key);
-    Option<Integer> getInt(String section, String key);
-    Option<Long> getLong(String section, String key);
-    Option<Double> getDouble(String section, String key);
-    Option<Boolean> getBoolean(String section, String key);
+    Result<Option<Integer>> getInt(String section, String key);
+    Result<Option<Long>> getLong(String section, String key);
+    Result<Option<Double>> getDouble(String section, String key);
+    Result<Option<Boolean>> getBoolean(String section, String key);
 }
