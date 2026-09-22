@@ -34,6 +34,15 @@ public sealed interface QuicTransportError extends Cause {
         HELLO_TIMEOUT("Hello handshake timed out"),
         UNEXPECTED_MESSAGE("Expected Hello message but received different type"),
         SERVER_NOT_STARTED("QUIC server is not started"),
+        /// #1456: the bind completed after stop() had already run. The just-bound channel was closed
+        /// rather than published, so the start reports failure instead of arming a transport nobody
+        /// owns. Terminal — retrying cannot un-stop a server; only a fresh start can.
+        STOPPED_DURING_START("QUIC cluster server was stopped while its bind was still in flight") {
+            @Override
+            public boolean isTerminal() {
+                return true;
+            }
+        },
         NO_TLS_CONFIGURATION("No TLS configuration provided. Set AETHER_INSECURE_DEV_MODE=true for development without TLS verification");
         private final String message;
         General(String message) {
