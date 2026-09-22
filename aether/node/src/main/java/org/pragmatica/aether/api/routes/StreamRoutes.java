@@ -187,7 +187,10 @@ public final class StreamRoutes implements RouteSource {
     /// #488: what this node has actually attached. Pure snapshot read off the consumer manager — no
     /// hot-path cost. An empty `consumers` list means no slice in the cluster declares a `[streams.X]`
     /// consumer, which is itself the honest answer; it never fabricates rows.
-    private DeclarativeConsumersResponse declarativeConsumers() {
+    /// Package-private for the same reason [#toConsumerPartition] is: the risk in this method is a
+    /// SWAPPED mapping, and both node-wide counters are `long`, so only a test that reads distinct
+    /// values through it can tell them apart.
+    DeclarativeConsumersResponse declarativeConsumers() {
         var statuses = nodeSupplier.get().streamConsumerManager().statuses();
 
         return new DeclarativeConsumersResponse(nodeSupplier.get().streamConsumerManager().activeSubscriptionCount(),
