@@ -184,6 +184,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private final PublishSlot<Channel> serverChannel = PublishSlot.publishSlot();
     private volatile EventLoopGroup eventLoopGroup;
     private volatile boolean ownsEventLoop;
+    /// #1456 test seam: runs between the bind completing and the just-bound channel being published,
+    /// so a test can call `stop()` from inside that window. The window is sub-millisecond in
+    /// production, which is why the race is only reachable deterministically from here. No-op unless
+    /// a test installs a hook.
+    private volatile Runnable beforePublish = () -> {};
 
     QuicClusterServerInstance(NodeId selfId,
                               NodeAddress selfAddress,
@@ -216,6 +221,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     @Override
     public Promise<Unit> stop() {
         return Promise.promise(this::initiateShutdown);
+    }
+
+    /// #1456 test seam — see [#beforePublish].
+    @Contract
+    void beforePublishForTest(Runnable hook) {
+        beforePublish = hook;
     }
 
     @Override
@@ -269,6 +280,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     /// that was stopped. A leaked reconciler was observed still dialling 2m10s later, inside
     /// unrelated test classes.
     private void publishBoundChannel(Channel channel, Promise<Unit> promise) {
+        beforePublish.run();
         serverChannel.publishOrReclaim(channel)
                      .onPresent(orphan -> closeOrphanedChannel(orphan, promise))
                      .onEmpty(() -> announceBoundChannel(channel, promise));
