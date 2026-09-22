@@ -21,17 +21,23 @@ import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -42,48 +48,75 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 /// #1456 — the cluster transport's half of the same defect: `handleBind` stored the just-bound UDP
 /// channel in a field that `initiateShutdown` had already read and found empty, so `stop()` closed
-/// nothing, reported success, and the channel stayed bound with nothing owning it. In CI one node
-/// held its QUIC port alongside its management and app-http ports, and its missing-peer reconciler —
-/// armed by the same post-start hooks — was still dialling 2m10s later, inside later test classes.
+/// nothing, reported success, and the channel stayed bound with nothing owning it.
 ///
-/// **How the detection is made deterministic**, a sub-millisecond race being worth nothing as a
-/// one-off green: `beforePublishForTest` is a gate in exactly the bind→publish window, and the whole
-/// of `stop()` runs as that gate's body. "stop ran between bind and publish" therefore holds by
-/// program order, with no sleep, no latch and no second thread. The assertion is by consequence —
-/// the UDP port must be rebindable — plus the start's own verdict, which must now be a failure
-/// rather than the success that used to arm a transport nobody owned.
-@Timeout(60)
+/// **How the interleaving is forced.** `beforePublishForTest` is a gate in exactly the bind→publish
+/// window. The test parks the start there on a latch, runs `stop()` **to completion** on its own
+/// thread, and only then releases the gate. No sleep, no guessed ordering: the release cannot happen
+/// until `stop()` has returned.
+///
+/// An earlier version of this test ran `stop()` from inside the gate and relied on program order.
+/// That was wrong, and a loaded run caught it: `Promise.promise(Consumer)` is
+/// `promise().async(consumer)`, so `QuicClusterServerInstance.stop()` *schedules* `initiateShutdown`
+/// rather than running it inline. It passed in isolation and failed under load — the exact
+/// timing-dependence this class exists to rule out. Hence the latch.
+///
+/// **Why a SHARED event loop group.** With an owned group, `shutdownEventLoop` calls
+/// `shutdownGracefully()`, whose termination future cannot complete while this gate parks one of that
+/// group's loops — the test would deadlock. It also *masks* the defect: shutting the group down
+/// closes the channels registered to it, so the port comes back even when the orphan is never
+/// closed. Measured, 2026-09-23: with an owned group and the fix reverted, the UDP port assertion
+/// PASSED and only the start's verdict reddened. The shared-loop configuration takes that accident
+/// away, so the port claim here is a claim about the publish path and nothing else. The divergence
+/// from production is stated rather than hidden: `QuicClusterNetwork` passes `Option.empty()` and so
+/// owns its group.
+@Timeout(90)
 class QuicClusterServerStopDuringBindTest {
     private static final NodeId SERVER_NODE = NodeId.randomNodeId();
-    private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(20).seconds();
+    private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final long RECLAIM_WAIT_MS = 10_000;
+    private static final long LATCH_WAIT_SECONDS = 30;
+
+    private EventLoopGroup sharedGroup;
+
+    @BeforeEach
+    void setUp() {
+        sharedGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
+    }
+
+    @AfterEach
+    void tearDown() throws InterruptedException {
+        sharedGroup.shutdownGracefully().await(AWAIT_TIMEOUT.millis(), TimeUnit.MILLISECONDS);
+    }
 
     @Test
     void start_closesTheChannelAndFails_whenStopRunsBeforeTheBindIsPublished() throws Exception {
         var port = freeUdpPort();
         var server = quicClusterServerOn(port);
+        var reachedGate = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
         var boundAtGate = new AtomicBoolean();
-        var stopAtGate = new AtomicReference<Promise<Unit>>();
 
-        ((QuicClusterServerInstance) server).beforePublishForTest(() -> stopInsideTheBindWindow(server,
-                                                                                                port,
-                                                                                                boundAtGate,
-                                                                                                stopAtGate));
+        ((QuicClusterServerInstance) server).beforePublishForTest(() -> holdAtGate(port,
+                                                                                   boundAtGate,
+                                                                                   reachedGate,
+                                                                                   release));
 
-        var started = server.start(port).await(AWAIT_TIMEOUT);
+        var start = CompletableFuture.supplyAsync(() -> server.start(port).await(AWAIT_TIMEOUT));
 
-        assertThat(boundAtGate.get())
-            .as("control: UDP %d must already be held when the gate runs, or this test would be "
-                + "asserting the release of a port that was never taken", port)
+        assertThat(reachedGate.await(LATCH_WAIT_SECONDS, TimeUnit.SECONDS))
+            .as("start() must reach the bound-but-not-yet-published gate")
             .isTrue();
-        assertThat(stopAtGate.get())
-            .as("the gate must have run, or no stop() happened inside the bind window")
-            .isNotNull();
-        stopAtGate.get().await(AWAIT_TIMEOUT).onFailure(cause -> fail("stop() failed: " + cause.message()));
+        assertThat(boundAtGate.get())
+            .as("control: UDP %d must already be held at the gate, or this test would be asserting "
+                + "the release of a port that was never taken", port)
+            .isTrue();
 
-        // The port claim is checked FIRST, deliberately: it is the primary consequence, and asserting
-        // the start's verdict ahead of it would abort the test before the port was ever read — which
-        // is exactly what a mutation probe on 2026-09-23 did, leaving the port claim unmeasured.
+        server.stop().await(AWAIT_TIMEOUT).onFailure(cause -> fail("stop() failed: " + cause.message()));
+
+        release.countDown();
+        var started = start.get(LATCH_WAIT_SECONDS, TimeUnit.SECONDS);
+
         assertThat(rebindable(port))
             .as("UDP %d must be reclaimable within %d ms: a bind landing after stop() must be closed "
                 + "by whoever publishes it", port, RECLAIM_WAIT_MS)
@@ -95,18 +128,20 @@ class QuicClusterServerStopDuringBindTest {
     }
 
     /// Runs between the bind completing and the just-bound channel being published — the window
-    /// #1456 lives in. Records that the port is genuinely held here, then starts the whole of
-    /// `stop()`; its decision about what there is to stop is taken synchronously, so by the time this
-    /// returns `stop()` has already looked and found nothing.
-    private static void stopInsideTheBindWindow(QuicClusterServer server,
-                                                int port,
-                                                AtomicBoolean bound,
-                                                AtomicReference<Promise<Unit>> stop) {
+    /// #1456 lives in. Records that the port is genuinely held, signals the test, and parks until
+    /// the test has finished running `stop()`.
+    private static void holdAtGate(int port, AtomicBoolean bound, CountDownLatch reached, CountDownLatch release) {
         bound.set(!bindable(port));
-        stop.set(server.stop());
+        reached.countDown();
+
+        try {
+            release.await(LATCH_WAIT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
-    private static QuicClusterServer quicClusterServerOn(int port) {
+    private QuicClusterServer quicClusterServerOn(int port) {
         var codec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), combinedCodecs());
 
         return QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("stop-during-bind"))
@@ -118,7 +153,7 @@ class QuicClusterServerStopDuringBindTest {
                                                                                codec,
                                                                                QuicTransportMetrics.quicTransportMetrics(),
                                                                                ssl,
-                                                                               Option.empty(),
+                                                                               Option.some(sharedGroup),
                                                                                (_, _, _) -> {},
                                                                                (_, _) -> {}));
     }

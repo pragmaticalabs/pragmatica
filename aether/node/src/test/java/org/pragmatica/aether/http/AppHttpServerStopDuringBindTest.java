@@ -35,6 +35,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// scheduling luck; there is no sleep, no latch and no second thread to lose a race with. The
 /// assertion is by consequence (the TCP port must be rebindable), never by reading internal state.
 ///
+/// Program order is load-bearing here and it is worth naming *why* it holds: `AppHttpServer.stop()`
+/// does its ordering work inline — `Fsm.dispatch` calls `state.handle(...)` on the calling thread —
+/// so by the time this gate returns, `StopRequested` has already moved the machine to `Stopped` and
+/// the publish that follows necessarily lands there. The sibling
+/// `QuicClusterServerStopDuringBindTest` cannot use this shape and says so: its `stop()` goes through
+/// `Promise.promise(Consumer)`, which dispatches asynchronously, so it forces the order with a latch
+/// instead. Assuming program order there passed in isolation and failed under load.
+///
 /// Two controls keep a green from being vacuous: the gate asserts the port is genuinely BOUND while
 /// it runs — so a pass cannot come from a bind that never happened — and it asserts `stop()` returned
 /// success, which is the very report the defect makes while leaking.
