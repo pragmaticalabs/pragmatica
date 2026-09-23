@@ -293,6 +293,21 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         promise.succeed(unit());
     }
 
+    /// Failing the start here is a change to this server's start contract: before #1456 a bind that
+    /// landed after `stop()` reported SUCCESS. The failing matters — it is what stops
+    /// `QuicClusterNetwork`'s post-start `.onSuccess` hooks arming a reconciler on a stopped transport
+    /// — but it also introduces a second candidate cause into `EmberCluster.start()`'s abort path,
+    /// whose surfaced cause must stay the failure that TRIGGERED the abort.
+    ///
+    /// It does, for a reason stronger than a race: `EmberCluster.start()` selects via
+    /// `firstFailure::fail`, and promise resolution is compare-and-set, so the first failure wins.
+    /// Inside that path the only thing that stops a node is `abortStart`, which runs only once
+    /// `firstFailure` has ALREADY resolved — so this cause cannot exist before the one it would have
+    /// to displace. **Pinned, not merely argued:** `EmberClusterSwimStartFailureTest` asserts the
+    /// surfaced cause `contains("Address already in use")`, which this message cannot satisfy.
+    /// Measured 2026-09-23 — forcing this branch unconditionally reddens it at line 78 with
+    /// `start() settled after 2144 ms with: QUIC cluster server was stopped while its bind was still
+    /// in flight`. Change the cause or the selection and that test is what catches you.
     private void closeOrphanedChannel(Channel orphan, Promise<Unit> promise) {
         log.warn("QUIC cluster server bound on UDP port {} after stop() had already run — closing the orphan (#1456)",
                  ((InetSocketAddress) orphan.localAddress()).getPort());
