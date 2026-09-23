@@ -284,7 +284,7 @@ test_deploy_multipart_blueprint() {
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 60 \
         || log_warn "deploy: cluster did not quiesce before blueprint deploy — deploy may race a reshuffle"
 
-    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    stream_delete_if_present "$STREAM_NAME"
     if ! push_blueprint "$STREAM_BP" >/dev/null; then
         log_fail "Failed to push blueprint ${STREAM_BP}"
         return 1
@@ -517,7 +517,7 @@ cleanup() {
         || log_warn "cleanup: ${STREAM_BP} still has active instances — next test may contend for replica placement"
 
     # Now the stream delete can actually take effect, with nothing recreating it.
-    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    stream_delete_if_present "$STREAM_NAME"
 
     # NOT waited on: "stream gone after delete". Measured 2026-08-12 — that wait can never
     # succeed here and timed out at 240s: the test-stream-multipart SLICE is still deployed,

@@ -93,14 +93,24 @@ test_subscriber_receives_events() {
     # Allow replication / partition routing to settle.
     sleep 2
 
-    # Read events back via the streams read CLI (STREAM_READ → /api/v1/streams/read/<name>/<partition>).
-    local result event_count
-    result=$(aether_json streams read "$STREAM_NAME" 0) || {
-        log_fail "streams read failed for ${STREAM_NAME} partition 0"
+    # Read events back via the streams read CLI
+    # (STREAM_READ → /api/v1/streams/{namespace}/{stream}/{version}/read/<partition>).
+    #
+    # The CLI takes the CATALOG IDENTITY, never a bare name: #1044 made a bare name a hard error
+    # ("is a bare stream name, which is ambiguous: it names no namespace"), because the bare form
+    # used to default to `system:`, which holds no app stream. `stream_identity` resolves it from
+    # the live catalog, so this cannot drift again.
+    local result event_count identity
+    identity=$(stream_identity "$STREAM_NAME") || {
+        log_fail "stream_identity ${STREAM_NAME} failed — stream absent from the catalog"
+        return 1
+    }
+    result=$(aether_json streams read "$identity" 0) || {
+        log_fail "streams read failed for ${identity} partition 0"
         return 1
     }
     if [ -z "$result" ]; then
-        log_fail "streams read returned empty response for ${STREAM_NAME} partition 0"
+        log_fail "streams read returned empty response for ${identity} partition 0"
         return 1
     fi
     # ReadEventsResponse → {"events":[{"offset":..., "data":..., "timestamp":...}]}.
