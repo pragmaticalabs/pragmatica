@@ -11,7 +11,7 @@ import java.util.List;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.api.ManagementServerError;
-import org.pragmatica.aether.api.routes.StreamRoutes.StreamCreateRequest;
+import org.pragmatica.aether.api.routes.StreamApiRoutes.StreamCreateRequest;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StreamEntityLogSubstrate;
@@ -194,7 +194,7 @@ class StreamRoutesReservedPrefixTest {
             manager.createStream(StreamConfig.streamConfig("topic:foo"))
                    .onFailure(cause -> fail("internal creation must succeed: " + cause.message()));
 
-            legacyRoutes(manager).createStream(new StreamCreateRequest("topic:foo", 4))
+            legacyCreate(manager).createStream(new StreamCreateRequest("topic:foo", 4))
                                  .onSuccess(response -> fail("an existing reserved name must be refused, not reported as '"
                                                              + response.status() + "'"))
                                  .onFailure(cause -> assertReserved(cause, "topic:foo", "topic:"));
@@ -313,7 +313,7 @@ class StreamRoutesReservedPrefixTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
 
         try {
-            legacyRoutes(manager).createStream(new StreamCreateRequest(name, 4))
+            legacyCreate(manager).createStream(new StreamCreateRequest(name, 4))
                                  .onSuccess(_ -> fail("a create under a reserved prefix must be refused: " + name))
                                  .onFailure(cause -> assertReserved(cause, name, prefix));
 
@@ -343,6 +343,11 @@ class StreamRoutesReservedPrefixTest {
     private static void assertReserved(Cause cause, String streamName, String prefix) {
         assertThat(cause).isEqualTo(new ManagementServerError.ReservedStreamName(streamName, prefix));
         assertThat(((ManagementServerError) cause).httpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /// #968: the body-carried create lives in `StreamApiRoutes` now (same guards, same order).
+    private static StreamApiRoutes legacyCreate(StreamPartitionManager manager) {
+        return catalogRoutes(manager, StreamNamespacesService.inMemory());
     }
 
     private static StreamRoutes legacyRoutes(StreamPartitionManager manager) {

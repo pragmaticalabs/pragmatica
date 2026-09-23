@@ -162,7 +162,7 @@ public enum ManagementRoute {
     // the same body-carried-identity shape as CONSUMER_GROUP_JOIN/LEAVE. ManagementServer's
     // pre-auth write-gate (STREAM_IDENTITY_WRITE_ROUTES) resolves identity from route-match + path
     // params, so it structurally cannot see a body-carried name; CREATE is protected instead by a
-    // separate, post-auth, handler-level guard in StreamRoutes#createFreshStream (see
+    // separate, post-auth, handler-level guard in StreamApiRoutes#createStream(StreamCreateRequest) (see
     // ManagementServer's rejectSystemStreamWrite doc for the full argument).
     STREAM_CREATE(POST, "/streams", List.of(), taskGroup(STREAMING)),
     // Catalog-scoped read-only ports (management-api-versioning-spec.md §3.2): identity params

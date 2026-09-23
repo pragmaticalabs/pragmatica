@@ -133,7 +133,7 @@ class SystemStreamWriteGateTest {
         }
 
         /// [ManagementRoute#STREAM_CREATE] is deliberately excluded from the gate: it's an
-        /// idempotent create-if-absent (`StreamRoutes.createStreamWithConfig`) — a name collision
+        /// idempotent create-if-absent (`StreamApiRoutes.createStream(StreamCreateRequest)`, #968) — a name collision
         /// with a framework stream returns `{"exists"}` and never mutates it, so no write ever
         /// actually reaches the framework stream regardless of what name the body carries.
         @Test

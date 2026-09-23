@@ -39,4 +39,4 @@ if [ ! -f "$JAR_FILE" ]; then
     mvn -f "$PROJECT_DIR/pom.xml" package -pl node -am -DskipTests -q
 fi
 
-exec java -jar "$JAR_FILE" "$@"
+exec java -XX:+ExitOnOutOfMemoryError -jar "$JAR_FILE" "$@"

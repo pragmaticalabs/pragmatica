@@ -470,7 +470,7 @@ public sealed interface NodeUserDataRenderer {
         sb.append("set -euo pipefail\n");
         sb.append("PEERS_ARG=\"\"\n");
         sb.append("if [ -n \"${AETHER_PEERS:-}\" ]; then PEERS_ARG=\"--peers=${AETHER_PEERS}\"; fi\n");
-        sb.append("exec java ");
+        sb.append("exec java -XX:+ExitOnOutOfMemoryError ");
         if (!jvmArgs.isEmpty()) {
             sb.append(jvmArgs).append(' ');
         }
