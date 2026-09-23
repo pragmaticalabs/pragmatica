@@ -33,7 +33,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// - **absent** -- no `LATEST` and no `snapshot-*.dat` on disk, established by LOOKING, never inferred
 ///   from a read that failed: readiness is legitimate, metadata starts empty;
 /// - **failed** -- something is on disk and nothing restores: `createAll` REFUSES, naming the instance
-///   and the cause, and the gate never leaves `LOADING_SNAPSHOT`;
+///   and the cause. Readiness is never signalled, and the half-built setup (gate included) is
+///   discarded as `AetherNode` aborts the boot -- so the assertion below is on the REFUSAL, not on a
+///   gate left in `LOADING_SNAPSHOT` for someone to read; no node survives to expose one;
 /// - **restored** -- readiness is signalled with the snapshot applied. #1353's fallback to an older
 ///   retained snapshot counts as restored (WARNed by the manager), not as failed.
 ///

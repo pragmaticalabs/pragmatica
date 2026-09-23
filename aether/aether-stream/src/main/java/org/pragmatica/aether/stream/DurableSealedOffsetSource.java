@@ -5,8 +5,12 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.storage.MetadataSnapshot;
 import org.pragmatica.storage.SnapshotManager;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// Point-in-time source of the sealed watermarks a RESTART would rebuild (#1345) — the only bound WAL
@@ -23,6 +27,8 @@ import org.pragmatica.storage.SnapshotManager;
 /// consulted per partition.
 @FunctionalInterface
 public interface DurableSealedOffsetSource {
+    Logger LOG = LoggerFactory.getLogger(DurableSealedOffsetSource.class);
+
     LastSealedOffsetSource current();
 
     /// Nothing durable — truncation never discards anything.
@@ -42,17 +48,30 @@ public interface DurableSealedOffsetSource {
     /// means process-crash-durable.
     ///
     /// #1013 made "unreadable" a failure distinct from "none yet" at the manager; here both still mean "keep
-    /// the WAL". This is a truncation tick, not the boot path -- the boot that could have refused already ran
-    /// -- and the manager WARNs the read failure itself.
+    /// the WAL". This is a truncation tick, not the boot path -- the boot that could have refused already ran.
+    ///
+    /// The failure is WARNed HERE, at [#onDisk], and that is not redundant with the manager's own logging. The
+    /// manager WARNs per FILE (`Snapshot restore failed`) and per aggregate verdict
+    /// (`DefaultSnapshotManager.reportNothingRestorable`); neither says what THIS caller then did about it.
+    /// Snapshots that tear after a good boot make every subsequent tick fail, and the operator's only
+    /// running-node signal is that this tick kept the WAL instead of truncating.
     static DurableSealedOffsetSource fromLatestSnapshot(SnapshotManager snapshotManager) {
         return () -> onDisk(snapshotManager);
     }
 
     private static LastSealedOffsetSource onDisk(SnapshotManager snapshotManager) {
         return snapshotManager.restoreFromLatest()
+                              .onFailure(DurableSealedOffsetSource::reportUnreadable)
                               .fold(_ -> LastSealedOffsetSource.none(),
                                     restored -> restored.map(DurableSealedOffsetSource::indexOf)
                                                         .or(LastSealedOffsetSource.none()));
+    }
+
+    /// #1013 round 2: the truncation tick's own signal. Nothing durable is reported, so nothing is discarded
+    /// and the WAL is kept -- data stays safe, which is why this is a WARN and not an ERROR, and why it is
+    /// worth saying at all: without it the safe outcome is also a silent one.
+    private static void reportUnreadable(Cause cause) {
+        LOG.warn("No durable sealed offset this tick: {}. Keeping the WAL; nothing is truncated.", cause.message());
     }
 
     private static LastSealedOffsetSource indexOf(MetadataSnapshot snapshot) {

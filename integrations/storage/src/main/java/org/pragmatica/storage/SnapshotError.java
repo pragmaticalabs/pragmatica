@@ -1,5 +1,7 @@
 package org.pragmatica.storage;
 
+import java.nio.file.Path;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
@@ -59,6 +61,22 @@ public sealed interface SnapshotError extends Cause {
             return latest
                  + " and none of the " + retained
                  + " other retained snapshot(s) restores; refusing to start with EMPTY metadata. "
+                 + "See docs/operators/runbooks/backup-recovery.md";
+        }
+    }
+
+    /// #1013 round 2: the snapshot directory is absent and so is the data root that should hold it.
+    /// An absent snapshot directory under a reachable data root is a first boot -- nothing was ever
+    /// written. Under a data root that is itself absent or unreadable the same absence means the
+    /// volume never mounted, and the two are indistinguishable from the snapshot directory alone.
+    /// Refusing keeps a node from coming up read-ready on empty metadata because its disk did not
+    /// arrive: #1013's own defect, reached by a different route.
+    record DataRootUnreachable(Path dataRoot, String detail) implements SnapshotError {
+        @Override
+        public String message() {
+            return "Snapshot directory is absent and its data root " + dataRoot + " " + detail
+                 + "; cannot tell a first boot from a volume that never mounted, "
+                 + "refusing to start with EMPTY metadata. "
                  + "See docs/operators/runbooks/backup-recovery.md";
         }
     }

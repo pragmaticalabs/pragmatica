@@ -326,6 +326,46 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         assertThat(durable.current().lastSealedOffset(STREAM, PARTITION)).as("unreadable snapshot: nothing durable").isEqualTo(-1L);
     }
 
+    /// #1013 round 2: the truncation tick's own operator signal. `onDisk` folds the manager's failure to
+    /// "nothing durable" -- the WAL-keeping direction, so no data is lost -- and before this the fold was
+    /// SILENT. A node whose snapshots tear AFTER a good boot has no boot left to refuse, so every subsequent
+    /// tick failed and emitted nothing; the sibling above pins the `-1` behaviour, this pins the evidence an
+    /// operator gets that it is happening.
+    ///
+    /// Control against a vacuous pass: the same appender is asserted TWICE, on both arms -- EMPTY while the
+    /// snapshot still restores, then exactly one line once it is torn. A capture matching everything fails
+    /// the first arm; a capture matching nothing (wrong logger name, appender never attached) fails the
+    /// second.
+    @Test
+    void fromLatestSnapshot_snapshotOnDiskUnreadable_warnsTheTruncationTick() {
+        var warnings = new CopyOnWriteArrayList<String>();
+        var capture = capturingWarnings(warnings, DurableSealedOffsetSource.class.getName());
+
+        try {
+            var store = MetadataStore.inMemoryMetadataStore("streams");
+            var snapshotDir = walDir.resolve("snapshots");
+            var snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(snapshotDir, "node-1"));
+            var durable = DurableSealedOffsetSource.fromLatestSnapshot(snapshots);
+
+            store.putRef("streams/" + STREAM + "/" + PARTITION + "/0-99", blockId(1));
+            snapshots.forceSnapshot();
+            durable.current();
+
+            assertThat(warnings).as("control: a tick whose snapshot restores warns nothing").isEmpty();
+
+            var latest = snapshotDir.resolve(FileOps.readString(snapshotDir.resolve("LATEST")).unwrap().trim());
+            var bytes = FileOps.readBytes(latest).unwrap();
+
+            FileOps.writeBytes(latest, Arrays.copyOf(bytes, bytes.length / 2)).unwrap();
+            durable.current();
+
+            assertThat(warnings).as("a tick that cannot read the snapshot says so").hasSize(1);
+            assertThat(warnings.getFirst()).contains("Keeping the WAL; nothing is truncated.");
+        } finally {
+            capture.run();
+        }
+    }
+
     /// Publish [#EVENTS], let the sealer drain to the in-memory `index`, truncate the WALs off that index and
     /// close (the crash). Returns the in-memory sealed watermark at the moment of the truncate.
     private long publishSealAndTruncate(SegmentIndex index, DurableSealedOffsetSource durable) {
@@ -370,13 +410,20 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     /// dedicated logger config, so the appender lands on the root config and sees every logger — the filter on
     /// the logger NAME is what keeps another test's background sealer retry out of the assertions.
     private static Runnable capturingWarnings(List<String> sink) {
+        return capturingWarnings(sink, StreamPartitionManager.class.getName());
+    }
+
+    /// Same capture, for a named logger: #1013 round 2 pins a WARN raised by
+    /// [DurableSealedOffsetSource], not by the manager, and the logger-name filter is exactly what keeps the
+    /// two apart.
+    private static Runnable capturingWarnings(List<String> sink, String loggerName) {
         var context = (LoggerContext) LogManager.getContext(false);
         var config = context.getConfiguration();
-        var loggerConfig = config.getLoggerConfig(StreamPartitionManager.class.getName());
+        var loggerConfig = config.getLoggerConfig(loggerName);
         var appender = new AbstractAppender("held-back-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
             @Override
             public void append(LogEvent event) {
-                if (event.getLevel() == Level.WARN && StreamPartitionManager.class.getName().equals(event.getLoggerName())) {
+                if (event.getLevel() == Level.WARN && loggerName.equals(event.getLoggerName())) {
                     sink.add(event.getMessage().getFormattedMessage());
                 }
             }

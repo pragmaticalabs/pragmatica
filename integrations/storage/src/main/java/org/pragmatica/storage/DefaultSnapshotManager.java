@@ -17,6 +17,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -284,11 +285,45 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// never inferred from a read that failed.
     private Result<List<Path>> previousRetained(Option<Path> unreadableLatest) {
         if (!exists(config.snapshotPath())) {
-            return Result.success(List.of());
+            return noSnapshotDirectory();
         }
 
         return listSnapshotFiles(SnapshotError.ReadFailed::new).map(files -> excludingUnreadable(files, unreadableLatest))
                                 .map(List::reversed);
+    }
+
+    /// #1013 round 2: "absent, established by looking" needs something to have looked AT. An absent
+    /// snapshot directory under a data root that is present and listable is a first boot -- nothing
+    /// was ever written there. Under a data root that is itself absent, or that refuses a listing,
+    /// the same absence means the volume never mounted, and reading it as a first boot is exactly
+    /// the defect #1013 closes on the torn-snapshot route: a node coming up read-ready on empty
+    /// metadata. The two are indistinguishable from the snapshot directory alone, so this
+    /// establishes the root before concluding anything about the directory under it.
+    ///
+    /// BOUND, stated because it is NOT closed: a volume whose MOUNT POINT exists but is unmounted
+    /// presents an empty, listable directory, and is still read here as a first boot. Closing that
+    /// needs evidence this layer does not hold -- a provisioning-time sentinel written onto the
+    /// volume itself, or a mount check at the layer that owns the data-dir configuration.
+    private Result<List<Path>> noSnapshotDirectory() {
+        var dataRoot = config.snapshotPath().getParent();
+
+        if (dataRoot == null || exists(dataRoot)) {
+            return rootPresent(dataRoot);
+        }
+
+        return new SnapshotError.DataRootUnreachable(dataRoot, "does not exist").result();
+    }
+
+    /// A data root that exists must also be readable: an unlistable one cannot establish that the
+    /// snapshot directory is genuinely absent rather than merely invisible.
+    private static Result<List<Path>> rootPresent(Path dataRoot) {
+        if (dataRoot == null) {
+            return Result.success(List.of());
+        }
+
+        return list(dataRoot).mapError(cause -> new SnapshotError.DataRootUnreachable(dataRoot,
+                                                                                      "cannot be listed: " + cause.message()))
+                    .map(_ -> List.of());
     }
 
     private static List<Path> excludingUnreadable(List<Path> files, Option<Path> unreadableLatest) {
@@ -316,7 +351,19 @@ final class DefaultSnapshotManager implements SnapshotManager {
             return Result.success(none());
         }
 
-        return new SnapshotError.NothingRestorable(describeLatest(unreadableLatest), candidates.size()).result();
+        return new SnapshotError.NothingRestorable(describeLatest(unreadableLatest),
+                                                   candidates.size()).<Option<MetadataSnapshot>>result()
+                                                                     .onFailure(DefaultSnapshotManager::reportNothingRestorable);
+    }
+
+    /// #1013 round 2: the AGGREGATE verdict, restored after the fix that made this state detectable
+    /// removed the only signal for it. [#readAndValidateSnapshot]'s per-file WARN says one file did
+    /// not read; this says every one of them failed and the metadata is gone. On the boot path the
+    /// caller turns the failure into a named boot refusal, which is louder -- but on the truncation
+    /// tick (`DurableSealedOffsetSource.onDisk`) there is no boot left to refuse, and a node whose
+    /// snapshots tear AFTER a good boot would otherwise fail every tick in silence.
+    private static void reportNothingRestorable(Cause cause) {
+        LOG.warn("{}", cause.message());
     }
 
     private static String describeLatest(Option<Path> unreadableLatest) {

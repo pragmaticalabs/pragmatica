@@ -1033,8 +1033,13 @@ public final class StorageFactory {
     /// `snapshotLoaded()` with only a WARN and an ABSENT "Restored snapshot" line to tell it apart
     /// from a first boot; the node then came up read-ready on empty metadata and replayed its WAL
     /// as if the metadata had never existed. Now it is a boot failure naming the instance, through
-    /// the same `Result` path #253 gave a tier that fails to build, and the gate stays in
-    /// `LOADING_SNAPSHOT`.
+    /// the same `Result` path #253 gave a tier that fails to build.
+    ///
+    /// What the gate does on that path is NOT an observable state: `snapshotLoaded()` is simply
+    /// never called, [#assembleSetup] never constructs the `StorageSetup`, `createAll` fails and
+    /// `AetherNode` aborts the boot -- so the gate object is discarded with the rest of the
+    /// half-built setup. No operator can read it in `LOADING_SNAPSHOT`, because there is no node to
+    /// read it from; the refusal itself is the whole operator-visible surface.
     private static Result<Unit> restoreAndSignalReady(String name,
                                                       SnapshotManager snapshotManager,
                                                       MetadataStore metadataStore,
