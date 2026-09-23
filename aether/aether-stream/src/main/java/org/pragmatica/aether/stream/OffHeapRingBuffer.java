@@ -355,8 +355,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Append and make the event visible at once — the ring has no durability gate of its own. Used by
-    /// standalone rings and by WAL recovery, whose records are durable by construction. An owner or
-    /// replica append that must first become durable goes through [#appendOrdered].
+    /// standalone rings. An owner or replica append that must first become durable goes through
+    /// [#appendOrdered], and so does WAL recovery (#1387): a replayed record is durable by construction
+    /// but its acks did not survive the restart.
     public Result<Long> append(byte[] payload, long timestamp) {
         return notifyingAfter(appendVisible(payload, timestamp));
     }
