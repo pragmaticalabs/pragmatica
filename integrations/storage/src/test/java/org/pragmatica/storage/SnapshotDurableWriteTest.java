@@ -392,72 +392,25 @@ class SnapshotDurableWriteTest {
     /// #1013: the snapshot directory does not exist yet either (the first boot of a node whose data
     /// dir was just created). Absent, by inspection: success with none.
     ///
-    /// #1013 round 2 narrowed what this specifies WITHOUT changing it, and the fixture is why: the
-    /// missing directory sits under `tempDir`, which EXISTS. That was always the case it modelled --
-    /// "the first boot of a node whose data dir was just created" is its own words -- so the data-root
-    /// guard added below leaves it green. It is now the CONTROL for
-    /// `restoreFromLatest_dataRootMissing_failsRatherThanReadingAsFirstBoot`: same absent snapshot
-    /// directory, present data root, still a first boot.
+    /// `[unverified: unmounted volume]` #1013 round 2 -- what this test does NOT distinguish, stated
+    /// so the gap is not mistaken for coverage. An absent snapshot directory reads as a first boot
+    /// whether nothing was ever written OR the volume never mounted. Refusing on an absent DATA ROOT
+    /// was implemented here and reverted: "data root absent" is the ORDINARY state wherever `/data`
+    /// is not writable (CI, every laptop), where the disk tier degrades to memory+DHT by design --
+    /// `HermeticStorage` (#1276) builds exactly that state on purpose, and refusing on it failed 52
+    /// aether/node boot tests across 18 classes that pin "boot never fails on an unmountable data dir".
+    ///
+    /// The discriminator lives one layer up, in `StorageFactory`, which knows whether the disk tier
+    /// ARMED or degraded. See the note on `DefaultSnapshotManager.previousRetained`; it needs its own
+    /// ticket and is out of #1013's scope.
     @Test
     void restoreFromLatest_snapshotDirectoryMissing_isAbsent() {
         var missing = tempDir.resolve("never-created");
         var manager = SnapshotManager.snapshotManager(store, snapshotConfig(missing, 100, 600_000, 5, NODE_ID));
 
         assertThat(FileOps.exists(missing)).isFalse();
-        // Fixture control: the DATA ROOT is present -- that is what makes this a first boot rather
-        // than an unmounted volume, and it is the only difference from the sibling test below.
-        assertThat(FileOps.exists(tempDir)).isTrue();
         assertThat(manager.restoreFromLatest().unwrap().isEmpty()).isTrue();
         assertThat(appender.warns()).isEmpty();
-    }
-
-    /// #1013 round 2: `defaultStreamStorage`'s javadoc promises boot "never fails on an unmountable
-    /// data dir" -- so on exactly that boot the snapshot directory is absent because the VOLUME is not
-    /// there, not because nothing was ever written, and the node came up read-ready on empty metadata.
-    /// That is #1013's own defect reached by a second route: absence "established by looking" with
-    /// nothing to look AT.
-    ///
-    /// The control is `restoreFromLatest_snapshotDirectoryMissing_isAbsent` above: identical absent
-    /// snapshot directory, data root PRESENT, still a success with none. Only the root's absence moves
-    /// the outcome, so this cannot pass by making every absent directory a failure.
-    @Test
-    void restoreFromLatest_dataRootMissing_failsRatherThanReadingAsFirstBoot() {
-        var unmounted = tempDir.resolve("never-mounted-volume");
-        var missing = unmounted.resolve("snapshots");
-        var manager = SnapshotManager.snapshotManager(store, snapshotConfig(missing, 100, 600_000, 5, NODE_ID));
-
-        // Fixture control: BOTH must be absent, or the test passes for the wrong reason.
-        assertThat(FileOps.exists(missing)).isFalse();
-        assertThat(FileOps.exists(unmounted)).isFalse();
-
-        var restored = manager.restoreFromLatest();
-
-        assertThat(restored.isFailure()).as("an absent snapshot dir under an absent data root is not a first boot")
-                                        .isTrue();
-        restored.onFailure(cause -> assertThat(cause).isInstanceOf(SnapshotError.DataRootUnreachable.class));
-    }
-
-    /// #1013 round 2: the data root exists but refuses a listing (here: it is a regular file). Absence
-    /// cannot be established by looking at a root that cannot be read, so this is a failure too --
-    /// the same reasoning `restoreFromLatest_snapshotDirectoryUnlistable_fails` applies one level down.
-    @Test
-    void restoreFromLatest_dataRootUnlistable_fails() {
-        var rootAsAFile = tempDir.resolve("root-as-a-file");
-
-        FileOps.writeString(rootAsAFile, "not a directory").unwrap();
-
-        var missing = rootAsAFile.resolve("snapshots");
-        var manager = SnapshotManager.snapshotManager(store, snapshotConfig(missing, 100, 600_000, 5, NODE_ID));
-
-        // Fixture control: the root must exist and must refuse a listing.
-        assertThat(FileOps.exists(missing)).isFalse();
-        assertThat(FileOps.exists(rootAsAFile)).isTrue();
-        assertThat(FileOps.list(rootAsAFile).isFailure()).isTrue();
-
-        var restored = manager.restoreFromLatest();
-
-        assertThat(restored.isFailure()).as("an unreadable data root cannot establish a first boot").isTrue();
-        restored.onFailure(cause -> assertThat(cause).isInstanceOf(SnapshotError.DataRootUnreachable.class));
     }
 
     /// #1013 round 2: the AGGREGATE verdict is WARNed, not only returned. The PR that made this state

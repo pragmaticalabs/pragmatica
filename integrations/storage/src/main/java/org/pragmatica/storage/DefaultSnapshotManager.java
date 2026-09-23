@@ -283,9 +283,26 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// #1013: a snapshot directory that does not exist holds nothing, by inspection. One that exists
     /// and cannot be listed is a failure, not an empty list -- absence is established by looking,
     /// never inferred from a read that failed.
+    ///
+    /// #1013 round 2 -- a KNOWN, DELIBERATELY UNCLOSED conflation, recorded here rather than fixed:
+    /// an absent snapshot directory reads as a first boot even when it is absent because the VOLUME
+    /// is not there. `StorageFactory.defaultStreamStorage`'s javadoc promises boot "never fails on an
+    /// unmountable data dir", so on that boot the node comes up read-ready on empty metadata.
+    ///
+    /// Refusing HERE was implemented and REVERTED, because the discriminator it needs does not exist
+    /// at this layer. "Data root absent" is not evidence of a vanished volume: it is the ORDINARY
+    /// state wherever `/data` is not writable -- CI and every developer laptop -- where the disk tier
+    /// degrades to memory+DHT by design (`handleDiskTierUnavailable`, #1276's `HermeticStorage`).
+    /// Refusing on it fails 52 node boot tests across 18 classes that pin exactly that guarantee.
+    ///
+    /// What WOULD close it is one layer up, where the intent is known: `StorageFactory` sees whether
+    /// the disk tier ARMED or degraded. An absent snapshot directory under a disk tier that armed is a
+    /// genuine first boot; under a tier that degraded, durable metadata was never possible and empty
+    /// is expected. Threading that single bit into [SnapshotConfig] would let the manager tell them
+    /// apart without guessing from the filesystem. Out of #1013's scope; needs its own ticket.
     private Result<List<Path>> previousRetained(Option<Path> unreadableLatest) {
         if (!exists(config.snapshotPath())) {
-            return noSnapshotDirectory();
+            return Result.success(List.of());
         }
 
         return listSnapshotFiles(SnapshotError.ReadFailed::new).map(files -> excludingUnreadable(files, unreadableLatest))
@@ -304,27 +321,6 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// presents an empty, listable directory, and is still read here as a first boot. Closing that
     /// needs evidence this layer does not hold -- a provisioning-time sentinel written onto the
     /// volume itself, or a mount check at the layer that owns the data-dir configuration.
-    /// `getParent()` is null only for a filesystem root, which has no enclosing volume to establish --
-    /// wrapped here rather than null-checked, so the "no root to check" case stays a first boot.
-    private Result<List<Path>> noSnapshotDirectory() {
-        return Option.option(config.snapshotPath().getParent())
-                     .map(DefaultSnapshotManager::dataRootReachable)
-                     .or(Result.success(List.of()));
-    }
-
-    /// A data root must be present AND readable: an absent one means the volume never mounted, and an
-    /// unlistable one cannot establish that the snapshot directory is genuinely absent rather than
-    /// merely invisible.
-    private static Result<List<Path>> dataRootReachable(Path dataRoot) {
-        if (!exists(dataRoot)) {
-            return new SnapshotError.DataRootUnreachable(dataRoot, "does not exist").result();
-        }
-
-        return list(dataRoot).mapError(cause -> new SnapshotError.DataRootUnreachable(dataRoot,
-                                                                                      "cannot be listed: " + cause.message()))
-                   .map(_ -> List.of());
-    }
-
     private static List<Path> excludingUnreadable(List<Path> files, Option<Path> unreadableLatest) {
         return unreadableLatest.map(latest -> excludingLatest(files, latest))
                                .or(files);
