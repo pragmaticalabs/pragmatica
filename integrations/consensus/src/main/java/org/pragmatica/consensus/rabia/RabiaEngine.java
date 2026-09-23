@@ -816,10 +816,26 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void registerBatch(Batch<C> batch, Consumer<Batch<C>> onBatchPrepared) {
-        pendingBatches.put(batch.id(), batch);
+        // #958: the id is a content hash, so a second local submission of identical commands
+        // must merge its correlationId into the already-pending batch, exactly as
+        // doHandleNewBatch does for a remote one. A plain put() replaced the pending batch,
+        // dropping the first caller's correlationId; commitChanges() then completed only the
+        // survivor and the first caller saw ApplyTimeout although its command had applied.
+        mergePending(batch);
         metrics.updatePendingBatches(self, pendingBatches.size());
         onBatchPrepared.accept(batch);
         triggerPhaseIfNeeded();
+    }
+
+    /// The one way a batch enters `pendingBatches` while live: merge by content-derived id.
+    /// `compute()` makes the merge atomic; the lambda routes through `Option.option(existing)`
+    /// so the absent case is expressed via `fold` rather than a raw `existing == null` sentinel.
+    /// Same id ⟹ same commands, so only correlationIds are combined, via the state machine.
+    private void mergePending(Batch<C> incoming) {
+        pendingBatches.compute(incoming.id(),
+                               (_, existing) -> Option.option(existing).fold(() -> incoming,
+                                                                             current -> stateMachine.merge(current,
+                                                                                                           incoming)));
     }
 
     private void broadcastBatch(Batch<C> batch) {
@@ -942,15 +958,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doHandleNewBatch(Batch<C> incoming) {
-        // Use compute() for atomic merge to avoid race conditions. The compute
-        // lambda routes through `Option.option(existing)` so the absent case is
-        // expressed via `fold` rather than a raw `existing == null` sentinel.
-        // Same id ⟹ same commands (content-derived id), so we merge correlationIds
-        // directly via the state machine.
-        pendingBatches.compute(incoming.id(),
-                               (_, existing) -> Option.option(existing).fold(() -> incoming,
-                                                                             current -> stateMachine.merge(current,
-                                                                                                           incoming)));
+        mergePending(incoming);
         if (engineState.get().isInPhase()) {
             // Already in phase - broadcast our proposal for this batch if not already proposed
             broadcastOwnProposalIfNeeded();
