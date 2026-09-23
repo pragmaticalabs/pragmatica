@@ -166,8 +166,8 @@ class StorageRoutesTest {
             }
 
             @Override
-            public org.pragmatica.lang.Option<org.pragmatica.storage.MetadataSnapshot> restoreFromLatest() {
-                return org.pragmatica.lang.Option.none();
+            public org.pragmatica.lang.Result<org.pragmatica.lang.Option<org.pragmatica.storage.MetadataSnapshot>> restoreFromLatest() {
+                return org.pragmatica.lang.Result.success(org.pragmatica.lang.Option.none());
             }
 
             @Override
