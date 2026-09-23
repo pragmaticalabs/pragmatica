@@ -125,8 +125,9 @@ class SliceVersionLifecycleTest {
         return await().atMost(WAIT_TIMEOUT)
                       .pollInterval(POLL_INTERVAL)
                       .alias("no node's LOCAL /api/v1/versions named " + TEST_ARTIFACT
-                             + " — with instances=1 exactly one node holds the registry; the value below is every "
-                             + "management port's body joined by ' | '")
+                             + " — with instances=1 exactly one node holds that registry, so ask every node, "
+                             + "never one node twice; the quoted input below is every management port's body "
+                             + "joined by ' | '")
                       .until(this::hostingNodeVersionsBody, body -> body.contains(TEST_ARTIFACT));
     }
 
