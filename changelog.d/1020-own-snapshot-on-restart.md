@@ -56,6 +56,24 @@
   purpose. Changing `> 0` to `>= 0` previously left all 806 tests green. [verified:
   `RabiaSyncAdoptionOwnSnapshotTest#resyncFromActive_ownDiskSnapshotAtTheLivePhase_isNotInstalled` — 1 red of 810
   under exactly that mutation, `expected: null but was: [111, 119, 110]`]
+- **A failed own-snapshot restore does not activate the node, and that is now SAID and PINNED rather
+  than left as a side effect.** `activateWithoutAdoption` always activated before this ticket; routing
+  its own-restore arm through `restoreState` — whose `activate()` hangs off `onSuccessRun` — means a
+  `restoreSnapshot` that FAILS now leaves the engine `Syncing`, re-entering the same branch on every
+  retry tick. It is fail-closed (such a node never serves the empty store this ticket is about), but
+  the docstring claimed activation unconditionally and nothing covered the failure. The docstring now
+  states it, and the ERROR names the CONSEQUENCE — node NOT active, serves no requests, every retry
+  re-enters — instead of logging a bare cause object, because that line is the entire operator surface
+  for the state: the periodic stuck-in-`Syncing` WARN is structurally suppressed on this path (#1447).
+  **Whether the wedge is right, whether it should be bounded or terminal, and what readiness reports
+  meanwhile are #1013's decisions and are deliberately NOT taken here.** The pin is an ENABLED
+  tripwire, not a `@Disabled` placeholder: it asserts the CURRENT behaviour and its failure message
+  names #1013 as the ticket that may legitimately flip it, so the change cannot be made silently.
+  [verified: `RabiaOwnRestoreFailureTest#ownRestoreFails_logsAtErrorNamingTheConsequence` — 1 red of
+  813 when the bare-cause log is restored; `#ownRestoreFails_staysInactive_untilTicket1013Decides` —
+  1 red of 813 when a failed restore is made to activate anyway, which is the change #1013 might make;
+  `#ownRestoreSucceeds_activates` is the control that makes the tripwire's negative assertion mean
+  "genuinely did not activate" rather than "fixture never got there"]
 - What this does NOT earn, stated so a sweep returns it beside the claim: the shipped
   `aether/docker/docker-compose.yml` and container `aether.toml` carry no `[backup]` section and mount no volume, so
   a deployment made from them still runs `RabiaPersistence.inMemory()` and loses every KV record — every minted key

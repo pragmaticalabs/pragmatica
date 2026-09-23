@@ -1191,6 +1191,20 @@ public class RabiaEngine<C extends Command> {
     /// installed through [#restoreState] (phase advance-only, pending batches, re-persist, activate,
     /// replay, notify). A live phase at or past the persisted one means the history is already in
     /// the process — a resync from ACTIVE — and installing the older snapshot would regress it.
+    ///
+    /// **This method does not always activate, despite its name and the paragraph above.** The
+    /// own-restore arm routes through [#restoreState], whose `activate()` hangs off `onSuccessRun`:
+    /// a `restoreSnapshot` that FAILS therefore skips activation entirely and the engine stays
+    /// `Syncing`, re-entering this same branch on every retry tick. Before #1020 this branch
+    /// activated unconditionally, so the behaviour is new here. It is fail-closed — a node that
+    /// cannot read its own snapshot never serves the empty store this ticket is about — and the
+    /// failure is reported by [#logRestoreFailure], which is the ONLY signal on that path (#1447).
+    ///
+    /// Whether that wedge is correct, whether it should be bounded or terminal, and what the
+    /// readiness surface should say while it persists are **#1013's** decisions and deliberately not
+    /// taken here. The current behaviour is pinned by
+    /// `RabiaOwnRestoreFailureTest#ownRestoreFails_staysInactive_untilTicket1013Decides`, which is an
+    /// ENABLED tripwire: changing this reddens it, by design.
     private void activateWithoutAdoption(Option<SavedState<C>> persisted, String reason) {
         persisted.filter(state -> state.lastCommittedPhase()
                                        .compareTo(currentPhase.get()) > 0)
@@ -1257,7 +1271,28 @@ public class RabiaEngine<C extends Command> {
                     .onSuccessRun(this::activate)
                     .onSuccessRun(this::replayStateNotifications)
                     .onSuccessRun(this::notifyStateRestored)
-                    .onFailure(cause -> log.error("Node {} failed to restore state: {}", self, cause));
+                    .onFailure(cause -> logRestoreFailure(cause));
+    }
+
+    /// #1020 — the ONE operator signal on a failed restore, so it names the CONSEQUENCE and not only
+    /// the cause.
+    ///
+    /// A `restoreSnapshot` that fails skips `activate()`, so the engine stays `Syncing` and the retry
+    /// tick re-enters the same branch. The periodic stuck-in-`Syncing` WARN does NOT cover this:
+    /// [#doSynchronize] calls [#warnIfSyncStuck] only after `adoptIfThresholdMet()` returns false, and
+    /// [#adoptCollectedState] resets `syncRounds` on every entry, so a loop that keeps re-entering
+    /// adoption never reaches [#WARN_EVERY_N_SYNC_ROUNDS] — and at `clusterSize` 1 the call is
+    /// unreachable outright (#1447). This line is therefore the whole operator surface for the state,
+    /// which is why it spells out that the node is NOT active rather than logging a bare cause.
+    ///
+    /// Whether a failed restore SHOULD wedge the node, and what readiness reports while it does, is
+    /// **#1013's** decision, not this one's. Pinned by
+    /// `RabiaOwnRestoreFailureTest#ownRestoreFails_staysInactive_untilTicket1013Decides`.
+    private void logRestoreFailure(Cause cause) {
+        log.error("Node {} FAILED to restore state and is NOT active: {}. It stays in sync/retry and serves no "
+                 + "requests; every retry re-enters this same branch until the snapshot can be read.",
+                  self,
+                  cause.message());
     }
 
     /// Fire the state machine's deferred notification burst (cluster-topology-overhaul §5.8,
