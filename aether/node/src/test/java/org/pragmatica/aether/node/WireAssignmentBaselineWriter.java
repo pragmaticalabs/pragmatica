@@ -34,13 +34,20 @@ class WireAssignmentBaselineWriter {
     @EnabledIfSystemProperty(named = "wire.baseline.record", matches = "true")
     void recordBaseline() {
         var header = """
-                     # Wire assignment baseline — #964. GENERATED; re-record with WireAssignmentBaselineWriter.
+                     # Wire assignment baseline — #964, #1450. GENERATED; re-record with WireAssignmentBaselineWriter.
                      #
-                     # TAG  <type> <wire tag>            the tag a peer must agree with to reach the right codec
-                     # ENUM <type> <NAME=ordinal,...>    the ordinal IS the encoding for a @Codec enum
+                     # TAG   <type> <wire tag>            the tag a peer must agree with to reach the right codec
+                     # ENUM  <type> <NAME=ordinal,...>    the ordinal IS the encoding for a @Codec enum
+                     # SHAPE <type> (<name>:<type>,...)   record components in DECLARATION ORDER — the body is a
+                     #                                    positional concatenation, so this list IS the layout
                      #
                      # Every changed line is something a peer running the previous build decodes differently.
                      # Read the diff before committing it.
+                     #
+                     # On a SHAPE line: add / remove / reorder / retype a component = WIRE BREAK (no field count,
+                     # no skip metadata, so an old reader desynchronises rather than ignoring the change).
+                     # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
+                     # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
                      """;
 
         try {
