@@ -1764,6 +1764,14 @@ class StreamConsumerManagerTest {
         /// group)`, `DurableGroupIdentity.groupId(artifactBase, method)`, and `StreamCursorCheckpointKey
         /// (stream, partition, group)` are all node-free, and the node is dropped at the declaration
         /// boundary before any of them is reached.
+        ///
+        /// WHAT THIS TEST CANNOT DETECT, measured rather than assumed. Deleting `distinct()` from
+        /// [TopicGroupDeclarationSource] leaves it GREEN (only the sibling above reddens): the
+        /// DECLARATION forks there, the cursor still does not, because both declarations resolve to the
+        /// same `(stream, partition, group)` subscription. So this is not a `distinct()` pin — it is a
+        /// sensor for the one change that COULD fork a cursor, a node component reaching the group
+        /// identity. Its discriminator is the two-row assertion: under a key whose identity ignores the
+        /// node, this test reddens on that line first.
         @Test
         void twoInstancesOfOneSlice_shareOneCursor_notOnePerInstance() {
             var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
