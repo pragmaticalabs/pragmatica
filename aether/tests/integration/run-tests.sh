@@ -35,6 +35,10 @@ SKIP_BUILD=false
 SKIP_DEPLOY=false
 SKIP_TEARDOWN=false
 SKIP_IMAGE_PUSH=false
+# --keep-on-failure: on a non-zero exit, leave the clusters up for log extraction instead of
+# tearing them down, and pass the same flag to `aether cluster bootstrap` so a failed
+# formation keeps its VMs too. Empty or the flag itself, so it expands safely under set -u.
+KEEP_ON_FAILURE_FLAG=""
 
 RESULTS_FILE="$(mktemp /tmp/aether-test-results.XXXXXX)"
 RESULTS_JSON="${SCRIPT_DIR}/test-results.json"
@@ -115,6 +119,7 @@ while [ $# -gt 0 ]; do
         --skip-build)    SKIP_BUILD=true; shift ;;
         --skip-deploy)   SKIP_DEPLOY=true; shift ;;
         --skip-teardown) SKIP_TEARDOWN=true; shift ;;
+        --keep-on-failure) KEEP_ON_FAILURE_FLAG="--keep-on-failure"; shift ;;
         --skip-image-push) SKIP_IMAGE_PUSH=true; shift ;;
         -h|--help)
             echo "Usage: $0 --env docker|remote|cloud [OPTIONS]"
@@ -126,6 +131,8 @@ while [ $# -gt 0 ]; do
             echo "  --skip-build       Skip build.sh and blueprint builds"
             echo "  --skip-deploy      Skip cluster provisioning (reuse running clusters)"
             echo "  --skip-teardown    Leave clusters running after tests"
+            echo "  --keep-on-failure  On a failed run (or failed bootstrap) leave clusters running for log"
+            echo "                     extraction; a green run still tears down. Cloud VMs stay BILLABLE."
             echo "  --skip-image-push  Skip pushing aether-node.jar + rebuilding remote image (reuse what is already on remote)"
             echo ""
             echo "Environment variables:"
@@ -816,7 +823,7 @@ deploy_docker() {
 # CLOUD_TOML_A / CLOUD_TOML_B must already be resolved (and exported — #441
 # S20) by the Step-2 cloud branch before either function runs.
 bootstrap_cloud_cluster_a() {
-    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 600
+    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 600 ${KEEP_ON_FAILURE_FLAG:+"$KEEP_ON_FAILURE_FLAG"}
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
     # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
@@ -838,7 +845,7 @@ bootstrap_cloud_cluster_a() {
 }
 
 bootstrap_cloud_cluster_b() {
-    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 600
+    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 600 ${KEEP_ON_FAILURE_FLAG:+"$KEEP_ON_FAILURE_FLAG"}
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     local cluster_b_ip
     cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
@@ -1141,7 +1148,43 @@ A_SUITES_SELECTED=${#A_SUITES[@]}
 # Install EXIT trap so teardown runs even when later steps fail (set -e exit, errors,
 # unbound variables). Without this, any failure between Step 2 and Step 11 leaks
 # bootstrapped clusters — on cloud, that is real €/hour cost.
-trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT
+#
+# The handler re-exits with the run's real status. Without that, a run aborted by `set -u`
+# exited 0 and read as success to any caller checking it. `$?` alone cannot carry it: macOS
+# /bin/bash 3.2 enters an EXIT trap with `$?`=0 after an unbound-variable abort. So success is
+# proven only by reaching the final exit (RUN_REACHED_END); a 0 without it is an abort.
+RUN_REACHED_END=false
+on_exit() {
+    local rc=$?
+    if [ "$rc" -eq 0 ] && [ "$RUN_REACHED_END" != true ]; then
+        log_error "Run aborted before completion (no final result) — exiting 1, not 0"
+        rc=1
+    fi
+    if [ "$SKIP_TEARDOWN" = false ]; then
+        if [ -n "$KEEP_ON_FAILURE_FLAG" ] && [ "$rc" -ne 0 ]; then
+            preserve_on_failure "$rc"
+        else
+            teardown
+        fi
+    fi
+    exit "$rc"
+}
+
+# --keep-on-failure path: nothing is destroyed; the PG firewall is still closed because log
+# extraction does not need the shared PG VM reachable.
+preserve_on_failure() {
+    log_step "Run failed (rc=$1) with --keep-on-failure — clusters PRESERVED for log extraction"
+    if [ "$ENV_TYPE" = "cloud" ]; then
+        log_warn "Preserved cloud VMs are BILLABLE. Reap when done:"
+        log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_A_NAME} --destroy --force"
+        log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_B_NAME} --destroy --force"
+        log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --destroy --force   # CTM-provisioned orphans"
+        "${REPO_ROOT}/../tools/pg-firewall.sh" close 2>&1 | tail -1 || true
+    else
+        log_warn "Containers left running; remove them with a normal run's teardown or 'docker compose down -v'."
+    fi
+}
+trap on_exit EXIT
 
 # Open the Hetzner firewall guarding the PG VM for the duration of the cloud test
 # window. Closed again by teardown(). Skipped on docker/remote (those use the
@@ -1417,6 +1460,7 @@ set -e
 # Cleanup temp files (teardown runs from EXIT trap installed earlier)
 rm -f "$RESULTS_FILE" "$TIMINGS_FILE"
 
+RUN_REACHED_END=true
 exit "$FINAL_RESULT"
 
 exit $FINAL_RESULT
