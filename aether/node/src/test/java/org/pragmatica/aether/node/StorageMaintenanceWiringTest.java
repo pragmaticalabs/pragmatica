@@ -81,7 +81,7 @@ class StorageMaintenanceWiringTest {
     /// `StorageFactory` wired a real manager, never `DelegatedStorageAdapter.noOp()`'s stand-in.
     @Test
     void defaultStreamStorage_demotionManager_isReal_notTheAlwaysFalseNoOp() {
-        var setup = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "test-node");
+        var setup = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "test-node").unwrap();
 
         assertThat(setup.demotionManager().isActive()).isFalse();
 
@@ -93,7 +93,7 @@ class StorageMaintenanceWiringTest {
     /// Same proof, for the garbage collector side of the pair.
     @Test
     void defaultStreamStorage_garbageCollector_isReal_notTheAlwaysFalseNoOp() {
-        var setup = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "test-node");
+        var setup = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "test-node").unwrap();
 
         assertThat(setup.garbageCollector().isActive()).isFalse();
 
@@ -107,8 +107,8 @@ class StorageMaintenanceWiringTest {
     /// flip its own flag — pinning that leader-pinned activation reaches every storage instance.
     @Test
     void compositeDemotionManager_activate_fansOutToEveryUnderlyingSetup() {
-        var setup1 = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "node-1");
-        var setup2 = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir2, "node-2");
+        var setup1 = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, "node-1").unwrap();
+        var setup2 = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir2, "node-2").unwrap();
         var composite = StorageFactory.compositeDemotionManager(Map.of("a", setup1, "b", setup2));
 
         assertThat(composite.isActive()).isFalse();
@@ -187,7 +187,7 @@ class StorageMaintenanceWiringTest {
     @Test
     void defaultStreamStorage_maintenancePass_neverDeletesFromOrDemotesOutOfSharedDhtTier() {
         var dhtClient = new InMemoryDHTClient();
-        var setup = StorageFactory.defaultStreamStorage(Option.some(dhtClient), streamDataDir, "test-node");
+        var setup = StorageFactory.defaultStreamStorage(Option.some(dhtClient), streamDataDir, "test-node").unwrap();
 
         // #849: the streams DHT tier is now gated on its marker check like every other DHT tier
         // (see `createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance` below), so
@@ -196,6 +196,7 @@ class StorageMaintenanceWiringTest {
              .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
                                                .await()
                                                .onFailure(cause -> fail("admitting the streams DHT tier failed: " + cause.message())));
+
 
         var content = "shared-tier-content".getBytes(StandardCharsets.UTF_8);
 

@@ -65,7 +65,7 @@ class TopicPublisherTest {
     }
 
     private void registerSubscriptionAt(ResourceAddress address, Artifact artifact, MethodName method, NodeId nodeId) {
-        var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method);
+        var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method, nodeId);
         var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId);
         var put = new KVCommand.Put<>(key, value);
         registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));

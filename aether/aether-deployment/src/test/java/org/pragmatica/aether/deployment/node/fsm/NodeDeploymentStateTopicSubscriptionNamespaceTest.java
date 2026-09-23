@@ -137,12 +137,76 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
                         .noneMatch(key -> key.startsWith("topic-sub/" + sliceNamespace + "/"));
     }
 
+    /// #1448 — THE KEY SHAPE THE NODE PUBLISHES, pinned at the writer rather than at the record.
+    ///
+    /// This harness is single-instance by construction (`RecordingClusterNode.apply` records commands
+    /// and never feeds a shared `KVStore`), so it cannot host the survival test — one instance's unload
+    /// cannot be observed to spare another's row here. That test lives in `StreamConsumerManagerTest`
+    /// (`descaleOfAnotherInstance_leavesThisNodeAttached`). What this CAN pin, and what nothing else
+    /// reaches, is that the writer scopes the key to THIS node: the whole fix is the node component
+    /// arriving in the published key, and a `topicSubscriptionKey(...)` call that dropped it would
+    /// still satisfy every namespace assertion above.
+    @Test
+    void publishedSubscriptionKey_isScopedToTheWritingNode() {
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(subscriptionKeys()).as("the chain published a topic subscription")
+                                                                  .isNotEmpty());
+
+        assertThat(subscriptionKeys()).allSatisfy(key -> assertThat(key.nodeId()).as("#1448: the publishing node is part of the key, so one instance's unload Removes only its own row")
+                                                                                 .isEqualTo(SELF));
+        assertThat(subscriptionKeys()).as("and it is the LAST path segment, after the method — the string codec is the snapshot format")
+                                      .allSatisfy(key -> assertThat(key.asString()).endsWith("/" + key.methodName()
+                                                                                                       .name() + "/" + SELF.id()));
+    }
+
+    /// #1448 — THE UNLOAD WRITER, which is the half that actually caused the outage and was the only
+    /// production hunk of this fix with no test of its own.
+    ///
+    /// `buildTopicSubscriptionRemoveCommand` must reconstruct the SAME key
+    /// `buildTopicSubscriptionPutCommand` wrote, node component included. The two failure modes are
+    /// opposite and both silent: a Remove built without the node (the original defect) deletes every
+    /// other instance's row, and a Remove built with the WRONG node deletes nothing, so a subscription
+    /// outlives the instance that served it and publishes keep routing to a slice that is gone. Neither
+    /// raises. Asserting set equality against the published keys pins both directions at once.
+    @Test
+    void unloadRemovesExactlyTheKeyThisNodePublished() {
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(subscriptionKeys()).as("precondition: the load chain published a topic subscription")
+                                                                  .isNotEmpty());
+
+        var published = subscriptionKeys();
+
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, SliceState.UNLOAD)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(removedSubscriptionKeys()).as("the unload chain reached unpublishTopicSubscriptions")
+                                                                          .isNotEmpty());
+
+        assertThat(removedSubscriptionKeys()).as("#1448: the unload Removes THIS node's own row — same address, artifact, method AND node as the Put")
+                                             .containsExactlyElementsOf(published);
+    }
+
     private List<TopicSubscriptionKey> subscriptionKeys() {
         return cluster.commands()
                       .stream()
                       .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
                                          && put.key() instanceof TopicSubscriptionKey)
                       .map(command -> (TopicSubscriptionKey) ((KVCommand.Put<AetherKey, ?>) command).key())
+                      .toList();
+    }
+
+    private List<TopicSubscriptionKey> removedSubscriptionKeys() {
+        return cluster.commands()
+                      .stream()
+                      .filter(command -> command instanceof KVCommand.Remove<AetherKey> remove
+                                         && remove.key() instanceof TopicSubscriptionKey)
+                      .map(command -> (TopicSubscriptionKey) ((KVCommand.Remove<AetherKey>) command).key())
                       .toList();
     }
 
@@ -171,8 +235,12 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
     }
 
     private static ValuePut<NodeArtifactKey, NodeArtifactValue> activePutFor(NodeId node) {
+        return putFor(node, SliceState.ACTIVE);
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> putFor(NodeId node, SliceState state) {
         var key = NodeArtifactKey.nodeArtifactKey(node, SLICE);
-        var value = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+        var value = NodeArtifactValue.nodeArtifactValue(state);
 
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }

@@ -49,4 +49,17 @@ public sealed interface SnapshotError extends Cause {
             return "Snapshot integrity check failed: content hash mismatch";
         }
     }
+
+    /// #1013: snapshot files are on disk and none of them restores. Distinct from "no snapshot
+    /// exists", which is a success with none -- this is metadata that WAS acked and is now
+    /// unreadable, and a boot must not proceed on empty metadata as if it never existed.
+    record NothingRestorable(String latest, int retained) implements SnapshotError {
+        @Override
+        public String message() {
+            return latest
+                 + " and none of the " + retained
+                 + " other retained snapshot(s) restores; refusing to start with EMPTY metadata. "
+                 + "See docs/operators/runbooks/backup-recovery.md";
+        }
+    }
 }

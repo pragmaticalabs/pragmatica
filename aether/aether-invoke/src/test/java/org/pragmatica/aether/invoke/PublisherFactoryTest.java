@@ -208,7 +208,7 @@ class PublisherFactoryTest {
                                                  Artifact subscriberArtifact,
                                                  String bareTopic) {
             var address = TopicAddressResolver.resolve(owningBlueprint, subscriberArtifact, bareTopic).unwrap();
-            var key = TopicSubscriptionKey.topicSubscriptionKey(address, subscriberArtifact, METHOD);
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, subscriberArtifact, METHOD, NODE);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
             var put = new KVCommand.Put<>(key, value);
 
@@ -450,7 +450,7 @@ class PublisherFactoryTest {
 
         private void registerSubscriber(TopicSubscriptionRegistry registry, Artifact artifact) {
             var address = TopicAddressResolver.resolve(artifact, CLICK_EVENTS).unwrap();
-            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, METHOD);
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, METHOD, NODE);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
 
             registry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));

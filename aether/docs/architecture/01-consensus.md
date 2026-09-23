@@ -135,7 +135,7 @@ All keys implement the `AetherKey` sealed interface. Each key type represents a 
 | `PreviousVersionKey` | `previous-version/{artifact}` | Previous version for rollback support |
 | `AlertThresholdKey` | `alert-threshold/{metric}` | Per-metric alert thresholds |
 | `ObservabilityDepthKey` | `obs-depth/{artifact}/{method}` | Per-method observability configuration |
-| `TopicSubscriptionKey` | `topic-sub/{topic}/{artifact}/{method}` | Pub/sub topic subscriptions |
+| `TopicSubscriptionKey` | `topic-sub/{namespace}/{topic}/{version}/{artifact}/{method}/{node}` | Pub/sub topic subscriptions — one row per subscribing INSTANCE, so one instance's unload removes only its own (#1448) |
 | `ScheduledTaskKey` | `scheduled-task/{section}/{artifact}/{method}` | Scheduled task definitions |
 | `ScheduledTaskStateKey` | `scheduled-task-state/{section}/{artifact}/{method}` | Task execution state |
 | `NodeLifecycleKey` | `node-lifecycle/{nodeId}` | Node lifecycle state (ON_DUTY, DRAINING, etc.) |

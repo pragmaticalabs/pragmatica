@@ -68,10 +68,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// **This class pins the CURRENT behaviour; it does not endorse it.** Whether a failed restore should
 /// wedge the node, whether the wedge should be bounded or terminal, and what the readiness surface
-/// should report while it persists are **#1013's** decisions ("a failed or absent snapshot restore
-/// signals readiness unconditionally"). #1020 deliberately takes none of them — it makes the existing
-/// behaviour legible and loud, and leaves an ENABLED tripwire so the decision cannot be taken by
-/// accident.
+/// should report while it persists are **#1468's** decisions ("Decide the contract for a failed
+/// consensus own-restore: the node wedges in JOINING forever and start() never resolves"). #1020
+/// deliberately takes none of them — it makes the existing behaviour legible and loud, and leaves an
+/// ENABLED tripwire so the decision cannot be taken by accident.
+///
+/// **Retargeted from #1013 to #1468 (2026-09-23).** #1013 narrowed to the STORAGE metadata-snapshot
+/// restore on the boot path and closes with PR #1418; this CONSENSUS own-restore arm is disjoint from
+/// it (different files, different symbols — #1418 does not redden this class) and moved to #1468,
+/// which carries the readiness trace. Left as-is, an enabled tripwire would have gone on directing
+/// readers to a closed ticket nobody will reopen.
+///
+/// The method name still reads `untilTicket1013Decides`: it records which ticket RAISED the tripwire,
+/// not which one owns the decision. The decision is #1468's.
 ///
 /// The tripwire is enabled rather than `@Disabled` on purpose: a disabled test guarantees nothing and
 /// sits forgotten, while an enabled one reddens at exactly the moment someone changes the behaviour
@@ -129,7 +138,7 @@ class RabiaOwnRestoreFailureTest {
 
     /// TRIPWIRE — pins that a node whose own snapshot cannot be restored does NOT activate.
     ///
-    /// If you are here from **#1013**, this failure is the decision record, not a bug: #1020 measured
+    /// If you are here from **#1468**, this failure is the decision record, not a bug: #1020 measured
     /// this behaviour, declined to change it, and left this test so the change would be deliberate.
     @Test
     void ownRestoreFails_staysInactive_untilTicket1013Decides() {
@@ -138,15 +147,17 @@ class RabiaOwnRestoreFailureTest {
         engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
 
         assertThat(becameActive(engine)).as("""
-                                           TRIPWIRE (#1020 → #1013): a node whose own persisted snapshot fails to \
+                                           TRIPWIRE (#1020 → #1468): a node whose own persisted snapshot fails to \
                                            restore currently does NOT activate — it stays Syncing and re-enters this \
                                            branch on every retry tick. #1020 pinned that deliberately WITHOUT \
                                            endorsing it: the choice between activating anyway, wedging with a bounded \
                                            or terminal diagnostic, and what readiness reports meanwhile belongs to \
-                                           #1013 ("a failed or absent snapshot restore signals readiness \
-                                           unconditionally"). If you are here from #1013, this test IS the decision \
-                                           record — change it deliberately and say in the commit message which of \
-                                           those you chose and why. If you are here from anything else, you have \
+                                           #1468 ("Decide the contract for a failed consensus own-restore: the node \
+                                           wedges in JOINING forever and start() never resolves"). If you are here \
+                                           from #1468, this test IS the decision record — change it deliberately and \
+                                           say in the commit message which of those you chose and why. This pointer \
+                                           was #1013 until 2026-09-23; #1013 narrowed to the storage boot path and \
+                                           closed with PR #1418. If you are here from anything else, you have \
                                            probably changed activation on the own-restore path by accident.\
                                            """)
                   .isFalse();

@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -35,6 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.storage.InMemoryMetadataStore.inMemoryMetadataStore;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -101,7 +103,7 @@ class SnapshotDurableWriteTest {
         disk.tearOnCall(2);
         mutate("second");
         manager.forceSnapshot();
-        var restored = manager.restoreFromLatest();
+        var restored = manager.restoreFromLatest().unwrap();
 
         assertThat(restored.isPresent()).as("the previous complete snapshot still restores").isTrue();
         assertThat(restored.unwrap().epoch()).isEqualTo(epochOnDisk);
@@ -132,7 +134,7 @@ class SnapshotDurableWriteTest {
         assertThat(tempDir.resolve("snapshot.partial")).as("the torn partial is removed").doesNotExist();
         assertThat(manager.lastSnapshotEpoch()).isEqualTo(epochOnDisk);
         assertThat(disk.tornPath.get()).as("the fixture tore the snapshot write").hasFileName("snapshot.partial");
-        assertThat(manager.restoreFromLatest().unwrap().epoch()).isEqualTo(epochOnDisk);
+        assertThat(manager.restoreFromLatest().unwrap().unwrap().epoch()).isEqualTo(epochOnDisk);
     }
 
     /// The rename itself fails: the seam replaces the `LATEST` partial with a DIRECTORY, so
@@ -157,7 +159,7 @@ class SnapshotDurableWriteTest {
         assertThat(manager.lastSnapshotEpoch()).isEqualTo(epochOnDisk);
         assertThat(tempDir.resolve("snapshot.partial")).doesNotExist();
         assertThat(tempDir.resolve("LATEST.partial")).doesNotExist();
-        assertThat(manager.restoreFromLatest().unwrap().epoch()).isEqualTo(epochOnDisk);
+        assertThat(manager.restoreFromLatest().unwrap().unwrap().epoch()).isEqualTo(epochOnDisk);
     }
 
     /// The sync step runs exactly once per partial -- `snapshot.partial` and `LATEST.partial` --
@@ -172,7 +174,7 @@ class SnapshotDurableWriteTest {
         mutate("first");
         manager.forceSnapshot();
         assertThat(counting.callsPerFile).containsOnly(Map.entry("snapshot.partial", 1), Map.entry("LATEST.partial", 1));
-        assertThat(manager.restoreFromLatest().isPresent()).as("the counted write is a real one").isTrue();
+        assertThat(manager.restoreFromLatest().unwrap().isPresent()).as("the counted write is a real one").isTrue();
     }
 
     /// rev1365 B1: `forceSnapshot()` is called from the scheduler tick (via `maybeSnapshot`) and
@@ -247,7 +249,7 @@ class SnapshotDurableWriteTest {
         var latestBefore = readLatest();
 
         truncateToHalf(newest);
-        var restored = manager.restoreFromLatest();
+        var restored = manager.restoreFromLatest().unwrap();
 
         assertThat(restored.isPresent()).as("the previous retained snapshot restores").isTrue();
         assertThat(restored.unwrap().epoch()).isEqualTo(previousEpoch);
@@ -275,7 +277,7 @@ class SnapshotDurableWriteTest {
         var newestEpoch = manager.lastSnapshotEpoch();
 
         FileOps.writeString(tempDir.resolve("LATEST"), "snapshot-0").unwrap();
-        var restored = manager.restoreFromLatest();
+        var restored = manager.restoreFromLatest().unwrap();
 
         assertThat(restored.isPresent()).isTrue();
         assertThat(restored.unwrap().epoch()).as("newest complete snapshot, not the oldest").isEqualTo(newestEpoch);
@@ -302,32 +304,156 @@ class SnapshotDurableWriteTest {
 
         truncateToHalf(newest);
         truncateToHalf(secondNewest);
-        var restored = manager.restoreFromLatest();
+        var restored = manager.restoreFromLatest().unwrap();
 
         assertThat(restored.unwrap().epoch()).isEqualTo(thirdNewestEpoch);
     }
 
-    /// Nothing complete remains: refuse, at WARN, rather than restore a torn snapshot.
+    /// Nothing complete remains: a FAILURE naming the file, never a torn restore and (#1013) never
+    /// `none` -- before #1013 this returned the same `none` as a first boot, with only a WARN to
+    /// tell them apart, and the caller signalled readiness on both.
     @Test
-    void restoreFromLatest_onlySnapshotTorn_returnsNoneAndWarns() {
+    void restoreFromLatest_onlySnapshotTorn_failsNothingRestorable() {
         var manager = SnapshotManager.snapshotManager(store, config);
 
         mutate("first");
         manager.forceSnapshot();
-        truncateToHalf(latestTarget());
-        var restored = manager.restoreFromLatest();
+        var torn = latestTarget();
 
-        assertThat(restored.isEmpty()).isTrue();
-        assertThat(appender.warnsMentioning("metadata starts EMPTY")).hasSize(1);
+        truncateToHalf(torn);
+
+        assertNothingRestorable(manager.restoreFromLatest(), "Snapshot " + torn + " named by LATEST is unreadable", 0);
     }
 
-    /// A first boot has no `LATEST` and no snapshots; the fallback must not turn that into a WARN.
+    /// #1013: `LATEST` names a file that is not on disk (the shape #1012's prune produced), and no
+    /// other snapshot is retained.
+    @Test
+    void restoreFromLatest_latestDangles_failsNothingRestorable() {
+        var manager = SnapshotManager.snapshotManager(store, config);
+
+        mutate("first");
+        manager.forceSnapshot();
+        var target = latestTarget();
+
+        FileOps.delete(target).unwrap();
+
+        assertNothingRestorable(manager.restoreFromLatest(), "Snapshot " + target + " named by LATEST is unreadable", 0);
+    }
+
+    /// #1013: no `LATEST`, but a snapshot file is on disk and it is torn. Before #1013 this was the
+    /// quietest shape: the fallback found nothing, did not WARN (the WARN was keyed on `LATEST` being
+    /// present) and returned the first-boot `none`. A snapshot file is evidence of metadata that
+    /// existed; it must not read as a first boot.
+    @Test
+    void restoreFromLatest_noLatestAndOnlyTornSnapshot_failsNothingRestorable() {
+        var manager = SnapshotManager.snapshotManager(store, config);
+
+        mutate("first");
+        manager.forceSnapshot();
+        var target = latestTarget();
+
+        FileOps.delete(tempDir.resolve("LATEST")).unwrap();
+        truncateToHalf(target);
+
+        assertNothingRestorable(manager.restoreFromLatest(), "LATEST is missing or unreadable", 1);
+    }
+
+    /// #1013: the snapshot directory EXISTS but cannot be listed (here: the path is a regular file,
+    /// which `exists` but is no directory). Absence cannot be established, so this is a failure --
+    /// not the empty list the old fallback turned every listing failure into.
+    @Test
+    void restoreFromLatest_snapshotDirectoryUnlistable_fails() {
+        var notADirectory = tempDir.resolve("snapshots-as-a-file");
+
+        FileOps.writeString(notADirectory, "not a directory").unwrap();
+        var manager = SnapshotManager.snapshotManager(store, snapshotConfig(notADirectory, 100, 600_000, 5, NODE_ID));
+
+        // Fixture control: the path must exist and must refuse a listing, or the test passes for the
+        // wrong reason (a missing directory is a legitimate first boot).
+        assertThat(FileOps.exists(notADirectory)).isTrue();
+        assertThat(FileOps.list(notADirectory).isFailure()).isTrue();
+
+        var restored = manager.restoreFromLatest();
+
+        assertThat(restored.isFailure()).as("an unlistable snapshot directory is not an absent one").isTrue();
+        restored.onFailure(cause -> assertThat(cause).isInstanceOf(SnapshotError.ReadFailed.class));
+    }
+
+    /// A first boot has no `LATEST` and no snapshots; the fallback must not turn that into a WARN,
+    /// and (#1013) it is a SUCCESS with none, distinct from the failures above.
     @Test
     void restoreFromLatest_firstBoot_noSnapshotAndNoWarn() {
         var manager = SnapshotManager.snapshotManager(store, config);
 
-        assertThat(manager.restoreFromLatest().isEmpty()).isTrue();
+        assertThat(manager.restoreFromLatest().unwrap().isEmpty()).isTrue();
         assertThat(appender.warns()).isEmpty();
+    }
+
+    /// #1013: the snapshot directory does not exist yet either (the first boot of a node whose data
+    /// dir was just created). Absent, by inspection: success with none.
+    ///
+    /// `[unverified: unmounted volume]` #1013 round 2 -- what this test does NOT distinguish, stated
+    /// so the gap is not mistaken for coverage. An absent snapshot directory reads as a first boot
+    /// whether nothing was ever written OR the volume never mounted. Refusing on an absent DATA ROOT
+    /// was implemented here and reverted: "data root absent" is the ORDINARY state wherever `/data`
+    /// is not writable (CI, every laptop), where the disk tier degrades to memory+DHT by design --
+    /// `HermeticStorage` (#1276) builds exactly that state on purpose, and refusing on it failed 52
+    /// aether/node boot tests across 18 classes that pin "boot never fails on an unmountable data dir".
+    ///
+    /// The discriminator lives one layer up, in `StorageFactory`, which knows whether the disk tier
+    /// ARMED or degraded. See the note on `DefaultSnapshotManager.previousRetained`; it needs its own
+    /// ticket and is out of #1013's scope.
+    @Test
+    void restoreFromLatest_snapshotDirectoryMissing_isAbsent() {
+        var missing = tempDir.resolve("never-created");
+        var manager = SnapshotManager.snapshotManager(store, snapshotConfig(missing, 100, 600_000, 5, NODE_ID));
+
+        assertThat(FileOps.exists(missing)).isFalse();
+        assertThat(manager.restoreFromLatest().unwrap().isEmpty()).isTrue();
+        assertThat(appender.warns()).isEmpty();
+    }
+
+    /// #1013 round 2: the AGGREGATE verdict is WARNed, not only returned. The PR that made this state
+    /// detectable deleted the base's `reportNothingRestorable` WARN; on the boot path the caller turns
+    /// the failure into a named refusal, but on a RUNNING node's truncation tick there is no boot left
+    /// to refuse and the state went silent.
+    ///
+    /// Two controls, because a log assertion is an instrument: `restoreFromLatest_firstBoot_noSnapshotAndNoWarn`
+    /// drives the same appender over the opposite arm and asserts NO warn at all; and the per-file
+    /// `Snapshot restore failed` line is asserted to be a DIFFERENT line that does NOT carry the
+    /// aggregate text, so this cannot be satisfied by the per-file WARN that was never removed.
+    @Test
+    void restoreFromLatest_onlySnapshotTorn_warnsTheAggregateVerdict() {
+        var manager = SnapshotManager.snapshotManager(store, config);
+
+        mutate("first");
+        manager.forceSnapshot();
+
+        var torn = latestTarget();
+
+        truncateToHalf(torn);
+        manager.restoreFromLatest();
+
+        assertThat(appender.warnsMentioning("refusing to start with EMPTY metadata")).as("the aggregate verdict is WARNed, not only returned")
+                                                                                     .hasSize(1);
+        assertThat(appender.warnsMentioning("Snapshot restore failed")).as("control: the per-file WARN is a separate line and still fires")
+                                                                       .hasSize(1);
+        assertThat(appender.warnsMentioning("Snapshot restore failed")
+                           .getFirst()
+                           .message()).as("control: the per-file line does NOT carry the aggregate text, so the assertion above needs the restored WARN")
+                                      .doesNotContain("refusing to start with EMPTY metadata");
+    }
+
+    private static void assertNothingRestorable(Result<Option<MetadataSnapshot>> restored, String expectedLatest, int expectedRetained) {
+        assertThat(restored.isFailure()).as("something is on disk and nothing restores: a failure, not none").isTrue();
+        restored.onFailure(cause -> assertNothingRestorableCause(cause, expectedLatest, expectedRetained));
+    }
+
+    private static void assertNothingRestorableCause(Cause cause, String expectedLatest, int expectedRetained) {
+        assertThat(cause).isInstanceOf(SnapshotError.NothingRestorable.class);
+        assertThat(cause.message()).contains(expectedLatest)
+                                   .contains("none of the " + expectedRetained + " other retained snapshot(s) restores")
+                                   .contains("refusing to start with EMPTY metadata");
     }
 
     // --- Helpers ---
@@ -410,7 +536,8 @@ class SnapshotDurableWriteTest {
         FileOps.writeString(probeDir.resolve("LATEST"), name).unwrap();
 
         return SnapshotManager.snapshotManager(inMemoryMetadataStore("validate"),
-                                               snapshotConfig(probeDir, 1, 600_000, 10_000, "validate")).restoreFromLatest();
+                                               snapshotConfig(probeDir, 1, 600_000, 10_000, "validate")).restoreFromLatest()
+                              .fold(_ -> none(), restored -> restored);
     }
 
     private static long epochInName(String name) {

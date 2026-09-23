@@ -6,16 +6,17 @@
   once. Readers then saw records whose publishers were told at most that the outcome is unknown, and which no
   replica is known to hold. Measured before the fix as `visible = 4`, `fetch(0) = [0,1,2,3,4]` where
   `[0,1,2]` was honest `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamRestartVisibleWatermarkTest.java]`.
-- **Replay now appends durable-but-not-visible** (`OffHeapRingBuffer.appendDurable`, built on the existing
-  `appendOrdered`, which already appends without advancing visibility or waking a consumer), and recovery
-  recomputes the watermark ONCE from the live acknowledgement state with the same expression the live path
-  uses. `advanceVisible` is monotonic, so the sealed floor that was visible before the restart is never
-  lowered by this: **a restart hides nothing a reader could see before it**
-  `[mechanism: StreamEntry.restoreVisibleWatermark, advanceVisible is a monotonic max]`.
-- **`minSyncReplicas` is read from the config being materialized, not from the `streams` map.** The new
-  `AcknowledgedOffsetSource` seam exists for exactly this: while `StreamEntry.fromConfig` recovers a
-  partition the entry is not in that map yet, and `minSyncReplicasFor` would answer `0` — "no acknowledgement
-  required" — reinstating the defect on the createStream path while the lazy-materialize path was fixed
+- **Replay now appends durable-but-not-visible** via `OffHeapRingBuffer.appendOrdered`, which appends
+  without advancing visibility or waking a consumer, and recovery recomputes the watermark ONCE from the
+  live acknowledgement state with the same expression the live path uses. `advanceVisible` is monotonic, so
+  the sealed floor that was visible before the restart is never lowered by this: **a restart hides nothing a
+  reader could see before it**
+  `[mechanism: StreamPartitionManager.restoreVisible, advanceVisible is a monotonic max]`.
+- **`minSyncReplicas` is read from the config being materialized, not from the `streams` map.**
+  `restoreVisible` takes the `StreamConfig` as a parameter and reads `config.minSyncReplicas()` directly,
+  rather than calling `minSyncReplicasFor(streamName)`: while a partition is being recovered the entry is
+  not in that map yet, and the lookup would answer `0` — "no acknowledgement required" — reinstating the
+  defect on the createStream path while the lazy-materialize path was fixed
   `[verified: the same test, reddened by a mutation that uses the map lookup]`.
 - **`minSyncReplicas <= 1` is unaffected and cannot observe any of this.** `replicatedThrough` answers
   `Long.MAX_VALUE` when no peer acknowledgement is required, so visible tracks durable and the whole replayed

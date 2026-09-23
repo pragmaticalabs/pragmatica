@@ -1213,8 +1213,10 @@ public class RabiaEngine<C extends Command> {
     /// failure is reported by [#logRestoreFailure], which is the ONLY signal on that path (#1447).
     ///
     /// Whether that wedge is correct, whether it should be bounded or terminal, and what the
-    /// readiness surface should say while it persists are **#1013's** decisions and deliberately not
-    /// taken here. The current behaviour is pinned by
+    /// readiness surface should say while it persists are **#1468's** decisions and deliberately not
+    /// taken here (retargeted from #1013 on 2026-09-23: #1013 narrowed to the storage metadata-snapshot
+    /// restore on the boot path and closed with PR #1418; this consensus arm is #1468's).
+    /// The current behaviour is pinned by
     /// `RabiaOwnRestoreFailureTest#ownRestoreFails_staysInactive_untilTicket1013Decides`, which is an
     /// ENABLED tripwire: changing this reddens it, by design.
     private void activateWithoutAdoption(Option<SavedState<C>> persisted, String reason) {
@@ -1298,7 +1300,7 @@ public class RabiaEngine<C extends Command> {
     /// which is why it spells out that the node is NOT active rather than logging a bare cause.
     ///
     /// Whether a failed restore SHOULD wedge the node, and what readiness reports while it does, is
-    /// **#1013's** decision, not this one's. Pinned by
+    /// **#1468's** decision, not this one's (retargeted from #1013 on 2026-09-23). Pinned by
     /// `RabiaOwnRestoreFailureTest#ownRestoreFails_staysInactive_untilTicket1013Decides`.
     private void logRestoreFailure(Cause cause) {
         log.error("Node {} FAILED to restore state and is NOT active: {}. It stays in sync/retry and serves no "

@@ -501,7 +501,7 @@ public final class StorageFactory {
     /// `streamDataDir` so blocks and refs survive a same-node restart. The disk tier degrades to
     /// memory+DHT when `streamDataDir` is not writable (mirrors `createOne`'s
     /// `handleDiskTierUnavailable`), so node boot never fails on an unmountable data dir.
-    static StorageSetup defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
+    static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
         var build = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
 
         return assembleStreamSetup(build.tiers(), streamDataDir.resolve("snapshots"), nodeId, build.dhtMarkerCheck());
@@ -548,17 +548,19 @@ public final class StorageFactory {
         var snapshotDir = request.streamDataDir().resolve("snapshots");
 
         return request.keyring()
-                      .fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(segmentsDir, STREAMS_NAME).map(_ -> new PendingSetup(defaultStreamStorage(request.dhtClient(),
-                                                                                                                                                                  request.streamDataDir(),
-                                                                                                                                                                  request.nodeId()),
-                                                                                                                                             Option.none())),
+                      .fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(segmentsDir, STREAMS_NAME)
+                                                       .flatMap(_ -> defaultStreamStorage(request.dhtClient(),
+                                                                                          request.streamDataDir(),
+                                                                                          request.nodeId()))
+                                                       .map(setup -> new PendingSetup(setup,
+                                                                                      Option.none())),
                             ring -> armEncryptedStreamTiers(request.dhtClient(),
                                                             segmentsDir,
-                                                            ring).map(build -> new PendingSetup(assembleStreamSetup(build.tiers(),
-                                                                                                                    snapshotDir,
-                                                                                                                    request.nodeId(),
-                                                                                                                    build.dhtMarkerCheck()),
-                                                                                                build.armedDisk())));
+                                                            ring).flatMap(build -> assembleStreamSetup(build.tiers(),
+                                                                                                       snapshotDir,
+                                                                                                       request.nodeId(),
+                                                                                                       build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
+                                                                                                                                                             build.armedDisk()))));
     }
 
     /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
@@ -612,10 +614,10 @@ public final class StorageFactory {
                                                                                                 List.of(memoryTier, disk)));
     }
 
-    private static StorageSetup assembleStreamSetup(List<StorageTier> tiers,
-                                                    Path snapshotDir,
-                                                    String nodeId,
-                                                    Option<DhtMarkerCheck> dhtMarkerCheck) {
+    private static Result<StorageSetup> assembleStreamSetup(List<StorageTier> tiers,
+                                                            Path snapshotDir,
+                                                            String nodeId,
+                                                            Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
         var instance = StorageInstance.storageInstance(STREAMS_NAME, tiers, metadataStore);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
@@ -630,17 +632,18 @@ public final class StorageFactory {
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
 
-        restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate);
-        log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
+        return restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate).map(_ -> {
+            log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
 
-        return StorageSetup.storageSetup(STREAMS_NAME,
-                                         instance,
-                                         snapshotManager,
-                                         readinessGate,
-                                         metadataStore,
-                                         demotionManager,
-                                         garbageCollector,
-                                         dhtMarkerCheck);
+            return StorageSetup.storageSetup(STREAMS_NAME,
+                                             instance,
+                                             snapshotManager,
+                                             readinessGate,
+                                             metadataStore,
+                                             demotionManager,
+                                             garbageCollector,
+                                             dhtMarkerCheck);
+        });
     }
 
     private static Result<PendingSetup> createOne(String name,
@@ -660,12 +663,12 @@ public final class StorageFactory {
         return buildTiers(name, config, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
                                                                                                    + "': " + cause.message(),
                                                                                                     Option.some(cause)))
-                         .map(build -> new PendingSetup(assembleSetup(name,
-                                                                      build.tiers(),
-                                                                      config,
-                                                                      nodeId,
-                                                                      build.dhtMarkerCheck()),
-                                                        build.armedDisk()));
+                         .flatMap(build -> assembleSetup(name,
+                                                         build.tiers(),
+                                                         config,
+                                                         nodeId,
+                                                         build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
+                                                                                                               build.armedDisk())));
     }
 
     private static Result<TierBuild> buildTiers(String name,
@@ -985,11 +988,11 @@ public final class StorageFactory {
         return new TierBuild(tiers, dhtBuild.markerCheck(), armedDisk);
     }
 
-    private static StorageSetup assembleSetup(String name,
-                                              List<StorageTier> tiers,
-                                              StorageConfig config,
-                                              String nodeId,
-                                              Option<DhtMarkerCheck> dhtMarkerCheck) {
+    private static Result<StorageSetup> assembleSetup(String name,
+                                                      List<StorageTier> tiers,
+                                                      StorageConfig config,
+                                                      String nodeId,
+                                                      Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(name);
         var instance = StorageInstance.storageInstance(name, tiers, metadataStore);
         var snapshotConfig = buildSnapshotConfig(config, nodeId);
@@ -1000,17 +1003,18 @@ public final class StorageFactory {
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
 
-        restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate);
-        log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
+        return restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate).map(_ -> {
+            log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
 
-        return StorageSetup.storageSetup(name,
-                                         instance,
-                                         snapshotManager,
-                                         readinessGate,
-                                         metadataStore,
-                                         demotionManager,
-                                         garbageCollector,
-                                         dhtMarkerCheck);
+            return StorageSetup.storageSetup(name,
+                                             instance,
+                                             snapshotManager,
+                                             readinessGate,
+                                             metadataStore,
+                                             demotionManager,
+                                             garbageCollector,
+                                             dhtMarkerCheck);
+        });
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {
@@ -1023,12 +1027,35 @@ public final class StorageFactory {
                                              nodeId);
     }
 
-    private static void restoreAndSignalReady(String name,
-                                              SnapshotManager snapshotManager,
-                                              MetadataStore metadataStore,
-                                              StorageReadinessGate readinessGate) {
-        snapshotManager.restoreFromLatest().onPresent(snapshot -> applySnapshot(name, snapshot, metadataStore));
-        readinessGate.snapshotLoaded();
+    /// #1013: readiness is signalled on exactly two of the manager's three outcomes -- a restored
+    /// snapshot, or NOTHING on disk (the manager establishes that by looking, not by a failed read).
+    /// The third, something on disk that does not restore, used to fall through to the same
+    /// `snapshotLoaded()` with only a WARN and an ABSENT "Restored snapshot" line to tell it apart
+    /// from a first boot; the node then came up read-ready on empty metadata and replayed its WAL
+    /// as if the metadata had never existed. Now it is a boot failure naming the instance, through
+    /// the same `Result` path #253 gave a tier that fails to build.
+    ///
+    /// What the gate does on that path is NOT an observable state: `snapshotLoaded()` is simply
+    /// never called, [#assembleSetup] never constructs the `StorageSetup`, `createAll` fails and
+    /// `AetherNode` aborts the boot -- so the gate object is discarded with the rest of the
+    /// half-built setup. No operator can read it in `LOADING_SNAPSHOT`, because there is no node to
+    /// read it from; the refusal itself is the whole operator-visible surface.
+    private static Result<Unit> restoreAndSignalReady(String name,
+                                                      SnapshotManager snapshotManager,
+                                                      MetadataStore metadataStore,
+                                                      StorageReadinessGate readinessGate) {
+        return snapshotManager.restoreFromLatest()
+                              .mapError(cause -> Causes.cause("Storage '" + name
+                                                             + "' has a metadata snapshot that does not restore, "
+                                                             + "readiness not signalled: " + cause.message(),
+                                                              Option.some(cause)))
+                              .onSuccess(restored -> restored.onPresent(snapshot -> applySnapshot(name,
+                                                                                                  snapshot,
+                                                                                                  metadataStore))
+                                                             .onEmpty(() -> log.info("No snapshot on disk for '{}': metadata starts empty",
+                                                                                     name)))
+                              .onSuccessRun(readinessGate::snapshotLoaded)
+                              .mapToUnit();
     }
 
     private static void applySnapshot(String name, MetadataSnapshot snapshot, MetadataStore metadataStore) {
