@@ -12,13 +12,33 @@
   Those four had been `|| true`, so since #1044 the pre-clean silently stopped pre-cleaning and the
   cleanup silently stopped cleaning, both while looking like they still worked.
 
-- **Five REST call sites still used the pre-catalog flat paths.** The 2026-09-02 migration
-  (`7a523c9e3`) moved every stream route to `/streams/{namespace}/{stream}/{version}/…`, but
-  `/streams/publish/{name}` and `/streams/{name}` survived in `04-streaming`, `13-edge-cases` and
-  `01-stability`. These are a **separate defect from the bare-name refusal** and account for the
-  symptoms most easily misread as product failures: a measured **100.00% stream publish error rate**
-  and `A=400, B=400` on concurrent publish. Measured on a live 5-node cluster, the flat publish path
-  answers `400 Bad Request: Missing stream name` — the route parses `publish` as the namespace.
+- **Those same four teardowns were ALSO missing `--force`, a second defect the first one hid.**
+  `aether streams delete` prompts `Are you sure you want to delete stream '…'? (y/N)`, and the suite
+  gives it no tty, so the command blocks on the prompt and exits non-zero **even for a perfectly
+  addressed stream**. Fixing only the address would therefore have produced a delete that still
+  silently did nothing. Found only because the new helper warns instead of swallowing: measured
+  against a live cluster, without `--force` the stream is still in the catalog afterwards; with it,
+  it is gone, and an unrelated stream created alongside it survives.
+
+- **Five REST call sites still used the pre-catalog flat paths — a DIFFERENT defect from the bare
+  name, with a different blast radius.** The 2026-09-02 migration (`7a523c9e3`) moved every stream
+  route to `/streams/{namespace}/{stream}/{version}/…`, but the **verb-first** `/streams/publish/{name}`
+  and the two-segment `/streams/{name}` survived in `04-streaming`, `13-edge-cases` and
+  `01-stability`. The URL *shape* is wrong independently of the name, so correcting only the name
+  would have left a URL that still fails. This class accounts for the symptoms most easily misread
+  as product failures: a measured **100.00% stream publish error rate** and `A=400, B=400`.
+
+  Measured on a live 5-node cluster, with a control: a path no route can claim returns
+  **404 `File not found`**, whereas `POST /api/v1/streams/publish/{name}` returns
+  **400 `Bad Request: Missing stream name`**. The 400-not-404 is the point — the verb-first path is
+  **not a dead route, it MISROUTES into `STREAM_CREATE` (`POST /streams`)**, which then rejects the
+  body for carrying no `name`. That is a fresh instance of the RouteMatcher bucketing hazard already
+  documented on `stream_coordinate`: "the old flat paths did NOT 404 — they MISROUTED."
+
+- **`13-edge-cases` also carried a false premise in a comment**: "Publish to two streams in parallel
+  (auto-creates them)". Publish auto-create materialises a ring by engine key and **never registers a
+  catalog entry** (the #1224 gap), so the streams were not resolvable afterwards. The comment is
+  removed rather than left to mislead the next reader as it misled this test's author.
 
 - **Five suites published to streams nothing had created.** "Streams auto-create on first publish"
   stopped being true at #1224 and was still asserted in three comments. `stream_coordinate` then

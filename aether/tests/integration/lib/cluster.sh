@@ -4515,8 +4515,14 @@ stream_delete_if_present() {
         log_info "stream_delete_if_present: ${name} not in catalog — nothing to delete"
         return 0
     }
-    aether_failover streams delete "$identity" >/dev/null 2>&1 \
-        || log_warn "stream_delete_if_present: 'streams delete ${identity}' failed (stream is in the catalog)"
+    # `--force` is REQUIRED, not hygiene: `streams delete` prompts "Are you sure…? (y/N)" and the
+    # suite gives it no tty, so without it the command blocks on the prompt and exits non-zero even
+    # for a perfectly-addressed stream. The original `|| true` was concealing TWO stacked defects —
+    # the bare name AND this — so fixing only the address would have produced a delete that still
+    # silently did nothing. Measured against a live cluster: without --force the stream is still in
+    # the catalog afterwards; with it, it is gone.
+    aether_failover streams delete "$identity" --force >/dev/null 2>&1 \
+        || log_warn "stream_delete_if_present: 'streams delete ${identity} --force' failed (stream is in the catalog)"
     return 0
 }
 
