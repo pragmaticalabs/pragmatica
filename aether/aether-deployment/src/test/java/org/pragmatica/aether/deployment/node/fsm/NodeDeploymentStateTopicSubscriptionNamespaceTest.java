@@ -162,12 +162,51 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
                                                                                                        .name() + "/" + SELF.id()));
     }
 
+    /// #1448 — THE UNLOAD WRITER, which is the half that actually caused the outage and was the only
+    /// production hunk of this fix with no test of its own.
+    ///
+    /// `buildTopicSubscriptionRemoveCommand` must reconstruct the SAME key
+    /// `buildTopicSubscriptionPutCommand` wrote, node component included. The two failure modes are
+    /// opposite and both silent: a Remove built without the node (the original defect) deletes every
+    /// other instance's row, and a Remove built with the WRONG node deletes nothing, so a subscription
+    /// outlives the instance that served it and publishes keep routing to a slice that is gone. Neither
+    /// raises. Asserting set equality against the published keys pins both directions at once.
+    @Test
+    void unloadRemovesExactlyTheKeyThisNodePublished() {
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(subscriptionKeys()).as("precondition: the load chain published a topic subscription")
+                                                                  .isNotEmpty());
+
+        var published = subscriptionKeys();
+
+        harness.dispatch(new NodeArtifactPutReceived(putFor(SELF, SliceState.UNLOAD)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(removedSubscriptionKeys()).as("the unload chain reached unpublishTopicSubscriptions")
+                                                                          .isNotEmpty());
+
+        assertThat(removedSubscriptionKeys()).as("#1448: the unload Removes THIS node's own row — same address, artifact, method AND node as the Put")
+                                             .containsExactlyElementsOf(published);
+    }
+
     private List<TopicSubscriptionKey> subscriptionKeys() {
         return cluster.commands()
                       .stream()
                       .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
                                          && put.key() instanceof TopicSubscriptionKey)
                       .map(command -> (TopicSubscriptionKey) ((KVCommand.Put<AetherKey, ?>) command).key())
+                      .toList();
+    }
+
+    private List<TopicSubscriptionKey> removedSubscriptionKeys() {
+        return cluster.commands()
+                      .stream()
+                      .filter(command -> command instanceof KVCommand.Remove<AetherKey> remove
+                                         && remove.key() instanceof TopicSubscriptionKey)
+                      .map(command -> (TopicSubscriptionKey) ((KVCommand.Remove<AetherKey>) command).key())
                       .toList();
     }
 
@@ -196,8 +235,12 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
     }
 
     private static ValuePut<NodeArtifactKey, NodeArtifactValue> activePutFor(NodeId node) {
+        return putFor(node, SliceState.ACTIVE);
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> putFor(NodeId node, SliceState state) {
         var key = NodeArtifactKey.nodeArtifactKey(node, SLICE);
-        var value = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+        var value = NodeArtifactValue.nodeArtifactValue(state);
 
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
