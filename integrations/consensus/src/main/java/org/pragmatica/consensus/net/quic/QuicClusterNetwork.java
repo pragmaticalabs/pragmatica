@@ -2044,9 +2044,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
                  peerId);
         // Explicit use of the `connection` parameter to satisfy the API contract — the
         // identity check already happened inside `state.evict()` which matches by phase.
-        if (connection != null && connection.isActive()) {
-            connection.close();
-        }
+        // #1442: wrapped at the boundary rather than null-checked in place. Behaviour is
+        // unchanged — every caller passes a live connection, and the documented guard is the
+        // `isActive()` one (see the comment at the channel-close call site).
+        Option.option(connection).filter(QuicPeerConnection::isActive).onPresent(QuicPeerConnection::close);
     }
 
     /// Event-driven eviction: when the QUIC channel genuinely closes, evict the peer so the

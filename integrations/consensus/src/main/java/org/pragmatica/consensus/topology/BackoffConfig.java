@@ -32,5 +32,4 @@ public record BackoffConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
                                                                                  .maxDelay(timeSpan(60).seconds())
                                                                                  .factor(1.5)
                                                                                  .withJitter());
-
 }
