@@ -4439,15 +4439,32 @@ stream_create() {
              "{\"partitions\":${partitions}}"
 }
 
+# Both failure paths WARN on stderr, and they are deliberately distinguished.
+#
+# This returned 1 silently for both, and that silence is what made the 2026-09-23 baseline
+# undiagnosable: a stream missing from the catalog is the dominant failure mode there, and every
+# caller — stream_publish, stream_info, stream_identity, stream_replicas — inherited the silence and
+# reported only `expected NOT '', got ''`. Surfacing the HTTP body at the api layer does not help,
+# because on this path NO REQUEST IS EVER MADE.
+#
+# "catalog unreachable" and "stream absent from an otherwise healthy catalog" call for different
+# actions (fix the cluster vs create the stream), so they must not read alike. stdout stays
+# coordinate-only: the assert call sites capture it with `$(...)` and redirect stderr away.
 stream_coordinate() {
     local name="$1" body coord
-    body=$(api_get "/api/v1/streams" 2>/dev/null) || return 1
+    body=$(api_get "/api/v1/streams" 2>/dev/null) || {
+        log_warn "stream_coordinate ${name}: GET /api/v1/streams failed — catalog unreachable" >&2
+        return 1
+    }
     coord=$(printf '%s' "$body" \
         | tr '}' '\n' \
         | grep -F "\"stream\":\"${name}\"" \
         | sed -E 's/.*"namespace":"([^"]*)".*"stream":"([^"]*)".*"version":"([^"]*)".*/\1\/\2\/\3/' \
         | head -1)
-    [ -n "$coord" ] || return 1
+    [ -n "$coord" ] || {
+        log_warn "stream_coordinate ${name}: not in the catalog (create it with stream_create); catalog holds: $(printf '%s' "$body" | grep -oE '"stream":"[^"]*"' | tr '\n' ' ' | head -c 300)" >&2
+        return 1
+    }
     printf '%s' "$coord"
 }
 
@@ -4478,6 +4495,29 @@ stream_identity() {
     local coord
     coord=$(stream_coordinate "$1") || return 1
     printf '%s' "${coord//\//:}"
+}
+
+# Best-effort teardown/pre-clean delete for a stream that may or may not exist.
+#
+# The four call sites are hygiene, not assertions: two pre-clean a stale stream before pushing a
+# blueprint (so the partition under test starts at offset 0) and two are cleanup traps. They were
+# written as `aether_failover streams delete "$STREAM_NAME" ... || true`, which since #1044 is a
+# bare-name hard error on EVERY invocation — so the pre-clean silently stopped pre-cleaning and the
+# cleanup silently stopped cleaning, both while looking like they still worked. `|| true` is what
+# made it invisible.
+#
+# Absent-from-catalog is a legitimate outcome here (the pre-clean runs before anything creates the
+# stream), so it returns 0 without invoking the CLI. It is NOT a silent catch-all: a delete that is
+# attempted and fails warns, because at that point the stream demonstrably existed.
+stream_delete_if_present() {
+    local name="$1" identity
+    identity=$(stream_identity "$name" 2>/dev/null) || {
+        log_info "stream_delete_if_present: ${name} not in catalog — nothing to delete"
+        return 0
+    }
+    aether_failover streams delete "$identity" >/dev/null 2>&1 \
+        || log_warn "stream_delete_if_present: 'streams delete ${identity}' failed (stream is in the catalog)"
+    return 0
 }
 
 # Replica-set view for a partition (STREAM_REPLICAS). Partition defaults to 0.

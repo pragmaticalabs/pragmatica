@@ -7,11 +7,24 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 STREAM_NAME="${STREAM_NAME:-test-events}"
+ISOLATION_STREAM="${ISOLATION_STREAM:-isolation-test}"
 
 test_cluster_ready() {
     wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
+}
+
+# Nothing in 04-streaming created `test-events`, and a publish has not minted a stream since
+# #1224 — so `stream_publish`/`stream_info` resolved a coordinate for a stream that was never in
+# the catalog and returned empty. Create both streams this file uses, and assert they landed.
+test_create_streams() {
+    stream_create "$STREAM_NAME" 1 > /dev/null 2>&1 || true        # idempotent
+    stream_create "$ISOLATION_STREAM" 1 > /dev/null 2>&1 || true
+    assert_ne "$(stream_coordinate "$STREAM_NAME" 2>/dev/null)" "" \
+              "Stream ${STREAM_NAME} present in catalog"
+    assert_ne "$(stream_coordinate "$ISOLATION_STREAM" 2>/dev/null)" "" \
+              "Stream ${ISOLATION_STREAM} present in catalog"
 }
 
 test_publish_and_verify_count() {
@@ -86,9 +99,9 @@ test_stream_metadata() {
 }
 
 test_multiple_streams_isolation() {
-    local other_stream="isolation-test"
     local payload='{"key":"isolated","data":"test","timestamp":'$(now_epoch)'}'
-    stream_publish "$other_stream" "$payload" > /dev/null 2>&1
+    stream_publish "$ISOLATION_STREAM" "$payload" > /dev/null \
+        || log_warn "isolation publish to ${ISOLATION_STREAM} failed — the assertion below is about ${STREAM_NAME} surviving it, so continuing"
 
     local streams
     streams=$(stream_list)
@@ -96,6 +109,7 @@ test_multiple_streams_isolation() {
 }
 
 run_test "Cluster ready" test_cluster_ready
+run_test "Create streams" test_create_streams
 run_test "Publish and verify count" test_publish_and_verify_count
 run_test "Stream metadata" test_stream_metadata
 run_test "Multiple streams isolation" test_multiple_streams_isolation
