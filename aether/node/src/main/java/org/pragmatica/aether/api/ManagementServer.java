@@ -95,6 +95,7 @@ import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.metrics.observability.AetherMetrics;
 import org.pragmatica.aether.http.AetherVersioningMetricsSink;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.concurrent.PublishSlot;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
@@ -240,8 +241,11 @@ class ManagementServerImpl implements ManagementServer {
 
     private final AtomicReference<Option<HttpForwarder>> mgmtForwarderRef = new AtomicReference<>(Option.empty());
 
-    private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
-    private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
+    /// #1456: a publish slot, not a bare reference. `stop()` closes it, so a bind that lands
+    /// afterwards is handed straight back to its publisher to close instead of being stored where
+    /// nobody will ever look again.
+    private final PublishSlot<HttpServer> serverSlot = PublishSlot.publishSlot();
+    private final PublishSlot<HttpServer> h3ServerSlot = PublishSlot.publishSlot();
     /// #642: the only route source that arms a periodic task. Held so stop() can cancel its sweep —
     /// route sources are otherwise fire-and-forget, and this one outlived its node on the shared
     /// scheduler.
@@ -431,7 +435,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                 wg)))
                                      .or(HttpServer.httpServer(serverConfig, handler));
 
-        return serverPromise.map(this::registerStartedH1Server)
+        return serverPromise.flatMap(this::registerStartedH1Server)
                             .onFailure(cause -> log.error("Failed to start management server on port {}: {}",
                                                           port,
                                                           cause.message()));
@@ -455,7 +459,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                          wg))
                                        .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
 
-        return serverPromise.map(this::registerStartedH3Server)
+        return serverPromise.flatMap(this::registerStartedH3Server)
                             .onFailure(cause -> log.error("Failed to start management HTTP/3 server on port {}: {}",
                                                           port,
                                                           cause.message()));
@@ -481,18 +485,42 @@ class ManagementServerImpl implements ManagementServer {
                   .or(config);
     }
 
-    private Unit registerStartedH1Server(HttpServer server) {
-        serverRef.set(server);
-        onServerStarted(server);
-
-        return unit();
+    /// #1456: the bind can complete after `stop()` has already run. `publishOrReclaim` hands the
+    /// server back when the slot is closed, and this side then closes it — nothing else holds a
+    /// reference to it, so otherwise its port stays bound, unreachable, for the life of the process.
+    ///
+    /// `stop()` deliberately does NOT wait for `start()`: #1308 established that a start can stay
+    /// pending indefinitely when quorum cannot form, and escaping that is the abort path's purpose.
+    /// Closing from the losing publisher's own thread needs no wait at all.
+    private Promise<Unit> registerStartedH1Server(HttpServer server) {
+        return serverSlot.publishOrReclaim(server)
+                         .fold(() -> activateH1Server(server),
+                               ManagementServerImpl::stopOrphanedServer);
     }
 
-    private Unit registerStartedH3Server(HttpServer server) {
-        h3ServerRef.set(server);
+    private Promise<Unit> activateH1Server(HttpServer server) {
+        onServerStarted(server);
+
+        return Promise.success(unit());
+    }
+
+    private Promise<Unit> registerStartedH3Server(HttpServer server) {
+        return h3ServerSlot.publishOrReclaim(server)
+                           .fold(() -> logH3ServerStarted(server),
+                                 ManagementServerImpl::stopOrphanedServer);
+    }
+
+    private static Promise<Unit> logH3ServerStarted(HttpServer server) {
         log.info("Management HTTP/3 QUIC server started on port {}", server.port());
 
-        return unit();
+        return Promise.success(unit());
+    }
+
+    private static Promise<Unit> stopOrphanedServer(HttpServer server) {
+        log.warn("Management listener on port {} bound after stop() had already run — closing the orphan (#1456)",
+                 server.port());
+
+        return server.stop();
     }
 
     private void handleRequestWithAltSvc(HttpRequest request, ResponseWriter response) {
@@ -506,14 +534,16 @@ class ManagementServerImpl implements ManagementServer {
         statusWsPublisher.stop();
         eventWsPublisher.stop();
         Option.option(apiKeyRoutesRef.get()).onPresent(ApiKeyRoutes::stop);
-        var h1Stop = Option.option(serverRef.get())
-                           .map(server -> server.stop()
-                                                .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped")))
-                           .or(Promise.success(unit()));
-        var h3Stop = Option.option(h3ServerRef.get())
-                           .map(server -> server.stop()
-                                                .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
-                           .or(Promise.success(unit()));
+        // #1456: close() is what orders this against an in-flight start — every later publish is
+        // handed back to its publisher to close rather than stored here.
+        var h1Stop = serverSlot.close()
+                               .map(server -> server.stop()
+                                                    .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped")))
+                               .or(Promise.success(unit()));
+        var h3Stop = h3ServerSlot.close()
+                                 .map(server -> server.stop()
+                                                      .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
+                                 .or(Promise.success(unit()));
 
         return h1Stop.flatMap(_ -> h3Stop);
     }
@@ -525,9 +555,12 @@ class ManagementServerImpl implements ManagementServer {
         return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle));
     }
 
+    /// Certificate rotation empties the slots with `take()` rather than `close()`: the listeners are
+    /// being replaced, not shut down, so the slots must stay publishable. A rotation racing a `stop()`
+    /// finds them already CLOSED, and the replacement listeners are then closed by their publisher.
     private Promise<Unit> stopHttpServers() {
-        var h1Stop = Option.option(serverRef.getAndSet(null)).map(HttpServer::stop).or(Promise.success(unit()));
-        var h3Stop = Option.option(h3ServerRef.getAndSet(null)).map(HttpServer::stop).or(Promise.success(unit()));
+        var h1Stop = serverSlot.take().map(HttpServer::stop).or(Promise.success(unit()));
+        var h3Stop = h3ServerSlot.take().map(HttpServer::stop).or(Promise.success(unit()));
 
         return h1Stop.flatMap(_ -> h3Stop);
     }
@@ -566,7 +599,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                 wg)))
                                      .or(HttpServer.httpServer(serverConfig, handler));
 
-        return serverPromise.map(this::registerStartedH1Server)
+        return serverPromise.flatMap(this::registerStartedH1Server)
                             .onSuccess(_ -> log.info("Management HTTP/1.1 server restarted with new certificate"))
                             .onFailure(cause -> log.error("Failed to restart management HTTP/1.1 server: {}",
                                                           cause.message()));
