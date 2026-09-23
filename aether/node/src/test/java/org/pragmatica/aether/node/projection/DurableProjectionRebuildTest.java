@@ -578,7 +578,8 @@ class DurableProjectionRebuildTest {
     private static void subscribe(TopicSubscriptionRegistry topics) {
         var key = TopicSubscriptionKey.topicSubscriptionKey(ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap(),
                                                             ARTIFACT,
-                                                            ON_PROJECTION_EVENT);
+                                                            ON_PROJECTION_EVENT,
+                                                            SELF);
 
         topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key,
                                                                     TopicSubscriptionValue.topicSubscriptionValue(SELF)),
