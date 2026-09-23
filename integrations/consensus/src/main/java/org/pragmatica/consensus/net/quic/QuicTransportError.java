@@ -37,6 +37,11 @@ public sealed interface QuicTransportError extends Cause {
         /// #1456: the bind completed after stop() had already run. The just-bound channel was closed
         /// rather than published, so the start reports failure instead of arming a transport nobody
         /// owns. Terminal — retrying cannot un-stop a server; only a fresh start can.
+        ///
+        /// This message must never be the cause `EmberCluster.start()` surfaces from its abort path;
+        /// the failure that TRIGGERED the abort must be. `EmberClusterSwimStartFailureTest` is what
+        /// catches a violation — see `QuicClusterServerInstance.closeOrphanedChannel` for why the
+        /// ordering holds and for the mutation that demonstrates the test's sensitivity.
         STOPPED_DURING_START("QUIC cluster server was stopped while its bind was still in flight") {
             @Override
             public boolean isTerminal() {
