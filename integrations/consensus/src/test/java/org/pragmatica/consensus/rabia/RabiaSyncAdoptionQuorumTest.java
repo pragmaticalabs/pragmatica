@@ -185,16 +185,20 @@ class RabiaSyncAdoptionQuorumTest {
         /// Here self holds phase 42 while both responders are at phase 0: adopting a response would
         /// silently discard a committed phase this node may be the sole surviving witness of.
         ///
-        /// Self is a FLOOR, not an adopted candidate — so the assertion is that NOTHING was installed.
-        /// Adopting self's own persisted snapshot would be its own bug: `persistence.save` never runs on
-        /// commit, so that snapshot lags the live state machine by an unbounded amount and installing it
-        /// would overwrite live state with a staler picture.
+        /// Self is a FLOOR, not an adopted candidate — so the assertion is that the RESPONDERS' snapshot
+        /// was not installed. What IS installed is self's own persisted snapshot (#1020): this is a cold
+        /// start, the live state machine is empty at phase 0, and the persisted phase 42 is the only
+        /// copy of that history in the process. (Before #1020 this asserted that NOTHING was installed,
+        /// on the argument that `persistence.save` never runs on commit so the persisted snapshot lags
+        /// the live state. That holds for a resync from ACTIVE — where the live phase is at or past the
+        /// persisted one and the engine still installs nothing — and not for a fresh process, which
+        /// activated on an EMPTY store while its committed history sat on disk.)
         ///
         /// The responders carry a NON-EMPTY snapshot on purpose. `restoreState` skips `restoreSnapshot`
         /// entirely when the adopted state's snapshot is empty, so stale-but-EMPTY responders would leave
-        /// nothing installed whether the floor held or not, and this assertion would pass against an
-        /// engine with no floor at all. A mutation run caught exactly that: with the floor deleted, this
-        /// test stayed green until the responders were given real bytes to install.
+        /// the own-snapshot install as the last one whether the floor held or not, and this assertion
+        /// would pass against an engine with no floor at all. A mutation run caught exactly that: with
+        /// the floor deleted, this test stayed green until the responders were given real bytes to install.
         @Test
         void ownMoreAdvancedState_isNotRegressed_byStalerResponses() {
             var stateMachine = new RecordingStateMachine();
@@ -208,8 +212,8 @@ class RabiaSyncAdoptionQuorumTest {
                 .as("the node must still ACTIVATE — refusing to regress is not a reason to stay dead")
                 .isTrue();
             assertThat(stateMachine.lastRestored())
-                .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed")
-                .isNull();
+                .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed — self's own is")
+                .isEqualTo(SELF_SNAPSHOT);
         }
 
         /// The discriminator for the test above: when a RESPONSE is the most advanced state, it must be
@@ -306,10 +310,11 @@ class RabiaSyncAdoptionQuorumTest {
                 .isEqualTo("42/10");
 
             // HALF TWO — CHANGED by #660. D9 previously restored anyway, discarding the node's own
-            // committed history. It now holds that history and installs nothing.
+            // committed history. It now holds that history: the cluster's older snapshot is not
+            // installed, and (#1020) its own persisted snapshot is — the live store was empty.
             assertThat(stateMachine.lastRestored())
                 .as("the node must NOT regress onto the cluster's older state — that is the ratified behaviour #660 supersedes")
-                .isNull();
+                .isEqualTo(SELF_SNAPSHOT);
         }
     }
 

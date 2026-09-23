@@ -12,6 +12,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -97,6 +98,12 @@ import org.slf4j.LoggerFactory;
 /// the BOUNDED reassignment overlap below. This is NOT effectively-once, and it is NOT a guarantee of a
 /// single deliverer at every instant.
 ///
+/// Replay after an ungraceful move is bounded by that checkpoint cadence, and the cadence is
+/// DELIVERY-driven, not timer-driven: `ConsumerRuntimeState.checkpointIfNeeded` runs only from
+/// `advanceCursor`, so the time half is evaluated when the NEXT delivery lands. A lone trailing event
+/// stays un-checkpointed until then, and a loser that detaches without a final flush (below) hands it to
+/// the successor again (#1385).
+///
 /// **Assignment fencing (#1271).** Which node delivers a `(group, partition)` is decided by a COMMITTED
 /// record ([ConsumerAssignmentWriter], leader-only), not by each node's own view:
 ///   - **Attach** — a node attaches only where its locally applied committed record names it, under the
@@ -158,6 +165,18 @@ public interface StreamConsumerManager {
     /// failed or did not settle within their shutdown bound. Delegates to the underlying
     /// [org.pragmatica.aether.stream.StreamConsumerRuntime#cursorCommitFailureCount].
     long cursorCommitFailureCount();
+    /// #1389: node-wide count of times this node was named for partitions it could not consume for lack
+    /// of a local slice — the two sites that emit the corresponding WARN, and nothing else:
+    ///   - a declaration ENTERING the parked state (the committed record names this node, the pass still
+    ///     computes this node, and no bridge is loaded here), counted once per entry, not per tick and
+    ///     not per partition — so it matches the WARN lines one for one; and
+    ///   - an attach that found the bridge gone between the desired-set read and the attach itself,
+    ///     counted once per subscription key dropped.
+    ///
+    /// The unit is therefore REPORTS, not partitions: one entry naming four parked partitions adds one.
+    /// Never reset by a redeploy or a reconcile, only by a node restart. A rising count with no attached
+    /// subscriptions is the durable-group liveness gap the ticket was filed for.
+    long attachSkippedNoLocalSliceCount();
 
     /// #1271: the node's quorum-loss listener with the consumer abandon composed in FRONT of it — delivery
     /// stops before the drain procedure starts, since the drain ends in a halt that may be seconds away and
@@ -203,6 +222,11 @@ public interface StreamConsumerManager {
 
             @Override
             public long cursorCommitFailureCount() {
+                return 0;
+            }
+
+            @Override
+            public long attachSkippedNoLocalSliceCount() {
                 return 0;
             }
         }
@@ -418,6 +442,8 @@ public interface StreamConsumerManager {
         private final AtomicBoolean passRequested = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private final Object passLock = new Object();
+        /// #1389: node-wide, process-lifetime. Exposed via [StreamConsumerManager#attachSkippedNoLocalSliceCount].
+        private final AtomicLong attachSkippedNoLocalSlice = new AtomicLong();
 
         ManagerState(StreamConsumerRegistry registry,
                      StreamConsumerRuntime runtime,
@@ -580,6 +606,47 @@ public interface StreamConsumerManager {
                    : unsubscribeAndDropAll(declaration);
         }
 
+        /// #1389: partitions the COMMITTED record names this node for, that THIS PASS still computes for
+        /// this node, while no local slice can consume them. Empty whenever the slice is local — then
+        /// admission, not parking, is the question.
+        ///
+        /// BOTH halves are load-bearing. The committed record ALONE is also satisfied by a reassignment
+        /// in flight: [#publishAssignments] submits the leader's `Put` through consensus without
+        /// awaiting it, so the record still names the departing assignee for at least a round after the
+        /// slice left it. Reporting that would raise a fault on every routine descale. What the
+        /// intersection keeps is the state nothing repairs — the deployment map still says ACTIVE here,
+        /// so [#candidateNodes] keeps computing this node, while the bridge is gone. `NodeDeploymentState`
+        /// reaches it: `handleReactivationFailure` and `suspendSlice` both unregister the slice from
+        /// invocation WITHOUT transitioning the deployment away from ACTIVE, unlike `handleUnloading` and
+        /// `performDeactivation`, which commit UNLOADING / DEACTIVATING first. In that state no leader
+        /// pass will ever move the partition and this WARN is the only observable.
+        private List<Integer> parkedPartitions(ConsumerDeclaration declaration,
+                                               List<PartitionAssignment> assignments,
+                                               Option<SliceBridge> bridge) {
+            return bridge.isPresent()
+                   ? List.of()
+                   : stillComputedHere(admittedPartitions(declaration), selfAssignedPartitions(assignments));
+        }
+
+        /// Partitions THIS PASS computes for this node, owner or not. [#forwardedPartitions] narrows the
+        /// same set to those whose owner is elsewhere; this is the whole set.
+        private List<Integer> selfAssignedPartitions(List<PartitionAssignment> assignments) {
+            return assignments.stream()
+                              .filter(assignment -> assignment.consumerNode()
+                                                              .map(self::equals)
+                                                              .or(false))
+                              .map(PartitionAssignment::partition)
+                              .toList();
+        }
+
+        private static List<Integer> stillComputedHere(List<Integer> admitted, List<Integer> computed) {
+            var mine = Set.copyOf(computed);
+
+            return admitted.stream()
+                           .filter(mine::contains)
+                           .toList();
+        }
+
         /// #1271: on the leader, commit this pass's computed assignment as the per-partition records every
         /// node's admission reads. A follower's writer returns nothing. The apply is fire-and-forget: a
         /// failed or slow commit leaves the old record standing and the next tick re-drives it.
@@ -648,7 +715,7 @@ public interface StreamConsumerManager {
         }
 
         private List<SubscriptionKey> declineColliding(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
-            recordDiagnosis(declaration, collisionDiagnosis(declaration, bases));
+            recordDiagnosis(declaration, collisionDiagnosis(self, declaration, bases));
 
             return unsubscribeAndDropAll(declaration);
         }
@@ -779,23 +846,29 @@ public interface StreamConsumerManager {
         private Diagnosis diagnose(ConsumerDeclaration declaration,
                                    List<PartitionAssignment> assignments,
                                    Option<SliceBridge> bridge) {
-            return Diagnosis.diagnosis(declaration,
+            return Diagnosis.diagnosis(self,
+                                       declaration,
                                        assignments,
                                        unassignedPartitions(assignments),
                                        forwardedPartitions(assignments),
+                                       parkedPartitions(declaration, assignments, bridge),
                                        bridge.map(loaded -> publishable(declaration, loaded)),
                                        deploymentPending(declaration));
         }
 
         /// #545: bypasses `Diagnosis.diagnosis`'s message derivation entirely — there is no assignment
         /// computation to report on here, only the named cross-artifact collision.
-        private static Diagnosis collisionDiagnosis(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
-            return new Diagnosis(declaration.artifact(),
+        private static Diagnosis collisionDiagnosis(NodeId node,
+                                                    ConsumerDeclaration declaration,
+                                                    List<ArtifactBase> bases) {
+            return new Diagnosis(node,
+                                 declaration.artifact(),
                                  declaration.methodName().name(),
                                  declaration.streamName(),
                                  false,
                                  Option.none(),
                                  declaration.eventType(),
+                                 List.of(),
                                  List.of(),
                                  List.of(),
                                  List.of(),
@@ -848,7 +921,26 @@ public interface StreamConsumerManager {
             var previous = Option.option(diagnoses.put(identity, diagnosis));
 
             if (!previous.map(diagnosis::equals).or(false)) {
+                countIfParked(previous, diagnosis);
                 diagnosis.log();
+            }
+        }
+
+        /// #1389: ENTRY into the parked state only — a diagnosis that changes while the declaration stays
+        /// parked (a partition moves in or out of the parked set) re-logs but does not re-count, so the
+        /// counter answers "how many times did this node go blind on a group", not "how many reconcile
+        /// passes noticed".
+        ///
+        /// An entry counted here always produces the parked WARN, never the silent path: [Diagnosis#log]
+        /// reports `unassignedPartitions` ahead of the parked set, and the two cannot both be non-empty.
+        /// A non-empty parked set means some partition was computed FOR this node, which means this node
+        /// is a candidate, which means [#candidateNodes] is non-empty — and with a non-empty candidate
+        /// list [#assignPartition] resolves a consumer for EVERY partition, so nothing is unassigned.
+        private void countIfParked(Option<Diagnosis> previous, Diagnosis diagnosis) {
+            if (!diagnosis.parkedPartitions().isEmpty() && previous.map(Diagnosis::parkedPartitions)
+                                                                   .or(List.of())
+                                                                   .isEmpty()) {
+                attachSkippedNoLocalSlice.incrementAndGet();
             }
         }
 
@@ -913,7 +1005,21 @@ public interface StreamConsumerManager {
             admittedEpochs.put(key, epoch);
             invocationHandler.localSlice(declaration.artifact())
                              .onPresent(bridge -> doSubscribe(key, declaration, bridge, epoch))
-                             .onEmpty(() -> forget(key));
+                             .onEmpty(() -> dropUnloaded(key, declaration));
+        }
+
+        /// #1389: the slice was here when the desired set was computed and is gone now. Forgotten so the
+        /// next pass re-evaluates it — but said out loud, because the committed record still names this
+        /// node and nothing else will report the partition as consumed by nobody.
+        private void dropUnloaded(SubscriptionKey key, ConsumerDeclaration declaration) {
+            forget(key);
+            attachSkippedNoLocalSlice.incrementAndGet();
+            log.warn("Declarative stream consumer NOT attached: partitions [{}] of stream {} are committed to this node ({}) for consumer group {}, but slice {} is not loaded here — nothing is consuming them until the leader reassigns them or the slice activates here",
+                     key.partition(),
+                     key.streamName(),
+                     self.id(),
+                     key.consumerGroup(),
+                     declaration.artifact());
         }
 
         private void forget(SubscriptionKey key) {
@@ -1145,6 +1251,11 @@ public interface StreamConsumerManager {
         }
 
         @Override
+        public long attachSkippedNoLocalSliceCount() {
+            return attachSkippedNoLocalSlice.get();
+        }
+
+        @Override
         public List<ConsumerStatus> statuses() {
             var cursors = cursorsByKey();
 
@@ -1247,7 +1358,8 @@ public interface StreamConsumerManager {
     /// `eventTypePublishable` is [Option#none] when the slice is not local: the probe needs the slice's
     /// own codec registry, so a node without the slice genuinely cannot know, and saying `false` there
     /// would invent a value.
-    record Diagnosis(Artifact artifact,
+    record Diagnosis(NodeId node,
+                     Artifact artifact,
                      String methodName,
                      String streamName,
                      boolean deployedLocally,
@@ -1256,17 +1368,21 @@ public interface StreamConsumerManager {
                      List<PartitionAssignment> assignments,
                      List<Integer> unassignedPartitions,
                      List<Integer> forwardedPartitions,
+                     List<Integer> parkedPartitions,
                      boolean deploymentPending,
                      Option<String> message) {
         private static final Logger log = LoggerFactory.getLogger(StreamConsumerManager.class);
 
-        static Diagnosis diagnosis(ConsumerDeclaration declaration,
+        static Diagnosis diagnosis(NodeId node,
+                                   ConsumerDeclaration declaration,
                                    List<PartitionAssignment> assignments,
                                    List<Integer> unassigned,
                                    List<Integer> forwarded,
+                                   List<Integer> parked,
                                    Option<Boolean> publishable,
                                    boolean deploymentPending) {
-            return new Diagnosis(declaration.artifact(),
+            return new Diagnosis(node,
+                                 declaration.artifact(),
                                  declaration.methodName().name(),
                                  declaration.streamName(),
                                  publishable.isPresent(),
@@ -1275,8 +1391,9 @@ public interface StreamConsumerManager {
                                  assignments,
                                  unassigned,
                                  forwarded,
+                                 parked,
                                  deploymentPending,
-                                 message(declaration, unassigned, publishable, deploymentPending));
+                                 message(node, declaration, unassigned, parked, publishable, deploymentPending));
         }
 
         /// The FAULT channel: populated only for a condition an operator must act on. Routine
@@ -1284,12 +1401,18 @@ public interface StreamConsumerManager {
         /// and it is already visible structurally in `partitionAssignments`, where `consumerNode`
         /// differs from `ownerNode`. Mixing it in would destroy the property that makes this field
         /// useful: a non-empty `diagnostic` means something is wrong.
-        private static Option<String> message(ConsumerDeclaration declaration,
+        private static Option<String> message(NodeId node,
+                                              ConsumerDeclaration declaration,
                                               List<Integer> unassigned,
+                                              List<Integer> parked,
                                               Option<Boolean> publishable,
                                               boolean deploymentPending) {
             if (!unassigned.isEmpty()) {
                 return Option.some(unassignedText(declaration, unassigned, deploymentPending));
+            }
+
+            if (!parked.isEmpty()) {
+                return Option.some(parkedText(node, declaration, parked));
             }
 
             if (publishable.map(known -> !known).or(false)) {
@@ -1321,10 +1444,30 @@ public interface StreamConsumerManager {
                     + " consumed by anyone";
         }
 
+        /// #1389: the committed assignee that cannot consume. WARN, not ERROR: the leader repairs it on its
+        /// next pass once the deployment map stops saying ACTIVE here (every unload path writes that before
+        /// it drops the bridge), so it is transient unless the map is stale — and then it is the only sign.
+        /// Named before the forwarding INFO, which would otherwise claim this node is consuming.
+        private static String parkedText(NodeId node, ConsumerDeclaration declaration, List<Integer> parked) {
+            return "partitions " + parked
+                 + " of stream " + declaration.streamName()
+                 + " are committed to this node (" + node.id()
+                 + ") for consumer group " + declaration.consumerGroup()
+                 + ", but slice " + declaration.artifact()
+                                               .asString()
+                 + " is not loaded here — nothing is consuming them until the leader reassigns them or the slice activates here";
+        }
+
         @Contract
         void log() {
             if (!unassignedPartitions.isEmpty()) {
                 logUnassigned();
+
+                return;
+            }
+
+            if (!parkedPartitions.isEmpty()) {
+                message.onPresent(text -> log.warn("Declarative stream consumer {}.{}: {}", artifact, methodName, text));
 
                 return;
             }

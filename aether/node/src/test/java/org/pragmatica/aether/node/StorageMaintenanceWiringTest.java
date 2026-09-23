@@ -188,6 +188,16 @@ class StorageMaintenanceWiringTest {
     void defaultStreamStorage_maintenancePass_neverDeletesFromOrDemotesOutOfSharedDhtTier() {
         var dhtClient = new InMemoryDHTClient();
         var setup = StorageFactory.defaultStreamStorage(Option.some(dhtClient), streamDataDir, "test-node").unwrap();
+
+        // #849: the streams DHT tier is now gated on its marker check like every other DHT tier
+        // (see `createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance` below), so
+        // admission must run before the first write, as `AetherNode.start()` does.
+        setup.dhtMarkerCheck()
+             .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                               .await()
+                                               .onFailure(cause -> fail("admitting the streams DHT tier failed: " + cause.message())));
+
+
         var content = "shared-tier-content".getBytes(StandardCharsets.UTF_8);
 
         var blockId = setup.instance().put(content).await().unwrap();

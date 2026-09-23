@@ -1926,7 +1926,9 @@ public class FactoryClassGenerator {
     ///
     /// Supported parameter types:
     ///   - Primitives: String, int, long, double, boolean → require* methods
-    ///   - Optional primitives: Option<String>, Option<Integer>, etc. → get* wrapped in Result.success
+    ///   - Optional primitives: Option<String> → getString wrapped in Result.success; Option<Integer>,
+    ///     Option<Long>, Option<Double>, Option<Boolean> → get* directly (they answer Result<Option<T>>,
+    ///     so a malformed value fails the chain, #1098)
     ///   - Collections: List<String> → requireStringList
     ///   - Value objects: any type with a JBCT factory `typeName(String) → Result<T>` → requireString + flatMap
     ///   - Optional value objects: Option<T> where T has a factory → getString + map with unwrap
@@ -2022,7 +2024,8 @@ public class FactoryClassGenerator {
     private enum ConfigAccessKind {
         /// Primitive types: String, int, long, double, boolean → requireX(section, key)
         REQUIRED_PRIMITIVE,
-        /// Optional primitives: Option<String>, Option<Integer>, etc. → Result.success(getX(section, key))
+        /// Optional primitives: Option<String> → Result.success(getString(section, key));
+        /// Option<Integer>/Long/Double/Boolean → getX(section, key), already a Result<Option<T>>
         OPTIONAL_PRIMITIVE,
         /// String list: List<String> → requireStringList(section, key)
         REQUIRED_STRING_LIST,
@@ -2236,7 +2239,11 @@ public class FactoryClassGenerator {
 
             return switch (kind) {
                 case REQUIRED_PRIMITIVE, REQUIRED_STRING_LIST -> configCall;
-                case OPTIONAL_PRIMITIVE -> "Result.success(" + configCall + ")";
+                // #1098: the typed get* answer Result<Option<T>> — a malformed value is a failure
+                // that must reach Result.all; only getString is a bare Option<String> to wrap.
+                case OPTIONAL_PRIMITIVE -> "getString".equals(facadeMethod)
+                                           ? "Result.success(" + configCall + ")"
+                                           : configCall;
                 case REQUIRED_VALUE_OBJECT -> configCall + ".flatMap(" + valueObjectType + "::" + valueObjectFactory + ")";
                 case OPTIONAL_VALUE_OBJECT -> "Result.success(" + configCall + ".map(s -> " + valueObjectType + "." + valueObjectFactory + "(s).expect(\"optional " + valueObjectType + " value validated at config load time\")))";
             };

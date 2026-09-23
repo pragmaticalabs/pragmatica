@@ -55,6 +55,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
     static final String STREAMS_NAME = "streams";
+    /// #849: the `streams` DHT namespace. Its encryption marker lives at
+    /// `stream-segments/.encryption-enabled`, same layout as `<name>-blocks/.encryption-enabled`.
+    static final String STREAM_SEGMENTS_DHT_PREFIX = "stream-segments";
     /// Hot-ring mirror in the memory tier — small; the live ring already holds recent events,
     /// the memory tier is only the first read-waterfall hop for just-sealed segment blocks.
     private static final long STREAM_MEMORY_BYTES = 16L * 1024 * 1024;
@@ -499,9 +502,9 @@ public final class StorageFactory {
     /// memory+DHT when `streamDataDir` is not writable (mirrors `createOne`'s
     /// `handleDiskTierUnavailable`), so node boot never fails on an unmountable data dir.
     static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
-        var tiers = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
+        var build = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
 
-        return assembleStreamSetup(tiers, streamDataDir.resolve("snapshots"), nodeId);
+        return assembleStreamSetup(build.tiers(), streamDataDir.resolve("snapshots"), nodeId, build.dhtMarkerCheck());
     }
 
     /// #253 — encrypted counterpart to the three-arg overload above. Streams has no per-instance
@@ -555,8 +558,9 @@ public final class StorageFactory {
                                                             segmentsDir,
                                                             ring).flatMap(build -> assembleStreamSetup(build.tiers(),
                                                                                                        snapshotDir,
-                                                                                                       request.nodeId()).map(setup -> new PendingSetup(setup,
-                                                                                                                                                       build.armedDisk()))));
+                                                                                                       request.nodeId(),
+                                                                                                       build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
+                                                                                                                                                             build.armedDisk()))));
     }
 
     /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
@@ -567,62 +571,53 @@ public final class StorageFactory {
                               String nodeId,
                               Option<EncryptionKeyring> keyring) {}
 
+    /// #849: the streams DHT tier goes through [#maybeEncryptDht] like every `<name>-blocks`
+    /// namespace -- gated on a `readGate` and carrying the [DhtMarkerCheck] that
+    /// `AetherNode.start()` verifies post-formation -- so `streams_encrypted` switched off over a
+    /// namespace whose marker says encrypted refuses with `EncryptedTierRequiresKeyring` before any
+    /// read, instead of admitting the boot and failing every segment read on the content-address
+    /// check. Before #849 both builders used the ungated two-arg `DhtStorageTier` and no marker was
+    /// ever written for `stream-segments`.
     private static Result<TierBuild> armEncryptedStreamTiers(Option<DHTClient> dhtClient,
                                                              Path segmentsDir,
                                                              EncryptionKeyring keyring) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
-        var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"))
-                               .map(dht -> EncryptingStorageTier.wrap(dht, keyring));
+        var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
 
         return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
                                                                                     log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
                                                                                              cause.message());
 
-                                                                                    return Result.success(new TierBuild(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
-                                                                                                                                                                 dht))
-                                                                                                                               .or(List.of(memoryTier)),
-                                                                                                                        Option.none()));
+                                                                                    return Result.success(withDht(dhtBuild,
+                                                                                                                  List.of(memoryTier)));
                                                                                 },
                                                                                 disk -> EncryptingStorageTier.armLocalDisk(disk,
                                                                                                                            segmentsDir,
-                                                                                                                           keyring).map(armed -> new TierBuild(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
-                                                                                                                                                                                                        armed.tier(),
-                                                                                                                                                                                                        dht))
-                                                                                                                                                                      .or(List.of(memoryTier,
-                                                                                                                                                                                  armed.tier())),
-                                                                                                                                                               Option.none(),
-                                                                                                                                                               Option.some(armed))));
+                                                                                                                           keyring).map(armed -> withDht(dhtBuild,
+                                                                                                                                                         List.of(memoryTier,
+                                                                                                                                                                 armed.tier()),
+                                                                                                                                                         Option.some(armed))));
     }
 
-    private static List<StorageTier> buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
+    private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
-        var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"));
+        var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
 
-        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> streamTiersWithoutDisk(cause,
-                                                                                                                memoryTier,
-                                                                                                                dhtTier),
-                                                                                disk -> streamTiers(memoryTier,
-                                                                                                    disk,
-                                                                                                    dhtTier));
+        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
+                                                                                    log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
+                                                                                             cause.message());
+
+                                                                                    return withDht(dhtBuild,
+                                                                                                   List.of(memoryTier));
+                                                                                },
+                                                                                disk -> withDht(dhtBuild,
+                                                                                                List.of(memoryTier, disk)));
     }
 
-    private static List<StorageTier> streamTiersWithoutDisk(Cause cause,
-                                                            MemoryTier memoryTier,
-                                                            Option<DhtStorageTier> dhtTier) {
-        log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback", cause.message());
-
-        return dhtTier.map(dht -> List.<StorageTier> of(memoryTier, dht))
-                      .or(List.of(memoryTier));
-    }
-
-    private static List<StorageTier> streamTiers(MemoryTier memoryTier,
-                                                 StorageTier diskTier,
-                                                 Option<DhtStorageTier> dhtTier) {
-        return dhtTier.map(dht -> List.<StorageTier> of(memoryTier, diskTier, dht))
-                      .or(List.of(memoryTier, diskTier));
-    }
-
-    private static Result<StorageSetup> assembleStreamSetup(List<StorageTier> tiers, Path snapshotDir, String nodeId) {
+    private static Result<StorageSetup> assembleStreamSetup(List<StorageTier> tiers,
+                                                            Path snapshotDir,
+                                                            String nodeId,
+                                                            Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
         var instance = StorageInstance.storageInstance(STREAMS_NAME, tiers, metadataStore);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
@@ -646,7 +641,8 @@ public final class StorageFactory {
                                              readinessGate,
                                              metadataStore,
                                              demotionManager,
-                                             garbageCollector);
+                                             garbageCollector,
+                                             dhtMarkerCheck);
         });
     }
 

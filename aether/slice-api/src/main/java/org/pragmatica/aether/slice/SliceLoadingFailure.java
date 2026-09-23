@@ -131,6 +131,29 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// #1184 — a slice declares an artifact the shared classloader already holds at a version its
+        /// pattern does not accept. The shared loader keeps ONE version per `groupId:artifactId` for
+        /// the life of the process, so admitting the slice would silently run it against
+        /// `loadedVersion`; refusing is the only honest outcome, and it is Fatal because no retry can
+        /// change what the loader holds. Both requesters are named so the operator sees which two
+        /// slices disagree, not just which one arrived second.
+        record SharedLoaderVersionConflict(String requester, String requested, String loadedVersion, String loadedBy) implements Fatal {
+            @Override
+            public String message() {
+                return "Shared classloader version conflict: slice " + requester
+                     + " requires " + requested
+                     + " but " + loadedVersion
+                     + " is already loaded by " + loadedBy
+                     + ". The shared classloader holds one version per artifact for the process lifetime,"
+                     + " so " + requester
+                     + " would silently run against " + loadedVersion
+                     + "; refusing to load it. Align the version across the slices that declare it,"
+                     + " declare it [shared] so the conflicting version loads into the slice's own loader,"
+                     + " or restart the node — a same-node upgrade is refused against its own predecessor's load,"
+                     + " and only a restart releases what the shared classloader holds (#1184).";
+            }
+        }
+
         /// #882 — the slice JAR was generated before the #763 route-security contract and declares
         /// at least one PUBLIC route. The node cannot tell a declared `public` from the old default
         /// (both compiled to `publicRoute()`), so it refuses rather than serve the route open under

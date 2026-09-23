@@ -50,7 +50,7 @@ class UncachedResourceClassLoaderTest {
         var jar = sliceJar("shared.jar");
         var loader = new SharedLibraryClassLoader(PLATFORM);
 
-        loader.addArtifact("org.example", "shared", Version.version("1.0.0").unwrap(), jar);
+        loader.addArtifact("org.example", "shared", Version.version("1.0.0").unwrap(), jar, "test-slice");
 
         assertSharedJarSurvivesLoaderClose(jar, loader);
     }

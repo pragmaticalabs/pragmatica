@@ -312,12 +312,12 @@ class NodeDeploymentStateScheduledTaskValidationTest {
             return Option.none();
         }
 
-        @Override public Option<Integer> getInt(String key) {
-            return Option.none();
+        @Override public Result<Option<Integer>> getInt(String key) {
+            return Result.success(Option.none());
         }
 
-        @Override public Option<Boolean> getBoolean(String key) {
-            return Option.none();
+        @Override public Result<Option<Boolean>> getBoolean(String key) {
+            return Result.success(Option.none());
         }
     }
 
@@ -339,12 +339,12 @@ class NodeDeploymentStateScheduledTaskValidationTest {
             return Option.none();
         }
 
-        @Override public Option<Integer> getInt(String key) {
-            return Option.none();
+        @Override public Result<Option<Integer>> getInt(String key) {
+            return Result.success(Option.none());
         }
 
-        @Override public Option<Boolean> getBoolean(String key) {
-            return Option.none();
+        @Override public Result<Option<Boolean>> getBoolean(String key) {
+            return Result.success(Option.none());
         }
     }
 

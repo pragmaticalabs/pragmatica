@@ -25,6 +25,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.concurrent.PublishSlot;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -66,6 +67,10 @@ import static org.pragmatica.lang.Unit.unit;
 /// bidirectional stream, sends a Hello response, and notifies the connection handler
 /// with the established [QuicPeerConnection].
 public sealed interface QuicClusterServer {
+    /// The largest length-prefixed frame the cluster transport's decoder accepts, in bytes — the single
+    /// source for both the server and the client pipelines, and the bound message producers split by
+    /// (e.g. stream replication, #1287).
+    int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
     /// Start listening on the given UDP port.
     Promise<Unit> start(int port);
     /// Stop the server and release resources.
@@ -162,7 +167,6 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final long INITIAL_MAX_DATA = 64_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
-    private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
 
     private final NodeId selfId;
     private final NodeAddress selfAddress;
@@ -174,9 +178,18 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private final Option<EventLoopGroup> sharedEventLoop;
     private final PeerConnectionHandler connectionHandler;
     private final MessageReceiver messageReceiver;
-    private volatile Channel serverChannel;
+    /// #1456: a publish slot, not a bare reference. `stop()` closes it, so a bind completing after
+    /// stop had already read an empty field is handed back to `handleBind` to close, instead of
+    /// leaving the cluster UDP port bound with nothing owning it for the life of the process.
+    private final PublishSlot<Channel> serverChannel = PublishSlot.publishSlot();
     private volatile EventLoopGroup eventLoopGroup;
     private volatile boolean ownsEventLoop;
+
+    /// #1456 test seam: runs between the bind completing and the just-bound channel being published,
+    /// so a test can call `stop()` from inside that window. The window is sub-millisecond in
+    /// production, which is why the race is only reachable deterministically from here. No-op unless
+    /// a test installs a hook.
+    private volatile Runnable beforePublish = () -> {};
 
     QuicClusterServerInstance(NodeId selfId,
                               NodeAddress selfAddress,
@@ -211,12 +224,17 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         return Promise.promise(this::initiateShutdown);
     }
 
+    /// #1456 test seam — see [#beforePublish].
+    @Contract
+    void beforePublishForTest(Runnable hook) {
+        beforePublish = hook;
+    }
+
     @Override
     public Option<Integer> boundPort() {
-        var channel = serverChannel;
-
-        return option(channel).map(Channel::localAddress)
-                     .map(addr -> ((InetSocketAddress) addr).getPort());
+        return serverChannel.current()
+                            .map(Channel::localAddress)
+                            .map(addr -> ((InetSocketAddress) addr).getPort());
     }
 
     /// #487 self-loopback: one event loop from this server's group, used to deliver a send-to-self on the
@@ -248,17 +266,52 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     @SuppressWarnings("JBCT-PAT-01")  // Netty future callback
     private void handleBind(int port, Promise<Unit> promise, io.netty.util.concurrent.Future<? super Void> future) {
         if (future.isSuccess()) {
-            var channel = ((io.netty.channel.ChannelFuture) future).channel();
-
-            serverChannel = channel;
-            var actualPort = ((InetSocketAddress) channel.localAddress()).getPort();
-
-            log.info("QUIC cluster server started on UDP port {}", actualPort);
-            promise.succeed(unit());
+            publishBoundChannel(((io.netty.channel.ChannelFuture) future).channel(), promise);
         } else {
             promise.fail(QuicTransportError.BindFailed.FACTORY.apply(port,
                                                                      Causes.fromThrowable(future.cause())));
         }
+    }
+
+    /// #1456: the bind can land after `stop()` has already run. The slot hands the channel straight
+    /// back when it is closed, and this side closes it — `initiateShutdown` has already been and gone,
+    /// so nothing else ever will. The start is FAILED rather than succeeded in that case, which is
+    /// both the honest answer (this server is not running) and what keeps the caller's post-start
+    /// hooks — `QuicClusterNetwork`'s reconciler and keepalive schedules — from arming a transport
+    /// that was stopped. A leaked reconciler was observed still dialling 2m10s later, inside
+    /// unrelated test classes.
+    private void publishBoundChannel(Channel channel, Promise<Unit> promise) {
+        beforePublish.run();
+        serverChannel.publishOrReclaim(channel)
+                     .onPresent(orphan -> closeOrphanedChannel(orphan, promise))
+                     .onEmpty(() -> announceBoundChannel(channel, promise));
+    }
+
+    private void announceBoundChannel(Channel channel, Promise<Unit> promise) {
+        log.info("QUIC cluster server started on UDP port {}",
+                 ((InetSocketAddress) channel.localAddress()).getPort());
+        promise.succeed(unit());
+    }
+
+    /// Failing the start here is a change to this server's start contract: before #1456 a bind that
+    /// landed after `stop()` reported SUCCESS. The failing matters — it is what stops
+    /// `QuicClusterNetwork`'s post-start `.onSuccess` hooks arming a reconciler on a stopped transport
+    /// — but it also introduces a second candidate cause into `EmberCluster.start()`'s abort path,
+    /// whose surfaced cause must stay the failure that TRIGGERED the abort.
+    ///
+    /// It does, for a reason stronger than a race: `EmberCluster.start()` selects via
+    /// `firstFailure::fail`, and promise resolution is compare-and-set, so the first failure wins.
+    /// Inside that path the only thing that stops a node is `abortStart`, which runs only once
+    /// `firstFailure` has ALREADY resolved — so this cause cannot exist before the one it would have
+    /// to displace. **Pinned, not merely argued:** `EmberClusterSwimStartFailureTest` asserts the
+    /// surfaced cause `contains("Address already in use")`, which this message cannot satisfy.
+    /// Measured 2026-09-23 — forcing this branch unconditionally reddens it at line 78 with
+    /// `start() settled after 2144 ms with: QUIC cluster server was stopped while its bind was still
+    /// in flight`. Change the cause or the selection and that test is what catches you.
+    private void closeOrphanedChannel(Channel orphan, Promise<Unit> promise) {
+        log.warn("QUIC cluster server bound on UDP port {} after stop() had already run — closing the orphan (#1456)",
+                 ((InetSocketAddress) orphan.localAddress()).getPort());
+        orphan.close().addListener(_ -> promise.fail(QuicTransportError.General.STOPPED_DURING_START));
     }
 
     private io.netty.channel.ChannelHandler buildQuicCodec() {
@@ -293,16 +346,16 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         return shared;
     }
 
+    /// #1456: `close()` is what orders this against an in-flight bind. It is terminal — any channel
+    /// published afterwards comes straight back to [#publishBoundChannel] to be closed there.
     private void initiateShutdown(Promise<Unit> promise) {
-        var channel = serverChannel;
+        serverChannel.close()
+                     .filter(Channel::isOpen)
+                     .onPresent(channel -> closeAndShutdown(channel, promise))
+                     .onEmpty(() -> shutdownEventLoop(promise));
+    }
 
-        serverChannel = null;
-        if (channel == null || !channel.isOpen()) {
-            shutdownEventLoop(promise);
-
-            return;
-        }
-
+    private void closeAndShutdown(Channel channel, Promise<Unit> promise) {
         log.info("Stopping QUIC cluster server");
         channel.close().addListener(_ -> shutdownEventLoop(promise));
     }

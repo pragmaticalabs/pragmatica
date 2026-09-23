@@ -46,6 +46,10 @@ public final class LocalDiskTier implements StorageTier {
     /// rename, the new one after it. Without this the TRUNCATE_EXISTING in-place write destroyed
     /// the previous copy at open and left a truncated file that the read waterfall would serve and
     /// then fail on its integrity check (review of #1095, B-1, reproduced under a real ENOSPC).
+    /// The rename is `FileOps.moveAtomic` (ONE `rename(2)`; the partial is a sibling, so it never
+    /// crosses a filesystem): `Files.move(REPLACE_EXISTING)` alone unlinks the block first, and a
+    /// reader or a crash in that window found nothing at the block path (#1169, correcting the
+    /// #910 ruling -- `know: 812d4de2c`).
     private static final String PARTIAL_SUFFIX = ".partial";
 
     private final Path basePath;
@@ -193,7 +197,7 @@ public final class LocalDiskTier implements StorageTier {
 
     private Result<Unit> writeThenRename(Path partial, Path path, byte[] content, long previousSize) {
         return writer.apply(partial, content)
-                     .flatMap(_ -> FileOps.moveReplace(partial, path))
+                     .flatMap(_ -> FileOps.moveAtomic(partial, path))
                      .onSuccess(_ -> correctUsedBytes(previousSize))
                      .onFailure(_ -> discardFailedWrite(partial))
                      .mapToUnit();
@@ -201,7 +205,8 @@ public final class LocalDiskTier implements StorageTier {
 
     /// Only what THIS write created is discarded: the partial file, whether it holds nothing (the
     /// open failed), N bytes (the disk filled mid-block) or the whole block (the rename failed).
-    /// The previous copy at the block path was never touched and stays counted (r3, c).
+    /// The previous copy at the block path was never touched -- the atomic rename never unlinks
+    /// it -- and stays counted (r3, c).
     private void discardFailedWrite(Path partial) {
         FileOps.deleteIfExists(partial).onFailure(cause -> log.warn("Partial block at {} could not be removed after a failed write: {}",
                                                                     partial,

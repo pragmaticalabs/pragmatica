@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.forward;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
@@ -18,6 +19,8 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.stream.segment.SegmentError;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -49,6 +52,7 @@ public interface StreamForwardHandler {
                                                transport,
                                                DEFAULT_MAX_READ_RESPONSE_BYTES,
                                                StreamReadForwardMetrics.NOOP,
+                                               Option.none(),
                                                Option.none());
     }
 
@@ -62,6 +66,7 @@ public interface StreamForwardHandler {
                                                transport,
                                                maxReadResponseBytes,
                                                metrics,
+                                               Option.none(),
                                                Option.none());
     }
 
@@ -80,7 +85,28 @@ public interface StreamForwardHandler {
                                                transport,
                                                maxReadResponseBytes,
                                                metrics,
-                                               ownerServe);
+                                               ownerServe,
+                                               Option.none());
+    }
+
+    /// #1383 overload: wires this node's tiered reader so a replica catch-up read falls through to the
+    /// owner's tier for a prefix the ring has evicted but the tier retains (see [DefaultStreamForwardHandler#readAppended]).
+    /// Without it (base handler / NOOP) the catch-up read stays ring-only and answers the evicted prefix
+    /// `CursorExpired`, exactly as before.
+    static StreamForwardHandler streamForwardHandler(NodeId selfNodeId,
+                                                     StreamPartitionManager partitionManager,
+                                                     StreamForwardTransport transport,
+                                                     long maxReadResponseBytes,
+                                                     StreamReadForwardMetrics metrics,
+                                                     Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe,
+                                                     Option<TieredStreamReader> tieredReader) {
+        return new DefaultStreamForwardHandler(selfNodeId,
+                                               partitionManager,
+                                               transport,
+                                               maxReadResponseBytes,
+                                               metrics,
+                                               ownerServe,
+                                               tieredReader);
     }
 
     StreamForwardHandler NOOP = new StreamForwardHandler() {
@@ -105,19 +131,22 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private final long maxReadResponseBytes;
     private final StreamReadForwardMetrics metrics;
     private final Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe;
+    private final Option<TieredStreamReader> tieredReader;
 
     DefaultStreamForwardHandler(NodeId selfNodeId,
                                 StreamPartitionManager partitionManager,
                                 StreamForwardTransport transport,
                                 long maxReadResponseBytes,
                                 StreamReadForwardMetrics metrics,
-                                Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe) {
+                                Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe,
+                                Option<TieredStreamReader> tieredReader) {
         this.selfNodeId = selfNodeId;
         this.partitionManager = partitionManager;
         this.transport = transport;
         this.maxReadResponseBytes = maxReadResponseBytes;
         this.metrics = metrics;
         this.ownerServe = ownerServe;
+        this.tieredReader = tieredReader;
     }
 
     /// #1236: the replica floor (`min-sync - 1` peers) is checked BEFORE the owner appends, so a forwarded
@@ -182,7 +211,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// served stale. Every other forward is a replica-class read served by a plain local read. When no
     /// owner-serve pipeline is wired (base handler / NOOP) even a linearizable forward degrades to the
     /// local read. A `catchup` forward (#1235) from a registered replica of the partition is a replication
-    /// read, answered up to the APPENDED head. Every other forward — including a `catchup` flag from a node
+    /// read, answered up to the APPENDED head from the ring or, for an evicted prefix, this node's tier
+    /// (#1383, [#readAppended]). Every other forward — including a `catchup` flag from a node
     /// outside the replica set — is a consumer read, answered up to the VISIBLE position: a bare flag must
     /// not let an arbitrary reader opt out of visibility (CTO ruling, #1235 Fork A).
     private Promise<List<OffHeapRingBuffer.RawEvent>> serveRead(ReadForward request) {
@@ -209,12 +239,111 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                                          request.sender());
     }
 
+    /// #1383: a replica catch-up read is served from the ring up to the APPENDED head, or — for a prefix the
+    /// ring has evicted but this node's tier retains — from the tier, then the ring for the rest of the page.
+    /// Before this the read was ring-only, so a replacement replica whose catch-up started below the ring tail
+    /// was answered `CursorExpired` on every redrive and never left SYNCING; with `min-sync` 2 and the original
+    /// peer gone, the partition's visible position never advanced again. The tier read is bounded by the
+    /// appended head — the replication-read class (#1235), never the consumer's visible bound (#1352) — so the
+    /// replica holds every offset it acks and nothing this owner has not appended. A prefix retention has
+    /// reclaimed is still `CursorExpired` (from the tier, [TieredStreamReader#read]) and still stalls: #1407.
     private Promise<List<OffHeapRingBuffer.RawEvent>> readAppended(ReadForward request) {
         return partitionManager.readAppended(request.streamName(),
                                              request.partition(),
                                              request.fromOffset(),
                                              request.maxEvents())
-                               .async();
+                               .fold(cause -> recoverEvicted(request, cause),
+                                     Promise::success);
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> recoverEvicted(ReadForward request, Cause cause) {
+        return cause instanceof StreamError.CursorExpired
+               ? readEvictedPrefix(request, cause)
+               : cause.promise();
+    }
+
+    /// An evicted offset the sealer still retains is IN FLIGHT: its seal is not indexed yet, so it is in neither
+    /// place, and the read fails transient ([SegmentError.SealInFlight]) for the backfill to redrive — never
+    /// `CursorExpired`, which names an offset nobody holds. Asked BEFORE the tier read, as the consumer path
+    /// does: the sink indexes a segment before the sealer releases its copy, so an offset not retained here is
+    /// already findable in the index. Without a tier wired the ring's own refusal stands.
+    private Promise<List<OffHeapRingBuffer.RawEvent>> readEvictedPrefix(ReadForward request, Cause expired) {
+        if (partitionManager.sealInFlight(request.streamName(), request.partition(), request.fromOffset())) {
+            return new SegmentError.SealInFlight(request.streamName(), request.partition(), request.fromOffset()).promise();
+        }
+
+        return tieredReader.fold(expired::promise, reader -> readTierThenRing(request, reader, expired));
+    }
+
+    /// The tier is asked for no more than `[fromOffset, appended head]`. The bound is load-bearing, not a belt: the
+    /// `SegmentIndex` is never purged when a stream is removed, so a stream re-created under the same name starts
+    /// a fresh ring over the old incarnation's refs, and the tier can be contiguous past the new head (rev1417 F3).
+    /// Nothing sealed at `fromOffset` means the ring's refusal was right (a seal that failed for good, a ring
+    /// released under the read) and it is returned as-is — an empty success would let the backfill take the
+    /// no-source path off a partition that has history.
+    private Promise<List<OffHeapRingBuffer.RawEvent>> readTierThenRing(ReadForward request,
+                                                                       TieredStreamReader reader,
+                                                                       Cause expired) {
+        var head = appendedHead(request);
+
+        if (request.fromOffset() > head) {
+            return expired.promise();
+        }
+
+        return reader.read(request.streamName(),
+                           request.partition(),
+                           request.fromOffset(),
+                           (int) Math.min(request.maxEvents(),
+                                          head - request.fromOffset() + 1))
+                     .flatMap(sealed -> serveSealedPrefix(request, sealed, expired));
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> serveSealedPrefix(ReadForward request,
+                                                                        List<OffHeapRingBuffer.RawEvent> sealed,
+                                                                        Cause expired) {
+        return sealed.isEmpty()
+               ? expired.promise()
+               : appendRingTail(request, sealed);
+    }
+
+    private long appendedHead(ReadForward request) {
+        return partitionManager.partitionBuffer(request.streamName(),
+                                                request.partition())
+                               .map(OffHeapRingBuffer::headOffset)
+                               .or(-1L);
+    }
+
+    /// The ring's share of the page starts right after the sealed prefix, and it is NOT best-effort: the pull
+    /// ends on a short page (`ForwardCatchupTransport.continueOrFinish`) and the backfill then promotes at the
+    /// page's own last offset (`PartitionBackfill.applyOwnerResponse`), so a page that succeeds must reach the
+    /// appended head — the invariant the ring-only read always had. A ring refusal for the next offset
+    /// therefore fails the whole page (rev1417 F1: a prefix-alone page promoted a replica CAUGHT_UP below the
+    /// head), as [SegmentError.SealInFlight] when the sealer still holds that offset, else as the ring's own
+    /// cause; the backfill redrives, and a later redrive reads a longer sealed prefix.
+    private Promise<List<OffHeapRingBuffer.RawEvent>> appendRingTail(ReadForward request,
+                                                                     List<OffHeapRingBuffer.RawEvent> sealed) {
+        var remaining = request.maxEvents() - sealed.size();
+
+        if (remaining <= 0) {
+            return Promise.success(sealed);
+        }
+
+        var next = sealed.getLast().offset() + 1;
+
+        return partitionManager.readAppended(request.streamName(),
+                                             request.partition(),
+                                             next,
+                                             remaining)
+                               .map(ring -> List.copyOf(Stream.concat(sealed.stream(),
+                                                                      ring.stream()).toList()))
+                               .fold(cause -> ringTailRefused(request, next, cause),
+                                     Promise::success);
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> ringTailRefused(ReadForward request, long next, Cause cause) {
+        return partitionManager.sealInFlight(request.streamName(), request.partition(), next)
+               ? new SegmentError.SealInFlight(request.streamName(), request.partition(), next).promise()
+               : cause.promise();
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(ReadForward request) {
