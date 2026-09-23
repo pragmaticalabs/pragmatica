@@ -163,7 +163,7 @@ COPY target/aether-node.jar .
 COPY aether.toml .
 # Extensions directory for optional modules
 RUN mkdir -p /app/extensions
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -cp '/app/aether-node.jar:/app/extensions/*' org.pragmatica.aether.Main"]
+ENTRYPOINT ["sh", "-c", "java -XX:+ExitOnOutOfMemoryError $JAVA_OPTS -cp '/app/aether-node.jar:/app/extensions/*' org.pragmatica.aether.Main"]
 ```
 
 Deploy TTM by adding the jar:

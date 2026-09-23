@@ -161,7 +161,7 @@ public final class LocalGenerator implements Generator {
     private String formatNodeStart(int index, int mgmtPort, int clusterPort, String heap, String gc, String peerList) {
         return String.format("""
             echo "Starting node %d (management: %d, cluster: %d)..."
-            java -Xmx%s -XX:+Use%s \\
+            java -XX:+ExitOnOutOfMemoryError -Xmx%s -XX:+Use%s \\
                 -DNODE_ID=%d \\
                 -DMANAGEMENT_PORT=%d \\
                 -DCLUSTER_PORT=%d \\
