@@ -1062,9 +1062,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                cause.message()));
         }
 
+        /// #1448: the key is node-scoped, so this node's subscription record is its own row. Before the
+        /// node component existed, every instance of the slice wrote ONE shared row and the matching
+        /// [#buildTopicSubscriptionRemoveCommand] deleted it for the whole cluster.
         private KVCommand<AetherKey> buildTopicSubscriptionPutCommand(Artifact artifact,
                                                                       SubscriptionManifestEntry entry) {
-            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(), artifact, entry.methodName());
+            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(),
+                                                                artifact,
+                                                                entry.methodName(),
+                                                                ctx.self());
             var value = TopicSubscriptionValue.topicSubscriptionValue(ctx.self());
 
             return new KVCommand.Put<>(key, value);
@@ -1099,9 +1105,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                cause.message()));
         }
 
+        /// #1448: scoped to `ctx.self()`, so an unload removes THIS node's subscription row and leaves
+        /// every other instance's row — and therefore the durable group's declaration — standing. The
+        /// node component must match [#buildTopicSubscriptionPutCommand] exactly or the unload silently
+        /// removes nothing and the record outlives the instance.
         private KVCommand<AetherKey> buildTopicSubscriptionRemoveCommand(Artifact artifact,
                                                                          SubscriptionManifestEntry entry) {
-            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(), artifact, entry.methodName());
+            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(),
+                                                                artifact,
+                                                                entry.methodName(),
+                                                                ctx.self());
 
             return new KVCommand.Remove<>(key);
         }

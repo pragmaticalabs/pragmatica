@@ -137,6 +137,31 @@ class NodeDeploymentStateTopicSubscriptionNamespaceTest {
                         .noneMatch(key -> key.startsWith("topic-sub/" + sliceNamespace + "/"));
     }
 
+    /// #1448 — THE KEY SHAPE THE NODE PUBLISHES, pinned at the writer rather than at the record.
+    ///
+    /// This harness is single-instance by construction (`RecordingClusterNode.apply` records commands
+    /// and never feeds a shared `KVStore`), so it cannot host the survival test — one instance's unload
+    /// cannot be observed to spare another's row here. That test lives in `StreamConsumerManagerTest`
+    /// (`descaleOfAnotherInstance_leavesThisNodeAttached`). What this CAN pin, and what nothing else
+    /// reaches, is that the writer scopes the key to THIS node: the whole fix is the node component
+    /// arriving in the published key, and a `topicSubscriptionKey(...)` call that dropped it would
+    /// still satisfy every namespace assertion above.
+    @Test
+    void publishedSubscriptionKey_isScopedToTheWritingNode() {
+        harness.dispatch(new QuorumEstablished());
+        harness.dispatch(new NodeArtifactPutReceived(activePutFor(SELF)));
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(subscriptionKeys()).as("the chain published a topic subscription")
+                                                                  .isNotEmpty());
+
+        assertThat(subscriptionKeys()).allSatisfy(key -> assertThat(key.nodeId()).as("#1448: the publishing node is part of the key, so one instance's unload Removes only its own row")
+                                                                                 .isEqualTo(SELF));
+        assertThat(subscriptionKeys()).as("and it is the LAST path segment, after the method — the string codec is the snapshot format")
+                                      .allSatisfy(key -> assertThat(key.asString()).endsWith("/" + key.methodName()
+                                                                                                       .name() + "/" + SELF.id()));
+    }
+
     private List<TopicSubscriptionKey> subscriptionKeys() {
         return cluster.commands()
                       .stream()

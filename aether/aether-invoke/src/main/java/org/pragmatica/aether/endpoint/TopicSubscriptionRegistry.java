@@ -44,11 +44,12 @@ public interface TopicSubscriptionRegistry {
     List<TopicSubscriber> findSubscribers(String topicAddress);
     List<TopicSubscription> allSubscriptions();
 
+    /// #1448 removed this record's `toKey()`. It had no callers anywhere in the repo, and it built a
+    /// key from `(address, artifact, methodName)` — the node-less shape that WAS the defect. Left in
+    /// place it would be an unpinned constructor of the wrong key, credible-looking and untested. The
+    /// sibling [EndpointRegistry.Endpoint#toKey] is kept because it has a live caller. Re-add this one
+    /// with a test when something needs it; the record carries all four components.
     record TopicSubscription(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) {
-        public TopicSubscriptionKey toKey() {
-            return TopicSubscriptionKey.topicSubscriptionKey(address, artifact, methodName);
-        }
-
         /// Bare topic name — addressing metadata only, NOT the runtime routing identity. Routing
         /// matches on the full [#routingKey] (`namespace:name:version`); this accessor is kept for
         /// display/diagnostics and for any caller that still needs the un-namespaced name.
@@ -71,6 +72,11 @@ public interface TopicSubscriptionRegistry {
                                          Map<String, AtomicInteger> roundRobinCounters) implements TopicSubscriptionRegistry {
             private static final Logger log = LoggerFactory.getLogger(topicSubscriptionRegistry.class);
 
+            /// Since #1448 the KEY also carries the node, so `key.nodeId()` and `value.nodeId()` name the
+            /// same node — `NodeDeploymentState.buildTopicSubscriptionPutCommand` is the single writer and
+            /// sets both from `ctx.self()`. The value is still read here deliberately: it remains the
+            /// serialized payload of the row, and reading it keeps this method unchanged. If a second
+            /// writer ever appears, the key is the identity and this must switch to `key.nodeId()`.
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut) {

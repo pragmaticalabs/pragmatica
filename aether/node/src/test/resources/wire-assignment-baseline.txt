@@ -161,7 +161,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamMetadataKey (streamNam
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamPartitionOwnershipKey (stream:java.lang.String,partition:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistrationKey (streamName:java.lang.String,configSection:java.lang.String,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamRegistryKey (address:org.pragmatica.aether.slice.resource.ResourceAddress)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$TopicSubscriptionKey (address:org.pragmatica.aether.slice.resource.ResourceAddress,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$TopicSubscriptionKey (address:org.pragmatica.aether.slice.resource.ResourceAddress,artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName,nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$VersionRoutingKey (artifactBase:org.pragmatica.aether.artifact.ArtifactBase)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$WorkerSliceDirectiveKey (artifact:org.pragmatica.aether.artifact.Artifact,communityId:org.pragmatica.lang.Option<java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AbTestRoutingValue (testId:java.lang.String,splitRuleJson:java.lang.String,variantVersionsJson:java.lang.String)

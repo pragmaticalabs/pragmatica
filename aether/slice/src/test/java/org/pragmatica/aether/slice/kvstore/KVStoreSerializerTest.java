@@ -1036,15 +1036,16 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void roundTrip_namespacedTopicSubscriptionKey_preservesAddressArtifactMethod() {
+        void roundTrip_namespacedTopicSubscriptionKey_preservesAddressArtifactMethodAndNode() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
 
             var address = ResourceAddress.resourceAddress("com.example.app", "order-events",
                                                     ResourceVersion.resourceVersion(2, 1, 3).unwrap()).unwrap();
             var artifact = Artifact.artifact("com.example:order-slice:1.0.0").unwrap();
             var method = MethodName.methodName("onOrder").unwrap();
-            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method);
-            var value = TopicSubscriptionValue.topicSubscriptionValue(new NodeId("node-a"));
+            var node = new NodeId("node-a");
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method, node);
+            var value = TopicSubscriptionValue.topicSubscriptionValue(node);
             entries.put(key, value);
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
@@ -1058,6 +1059,8 @@ class KVStoreSerializerTest {
                                  assertThat(rk.topicName()).isEqualTo("order-events");
                                  assertThat(rk.artifact()).isEqualTo(artifact);
                                  assertThat(rk.methodName()).isEqualTo(method);
+                                 assertThat(rk.nodeId()).describedAs("#1448: the node component survives the TOML round trip — the string codec is the snapshot format, so a key that loses it loses per-instance identity on restore")
+                                                        .isEqualTo(node);
                                  assertThat(restored.get(key)).isEqualTo(value);
                              });
         }

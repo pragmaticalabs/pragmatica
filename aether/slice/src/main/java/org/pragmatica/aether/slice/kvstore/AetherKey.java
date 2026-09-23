@@ -453,14 +453,27 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    /// Per-subscription registry key, now namespaced: `topic-sub/{namespace}/{topic}/{version}/{artifact}/{method}`.
+    /// Per-subscription registry key, namespaced AND node-scoped:
+    /// `topic-sub/{namespace}/{topic}/{version}/{artifact}/{method}/{node}`.
     ///
     /// Carries a full [ResourceAddress] (namespace + topic + version) so pub/sub mirrors the stream
     /// addressing model. Runtime routing still matches on the bare topic name ([ResourceAddress#topic])
     /// — see [TopicSubscriptionRegistry] — so existing un-namespaced topics keep working; the
     /// namespace/version travel as addressing metadata in the key's wire form. `asString`/parse are
     /// symmetric so the `topic-sub` serializer arm round-trips automatically.
-    record TopicSubscriptionKey(ResourceAddress address, Artifact artifact, MethodName methodName) implements AetherKey {
+    ///
+    /// The trailing [NodeId] is the #1448 fix. Without it, N instances of one slice collapse into a
+    /// single KV row, and the `Remove` any ONE instance emits on unload deletes the row every OTHER
+    /// instance's durable-group declaration and ephemeral route are synthesised from — so descaling
+    /// one instance un-declares the group cluster-wide, silently. One row per (subscription, node)
+    /// makes an unload remove exactly the unloading node's own record. Readers that want the group
+    /// rather than the instances deduplicate — see [TopicGroupDeclarationSource].
+    ///
+    /// The node component is LAST so the `topic-sub/{namespace}/{topic}/{version}` addressing prefix
+    /// stays intact for prefix matching. Parsing splits it off at the final `/`, which requires a node
+    /// id to contain no `/` — the same constraint [StorageStatusKey] already relies on.
+    record TopicSubscriptionKey(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId)
+            implements AetherKey {
         private static final String PREFIX = "topic-sub/";
 
         @Override
@@ -472,7 +485,8 @@ public sealed interface AetherKey extends StructuredKey {
                  + "/" + address.version()
                                 .asString()
                  + "/" + artifact.asString()
-                 + "/" + methodName.name();
+                 + "/" + methodName.name()
+                 + "/" + nodeId.id();
         }
 
         @Override
@@ -489,8 +503,9 @@ public sealed interface AetherKey extends StructuredKey {
 
         public static TopicSubscriptionKey topicSubscriptionKey(ResourceAddress address,
                                                                 Artifact artifact,
-                                                                MethodName methodName) {
-            return new TopicSubscriptionKey(address, artifact, methodName);
+                                                                MethodName methodName,
+                                                                NodeId nodeId) {
+            return new TopicSubscriptionKey(address, artifact, methodName, nodeId);
         }
 
         public static Result<TopicSubscriptionKey> topicSubscriptionKey(String key) {
@@ -523,22 +538,31 @@ public sealed interface AetherKey extends StructuredKey {
 
             var version = rest2.substring(0, thirdSlash);
             var rest3 = rest2.substring(thirdSlash + 1);
-            var lastSlash = rest3.lastIndexOf('/');
+            var nodeSlash = rest3.lastIndexOf('/');
+
+            if (nodeSlash <= 0) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var rest4 = rest3.substring(0, nodeSlash);
+            var nodePart = rest3.substring(nodeSlash + 1);
+            var lastSlash = rest4.lastIndexOf('/');
 
             if (lastSlash <= 0) {
                 return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            var artifactPart = rest3.substring(0, lastSlash);
-            var methodPart = rest3.substring(lastSlash + 1);
+            var artifactPart = rest4.substring(0, lastSlash);
+            var methodPart = rest4.substring(lastSlash + 1);
 
-            if (methodPart.isEmpty()) {
+            if (methodPart.isEmpty() || nodePart.isEmpty()) {
                 return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
             }
 
             return Result.all(ResourceAddress.resourceAddress(namespace, topic, version),
                               Artifact.artifact(artifactPart),
-                              MethodName.methodName(methodPart))
+                              MethodName.methodName(methodPart),
+                              NodeId.nodeId(nodePart))
                          .map(TopicSubscriptionKey::new);
         }
     }

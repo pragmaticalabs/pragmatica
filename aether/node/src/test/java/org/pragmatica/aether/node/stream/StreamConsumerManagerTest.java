@@ -80,7 +80,6 @@ import org.apache.logging.log4j.core.layout.PatternLayout;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -1394,8 +1393,9 @@ class StreamConsumerManagerTest {
         private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
         private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
         /// The ONE place #1448 is cited from, so the reference is a one-line change rather than a sweep.
-        /// Referenced by the tripwire's failure message and its `@Disabled` inverse. The earlier name for
-        /// this, "#1389 item 3", was retired when the defect got its own ticket: "item 3" named nothing.
+        /// Referenced by the survival pin and the cursor-fork test that replaced the tripwire. The earlier
+        /// name for this, "#1389 item 3", was retired when the defect got its own ticket: "item 3" named
+        /// nothing.
         private static final String UNDECLARE_TICKET = "#1448";
 
         private CapturingAppender appender;
@@ -1697,84 +1697,101 @@ class StreamConsumerManagerTest {
                                                                 .isEqualTo(1L);
         }
 
-        /// TRIPWIRE for the producer of the M1 stall this ticket was filed from — a SEPARATE defect in a
-        /// separate subsystem, tracked by its own blocking ticket #1448: `TopicSubscriptionKey` is `(address, artifact,
-        /// method)` with NO node component, so every instance writes the same KV entry and ONE instance's
-        /// unload `Remove`s the record every OTHER instance's durable group is declared from. The group is
-        /// un-declared cluster-wide, the consumer detaches on the next pass, and no diagnosis can report
-        /// it — a dropped declaration has no status row to carry one. That is what a 5-minute
-        /// consumed-nowhere window looks like; the parked report above cannot see it and does not claim
-        /// to.
+        /// THE SURVIVAL PIN for #1448. Its tripwire — `tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere`
+        /// — stood here asserting the opposite, and was deleted by the fix exactly as its own failure
+        /// message instructed ("delete me and enable the inverse below"). It is recorded rather than
+        /// silently dropped, per that instruction.
         ///
-        /// This asserts that CURRENT behaviour so it goes red the moment the key becomes node-scoped or
-        /// re-asserted — then delete it and enable the inverse below.
+        /// The defect it guarded: `TopicSubscriptionKey` was `(address, artifact, method)` with no node,
+        /// so every instance of a slice wrote ONE KV row and any ONE instance's unload `Remove`d the
+        /// record every OTHER instance's durable group was declared from. The group went un-declared
+        /// cluster-wide, every consumer detached on its next pass, and nothing could report it — a
+        /// dropped declaration has no status row to carry a diagnostic. That is what a 5-minute
+        /// consumed-nowhere window looked like.
+        ///
+        /// The key now carries the node, so SELF and PEER hold two DIFFERENT rows and PEER's descale
+        /// removes only its own. The two keys being distinct is asserted first: without that
+        /// discriminator this test would also pass against a registry that simply ignored the remove.
         @Test
-        void tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere_until1448IsFixed() {
+        void descaleOfAnotherInstance_leavesThisNodeAttached() {
             var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
-            var key = topicSubscriptionKey();
+            var selfKey = topicSubscriptionKey(SELF);
+            var peerKey = topicSubscriptionKey(PEER);
             var group = DurableGroupIdentity.groupId(ARTIFACT, METHOD);
+
+            assertThat(selfKey).describedAs("%s: the two instances must be two KEYS — that IS the fix, and without it the rest of this test is vacuous",
+                                            UNDECLARE_TICKET)
+                               .isNotEqualTo(peerKey);
 
             deploySliceEverywhere();
             ownership.withPartitionCount(1);
             ownership.ownedBySelf(0);
-            subscribeOn(topics, key, SELF);
-            subscribeOn(topics, key, PEER);
+            subscribeOn(topics, selfKey, SELF);
+            subscribeOn(topics, peerKey, PEER);
             var manager = topicGroupManager(topics);
 
             manager.reconcile();
             assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("precondition: SELF consumes the durable group's partition")
                                                                   .containsExactly(0);
-            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).singleElement()
+            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("TWO node-scoped subscription rows synthesise ONE declaration, hence ONE status — the reader-side dedup in TopicGroupDeclarationSource")
+                                                                .singleElement()
                       .satisfies(status -> assertThat(status.consumerGroup()).isEqualTo(group));
 
-            // PEER's instance is descaled: NodeDeploymentState.handleUnloading unpublishes ITS subscription,
-            // which is the same cluster-wide key SELF's declaration is synthesised from. The capture is
-            // cleared first: the stub bridge's codec draws an unrelated publishability WARN on pass one.
+            // PEER's instance is descaled: NodeDeploymentState.handleUnloading unpublishes ITS row, which
+            // is no longer the row SELF's declaration is synthesised from. The capture is cleared first:
+            // the stub bridge's codec draws an unrelated publishability WARN on pass one.
             appender.clear();
-            topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(peerKey), Option.none()));
             manager.reconcile();
 
-            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("TRIPWIRE (%s): SELF still hosts the slice and is still the committed assignee, yet the group is un-declared here and its consumer detached. If you are reading this because the assertion FAILED, the node-less TopicSubscriptionKey defect is fixed: delete me and enable the inverse below (`descaleOfAnotherInstance_leavesThisNodeAttached`). Do not delete me silently — %s says so too",
-                                                                              UNDECLARE_TICKET,
+            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("%s: SELF still hosts the slice, is still the committed assignee, and STAYS ATTACHED — another instance's descale cannot un-declare the group here",
                                                                               UNDECLARE_TICKET)
-                                                                  .isEmpty();
-            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("TRIPWIRE: no declaration, so no status, so no diagnostic — the stall is unreported")
-                                                                .isEmpty();
-            assertThat(appender.warns()).describedAs("TRIPWIRE: and nothing is logged at WARN about it")
+                                                                  .containsExactly(0);
+            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("and the group still has a status row, so a later fault would have somewhere to be reported")
+                                                                .singleElement()
+                      .satisfies(status -> assertThat(status.consumerGroup()).isEqualTo(group));
+            assertThat(appender.warns()).describedAs("a routine descale of a peer instance is not a fault here")
                                         .isEmpty();
-            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("TRIPWIRE: and #1389's counter cannot see it either — the declaration is gone, so no diagnosis is ever computed")
-                                                               .isZero();
         }
 
-        /// The inverse of the tripwire above. `@Disabled` here is deliberate and bounded: enabled today it
-        /// would not pass vacuously, it would FAIL, because the registry really does drop the key — and an
-        /// enabled failing test is noise, not a tripwire. The tripwire is what guarantees this one gets
-        /// enabled.
+        /// THE CURSOR-FORK QUESTION, left open by the design round and settled here rather than by
+        /// reading. N node-scoped rows must not fork the durable group's cursor: the group owns the
+        /// cursor, not the instance (durable-pubsub-spec §6). `cursorsByKey()` is private, so this
+        /// asserts the two observables it is built from and keyed by — the runtime's subscription
+        /// snapshots, and the `(stream, partition, consumerGroup)` triple each one carries.
+        ///
+        /// It holds because no cursor-keying type carries a node: `SubscriptionKey(stream, partition,
+        /// group)`, `DurableGroupIdentity.groupId(artifactBase, method)`, and `StreamCursorCheckpointKey
+        /// (stream, partition, group)` are all node-free, and the node is dropped at the declaration
+        /// boundary before any of them is reached.
         @Test
-        @Disabled("#1448: enable when TopicSubscriptionKey becomes node-scoped or is re-asserted. The tripwire above goes red at that moment and its failure message says to delete it and enable this.")
-        void descaleOfAnotherInstance_leavesThisNodeAttached() {
+        void twoInstancesOfOneSlice_shareOneCursor_notOnePerInstance() {
             var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
-            var key = topicSubscriptionKey();
+            var group = DurableGroupIdentity.groupId(ARTIFACT, METHOD);
 
             deploySliceEverywhere();
             ownership.withPartitionCount(1);
             ownership.ownedBySelf(0);
-            subscribeOn(topics, key, SELF);
-            subscribeOn(topics, key, PEER);
+            subscribeOn(topics, topicSubscriptionKey(SELF), SELF);
+            subscribeOn(topics, topicSubscriptionKey(PEER), PEER);
             var manager = topicGroupManager(topics);
 
             manager.reconcile();
-            topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            manager.reconcile();
 
-            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).containsExactly(0);
-            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).hasSize(1);
+            assertThat(topics.allSubscriptions()).describedAs("the discriminator: two instances really are two rows here")
+                                                 .hasSize(2);
+            assertThat(runtime.subscriptions()).describedAs("%s: one subscription, so one cursor — the group's, not one per instance",
+                                                            UNDECLARE_TICKET)
+                                               .singleElement()
+                      .satisfies(snapshot -> assertThat(snapshot.consumerGroup()).describedAs("and it is keyed on the version-stable GROUP, which carries no node")
+                                                                                 .isEqualTo(group));
         }
 
-        private static TopicSubscriptionKey topicSubscriptionKey() {
+        private static TopicSubscriptionKey topicSubscriptionKey(NodeId node) {
             return TopicSubscriptionKey.topicSubscriptionKey(ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap(),
                                                              ARTIFACT,
-                                                             METHOD);
+                                                             METHOD,
+                                                             node);
         }
 
         private static void subscribeOn(TopicSubscriptionRegistry topics, TopicSubscriptionKey key, NodeId node) {
@@ -2082,7 +2099,8 @@ class StreamConsumerManagerTest {
             var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
             var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address,
                                                                                                               artifact,
-                                                                                                              method);
+                                                                                                              method,
+                                                                                                              SELF);
             var value = org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF);
 
             topicRegistry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
