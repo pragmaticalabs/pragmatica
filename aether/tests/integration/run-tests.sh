@@ -132,7 +132,9 @@ while [ $# -gt 0 ]; do
             echo "  --skip-deploy      Skip cluster provisioning (reuse running clusters)"
             echo "  --skip-teardown    Leave clusters running after tests"
             echo "  --keep-on-failure  On a failed run (or failed bootstrap) leave clusters running for log"
-            echo "                     extraction; a green run still tears down. Cloud VMs stay BILLABLE."
+            echo "                     extraction; a green run still tears down. An interrupt (Ctrl-C,"
+            echo "                     SIGTERM, SIGHUP) counts as a failure and also preserves. Cloud VMs"
+            echo "                     stay BILLABLE."
             echo "  --skip-image-push  Skip pushing aether-node.jar + rebuilding remote image (reuse what is already on remote)"
             echo ""
             echo "Environment variables:"
@@ -1149,13 +1151,16 @@ A_SUITES_SELECTED=${#A_SUITES[@]}
 # unbound variables). Without this, any failure between Step 2 and Step 11 leaks
 # bootstrapped clusters — on cloud, that is real €/hour cost.
 #
-# The handler re-exits with the run's real status. Without that, a run aborted by `set -u`
-# exited 0 and read as success to any caller checking it. `$?` alone cannot carry it: macOS
-# /bin/bash 3.2 enters an EXIT trap with `$?`=0 after an unbound-variable abort. So success is
-# proven only by reaching the final exit (RUN_REACHED_END); a 0 without it is an abort.
+# The handler re-exits with the run's real status. A run aborted by `set -u` used to exit 0 and
+# read as success to any caller checking it: macOS /bin/bash 3.2 loses an unbound-variable
+# abort's status whenever an EXIT trap runs, entering the trap with `$?`=0. So success is proven
+# only by reaching the final exit (RUN_REACHED_END); a 0 without it is an abort.
 RUN_REACHED_END=false
 on_exit() {
     local rc=$?
+    # errexit off inside the handler: one failing teardown step must not abort the rest of the
+    # cleanup, nor replace the run's status with its own. The run's status is `rc`, re-raised below.
+    set +e
     if [ "$rc" -eq 0 ] && [ "$RUN_REACHED_END" != true ]; then
         log_error "Run aborted before completion (no final result) — exiting 1, not 0"
         rc=1
@@ -1175,13 +1180,19 @@ on_exit() {
 preserve_on_failure() {
     log_step "Run failed (rc=$1) with --keep-on-failure — clusters PRESERVED for log extraction"
     if [ "$ENV_TYPE" = "cloud" ]; then
-        log_warn "Preserved cloud VMs are BILLABLE. Reap when done:"
-        log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_A_NAME} --destroy --force"
-        log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_B_NAME} --destroy --force"
-        log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --destroy --force   # CTM-provisioned orphans"
+        if [ "${CLOUD_RESOURCES_PROVISIONED:-false}" = true ]; then
+            log_warn "Preserved cloud VMs are BILLABLE. Reap this run's clusters when done:"
+            log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_A_NAME} --destroy --force"
+            log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_B_NAME} --destroy --force"
+            log_warn "  CTM replacement VMs may carry no matching cluster label; the bare"
+            log_warn "  'cloud-reaper.sh --destroy --force' catches them but destroys EVERY aether-labelled"
+            log_warn "  resource in the account except test-pg — never run it while another run is live."
+        else
+            log_info "No cloud resources were provisioned this run — nothing to reap."
+        fi
         "${REPO_ROOT}/../tools/pg-firewall.sh" close 2>&1 | tail -1 || true
     else
-        log_warn "Containers left running; remove them with a normal run's teardown or 'docker compose down -v'."
+        log_warn "Containers left running on ${TARGET_HOST:-localhost}; a later normal run's teardown removes them."
     fi
 }
 trap on_exit EXIT
@@ -1392,9 +1403,9 @@ if [ "$PREFLIGHT_STOP" = true ]; then
     # THIS machine's CLI is blocked" — connectivity_preflight returns non-zero ONLY in
     # that case. Tearing the cluster down here would destroy a healthy cluster and force
     # a full re-bootstrap once the operator fixes Local Network access. So preserve it by
-    # reusing the existing skip-teardown mechanism: the EXIT trap (installed above,
-    # `trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT`) honours SKIP_TEARDOWN, the
-    # same flag `--skip-teardown` sets. No parallel teardown path.
+    # reusing the existing skip-teardown mechanism: the EXIT handler (`on_exit`, installed
+    # above) honours SKIP_TEARDOWN, the same flag `--skip-teardown` sets. No parallel
+    # teardown path.
     SKIP_TEARDOWN=true
     log_error "Cluster PRESERVED (not torn down): it is healthy and reachable via curl; only this machine's CLI is blocked."
     log_error "After fixing access, re-run the suite to reuse it (add --skip-deploy to skip re-bootstrap)."
