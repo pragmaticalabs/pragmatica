@@ -20,6 +20,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 
+import io.micrometer.core.instrument.MeterRegistry;
+
 
 public final class PublisherFactory implements ResourceFactory<Publisher, TopicConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("Publisher requires ProvisioningContext with runtime extensions");
@@ -57,14 +59,26 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
                                 spec -> provisionDurable(config, spec, context));
     }
 
+    /// The slice-id extension is absent only outside a deployment (unit tests, minimal runtimes);
+    /// the placeholder keeps the #1216 WARN honest about that rather than naming a slice it never had.
+    static final String UNSCOPED_PUBLISHER = "<no slice id in provisioning context>";
+
+    /// The node's real `MeterRegistry` reaches resource provisioning as a context extension (#278,
+    /// `AetherNode`), the same seam `MetricsInterceptorFactory` reads; absent outside a deployment, in
+    /// which case the publisher keeps the WARN and skips the counter.
     private Promise<Publisher> provisionEphemeral(TopicConfig config, ProvisioningContext context) {
         var topicAddress = resolveTopicAddress(config, context);
+        var publisherSlice = context.extension(String.class).or(UNSCOPED_PUBLISHER);
+        var meters = context.extension(MeterRegistry.class).option();
 
         return context.extension(TopicSubscriptionRegistry.class)
                       .flatMap(registry -> context.extension(SliceInvoker.class)
-                                                  .map(invoker -> (Publisher) new TopicPublisher<>(topicAddress,
-                                                                                                   registry,
-                                                                                                   invoker)))
+                                                  .map(invoker -> (Publisher) TopicPublisher.topicPublisher(config.topicName(),
+                                                                                                            topicAddress,
+                                                                                                            publisherSlice,
+                                                                                                            registry,
+                                                                                                            invoker,
+                                                                                                            meters)))
                       .async();
     }
 

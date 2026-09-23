@@ -51,14 +51,16 @@ public interface ConfigService {
     /// Get raw integer value from configuration.
     ///
     /// @param key Dot-separated key path
-    /// @return Option containing the value if present
-    Option<Integer> getInt(String key);
+    /// @return `Success(None)` when absent, `Success(Some)` when present and parseable, or a
+    ///         [ConfigError.TypeMismatch] naming the key and the raw value when present but not an
+    ///         integer (#1098 — a malformed value must never read as absent)
+    Result<Option<Integer>> getInt(String key);
 
     /// Get raw boolean value from configuration.
     ///
     /// @param key Dot-separated key path
-    /// @return Option containing the value if present
-    Option<Boolean> getBoolean(String key);
+    /// @return as [#getInt]; only `true`/`false` (any case) are booleans
+    Result<Option<Boolean>> getBoolean(String key);
 
     // Static accessor pattern
     /// Get the global ConfigService instance.

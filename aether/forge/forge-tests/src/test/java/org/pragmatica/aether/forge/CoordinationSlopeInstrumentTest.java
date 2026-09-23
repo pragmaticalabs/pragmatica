@@ -243,7 +243,7 @@ class CoordinationSlopeInstrumentTest {
     private static Path repoRoot() {
         var dir = Path.of("").toAbsolutePath();
 
-        while (dir != null && !Files.isDirectory(dir.resolve(".git"))) {
+        while (dir != null && !Files.exists(dir.resolve(".git"))) {
             dir = dir.getParent();
         }
 

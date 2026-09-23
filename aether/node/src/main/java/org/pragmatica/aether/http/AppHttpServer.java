@@ -285,6 +285,12 @@ class AppHttpServerAdapter implements AppHttpServer {
     private volatile boolean quorumEstablished;
     private final AtomicLong routeNotReadyRejections = new AtomicLong();
 
+    /// #1456 test seam: runs between the bind completing and the just-bound server being published to
+    /// the FSM, so a test can hold a start inside that window and call `stop()` there. The window is
+    /// sub-millisecond in production, which is why the race is only reachable deterministically from
+    /// here. No-op unless a test installs a hook.
+    private volatile Runnable beforePublish = () -> {};
+
     AppHttpServerAdapter(AppHttpConfig config,
                          ForwardingTimeouts forwardingTimeouts,
                          NodeId selfNodeId,
@@ -479,10 +485,23 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                 wg)))
                                      .or(HttpServer.httpServer(serverConfig, handler));
 
-        return serverPromise.map(this::registerStartedH1Server)
+        return serverPromise.map(this::holdAtPublishGate)
+                            .map(this::registerStartedH1Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
                                                           config.port(),
                                                           cause.message()));
+    }
+
+    /// #1456 test seam — see [#beforePublish].
+    @Contract
+    void beforePublishForTest(Runnable hook) {
+        beforePublish = hook;
+    }
+
+    private HttpServer holdAtPublishGate(HttpServer server) {
+        beforePublish.run();
+
+        return server;
     }
 
     private Promise<Unit> startH3Server() {

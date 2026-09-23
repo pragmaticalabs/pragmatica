@@ -9,13 +9,16 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Promise.resolved;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -45,6 +48,54 @@ public interface StorageInstance {
     Option<BlockId> resolveRef(String name);
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
+
+    /// Releases one reference credited by [#put] -- the debit for a block that carries no name of its
+    /// own. [DefaultContentStore] stores chunk blocks with plain `put` and names only the manifest, so
+    /// `put`'s credit is the only thing holding a chunk; this is how that credit is given back when the
+    /// manifest is superseded or deleted (#981). Decrements only: at zero the block reports
+    /// [BlockLifecycle#isOrphaned] and [StorageGarbageCollector] collects it through the same lifecycle
+    /// record it already reads -- there is no second delete path. Never removes anything from a tier,
+    /// so a block another reference still holds stays readable through it.
+    ///
+    /// The default releases nothing: an implementation without a lifecycle record has no credit to give
+    /// back. A double that delegates to a real instance must override this too, or its chunks leak.
+    default Promise<Unit> release(BlockId id) {
+        return Promise.success(unit());
+    }
+
+    /// [#putRef] that also reports which block the swap DISPLACED -- the id `name` pointed at until this
+    /// call, taken from the same atomic pointer swap that installs the new one, so each displaced id is
+    /// handed out exactly once however many writers race on `name`. [DefaultContentStore] releases the
+    /// displaced manifest's chunks from this, never from a pre-read of the name: two overwrites of one
+    /// name that both pre-read the same manifest would both release its chunks, and a third name
+    /// deduplicating to them would lose them (#981 round 2). Counting is [#putRef]'s: the displaced
+    /// block is already decremented when this resolves.
+    ///
+    /// The default composes a pre-read with [#putRef] -- correct for one writer per name, NOT under
+    /// contention; an implementation with an atomic swap (`DefaultStorageInstance`) overrides it, and a
+    /// double that delegates to one must delegate this too or it re-opens the race.
+    default Promise<RefSwap> swapRef(String name, byte[] content) {
+        var displaced = resolveRef(name);
+
+        return putRef(name, content).map(current -> RefSwap.refSwap(current, displaced));
+    }
+
+    /// [#deleteRef] that reports which block `name` pointed at, from the same atomic removal --
+    /// exactly once per removal, so two deletes of one name release its manifest's chunks once. Same
+    /// default caveat as [#swapRef].
+    default Promise<Option<BlockId>> dropRef(String name) {
+        var displaced = resolveRef(name);
+
+        return deleteRef(name).map(_ -> displaced);
+    }
+
+    /// What a ref swap did: the block `name` now points at, and the one it displaced, if any.
+    record RefSwap(BlockId current, Option<BlockId> displaced) {
+        static RefSwap refSwap(BlockId current, Option<BlockId> displaced) {
+            return new RefSwap(current, displaced);
+        }
+    }
+
     /// Writes (or deduplicates) `content` and points `name` at the resulting block -- the write-and-ref
     /// primitive, and the only correct way to store content under a name.
     ///
@@ -76,21 +127,27 @@ public interface StorageInstance {
         return putRef(name, content);
     }
 
-    /// Delete a block from all tiers and remove its lifecycle metadata. Used by GC.
+    /// Delete a block from all tiers and remove its lifecycle metadata. Used by explicit content/manifest
+    /// deletion and stream retention -- never by GC, which uses [#deleteFromPrivateTiers] (#250).
     Promise<Unit> delete(BlockId id);
 
-    /// Delete a block from node-private tiers only, then remove its lifecycle metadata.
-    /// A tier reporting [StorageTier#isShared] is skipped -- this node's local refcount
-    /// belief is not authoritative for a cluster-shared tier, so orphan-driven garbage
+    /// Collect `orphan` -- the lifecycle record exactly as the caller's scan saw it -- from
+    /// node-private tiers. A tier reporting [StorageTier#isShared] is skipped -- this node's local
+    /// refcount belief is not authoritative for a cluster-shared tier, so orphan-driven garbage
     /// collection must never issue a delete against it. Used by [StorageGarbageCollector];
-    /// callers that legitimately need "delete everywhere" (explicit content/manifest
-    /// deletion, stream retention) must keep using [#delete].
+    /// a caller that legitimately needs "delete everywhere" (stream retention) must keep
+    /// using [#delete] -- content/manifest deletion no longer does; it releases (#981).
+    ///
+    /// Resolves to `true` when the block was collected and `false` when it was NOT, because its
+    /// record no longer equals `orphan` -- something (a deduplicating [#put], a read, a
+    /// [#createRef]) touched it after the scan, and the scan's orphan verdict is stale (#801).
+    /// Only the scanned record is a valid argument: a caller that constructs one gets `false`.
     ///
     /// Default falls back to [#delete] -- correct for any implementation with no
     /// tier-sharing concept (e.g. test doubles). Only [DefaultStorageInstance], where the
-    /// real hazard exists, overrides this with tier-filtered deletion.
-    default Promise<Unit> deleteFromPrivateTiers(BlockId id) {
-        return delete(id);
+    /// real hazard exists, overrides this with tier-filtered, record-conditional deletion.
+    default Promise<Boolean> deleteFromPrivateTiers(BlockLifecycle orphan) {
+        return delete(orphan.blockId()).map(_ -> true);
     }
 
     /// Instance name.
@@ -144,6 +201,14 @@ final class DefaultStorageInstance implements StorageInstance {
     /// Non-capacity promotion failures per cache tier, for the WARN-once-then-every-N policy (#910).
     private final Map<TierLevel, AtomicLong> promotionFailures = new ConcurrentHashMap<>();
     private final SingleFlightCache readCache = SingleFlightCache.singleFlightCache();
+    /// Blocks whose private-tier bytes GC is deleting right now, keyed by id, each resolving when that
+    /// deletion has finished. A [#put] whose claim succeeds while its id is here has claimed the slot
+    /// GC just vacated and must not write until GC's tier deletes are done, or GC deletes the bytes
+    /// it has just written (#801). One collection per id at a time: the only caller is the single
+    /// scheduled maintenance tick, which awaits each block in turn, so `putIfAbsent` never loses --
+    /// it is there so that a second collector for the same id would wait on the first's promise
+    /// rather than replace it.
+    private final Map<BlockId, Promise<Unit>> collecting = new ConcurrentHashMap<>();
 
     DefaultStorageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore, WritePolicy writePolicy) {
         this.name = name;
@@ -198,14 +263,32 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Unit> deleteRef(String refName) {
-        metadataStore.removeRef(refName)
-                     .onPresent(id -> metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented));
+        return dropRef(refName).mapToUnit();
+    }
+
+    @Override
+    public Promise<Option<BlockId>> dropRef(String refName) {
+        var displaced = metadataStore.removeRef(refName);
+
+        displaced.onPresent(id -> metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented));
+
+        return Promise.success(displaced);
+    }
+
+    @Override
+    public Promise<Unit> release(BlockId id) {
+        metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented);
 
         return Promise.success(unit());
     }
 
     @Override
     public Promise<BlockId> putRef(String refName, byte[] content) {
+        return swapRef(refName, content).map(RefSwap::current);
+    }
+
+    @Override
+    public Promise<RefSwap> swapRef(String refName, byte[] content) {
         return BlockId.blockId(content)
                       .async()
                       .flatMap(id -> handlePut(id, content))
@@ -217,10 +300,45 @@ final class DefaultStorageInstance implements StorageInstance {
         return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"));
     }
 
+    /// #801: the scan's verdict is only good until something touches the record, so the record is
+    /// taken FIRST, by compare-and-remove against the scanned value -- a deduplicating put, a read
+    /// or a ref that landed after the scan has changed it, the remove fails and nothing is deleted.
+    /// Once the record is gone no put can deduplicate onto this block (its claim succeeds instead);
+    /// `collecting` makes that claimant wait for the tier deletes so they cannot wipe its fresh
+    /// write. A tier delete that fails puts the scanned record back (if no claimant has taken the
+    /// slot) so the next cycle retries it, as it did when the record was removed last -- and does so
+    /// INSIDE the resolution of the failed delete, before the claimant is released and before the
+    /// returned promise resolves, never as an `onFailure` side effect (those run on the executor,
+    /// after the caller has already seen the result).
     @Override
-    public Promise<Unit> deleteFromPrivateTiers(BlockId id) {
-        return deleteFromPrivateTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id,
-                                                                                    "deleted from private tiers; shared copy retained"));
+    public Promise<Boolean> deleteFromPrivateTiers(BlockLifecycle orphan) {
+        var id = orphan.blockId();
+        var done = Promise.<Unit> promise();
+
+        collecting.putIfAbsent(id, done);
+        if (!metadataStore.releaseClaim(id, orphan)) {
+            finishCollecting(id, done);
+            log.debug("Block {} touched since the GC scan, not collected", id);
+
+            return Promise.success(false);
+        }
+
+        return deleteFromPrivateTiers(id, 0).fold(result -> collected(orphan, done, result));
+    }
+
+    private Promise<Boolean> collected(BlockLifecycle orphan, Promise<Unit> done, Result<Unit> result) {
+        var id = orphan.blockId();
+
+        result.onFailure(_ -> metadataStore.claimBlock(id, orphan));
+        finishCollecting(id, done);
+        result.onSuccess(_ -> log.debug("Block {} deleted from private tiers; shared copy retained", id));
+
+        return resolved(result.map(_ -> true));
+    }
+
+    private void finishCollecting(BlockId id, Promise<Unit> done) {
+        collecting.remove(id, done);
+        done.succeed(unit());
     }
 
     @Override
@@ -247,8 +365,16 @@ final class DefaultStorageInstance implements StorageInstance {
         var sentinel = sentinelFor(id);
 
         return metadataStore.claimBlock(id, sentinel)
-               ? writeThroughTiers(id, content).onFailure(_ -> metadataStore.releaseClaim(id, sentinel))
-               : deduplicateBlock(id);
+               ? afterCollection(id).flatMap(_ -> writeThroughTiers(id, content))
+                                .onFailure(_ -> metadataStore.releaseClaim(id, sentinel))
+               : deduplicateBlock(id, content);
+    }
+
+    /// #801: a claim that succeeded because GC has just compare-and-removed this id's orphan record
+    /// must let GC's in-flight tier deletes finish before writing. Registered before the remove, so
+    /// a claimant that observed the removal observes the registration too.
+    private Promise<Unit> afterCollection(BlockId id) {
+        return option(collecting.get(id)).or(Promise.success(unit()));
     }
 
     /// Points `refName` at `newId`, decrementing whatever it previously pointed to. `newId`'s own
@@ -260,11 +386,12 @@ final class DefaultStorageInstance implements StorageInstance {
     /// displaced block (never decremented, stays live). The swap-then-decrement order is still load-
     /// bearing for a different hazard: a concurrent GC scan can never observe a floor-clamped
     /// transient zero on a block that is, at that same instant, still genuinely live (#737).
-    private BlockId repointRef(String refName, BlockId newId) {
-        metadataStore.replaceRef(refName, newId)
-                     .onPresent(oldId -> metadataStore.computeLifecycle(oldId, BlockLifecycle::withRefCountDecremented));
+    private RefSwap repointRef(String refName, BlockId newId) {
+        var displaced = metadataStore.replaceRef(refName, newId);
 
-        return newId;
+        displaced.onPresent(oldId -> metadataStore.computeLifecycle(oldId, BlockLifecycle::withRefCountDecremented));
+
+        return RefSwap.refSwap(newId, displaced);
     }
 
     /// The claim IS the block's lifecycle record -- there is no second one. It names the tier the
@@ -281,11 +408,20 @@ final class DefaultStorageInstance implements StorageInstance {
                       .level();
     }
 
-    private Promise<BlockId> deduplicateBlock(BlockId id) {
-        metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented);
+    /// The increment is the claim on an existing block, and it only counts if it LANDED: an empty
+    /// result means the record vanished between the failed claim and this call -- GC compare-and-
+    /// removed it (#801) -- so the id must not be handed out and the put goes round again, where its
+    /// claim now succeeds and [#afterCollection] orders its write behind GC's tier deletes.
+    private Promise<BlockId> deduplicateBlock(BlockId id, byte[] content) {
+        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented)
+                            .fold(() -> handlePut(id, content),
+                                  lc -> Promise.success(deduplicated(lc.blockId())));
+    }
+
+    private static BlockId deduplicated(BlockId id) {
         log.debug("Block {} already stored, incremented refCount", id);
 
-        return Promise.success(id);
+        return id;
     }
 
     private Promise<BlockId> writeThroughTiers(BlockId id, byte[] content) {

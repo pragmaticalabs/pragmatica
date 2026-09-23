@@ -12,6 +12,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.Slice;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -199,10 +200,18 @@ public interface WorkerDeploymentManager {
                 return Promise.unitPromise();
             }
 
+            /// #1184 (rev N1) — the failure record forwarded to consensus carries the cause's message
+            /// and its classified `fatal` flag, so the leader and the operator see WHY the slice
+            /// failed and whether a retry can help. Before, this site forwarded a bare `FAILED` with
+            /// no reason and `fatal=false`, so a permanent refusal (a shared-loader version conflict,
+            /// a parameter mismatch, a class not on the classpath) read as retryable and its reason
+            /// lived only in this worker's log. `PERMANENT` for an unrecognised cause mirrors the
+            /// FSM path's `handleLoadingFailure` (#930); a cause typed at its raise site classifies
+            /// the same way regardless.
             private void handleDeploymentFailure(Artifact artifact, SliceNodeKey sliceKey, Cause cause) {
                 log.error("Failed to deploy slice {} on worker {}: {}", artifact, self.id(), cause.message());
                 updateDeploymentState(artifact, DeploymentState.FAILED);
-                forwardSliceStateUpdate(sliceKey, SliceState.FAILED);
+                forwardSliceFailure(sliceKey, cause);
             }
 
             private void teardownSlice(Artifact artifact) {
@@ -271,6 +280,15 @@ public interface WorkerDeploymentManager {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(state);
                 var correlationId = nextCorrelationId("state-" + state.name().toLowerCase());
+
+                forwardPut(nodeArtifactKey, nodeArtifactValue, correlationId);
+            }
+
+            private void forwardSliceFailure(SliceNodeKey sliceKey, Cause cause) {
+                var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
+                var nodeArtifactValue = NodeArtifactValue.failedNodeArtifactValue(cause,
+                                                                                  SliceLoadingFailure.Unrecognised.PERMANENT);
+                var correlationId = nextCorrelationId("state-failed");
 
                 forwardPut(nodeArtifactKey, nodeArtifactValue, correlationId);
             }
