@@ -6,6 +6,8 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.dht.EntityPartitionArc;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.lang.Result;
@@ -32,6 +34,20 @@ sealed interface ReservedStreamNames {
 
     private static Result<String> refuse(String engineName, String prefix) {
         return new ManagementServerError.ReservedStreamName(engineName, prefix).result();
+    }
+
+    /// The predicate the pre-auth path gate applies, with the SAME canonicalization in front of it
+    /// (#742 review SF-2): a body-carried name may be the bare engine key (`cluster-events`) or the
+    /// catalog spelling (`system:cluster-events:1.0.0`); the versioned gate reduces the latter through
+    /// `ResourceAddress` → `StreamManager.engineKey` before asking `SystemStreams`, and so does this.
+    /// A name that does not parse as an address is checked as the bare key it is. Shared by the
+    /// body-carried routes the gate cannot see: `STREAM_CREATE` (#968, in [StreamApiRoutes]) and the
+    /// consumer-group join/leave (in [StreamRoutes]).
+    static boolean namesSystemStream(String name) {
+        return SystemStreams.isForbiddenEngineKey(name) || ResourceAddress.resourceAddress(name)
+                                                                          .map(StreamManager::engineKey)
+                                                                          .map(SystemStreams::isForbiddenEngineKey)
+                                                                          .or(false);
     }
 
     record unused() implements ReservedStreamNames {}

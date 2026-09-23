@@ -26,14 +26,11 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
-import org.pragmatica.aether.slice.resource.ResourceAddress;
-import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.HydrationSnapshot;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamHydration;
-import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaView;
@@ -57,13 +54,10 @@ import org.pragmatica.lang.utils.Causes;
 public final class StreamRoutes implements RouteSource {
     private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
 
-    /// Both refusals carry the status the pre-auth path gate answers with (405, see
+    /// The refusal carries the status the pre-auth path gate answers with (405, see
     /// `ManagementServer.rejectSystemStreamWrite`): a bare `Causes.cause` is not `HttpStatusAware`
     /// and `ProblemResponses` renders it as 500, which made the guard's refusal indistinguishable
     /// by status from an internal failure (#742 review).
-    private static final Cause SYSTEM_STREAM_NAME_FORBIDDEN = HttpError.httpError(HttpStatus.METHOD_NOT_ALLOWED,
-                                                                                  Causes.cause("Cannot create a stream using a reserved system stream name"));
-
     private static final Cause SYSTEM_STREAM_GROUP_FORBIDDEN = HttpError.httpError(HttpStatus.METHOD_NOT_ALLOWED,
                                                                                    Causes.cause("Cannot join or leave a consumer group on a reserved system stream"));
 
@@ -99,10 +93,6 @@ public final class StreamRoutes implements RouteSource {
         }
     }
 
-    record StreamCreateRequest(String name, Integer partitions) {}
-
-    record StreamCreateResponse(String name, int partitions, String status) {}
-
     record StreamConsumersResponse(String name, List<PartitionInfo> partitions) {}
 
     record JoinGroupRequest(String groupId, String streamName, int partitionCount, String consumerId) {}
@@ -113,19 +103,17 @@ public final class StreamRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<StreamCreateResponse> route(ManagementRoute.STREAM_CREATE)
-                                         .withBody(StreamCreateRequest.class)
-                                         .toResult(this::createStream)
-                                         .asJson(),
-
         // #742 fold: STREAM_GET/STREAM_PARTITION/STREAM_REPLICAS/STREAM_READ/STREAM_PUBLISH/
         // STREAM_DELETE's flat-name legacy registrations moved to StreamApiRoutes' catalog-form
         // equivalents (STREAM_GET, STREAM_PARTITION, STREAM_REPLICAS, STREAM_READ, STREAMS_PUBLISH,
         // STREAMS_DELETE) — same underlying operations, canonicalized (namespace, stream, version)
-        // addressing. See #742's closing comment for why this file remains: STREAM_CREATE/
-        // STREAM_CONSUMERS/CONSUMER_GROUP_STATUS have no catalog home and CONSUMER_GROUP_JOIN/LEAVE
-        // are excluded from this fold (capability mismatch against their nearest catalog candidates,
-        // tracked separately).
+        // addressing. #968 moved STREAM_CREATE there too: its body-carried name is now parsed as a
+        // catalog address and it shares the catalog-registering create chain with STREAMS_CREATE,
+        // instead of minting rings no catalog read could find. See #742's closing comment for why
+        // this file remains: STREAM_CONSUMERS/CONSUMER_GROUP_STATUS have no catalog home and
+        // CONSUMER_GROUP_JOIN/LEAVE are excluded from this fold (capability mismatch against their
+        // nearest catalog candidates, tracked separately).
+        return Stream.of(
         // #490: LOCAL variant — same handler, but the route target makes the RECEIVING
         // node answer from its own registry (see ManagementRoute.STREAM_REPLICAS_LOCAL).
         ManagementRoutes.<StreamReplicasResponse> route(ManagementRoute.STREAM_REPLICAS_LOCAL)
@@ -276,54 +264,6 @@ public final class StreamRoutes implements RouteSource {
                     .intValue();
     }
 
-    /// Package-visible for direct unit coverage of the system-stream-name guard in
-    /// [#createStreamWithConfig] — the entry point a real `POST /streams` request also goes through.
-    Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
-        return Option.option(request.name())
-                     .toResult(MISSING_STREAM_NAME)
-                     .flatMap(name -> createStreamWithConfig(name, request));
-    }
-
-    /// The reserved-name refusals run BEFORE the existence check (#1282 review): answering `"exists"`
-    /// for a reserved name would make this route an oracle for which internally provisioned streams
-    /// exist. Order among the refusals is unchanged — the enumerated system streams keep their `405`.
-    private Result<StreamCreateResponse> createStreamWithConfig(String name, StreamCreateRequest request) {
-        if (namesSystemStream(name)) {
-            return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
-        }
-
-        return ReservedStreamNames.requireUnreserved(name).flatMap(_ -> createOrReportExisting(name, request));
-    }
-
-    private Result<StreamCreateResponse> createOrReportExisting(String name, StreamCreateRequest request) {
-        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
-
-        return streamManager().streamInfo(name)
-                            .map(existing -> Result.success(new StreamCreateResponse(name,
-                                                                                     existing.partitions(),
-                                                                                     "exists")))
-                            .or(() -> mintStream(name, partitions));
-    }
-
-    /// [ManagementServer]'s HTTP-path write-gate is pre-auth and reuses the dispatch path's route
-    /// canonicalization (condition 1) — a parallel body parser inside the gate would violate that.
-    /// `STREAM_CREATE`'s target name is body-carried, not path-carried, so the gate structurally
-    /// cannot see it; [#createStreamWithConfig] is the sole path to this method, the only call site that
-    /// ever mints a stream ([StreamManager#createStream]), so the guards sit there, first,
-    /// unconditionally, with no branch that reaches the mint below them — the handler-level equivalent of
-    /// the gate's pre-auth placement, honest about running post-auth since body-carried identity leaves no
-    /// earlier hook. They close the window a create racing ahead of [SystemStreamBootstrap]'s registration
-    /// at cluster startup would otherwise use to mint a caller-controlled config under a reserved name.
-    /// #1282 widens them past the enumerated system streams to every reserved kind prefix
-    /// ([ReservedStreamNames]) — `system:`, `topic:`, `entity:` streams are minted only by internal
-    /// provisioning.
-    private Result<StreamCreateResponse> mintStream(String name, int partitions) {
-        var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
-
-        return streamManager().createStream(config)
-                            .map(_ -> new StreamCreateResponse(name, partitions, "created"));
-    }
-
     private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
                                                                                                     4 * 1024 * 1024L,
                                                                                                     60 * 60 * 1000L);
@@ -373,7 +313,7 @@ public final class StreamRoutes implements RouteSource {
                             .map(partitions -> new StreamConsumersResponse(name, partitions));
     }
 
-    /// #742 — same guard as [#createStreamWithConfig], for the same reason: the target stream name is
+    /// #742 — same guard as `StreamApiRoutes#createStream(StreamCreateRequest)`, for the same reason: the target stream name is
     /// body-carried, so [ManagementServer]'s pre-auth write-gate cannot see it, and the coordinator's
     /// `joinGroup`/`leaveGroup` both `rebalance` — real, replicated KV assignment records under the
     /// named stream. First statement, unconditionally, before any coordinator call. Package-visible
@@ -383,7 +323,7 @@ public final class StreamRoutes implements RouteSource {
             return Result.failure(MISSING_STREAM_NAME);
         }
 
-        if (namesSystemStream(request.streamName())) {
+        if (ReservedStreamNames.namesSystemStream(request.streamName())) {
             return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
         }
 
@@ -401,7 +341,7 @@ public final class StreamRoutes implements RouteSource {
             return Result.failure(MISSING_STREAM_NAME);
         }
 
-        if (namesSystemStream(request.streamName())) {
+        if (ReservedStreamNames.namesSystemStream(request.streamName())) {
             return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
         }
 
@@ -410,18 +350,6 @@ public final class StreamRoutes implements RouteSource {
                                       request.consumerId())
                           .map(_ -> new GroupStatusResponse(request.groupId(),
                                                             coordinator.groupStatus(request.groupId())));
-    }
-
-    /// The predicate the pre-auth path gate applies, with the SAME canonicalization in front of it
-    /// (#742 review SF-2): a body-carried name may be the bare engine key (`cluster-events`) or the
-    /// catalog spelling (`system:cluster-events:1.0.0`); the versioned gate reduces the latter through
-    /// `ResourceAddress` → `StreamManager.engineKey` before asking `SystemStreams`, and so does this.
-    /// A name that does not parse as an address is checked as the bare key it is.
-    private static boolean namesSystemStream(String name) {
-        return SystemStreams.isForbiddenEngineKey(name) || ResourceAddress.resourceAddress(name)
-                                                                          .map(StreamManager::engineKey)
-                                                                          .map(SystemStreams::isForbiddenEngineKey)
-                                                                          .or(false);
     }
 
     private static boolean isBlank(String value) {

@@ -5479,17 +5479,31 @@ POST /api/v1/streams
 
 **Auth:** OPERATOR_AND_ABOVE
 
-Creates a stream with the given name and optional partition count. Idempotent — returns success if stream already exists.
+Creates the stream `name` — a catalog address `namespace:stream:version` — with an optional partition
+count, and registers it in the stream catalog. Since #968 this is the body-carried form of
+[`POST /api/v1/streams/{namespace}/{stream}/{version}`](#create-stream-version): both write the same two stores, and
+`"created"` is answered only after **both** the stream config and the catalog entry have committed
+through consensus. The created stream is then visible in `GET /api/v1/streams` and
+`GET /api/v1/streams/namespaces` on every node. (Before #968 this route only materialized the stream's
+ring buffers and answered `"created"` for a stream no catalog read could find.)
 
-A name carrying a reserved stream-kind prefix — `system:`, `topic:` or `entity:` — is refused with
-`400 Bad Request` (`ReservedStreamName`, naming the prefix) and nothing is created; see
-[Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). The enumerated system streams keep
-their `405` refusal ([`system:*` write gate](#system-write-gate-405)).
+Outcomes, by status:
+
+| Outcome | Status | Body |
+|---|---|---|
+| Created — config and catalog entry both committed | `200` | `{"name", "partitions", "status": "created"}` |
+| Already in the catalog (idempotent repeat) | `200` | `{"name", "partitions": <the existing count>, "status": "exists"}` |
+| `name` missing | `400` | `Missing stream name` |
+| `name` is not a catalog address (a bare name such as `my-stream`) | `400` | names the `namespace:stream:version` form to retype — a bare name has no catalog address, so nothing could list, read or delete the stream it would mint |
+| `name` carries a reserved stream-kind prefix (`system:`, `topic:`, `entity:`) | `400` | `ReservedStreamName`, naming the prefix; nothing is created — see [Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). Runs before the existence check, so a reserved name is never answered `"exists"`. |
+| `name` is an enumerated system stream (bare or catalog spelling) | `405` | [`system:*` write gate](#system-write-gate-405) |
+| Stream config commit failed or timed out (10 s) | `500` | the cause; nothing is registered |
+| Catalog entry commit failed or timed out (10 s) | `500` | the cause; the ring stays materialized, and a retry registers it rather than failing on the half-done first attempt |
 
 **Request:**
 ```json
 {
-  "name": "my-stream",
+  "name": "com.example.app:orders:1.0.0",
   "partitions": 4
 }
 ```
@@ -5497,7 +5511,7 @@ their `405` refusal ([`system:*` write gate](#system-write-gate-405)).
 **Response:**
 ```json
 {
-  "name": "my-stream",
+  "name": "com.example.app:orders:1.0.0",
   "partitions": 4,
   "status": "created"
 }
@@ -5721,6 +5735,11 @@ reserved stream-kind prefix — a `topic` or `entity` namespace — is refused w
 before anything is materialized or registered; see
 [Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). A `system`-namespace address
 reduces to its bare name (the flat operator-stream spelling) and is not reserved.
+
+`"created"` is answered only after both the stream config and the catalog entry have committed
+through consensus (#968: the catalog put used to be fired without awaiting it, so a refused or
+timed-out commit still answered `"created"`). A catalog commit that fails or times out (10 s) is a
+`500` carrying the cause; the ring stays materialized and a retry registers it.
 
 ### Publish
 

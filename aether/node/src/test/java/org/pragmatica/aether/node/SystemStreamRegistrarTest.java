@@ -9,7 +9,9 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
@@ -23,6 +25,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Result.unitResult;
+import static org.pragmatica.lang.Unit.unit;
 
 /// Fix #1 — proves the system-stream registration is LEVEL-TRIGGERED and self-healing:
 ///   - a transient `createStream` commit failure is RETRIED until it commits;
@@ -53,9 +56,15 @@ class SystemStreamRegistrarTest {
                                                                         () -> StreamError.General.STREAM_ALREADY_EXISTS.result(),
                                                                         scheduler);
 
-            // Leader-gain runs the first pass immediately: createStream fails (transient) → a retry is
+            // Leader-gain SCHEDULES the first pass (#1419: never inline — see FIRST_PASS_DELAY) and
+            // returns without touching a leg. Firing it: createStream fails (transient) → a retry is
             // scheduled; bootstrap leg latches DONE (ALREADY_EXISTS).
             registrar.onLeaderChange(gained());
+            assertThat(createStreamCalls.get())
+                .as("the first pass is scheduled, not run on the notification thread")
+                .isZero();
+
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete()).isFalse();
             assertThat(scheduler.hasPending()).isTrue();
@@ -89,6 +98,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
 
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete())
@@ -113,6 +123,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(scheduler.hasPending()).isTrue();
 
@@ -139,6 +150,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
 
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete())
@@ -170,6 +182,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(bootstrapCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete()).isFalse();
@@ -199,17 +212,20 @@ class SystemStreamRegistrarTest {
                                                                         () -> unitResult(),
                                                                         scheduler);
 
-            // First pass (leader-gain) schedules retry #1; then fire 7 more passes to walk the curve
-            // past the clamp point (16s → 32s clamps to MAX=30s).
+            // Leader-gain schedules the FIRST pass at zero delay (#1419); each of the 8 fired passes
+            // then schedules one retry, walking the curve past the clamp point (16s → 32s clamps to
+            // MAX=30s). The zero-delay head is the fix's own signature: it must not consume a
+            // backoff step.
             registrar.onLeaderChange(gained());
-            for (int i = 0; i < 7; i++) {
+            for (int i = 0; i < 8; i++) {
                 scheduler.fireNext();
             }
 
             var nanos = scheduler.delays().stream().map(TimeSpan::nanos).toList();
 
-            assertThat(nanos).as("backoff doubles from INITIAL then saturates at MAX")
-                             .containsExactly(SystemStreamRegistrar.INITIAL_BACKOFF.nanos(),
+            assertThat(nanos).as("the first pass is armed at zero delay, then backoff doubles from INITIAL and saturates at MAX")
+                             .containsExactly(SystemStreamRegistrar.FIRST_PASS_DELAY.nanos(),
+                                              SystemStreamRegistrar.INITIAL_BACKOFF.nanos(),
                                               TimeSpan.timeSpan(1L).seconds().nanos(),
                                               TimeSpan.timeSpan(2L).seconds().nanos(),
                                               TimeSpan.timeSpan(4L).seconds().nanos(),
@@ -217,6 +233,9 @@ class SystemStreamRegistrarTest {
                                               TimeSpan.timeSpan(16L).seconds().nanos(),
                                               SystemStreamRegistrar.MAX_BACKOFF.nanos(),
                                               SystemStreamRegistrar.MAX_BACKOFF.nanos());
+            assertThat(SystemStreamRegistrar.FIRST_PASS_DELAY.nanos())
+                .as("the first pass must start immediately — only the THREAD changes")
+                .isZero();
 
             assertThat(SystemStreamRegistrar.INITIAL_BACKOFF.millis())
                 .as("INITIAL_BACKOFF contract is 500ms")
@@ -227,9 +246,93 @@ class SystemStreamRegistrarTest {
         }
     }
 
+    /// #1419 — the registrar must not run a leg on the thread that delivered the `LeaderChange`.
+    ///
+    /// On the real path that thread is Rabia's single apply thread, inside `commitChanges`, and BOTH
+    /// legs block it: `createStream` awaits the `StreamConfigKey` commit (`StreamPartitionManager`'s
+    /// pre-existing 10 s await — latent on rc4 today) and `bootstrap` awaits the catalog commit
+    /// (`KvBackedStreamRegistry`, added by #968). Each of those commits can only be applied by the
+    /// very thread that is waiting for it, so an inline pass waits on something it is itself
+    /// preventing — the await burns its whole bound and consensus is frozen for that long.
+    ///
+    /// Both tests reproduce that causal shape exactly: the leg awaits a promise that ONLY the caller
+    /// can resolve, and only AFTER `onLeaderChange` has returned. Run inline the leg cannot commit at
+    /// all (it times out, the registrar never latches DONE, and the call takes the whole bound); run
+    /// off the notification thread it commits on the first pass. One test per leg, because the fix
+    /// moves the pass rather than either leg, and leg 1's stall predates #968.
+    @Nested
+    class OffTheNotificationThread {
+        private static final TimeSpan LEG_BOUND = TimeSpan.timeSpan(2L).seconds();
+
+        @Test
+        void onLeaderChange_bootstrapLegCommitOnlyPossibleAfterReturn_commitsAndNeverBlocksTheCaller() {
+            var commit = Promise.<Unit> promise();
+            var legEntries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> awaitCommit(commit, legEntries),
+                                                                        scheduler);
+
+            assertLegRunsOffTheCallersThread(registrar, scheduler, commit, legEntries);
+        }
+
+        @Test
+        void onLeaderChange_createStreamLegCommitOnlyPossibleAfterReturn_commitsAndNeverBlocksTheCaller() {
+            var commit = Promise.<Unit> promise();
+            var legEntries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> awaitCommit(commit, legEntries),
+                                                                        () -> unitResult(),
+                                                                        scheduler);
+
+            assertLegRunsOffTheCallersThread(registrar, scheduler, commit, legEntries);
+        }
+
+        private static void assertLegRunsOffTheCallersThread(SystemStreamRegistrar registrar,
+                                                             CapturingScheduler scheduler,
+                                                             Promise<Unit> commit,
+                                                             AtomicInteger legEntries) {
+            var startNanos = System.nanoTime();
+
+            registrar.onLeaderChange(gained());
+
+            var elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000L;
+
+            assertThat(legEntries.get())
+                .as("the leg must not be entered on the notification thread — on the real path that is "
+                    + "Rabia's apply thread and the leg awaits a put only it can commit (#1419)")
+                .isZero();
+            assertThat(elapsedMillis)
+                .as("onLeaderChange must return without waiting; inline it burns the leg's whole %s bound", LEG_BOUND)
+                .isLessThan(LEG_BOUND.millis());
+
+            // Exactly what the apply thread does once released: apply the commit the leg waits on.
+            commit.succeed(unit());
+            scheduler.fireNext();
+
+            assertThat(legEntries.get()).isEqualTo(1);
+            assertThat(registrar.isComplete())
+                .as("the awaited commit lands, so the leg latches DONE on its FIRST pass")
+                .isTrue();
+            assertThat(scheduler.hasPending())
+                .as("both legs DONE — nothing further scheduled")
+                .isFalse();
+        }
+
+        /// A leg whose consensus commit is resolvable only by the thread that delivered the
+        /// notification, after it returns. Bounded so the inline (defective) arrangement fails loudly
+        /// instead of hanging the suite.
+        private static Result<?> awaitCommit(Promise<Unit> commit, AtomicInteger legEntries) {
+            legEntries.incrementAndGet();
+
+            return commit.await(LEG_BOUND);
+        }
+    }
+
     /// Deterministic [`SystemStreamRegistrar.RetryScheduler`] seam: captures each scheduled runnable
     /// instead of timing it so the test can drive retry passes explicitly. A fired runnable is removed
-    /// before invocation (mirroring the production `pendingRetry.set(null)` at the top of `onRetryFire`).
+    /// before invocation (mirroring the production `pendingRetry.set(null)` at the top of
+    /// `onScheduledPass`). Every pass is captured here, including the first (#1419).
     private static final class CapturingScheduler implements SystemStreamRegistrar.RetryScheduler {
         private final List<Runnable> pending = new ArrayList<>();
         private final List<TimeSpan> delays = new ArrayList<>();

@@ -6,12 +6,16 @@ package org.pragmatica.aether.api.routes;
 
 import java.lang.reflect.Proxy;
 
-import org.pragmatica.aether.api.routes.StreamRoutes.StreamCreateRequest;
+import org.pragmatica.aether.api.routes.StreamApiRoutes.StreamCreateRequest;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -24,7 +28,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 
-/// `POST /streams` (`StreamRoutes#createStream`) must refuse to mint a stream under a reserved
+/// `POST /streams` (`StreamApiRoutes#createStream(StreamCreateRequest)`, moved from `StreamRoutes` by
+/// #968) must refuse to mint a stream under a reserved
 /// [org.pragmatica.aether.slice.stream.SystemStreams] name — the target name is body-carried, so
 /// `ManagementServer`'s pre-auth write-gate structurally cannot see it (gate condition 1: reuse the
 /// dispatch path's route-match, no parallel body parser). The guard therefore lives in
@@ -49,8 +54,14 @@ class StreamRoutesCreateSystemStreamTest {
         };
     }
 
-    private static StreamRoutes routesFor(StreamPartitionManager manager, KVStore<AetherKey, AetherValue> store) {
-        return StreamRoutes.streamRoutes(() -> nodeWith(manager, store), null, null);
+    private static StreamApiRoutes routesFor(StreamPartitionManager manager, KVStore<AetherKey, AetherValue> store) {
+        return routesFor(manager, store, StreamNamespacesService.inMemory());
+    }
+
+    private static StreamApiRoutes routesFor(StreamPartitionManager manager,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             StreamNamespacesService namespacesService) {
+        return StreamApiRoutes.streamApiRoutes(() -> nodeWith(manager, store), namespacesService, null, null);
     }
 
     private static KVStore<AetherKey, AetherValue> emptyStore() {
@@ -94,15 +105,48 @@ class StreamRoutesCreateSystemStreamTest {
         }
     }
 
+    /// #968: REPLACES `createStream_ordinaryAppStreamName_stillSucceeds`, which passed the bare name
+    /// `orders`, asserted `manager.streamInfo("orders").isPresent()` and nothing else — a fixture that
+    /// ENCODED the defect: it specified the half-write (rings minted, catalog untouched) as the
+    /// intended behaviour. A bare name has no catalog address, so it is now refused with `400` naming
+    /// the form to retype, and nothing is minted.
     @Test
-    void createStream_ordinaryAppStreamName_stillSucceeds() {
+    void createStream_bareAppStreamName_isRefusedWith400AndNothingIsMinted() {
         var manager = streamPartitionManager(Long.MAX_VALUE);
+        var namespacesService = StreamNamespacesService.inMemory();
 
         try {
-            var result = routesFor(manager, emptyStore()).createStream(new StreamCreateRequest("orders", 4));
+            var result = routesFor(manager, emptyStore(), namespacesService).createStream(new StreamCreateRequest("orders", 4));
 
-            result.onFailure(_ -> fail("an ordinary application stream name must not be affected by the guard"));
-            assertThat(manager.streamInfo("orders").isPresent()).isTrue();
+            result.onSuccess(response -> fail("a bare name cannot be catalogued, yet the response was: " + response));
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(HttpError.class);
+                assertThat(((HttpError) cause).status()).isEqualTo(HttpStatus.BAD_REQUEST);
+                assertThat(cause.message()).contains("namespace:stream:version");
+            });
+            assertThat(manager.streamInfo("orders").isEmpty()).as("nothing minted under the bare name").isTrue();
+            assertThat(namespacesService.snapshot()).isEmpty();
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// The ordinary-name half of the replaced fixture, restated honestly: an application stream
+    /// ADDRESS is unaffected by the guard, and the stream must be readable back from the catalog.
+    @Test
+    void createStream_ordinaryAppStreamAddress_stillSucceedsAndIsCatalogued() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        var namespacesService = StreamNamespacesService.inMemory();
+
+        try {
+            var result = routesFor(manager, emptyStore(), namespacesService).createStream(new StreamCreateRequest("com.example.app:orders:1.0.0",
+                                                                                                                  4));
+
+            result.onFailure(_ -> fail("an ordinary application stream address must not be affected by the guard"));
+            assertThat(manager.streamInfo("com.example.app:orders:1.0.0").isPresent()).isTrue();
+            assertThat(namespacesService.lookup(ResourceAddress.resourceAddress("com.example.app:orders:1.0.0").unwrap())
+                                        .isPresent()).as("the created stream must be readable back from the catalog")
+                      .isTrue();
         } finally {
             manager.close();
         }
