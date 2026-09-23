@@ -472,8 +472,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// The node component is LAST so the `topic-sub/{namespace}/{topic}/{version}` addressing prefix
     /// stays intact for prefix matching. Parsing splits it off at the final `/`, which requires a node
     /// id to contain no `/` — the same constraint [StorageStatusKey] already relies on.
-    record TopicSubscriptionKey(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId)
-            implements AetherKey {
+    record TopicSubscriptionKey(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) implements AetherKey {
         private static final String PREFIX = "topic-sub/";
 
         @Override
