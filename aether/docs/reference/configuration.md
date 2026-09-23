@@ -303,8 +303,9 @@ naming the instance and the key id blocks were last written under, instead of si
 framed `AEC1...` bytes as if they were plaintext content on every read. Recovery: restore
 `[storage.encryption]` with that key id still resolvable in `[storage.encryption.keys]`, or migrate
 to a fresh, unmarked directory or DHT namespace (`#831`). This marker/refusal pair covers the
-per-instance disk/DHT path above; the built-in `streams` segment tiers' DHT namespace
-(`stream-segments`) has neither yet — only its disk side does — and is tracked separately as `#849`.
+per-instance disk/DHT path above and, since `#849`, both sides of the built-in `streams` segment
+tiers: the `stream-segments` DHT namespace is stamped at `stream-segments/.encryption-enabled` on
+the same post-formation admission as every `<name>-blocks` namespace, and refuses the same way.
 **A refused boot leaves no disk marker behind (`#852`).** Storage construction is two-phase: the
 guards of every configured instance *and* of the built-in `streams` segment tiers all run first, and
 only when all of them pass are the `.encryption-enabled` disk markers written. So a boot refused by

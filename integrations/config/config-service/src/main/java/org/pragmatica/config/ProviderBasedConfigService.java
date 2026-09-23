@@ -78,29 +78,21 @@ public final class ProviderBasedConfigService implements ConfigService {
         return provider.getString(key);
     }
 
+    /// #1098 — both typed readers are the provider's own: absent → `Success(None)`, present but
+    /// malformed → [ConfigError.TypeMismatch] naming the key and the value. The old `getBoolean`
+    /// went through `Boolean.parseBoolean`, which read `"yes"` as `false` and never failed.
     @Override
-    public Option<Integer> getInt(String key) {
-        return provider.getString(key)
-                       .flatMap(ProviderBasedConfigService::safeParseInteger);
+    public Result<Option<Integer>> getInt(String key) {
+        return provider.getInt(key);
     }
 
     @Override
-    public Option<Boolean> getBoolean(String key) {
-        var raw = provider.getString(key);
-
-        return raw.map(ProviderBasedConfigService::toBooleanValue);
-    }
-
-    private static Boolean toBooleanValue(String value) {
-        return Boolean.parseBoolean(value);
+    public Result<Option<Boolean>> getBoolean(String key) {
+        return provider.getBoolean(key);
     }
 
     private static boolean hasSectionPrefix(String key, String prefix, String section) {
         return key.startsWith(prefix) || key.equals(section);
-    }
-
-    private static Option<Integer> safeParseInteger(String value) {
-        return Number.parseInt(value).option();
     }
 
     // --- Record binding ---
@@ -285,9 +277,11 @@ public final class ProviderBasedConfigService implements ConfigService {
                                                     Class<?> configClass) {
         var extracted = extractValue(section, component);
 
-        if (extracted.isSuccess() || isUnsupportedType(extracted)) {
-            // #761: a declaration error is not satisfiable by a DEFAULT instance, and must not be
-            // reported as SectionNotFound; letting it fall through would turn "cannot be configured"
+        if (!isAbsent(extracted)) {
+            // Only ABSENCE may be satisfied by the derived name or the DEFAULT instance. #761 made
+            // a declaration error (UnsupportedType) propagate; #1098 inverts the guard so that
+            // EVERY other failure does too — a malformed value (TypeMismatch), a nested record's
+            // own refusal, an unknown key — because letting any of them fall through turns "wrong"
             // into a silent default. (The derived-name fallback below is String-only, so an Option
             // component never reaches it.)
             return extracted.flatMap(v -> IndexedValue.indexedValue(index, v));
@@ -365,9 +359,11 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     // --- Primitive parser lookup ---
-    static Option<Fn1<Option<Object>, String>> primitiveParser(Class<?> type) {
+    /// Each parser answers a failure for a value it cannot read; the caller replaces that cause
+    /// with a [ConfigError.TypeMismatch] naming the key, the declared type and the raw value.
+    static Option<Fn1<Result<Object>, String>> primitiveParser(Class<?> type) {
         if (type == String.class) {
-            return some(Option::some);
+            return some(Result::success);
         }
 
         if (type == int.class || type == Integer.class) {
@@ -401,53 +397,57 @@ public final class ProviderBasedConfigService implements ConfigService {
         return none();
     }
 
-    private static Option<Object> parseIntAsObject(String v) {
-        return safeParseInt(v).map(Object.class::cast);
+    private static Result<Object> parseIntAsObject(String v) {
+        return Number.parseInt(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseLongAsObject(String v) {
-        return safeParseLong(v).map(Object.class::cast);
+    private static Result<Object> parseLongAsObject(String v) {
+        return Number.parseLong(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseBooleanAsObject(String v) {
-        return some(Boolean.parseBoolean(v));
+    private static Result<Object> parseBooleanAsObject(String v) {
+        return ConfigSource.parseBoolean(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseDoubleAsObject(String v) {
-        return safeParseDouble(v).map(Object.class::cast);
+    private static Result<Object> parseDoubleAsObject(String v) {
+        return Number.parseDouble(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseTimeSpanAsObject(String v) {
-        return TimeSpan.timeSpan(v)
-                       .option()
-                       .map(Object.class::cast);
+    private static Result<Object> parseTimeSpanAsObject(String v) {
+        return TimeSpan.timeSpan(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseDurationAsObject(String v) {
-        return TimeSpan.timeSpan(v)
-                       .option()
-                       .map(ts -> (Object) ts.duration());
+    private static Result<Object> parseDurationAsObject(String v) {
+        return TimeSpan.timeSpan(v).map(ts -> (Object) ts.duration());
     }
 
-    private static Option<Object> parseIoTimeSpanAsObject(String v) {
+    private static Result<Object> parseIoTimeSpanAsObject(String v) {
         return parseIoTimeSpan(v).map(Object.class::cast);
     }
 
-    private static Option<org.pragmatica.lang.io.TimeSpan> parseIoTimeSpan(String v) {
-        return TimeSpan.timeSpan(v)
-                       .option()
-                       .map(ts -> org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
+    private static Result<org.pragmatica.lang.io.TimeSpan> parseIoTimeSpan(String v) {
+        return TimeSpan.timeSpan(v).map(ts -> org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
     }
 
     // --- Type-specific resolvers ---
     private Option<Result<Object>> lookupPrimitive(String fullKey, Class<?> type) {
-        return primitiveParser(type).map(parser -> fetchAndParse(fullKey, parser));
+        return primitiveParser(type).map(parser -> fetchAndParse(fullKey, type, parser));
     }
 
-    private Result<Object> fetchAndParse(String fullKey, Fn1<Option<Object>, String> parser) {
+    /// Absent → [ConfigError.SectionNotFound] (the one cause a DEFAULT may satisfy); present but
+    /// unparseable → [ConfigError.TypeMismatch], which propagates (#1098).
+    private Result<Object> fetchAndParse(String fullKey, Class<?> type, Fn1<Result<Object>, String> parser) {
         return provider.getString(fullKey)
-                       .flatMap(parser)
-                       .toResult(ConfigError.sectionNotFound(fullKey));
+                       .toResult(ConfigError.sectionNotFound(fullKey))
+                       .flatMap(raw -> parseNamed(fullKey, type, raw, parser));
+    }
+
+    private static Result<Object> parseNamed(String fullKey,
+                                             Class<?> type,
+                                             String raw,
+                                             Fn1<Result<Object>, String> parser) {
+        return parser.apply(raw)
+                     .mapError(_ -> toTypeMismatch(fullKey, type, raw));
     }
 
     private Option<Result<Object>> lookupEnum(String fullKey, Class<?> type) {
@@ -522,19 +522,6 @@ public final class ProviderBasedConfigService implements ConfigService {
         return some(resolveBackoffStrategy(fullKey));
     }
 
-    // --- Primitive parsers ---
-    private static Option<Integer> safeParseInt(String value) {
-        return Number.parseInt(value).option();
-    }
-
-    private static Option<Long> safeParseLong(String value) {
-        return Number.parseLong(value).option();
-    }
-
-    private static Option<Double> safeParseDouble(String value) {
-        return Number.parseDouble(value).option();
-    }
-
     // --- Map value collection ---
     private Result<Object> collectMapValue(String fullKey) {
         var prefix = fullKey + ".";
@@ -598,18 +585,17 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private Result<Object> exponentialBackoffStrategy(String fullKey) {
-        var initialDelay = optionalIoTimeSpan(fullKey + ".initial_delay",
-                                              org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis());
-        var maxDelay = optionalIoTimeSpan(fullKey + ".max_delay",
-                                          org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
-        var factor = optionalDouble(fullKey + ".factor", 2.0);
-        var withJitter = optionalBoolean(fullKey + ".with_jitter", false);
-
-        return success(BackoffStrategy.exponential()
-                                      .initialDelay(initialDelay)
-                                      .maxDelay(maxDelay)
-                                      .factor(factor)
-                                      .jitter(withJitter));
+        return Result.all(optionalIoTimeSpan(fullKey + ".initial_delay",
+                                             org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis()),
+                          optionalIoTimeSpan(fullKey + ".max_delay",
+                                             org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds()),
+                          optionalDouble(fullKey + ".factor", 2.0),
+                          optionalBoolean(fullKey + ".with_jitter", false))
+                     .map((initialDelay, maxDelay, factor, withJitter) -> BackoffStrategy.exponential()
+                                                                                         .initialDelay(initialDelay)
+                                                                                         .maxDelay(maxDelay)
+                                                                                         .factor(factor)
+                                                                                         .jitter(withJitter));
     }
 
     private Result<Object> linearBackoffStrategy(String fullKey) {
@@ -621,29 +607,29 @@ public final class ProviderBasedConfigService implements ConfigService {
                                                                                                                                 .maxDelay(maxDelay));
     }
 
+    // #1098: the sub-field fallbacks apply to an ABSENT key only; a present, unparseable one is a
+    // TypeMismatch that fails the whole strategy, exactly as a required sub-field does.
     private Result<org.pragmatica.lang.io.TimeSpan> requiredIoTimeSpan(String fullKey) {
         return provider.getString(fullKey)
-                       .flatMap(ProviderBasedConfigService::parseIoTimeSpan)
-                       .toResult(ConfigError.sectionNotFound(fullKey));
+                       .toResult(ConfigError.sectionNotFound(fullKey))
+                       .flatMap(raw -> parseIoTimeSpan(raw).mapError(_ -> toTypeMismatch(fullKey, TimeSpan.class, raw)));
     }
 
-    private org.pragmatica.lang.io.TimeSpan optionalIoTimeSpan(String fullKey,
-                                                               org.pragmatica.lang.io.TimeSpan fallback) {
+    private Result<org.pragmatica.lang.io.TimeSpan> optionalIoTimeSpan(String fullKey,
+                                                                       org.pragmatica.lang.io.TimeSpan fallback) {
         return provider.getString(fullKey)
-                       .flatMap(ProviderBasedConfigService::parseIoTimeSpan)
-                       .or(fallback);
+                       .fold(() -> success(fallback),
+                             raw -> parseIoTimeSpan(raw).mapError(_ -> toTypeMismatch(fullKey, TimeSpan.class, raw)));
     }
 
-    private double optionalDouble(String fullKey, double fallback) {
-        return provider.getString(fullKey)
-                       .flatMap(ProviderBasedConfigService::safeParseDouble)
-                       .or(fallback);
+    private Result<Double> optionalDouble(String fullKey, double fallback) {
+        return provider.getDouble(fullKey)
+                       .map(value -> value.or(fallback));
     }
 
-    private boolean optionalBoolean(String fullKey, boolean fallback) {
-        return provider.getString(fullKey)
-                       .map(Boolean::parseBoolean)
-                       .or(fallback);
+    private Result<Boolean> optionalBoolean(String fullKey, boolean fallback) {
+        return provider.getBoolean(fullKey)
+                       .map(value -> value.or(fallback));
     }
 
     // --- DEFAULT field lookup ---
@@ -666,8 +652,8 @@ public final class ProviderBasedConfigService implements ConfigService {
         return isStaticFinal && type.isAssignableFrom(field.getType());
     }
 
-    private static boolean isUnsupportedType(Result<Object> extracted) {
-        return extracted.fold(cause -> cause instanceof ConfigError.UnsupportedType, _ -> false);
+    private static boolean isAbsent(Result<Object> extracted) {
+        return extracted.fold(cause -> cause instanceof ConfigError.SectionNotFound, _ -> false);
     }
 
     private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass,
@@ -722,12 +708,16 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private Result<Object> extractOptionalPrimitive(String fullKey, Class<?> innerClass) {
-        return primitiveParser(innerClass).map(parser -> wrapOptionalParse(fullKey, parser))
+        return primitiveParser(innerClass).map(parser -> wrapOptionalParse(fullKey, innerClass, parser))
                               .or(() -> handleOptionalEnum(fullKey, innerClass));
     }
 
-    private Result<Object> wrapOptionalParse(String fullKey, Fn1<Option<Object>, String> parser) {
-        return success(provider.getString(fullKey).flatMap(parser));
+    /// #1098 — `Option<T>` means the KEY may be absent, not that a value the parser rejects may
+    /// quietly become `none()`: absent → `Success(None)`, malformed → [ConfigError.TypeMismatch].
+    private Result<Object> wrapOptionalParse(String fullKey, Class<?> innerClass, Fn1<Result<Object>, String> parser) {
+        return provider.getString(fullKey)
+                       .fold(() -> success(none()),
+                             raw -> parseNamed(fullKey, innerClass, raw, parser).map(Option::option));
     }
 
     private Result<Object> handleOptionalEnum(String fullKey, Class<?> innerClass) {

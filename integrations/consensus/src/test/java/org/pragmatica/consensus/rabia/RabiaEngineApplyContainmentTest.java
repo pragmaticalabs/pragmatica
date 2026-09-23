@@ -20,6 +20,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.Command;
+import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
@@ -144,6 +145,125 @@ class RabiaEngineApplyContainmentTest {
             .as("worker thread must survive the apply-handler throw — same thread services the "
                 + "subsequent executor task (a replaced thread proves the worker died unguarded)")
             .isSameAs(baselineWorker);
+    }
+
+    @Test
+    void stop_waits_for_apply_before_saving_matching_snapshot_and_phase() throws InterruptedException {
+        engine.stop().await();
+        var persistence = RabiaPersistence.<TestCommand>inMemory();
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var snapshots = new AtomicInteger();
+        stateMachine = new PoisonStateMachine() {
+            @Override
+            public <R> List<R> process(Batch<TestCommand> batch) {
+                var result = super.<R>process(batch);
+                entered.countDown();
+                Result.lift(() -> release.await()).unwrap();
+                return result;
+            }
+
+            @Override
+            public Result<byte[]> makeSnapshot() {
+                snapshots.incrementAndGet();
+                return Result.success(new byte[] {(byte) appliedCommands.size()});
+            }
+        };
+        engine = new RabiaEngine<>(topologyManager, network, stateMachine, ProtocolConfig.testConfig(),
+                                   ConsensusMetrics.noop(), false, persistence);
+        activateEngine();
+        driveCommandToV1Decision(Phase.ZERO, new TestCommand("held-apply"));
+        assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        var beforeStop = snapshots.get();
+        var admitted = engine.apply(List.of(new TestCommand("before-stop")));
+        var stop = engine.stop();
+        var completed = new java.util.concurrent.atomic.AtomicBoolean();
+        stop.onResult(_ -> completed.set(true));
+        try {
+            assertThat(engine.stop()).isSameAs(stop);
+            assertThat(completed).isFalse();
+            assertRefusedWhileStopping("apply during stop", engine.apply(List.of(new TestCommand("after-stop"))));
+            assertThat(snapshots.get()).isEqualTo(beforeStop);
+            assertThat(stateMachine.appliedCommands).hasSize(1);
+        } finally {
+            release.countDown();
+        }
+        stop.await().unwrap();
+        assertThat(admitted.await().isFailure()).isTrue();
+        var saved = persistence.load().unwrap();
+        assertThat(saved.lastCommittedPhase()).isEqualTo(new Phase(1));
+        assertThat(saved.snapshot()).containsExactly((byte) 1);
+        assertThat(snapshots.get()).isEqualTo(beforeStop + 1);
+        assertThat(stateMachine.appliedCommands).isEmpty();
+    }
+
+    /// `reconfigure()` while a stop is in progress is refused the same way as a submission. Without
+    /// the refusal the call is handed to `safeExecute`, which drops tasks once stopping, and the
+    /// returned promise never resolves — so this pin carries its own bound, well under the 30 s
+    /// `applyTimeout`, and reddens on the timeout cause rather than hanging.
+    @Test
+    void reconfigure_during_stop_is_refused_with_node_inactive() throws InterruptedException {
+        engine.stop().await();
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var stop = holdApplyAndStartStop(release);
+
+        try {
+            var newMembership = ClusterConfig.clusterConfig(List.of(NODE_1, NODE_2, NODE_3, nodeId("node-4").unwrap())).unwrap();
+
+            assertRefusedWhileStopping("reconfigure during stop", engine.reconfigure(newMembership));
+        } finally {
+            release.countDown();
+        }
+
+        stop.await().unwrap();
+    }
+
+    /// Bound under which a refusal must resolve — an order of magnitude below the 30 s
+    /// `ProtocolConfig.DEFAULT_APPLY_TIMEOUT`, so a call that is only failed by that timeout, or never
+    /// resolved at all, reddens here by CAUSE and quickly. Measured with the submit refusal removed:
+    /// the old `isFailure()` pin took 30.4 s to pass on `ApplyTimeout`; with it, 0.4 s.
+    private static final TimeSpan REFUSAL_BOUND = timeSpan(5).seconds();
+
+    /// The stop-time refusal contract: the call fails with [ConsensusError.NodeInactive] — the cause
+    /// the refusal produces — and resolves within [#REFUSAL_BOUND]. A timed await that returns
+    /// `CoreError.Timeout`, or a promise failed by `ApplyTimeout`, is not a refusal.
+    private static <T> void assertRefusedWhileStopping(String call, Promise<T> outcome) {
+        var started = System.nanoTime();
+        var result = outcome.await(REFUSAL_BOUND);
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+        assertThat(result.isFailure())
+            .as("%s must be refused, not admitted", call)
+            .isTrue();
+        result.onFailure(cause -> assertThat(cause)
+            .as("%s must fail with the refusal's own cause (resolved after %d ms), never by a timeout", call, elapsedMillis)
+            .isInstanceOf(ConsensusError.NodeInactive.class));
+        assertThat(elapsedMillis)
+            .as("%s must be refused promptly; %d ms is not a refusal", call, elapsedMillis)
+            .isLessThan(REFUSAL_BOUND.millis());
+    }
+
+    /// A fresh in-memory engine whose executor is blocked inside a live apply, with `stop()` started
+    /// but unable to run: the stopping-in-progress window in which the engine state is still Active
+    /// and only the `stopping` refusals stand between a caller and a task that will never run.
+    private Promise<Unit> holdApplyAndStartStop(java.util.concurrent.CountDownLatch release) throws InterruptedException {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        stateMachine = new PoisonStateMachine() {
+            @Override
+            public <R> List<R> process(Batch<TestCommand> batch) {
+                var result = super.<R>process(batch);
+                entered.countDown();
+                Result.lift(() -> release.await()).unwrap();
+                return result;
+            }
+        };
+        engine = new RabiaEngine<>(topologyManager, network, stateMachine, ProtocolConfig.testConfig(),
+                                   ConsensusMetrics.noop(), false, RabiaPersistence.inMemory());
+        activateEngine();
+        driveCommandToV1Decision(Phase.ZERO, new TestCommand("held-apply"));
+        assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        return engine.stop();
     }
 
     /// Drives a single command through proposals + round-1 + round-2 votes to a V1 decision in

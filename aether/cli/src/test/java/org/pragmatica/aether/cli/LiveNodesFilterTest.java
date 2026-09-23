@@ -10,11 +10,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+
 /// Unit tests for `LiveNodesFilter` — the client-side post-processing for the
 /// `GET /api/nodes/live` document (harness-resilience spec A2) and the `reachable`
 /// extraction for `GET /api/nodes/endpoint/{id}` (A1).
 class LiveNodesFilterTest {
-
     private static final String LIVE_DOC = """
             {"nodes":[\
             {"nodeId":"node-1","address":"10.0.0.7:7100","role":"CORE","swimAlive":true,"reportedState":"READY"},\
@@ -39,7 +39,6 @@ class LiveNodesFilterTest {
                 {"nodes":[\
                 {"nodeId":"node-9","address":null,"role":"CORE","swimAlive":false,"reportedState":"READY"}\
                 ],"liveCount":0,"zombieCount":1}""";
-
         var json = LiveNodesFilter.onlyAlive(allDead);
 
         assertFalse(json.contains("\"node-9\""));
@@ -52,6 +51,17 @@ class LiveNodesFilterTest {
         var garbage = "not json at all";
 
         assertEquals(garbage, LiveNodesFilter.onlyAlive(garbage));
+    }
+
+    /// #1033: an error envelope (`AetherCli.fetch` folding a failed send) carries no `nodes`
+    /// array. Rebuilding it into `{"nodes":[],…}` erased the error and turned "could not ask"
+    /// into "zero alive nodes" for `nodes live --only-alive`. It must pass through untouched so
+    /// the formatter can refuse it.
+    @Test
+    void onlyAlive_errorEnvelope_returnsOriginalUnchanged() {
+        var envelope = "{\"error\":\"Connection failed: Connection refused\"}";
+
+        assertEquals(envelope, LiveNodesFilter.onlyAlive(envelope));
     }
 
     @Test

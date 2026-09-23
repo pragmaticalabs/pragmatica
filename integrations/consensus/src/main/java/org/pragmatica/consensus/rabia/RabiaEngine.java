@@ -167,6 +167,8 @@ public class RabiaEngine<C extends Command> {
     /// not-yet-caught-up replacement leader (#329).
     private final AtomicReference<Phase> highestObservedClusterPhase = new AtomicReference<>(Phase.ZERO);
     private final AtomicReference<EngineState> engineState = new AtomicReference<>(new EngineState.Stopped());
+    private final AtomicBoolean stopping = new AtomicBoolean();
+    private final Promise<Unit> stoppedCompletion = Promise.promise();
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
     // Per Rabia spec: after a decision, the next phase inherits this value for round 1 vote
     private final AtomicReference<Option<StateValue>> lockedValue = new AtomicReference<>(Option.none());
@@ -589,7 +591,10 @@ public class RabiaEngine<C extends Command> {
     ///
     /// Replaying the same membership is a no-op — no state is wiped if `newConfig` already
     /// matches the engine's current view. Returns success on no-op too.
-    public Promise<Unit> reconfigure(ClusterConfig newConfig) {
+    public synchronized Promise<Unit> reconfigure(ClusterConfig newConfig) {
+        if (stopping.get()) {
+            return new ConsensusError.NodeInactive(self).promise();
+        }
         var promise = Promise.<Unit> promise();
 
         safeExecute(() -> doReconfigure(newConfig, promise));
@@ -759,7 +764,7 @@ public class RabiaEngine<C extends Command> {
                        _ -> {});
     }
 
-    private Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared) {
+    private synchronized Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared) {
         if (log.isDebugEnabled()) {
             var caller = Thread.currentThread().getStackTrace();
             var callerInfo = caller.length > 3
@@ -767,6 +772,10 @@ public class RabiaEngine<C extends Command> {
                              : "unknown";
 
             log.debug("Node {} submitting {} command(s): {} [caller: {}]", self, commands.size(), commands, callerInfo);
+        }
+
+        if (stopping.get()) {
+            return new ConsensusError.NodeInactive(self).result();
         }
 
         return validateSubmission(commands).map(_ -> prepareBatch(commands))
@@ -827,8 +836,14 @@ public class RabiaEngine<C extends Command> {
         return startPromise.get();
     }
 
-    public Promise<Unit> stop() {
-        return Promise.promise(this::performStop);
+    public synchronized Promise<Unit> stop() {
+        if (stopping.compareAndSet(false, true)) {
+            Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
+                        () -> executor.execute(() -> performStop(stoppedCompletion)))
+                  .onFailure(stoppedCompletion::fail);
+        }
+
+        return stoppedCompletion;
     }
 
     private void performStop(Promise<Unit> promise) {
@@ -839,9 +854,8 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         notifyConsensusStateTransition();
-        // Synchronously fail in-flight promises BEFORE executor.shutdown(); otherwise
-        // shutdownAndReset() may execute concurrently with the DiscardPolicy and leave
-        // callers (e.g. publisher.runApply) waiting on cluster.apply(...) Promises forever.
+        // Admission is closed; all previously admitted apply tasks have finished.
+        // Snapshot contents and the phase frontier therefore describe the same state.
         correlationMap.forEach((_, p) -> p.fail(new ConsensusError.NodeInactive(self)));
         correlationMap.clear();
         shutdownAndReset();
@@ -857,7 +871,11 @@ public class RabiaEngine<C extends Command> {
     /// the swallow semantics the live KV dispatch already has (MessageRouter.dispatchOne): the worker
     /// survives to process subsequent rounds; the failed round is abandoned and re-driven by the
     /// sender's retry. Errors (non-RuntimeException Throwable) are intentionally left to propagate.
-    private void safeExecute(Runnable task) {
+    private synchronized void safeExecute(Runnable task) {
+        if (stopping.get()) {
+            return;
+        }
+
         executor.execute(() -> {
             var start = System.nanoTime();
 
@@ -1126,7 +1144,7 @@ public class RabiaEngine<C extends Command> {
         if (responses.isEmpty()) {
             // Only reachable at clusterSize 1, where the requirement is zero responses: self is the
             // whole majority and there is no peer to adopt from.
-            activateWithoutAdoption("no peers to adopt from");
+            activateWithoutAdoption(persisted, "no peers to adopt from");
 
             return;
         }
@@ -1136,7 +1154,7 @@ public class RabiaEngine<C extends Command> {
         detectBootFutureHistory(persisted, candidate);
 
         if (candidate.lastCommittedPhase().compareTo(ownStateFloor(persisted)) < 0) {
-            activateWithoutAdoption("every response is behind this node's own state");
+            activateWithoutAdoption(persisted, "every response is behind this node's own state");
 
             return;
         }
@@ -1148,13 +1166,13 @@ public class RabiaEngine<C extends Command> {
         restoreState(candidate);
     }
 
-    /// Activates on this node's OWN state, installing nothing.
+    /// Activates on this node's OWN state, installing no RESPONSE.
     ///
     /// Reached when the response threshold is met but no response carries a state more advanced than
     /// this node already holds. Self is part of the majority, so the majority's most advanced state is
-    /// already here and there is nothing to fetch.
+    /// already self's and there is nothing to fetch from a peer.
     ///
-    /// This deliberately does NOT route through [#restoreState]: that would call
+    /// This deliberately does NOT route a response through [#restoreState]: that would call
     /// `stateMachine.restoreSnapshot` with a state that is BEHIND the live one, overwriting a live state
     /// machine with a staler snapshot while `applyRestoredState`'s advance-only `currentPhase` kept the
     /// counter where it was — committed writes gone with no phase to indicate it. That is precisely the
@@ -1162,7 +1180,34 @@ public class RabiaEngine<C extends Command> {
     ///
     /// Mirrors the tail of [#restoreState]'s empty-snapshot branch — activate, then replay, then notify —
     /// so post-restore listeners still fire exactly once, as they did when an empty response was adopted.
-    private void activateWithoutAdoption(String reason) {
+    ///
+    /// #1020 — "already here" is true of the LIVE state machine only when self's history is in it.
+    /// A process restarted from disk holds its history in `persistence.load()` and nothing else:
+    /// `load()` fed the sync-response payload, the adoption floor and the future-history detector,
+    /// and never the state machine. Activating bare here left such a node ACTIVE with an EMPTY store
+    /// at phase 0 — an API key it had committed and acknowledged answered 403 after a full-cluster
+    /// stop with `[backup]` enabled, on exactly the node whose snapshot was the most advanced. So
+    /// when the persisted phase is ahead of the live one, the persisted state IS the own state and is
+    /// installed through [#restoreState] (phase advance-only, pending batches, re-persist, activate,
+    /// replay, notify). A live phase at or past the persisted one means the history is already in
+    /// the process — a resync from ACTIVE — and installing the older snapshot would regress it.
+    private void activateWithoutAdoption(Option<SavedState<C>> persisted, String reason) {
+        persisted.filter(state -> state.lastCommittedPhase()
+                                       .compareTo(currentPhase.get()) > 0)
+                 .onPresent(state -> restoreOwnState(state, reason))
+                 .onEmpty(() -> activateOnLiveState(reason));
+    }
+
+    private void restoreOwnState(SavedState<C> state, String reason) {
+        log.info("Node {} activating on its own persisted state ({}); persisted phase {}, live phase {}",
+                 self,
+                 reason,
+                 state.lastCommittedPhase(),
+                 currentPhase.get());
+        restoreState(state);
+    }
+
+    private void activateOnLiveState(String reason) {
         log.debug("Node {} activating on its own state ({}); own phase {}", self, reason, currentPhase.get());
         syncResponses.clear();
         activate();
@@ -1313,7 +1358,20 @@ public class RabiaEngine<C extends Command> {
                                               ? existing
                                               : state.lastCommittedPhase());
         state.pendingBatches().forEach(batch -> pendingBatches.put(batch.id(), batch));
-        persistence.save(stateMachine, currentPhase.get(), pendingBatches.values());
+        // #1020 — the ONE save whose failure nobody used to hear. The other three call sites (pause,
+        // reconfigure, stop) all log on failure, and `GitBackedPersistence` carries no logger of its
+        // own, so a discarded `Result` here was silent end to end — while the INFO line below
+        // announced success regardless. This save is what makes the restored state durable for the
+        // NEXT restart: if it fails, the node is correct in memory and stale on disk, and the very
+        // defect this ticket closes returns one restart later with no diagnostic anywhere.
+        persistence.save(stateMachine,
+                         currentPhase.get(),
+                         pendingBatches.values())
+                   .onFailure(cause -> log.error("Node {} restored state but FAILED to persist it: {}. The restore is "
+                                                + "in memory ONLY — this node's disk still holds its previous checkpoint, "
+                                                + "so a restart will lose the restored history and serve a stale store.",
+                                                 self,
+                                                 cause));
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
 

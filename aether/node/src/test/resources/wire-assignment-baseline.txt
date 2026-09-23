@@ -279,9 +279,13 @@ TAG  org.pragmatica.cluster.metrics.PeerHealthObservation 84
 TAG  org.pragmatica.cluster.node.forward.ForwardApplyRequest 1664
 TAG  org.pragmatica.cluster.node.forward.ForwardApplyResponse 1665
 TAG  org.pragmatica.cluster.state.kvstore.KVCommand$Get 69
+TAG  org.pragmatica.cluster.state.kvstore.KVCommand$LeaderTransaction 125
+TAG  org.pragmatica.cluster.state.kvstore.KVCommand$Mutation 126
 TAG  org.pragmatica.cluster.state.kvstore.KVCommand$Noop 70
 TAG  org.pragmatica.cluster.state.kvstore.KVCommand$Put 71
+TAG  org.pragmatica.cluster.state.kvstore.KVCommand$ReadWitness 124
 TAG  org.pragmatica.cluster.state.kvstore.KVCommand$Remove 72
+TAG  org.pragmatica.cluster.state.kvstore.KVCommand$TransactionResult 127
 TAG  org.pragmatica.cluster.state.kvstore.LeaderKey 73
 TAG  org.pragmatica.cluster.state.kvstore.LeaderValue 74
 TAG  org.pragmatica.consensus.NodeId 21

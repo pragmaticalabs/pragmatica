@@ -81,6 +81,13 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///      while the check retries after formation -- so the component reads DOWN naming `artifacts`; once
 ///      `start()` has admitted the tier it reads UP. The retrying state itself is not inducible on a
 ///      single-node boot (below), so "before start()" is its real-node stand-in.
+///   6. #849 (adopted from rev1413's probe, 2026-09-22): the built-in `streams` instance's
+///      `stream-segments` DHT namespace is reached by the SAME post-formation loop as `artifacts`, in
+///      both directions, and readiness waits on it -- the streams siblings of claims 2, 3 and 4.
+///      `StorageFactoryEncryptionTest`'s streams cases drive `StorageFactory`'s two admission steps
+///      over a test-built check list and cannot see `AetherNode`'s own loop diverge (a hard-coded
+///      instance list, a filter); these three can. At the base `d444d22c6` the first two are red:
+///      `start()` succeeds over the marked namespace, and no streams marker is written.
 ///
 /// A genuine cross-boot scenario ("marker written by a PRIOR boot, no keyring THIS boot -> refusal")
 /// stays infeasible as a real-boot test here: no seam exists across any of the four
@@ -95,6 +102,8 @@ class AetherNodeDhtMarkerPostFormationBootTest {
     private static final String SECRET_PATH = "path/to/k1";
     private static final String ACTIVE_KEY_ID = "k1";
     private static final String VALID_AES256_KEY = Base64.getEncoder().encodeToString(new byte[32]);
+    /// #849: the streams DHT namespace's marker key, `stream-segments/.encryption-enabled`.
+    private static final String STREAMS_MARKER_KEY = "stream-segments/" + EncryptingStorageTier.MARKER_FILE_NAME;
     private static final TimeSpan START_BOUND = timeSpan(15).seconds();
     private static final TimeSpan MARKER_READ_BOUND = timeSpan(5).seconds();
     private static final long CONSTRUCTION_BOUND_MS = 5_000;
@@ -210,6 +219,93 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                                          + "wait on the marker check -- a replacement still retrying can "
                                                          + "already be leader, and its leader ticks must run")
                                                      .isPositive();
+    }
+
+    /// #849, claim 6, reverse direction: a `stream-segments` marker seeded into the node's own DHT,
+    /// `streams_encrypted` off (no `[storage.encryption]` at all) -> `start()` fails with
+    /// `EncryptedTierRequiresKeyring` NAMING `streams`, the node never reports ACTIVE, and the
+    /// refused gate is resolved rather than left pending. The streams sibling of the test above.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void start_failsNamingStreams_whenStreamSegmentsMarkerPresentAndNoKeyring() {
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none(), tempDir), () -> {})
+                          .onFailure(cause -> fail("construction must succeed - " + cause.message()))
+                          .unwrap();
+
+        var pendingBeforeStart = StorageFactory.pendingDhtAdmissions(node.storageSetups());
+
+        node.dhtClient()
+            .unwrap()
+            .put(STREAMS_MARKER_KEY, ACTIVE_KEY_ID.getBytes(StandardCharsets.UTF_8))
+            .await(MARKER_READ_BOUND)
+            .onFailure(cause -> fail("PRECONDITION: seeding the streams marker failed - " + cause.message()));
+
+        node.start()
+            .await(START_BOUND)
+            .onSuccess(_ -> fail("a stream-segments marker present with no keyring must fail start() -- if this "
+                                 + "passes, the streams check is constructed but never reached by start()"))
+            .onFailure(cause -> {
+                assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class);
+                assertThat(((EncryptionError.EncryptedTierRequiresKeyring) cause).instanceName()).isEqualTo("streams");
+                assertThat(((EncryptionError.EncryptedTierRequiresKeyring) cause).keyId()).isEqualTo(ACTIVE_KEY_ID);
+            });
+
+        assertThat(node.nodeLifecycle().currentState()).as("a node whose streams DHT tier was refused must never report ACTIVE")
+                                                      .isNotEqualTo(NodeState.ACTIVE);
+        assertThat(node.storageSetups().get("streams").dhtAdmissionPending()).as("the gate is resolved (with the refusal), "
+                                                                                 + "not left pending")
+                                                                             .isFalse();
+        assertThat(pendingBeforeStart).as("before start(), the streams gate must be among the pending admissions -- the "
+                                          + "readiness component reads this list")
+                                      .contains("streams");
+    }
+
+    /// #849, claim 6, forward direction: `streams_encrypted = true` -> `start()` writes
+    /// `stream-segments/.encryption-enabled` = active key id, absent before, present after, and the
+    /// admitted node reaches ACTIVE.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void start_writesStreamSegmentsMarker_whenStreamsEncrypted() throws InterruptedException {
+        var provider = (SecretsProvider) path -> Promise.success(Map.of(SECRET_PATH, VALID_AES256_KEY).get(path));
+        var environment = Option.some(EnvironmentIntegration.environmentIntegration(Option.none(), Option.some(provider), Option.none()));
+        var encryption = Option.some(StorageEncryptionConfig.storageEncryptionConfig(Map.of(ACTIVE_KEY_ID, "${secrets:" + SECRET_PATH + "}"),
+                                                                                      ACTIVE_KEY_ID,
+                                                                                      true));
+
+        node = AetherNode.aetherNode(minimalConfig(environment, encryption, tempDir), () -> {})
+                          .onFailure(cause -> fail("construction must succeed with streams_encrypted=true - " + cause.message()))
+                          .unwrap();
+        var client = node.dhtClient().unwrap();
+
+        assertThat(client.get(STREAMS_MARKER_KEY).await(MARKER_READ_BOUND).unwrap().isPresent()).as("no streams marker before start()")
+                                                                                                 .isFalse();
+
+        node.start().await(START_BOUND)
+            .onFailure(cause -> fail("start() must succeed and write the streams DHT marker - " + cause.message()));
+
+        var after = client.get(STREAMS_MARKER_KEY).await(MARKER_READ_BOUND).unwrap();
+
+        assertThat(after.isPresent()).as("start() must have stamped stream-segments once formation resolved").isTrue();
+        assertThat(new String(after.unwrap(), StandardCharsets.UTF_8)).isEqualTo(ACTIVE_KEY_ID);
+        awaitActive(node);
+    }
+
+    /// #849, claim 6, control: unmarked namespace, plain boot -> admitted, reaches ACTIVE, stamps
+    /// nothing. Guards against the opposite failure: a streams gate that is constructed but never
+    /// resolved would hold readiness forever.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void start_reachesActiveAndWritesNoStreamsMarker_whenNamespaceUnmarkedAndStreamsNotEncrypted() throws InterruptedException {
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none(), tempDir), () -> {})
+                          .onFailure(cause -> fail("construction must succeed - " + cause.message()))
+                          .unwrap();
+
+        node.start().await(START_BOUND).onFailure(cause -> fail("plain start() must succeed - " + cause.message()));
+
+        awaitActive(node);
+        assertThat(node.dhtClient().unwrap().get(STREAMS_MARKER_KEY).await(MARKER_READ_BOUND).unwrap().isPresent()).as("a plain boot stamps nothing")
+                                                                                                                    .isFalse();
+        assertThat(StorageFactory.pendingDhtAdmissions(node.storageSetups())).isEmpty();
     }
 
     @Test

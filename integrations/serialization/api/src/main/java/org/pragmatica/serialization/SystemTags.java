@@ -58,7 +58,6 @@ import java.util.Map;
 public interface SystemTags {
     /// Returned by [#tagFor] for a class name that has no hand-assigned tag.
     int NOT_PINNED = -1;
-
     Map<String, Integer> TAGS = table();
 
     /// The pinned tag for `className`, or [#NOT_PINNED] when the name is not a system type.
@@ -92,24 +91,23 @@ public interface SystemTags {
              .stream()
              .sorted(Map.Entry.comparingByKey())
              .forEach(entry -> {
-                 var previousName = byTag.put(entry.getValue(), entry.getKey());
+                          var previousName = byTag.put(entry.getValue(),
+                                                       entry.getKey());
 
-                 if (previousName != null) {
-                     throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
-                                                                                                    previousName,
-                                                                                                    entry.getKey()));
-                 }
-             });
+                          if (previousName != null) {
+                          throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
+                                                                                                         previousName,
+                                                                                                         entry.getKey()));
+                      }
+                      });
     }
 
     private static Map<String, Integer> table() {
         var table = new HashMap<String, Integer>(512);
-
         // consensus core  [base 21]
         pin(table, 21, "org.pragmatica.consensus.NodeId");
         pin(table, 22, "org.pragmatica.consensus.StateMachine.Batch");
         pin(table, 23, "org.pragmatica.consensus.StateMachine.Batch.Id");
-
         // Rabia consensus protocol  [base 24]
         pin(table, 24, "org.pragmatica.consensus.rabia.ClusterConfig");
         pin(table, 25, "org.pragmatica.consensus.rabia.CorrelationId");
@@ -123,7 +121,6 @@ public interface SystemTags {
         pin(table, 33, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1");
         pin(table, 34, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2");
         pin(table, 35, "org.pragmatica.consensus.rabia.StateValue");
-
         // cluster network protocol  [base 36]
         pin(table, 36, "org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes");
         pin(table, 37, "org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes");
@@ -132,10 +129,8 @@ public interface SystemTags {
         pin(table, 40, "org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest");
         pin(table, 41, "org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse");
         pin(table, 42, "org.pragmatica.consensus.net.NodeInfo");
-
         // TCP transport  [base 43]
         pin(table, 43, "org.pragmatica.net.tcp.NodeAddress");
-
         // SWIM membership gossip  [base 44]
         pin(table, 44, "org.pragmatica.swim.SwimConfig");
         pin(table, 45, "org.pragmatica.swim.SwimMember");
@@ -147,7 +142,6 @@ public interface SystemTags {
         pin(table, 51, "org.pragmatica.swim.SwimMessage.PingReq");
         pin(table, 52, "org.pragmatica.swim.SwimMessage.WhoAmI");
         pin(table, 53, "org.pragmatica.swim.SwimMessage.WhoAmIReply");
-
         // DHT protocol  [base 54]
         pin(table, 54, "org.pragmatica.dht.DHTMessage.DigestRequest");
         pin(table, 55, "org.pragmatica.dht.DHTMessage.DigestResponse");
@@ -164,7 +158,6 @@ public interface SystemTags {
         pin(table, 66, "org.pragmatica.dht.DHTMessage.RemoveRequest");
         pin(table, 67, "org.pragmatica.dht.DHTMessage.RemoveResponse");
         pin(table, 68, "org.pragmatica.dht.Partition");
-
         // replicated KV commands  [base 69]
         pin(table, 69, "org.pragmatica.cluster.state.kvstore.KVCommand.Get");
         pin(table, 70, "org.pragmatica.cluster.state.kvstore.KVCommand.Noop");
@@ -172,7 +165,6 @@ public interface SystemTags {
         pin(table, 72, "org.pragmatica.cluster.state.kvstore.KVCommand.Remove");
         pin(table, 73, "org.pragmatica.cluster.state.kvstore.LeaderKey");
         pin(table, 74, "org.pragmatica.cluster.state.kvstore.LeaderValue");
-
         // cluster health + metrics gossip  [base 75]
         pin(table, 75, "org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing");
         pin(table, 76, "org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong");
@@ -184,7 +176,6 @@ public interface SystemTags {
         pin(table, 82, "org.pragmatica.cluster.metrics.HealthHintWire");
         pin(table, 83, "org.pragmatica.cluster.metrics.PeerConnectivityObservation");
         pin(table, 84, "org.pragmatica.cluster.metrics.PeerHealthObservation");
-
         // worker protocol  [base 85]
         pin(table, 85, "org.pragmatica.aether.worker.heartbeat.FollowerHeartbeat");
         pin(table, 86, "org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot");
@@ -192,7 +183,6 @@ public interface SystemTags {
         pin(table, 88, "org.pragmatica.aether.worker.metrics.PerSliceMetrics");
         pin(table, 89, "org.pragmatica.aether.worker.mutation.WorkerMutation");
         pin(table, 90, "org.pragmatica.aether.worker.network.DHTRelayMessage");
-
         // stream replication and forwarding  [base 91]
         pin(table, 91, "org.pragmatica.aether.stream.consensus.StreamConsensusCommand");
         pin(table, 92, "org.pragmatica.aether.stream.forward.RawEventDto");
@@ -205,7 +195,6 @@ public interface SystemTags {
         pin(table, 99, "org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse");
         pin(table, 100, "org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck");
         pin(table, 101, "org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents");
-
         // value objects nested in the above  [base 102]
         pin(table, 102, "java.net.InetSocketAddress");
         pin(table, 103, "org.pragmatica.aether.slice.MethodName");
@@ -215,7 +204,6 @@ public interface SystemTags {
         pin(table, 107, "org.pragmatica.lang.vo.NonBlankString");
         pin(table, 108, "org.pragmatica.lang.vo.Url");
         pin(table, 109, "org.pragmatica.lang.vo.Uuid");
-
         // durable pub-sub topic envelopes (#386)  [base 110] — TopicEventEnvelope heads the payload
         // bytes of EVERY durable-topic event (hot on merit); DlqEnvelope is failure-bounded traffic,
         // but the aether.stream.* hot-prefix contract (SystemCodecPinningTest) binds every type under
@@ -226,21 +214,22 @@ public interface SystemTags {
         // #667: nested in every Rabia SyncResponse; consensus-prefixed, so it must sit in the one-byte
         // window (`SystemCodecPinningTest.hotProtocolTypes_fitInTheOneByteWindow`).
         pin(table, 112, "org.pragmatica.consensus.rabia.ResponderState");
-
-        // ---- 113..127 RESERVED: the last free 1-byte slots. Spend them on hot types only. ----
+        // Guarded KV mutation primitives. Remaining 113..122 slots stay reserved.
+        // Tag 123 is available: the removed uncorrelated LeaderPut never shipped before GA.
+        pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
+        pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
+        pin(table, 126, "org.pragmatica.cluster.state.kvstore.KVCommand.Mutation");
+        pin(table, 127, "org.pragmatica.cluster.state.kvstore.KVCommand.TransactionResult");
         // ---- 128..16383: two-byte system tags. ----
-
         // worker bootstrap (rare, large payloads)  [base 128]
         pin(table, 128, "org.pragmatica.aether.worker.bootstrap.SnapshotRequest");
         pin(table, 129, "org.pragmatica.aether.worker.bootstrap.SnapshotResponse");
-
         // artifact coordinates  [base 192]
         pin(table, 192, "org.pragmatica.aether.artifact.Artifact");
         pin(table, 193, "org.pragmatica.aether.artifact.ArtifactBase");
         pin(table, 194, "org.pragmatica.aether.artifact.ArtifactId");
         pin(table, 195, "org.pragmatica.aether.artifact.GroupId");
         pin(table, 196, "org.pragmatica.aether.artifact.Version");
-
         // cluster events  [base 256]
         pin(table, 256, "org.pragmatica.aether.api.ClusterEvent.AccessDenied");
         pin(table, 257, "org.pragmatica.aether.api.ClusterEvent.AlertInjected");
@@ -286,7 +275,6 @@ public interface SystemTags {
         // so the clear edge must be its own event.
         pin(table, 290, "org.pragmatica.aether.api.ClusterEvent.ThresholdBreached");
         pin(table, 291, "org.pragmatica.aether.api.ClusterEvent.ThresholdCleared");
-
         // HTTP handling and forwarding  [base 512]
         pin(table, 512, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest");
         pin(table, 513, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse");
@@ -297,7 +285,6 @@ public interface SystemTags {
         pin(table, 518, "org.pragmatica.aether.http.handler.security.Principal");
         pin(table, 519, "org.pragmatica.aether.http.handler.security.Role");
         pin(table, 520, "org.pragmatica.aether.http.handler.security.SecurityContext");
-
         // slice invocation  [base 640]
         // RETIRED 2026-08-27 (#571): `DHTNotification` was deleted — it had zero senders and zero
         // receivers. These two pins STAY, and deleting them would be the bug: the table is what makes
@@ -311,7 +298,6 @@ public interface SystemTags {
         pin(table, 641, "org.pragmatica.aether.dht.DHTNotification.Removed");
         pin(table, 642, "org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest");
         pin(table, 643, "org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse");
-
         // slice core types  [base 704]
         pin(table, 704, "org.pragmatica.aether.slice.ConsistencyMode");
         pin(table, 705, "org.pragmatica.aether.slice.ExecutionMode");
@@ -321,7 +307,6 @@ public interface SystemTags {
         pin(table, 709, "org.pragmatica.aether.slice.StreamCompression");
         pin(table, 710, "org.pragmatica.aether.slice.StreamConfig");
         pin(table, 711, "org.pragmatica.aether.slice.TierAwareRetention");
-
         // generation and community topology  [base 832]
         pin(table, 832, "org.pragmatica.aether.slice.generation.ClusterMode");
         pin(table, 833, "org.pragmatica.aether.slice.generation.ClusterQuiescence");
@@ -334,7 +319,6 @@ public interface SystemTags {
         pin(table, 839, "org.pragmatica.aether.slice.generation.GenerationReason");
         pin(table, 840, "org.pragmatica.aether.slice.generation.HealthHint");
         pin(table, 841, "org.pragmatica.aether.slice.generation.PartitionOwner");
-
         // blueprints  [base 960]
         pin(table, 960, "org.pragmatica.aether.slice.blueprint.Blueprint");
         pin(table, 961, "org.pragmatica.aether.slice.blueprint.BlueprintArtifact");
@@ -345,7 +329,6 @@ public interface SystemTags {
         pin(table, 966, "org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy");
         pin(table, 967, "org.pragmatica.aether.slice.blueprint.SecurityOverrides");
         pin(table, 968, "org.pragmatica.aether.slice.blueprint.SecurityOverrides.Entry");
-
         // AetherKey  [base 1088]
         pin(table, 1088, "org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey");
         pin(table, 1089, "org.pragmatica.aether.slice.kvstore.AetherKey.AbTestRoutingKey");
@@ -397,7 +380,6 @@ public interface SystemTags {
         pin(table, 1135, "org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey");
         pin(table, 1136, "org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey");
         pin(table, 1137, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey");
-
         // AetherValue  [base 1600]
         pin(table, 1600, "org.pragmatica.aether.slice.kvstore.AetherValue.AbTestRoutingValue");
         pin(table, 1601, "org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue");
@@ -459,28 +441,25 @@ public interface SystemTags {
         pin(table, 1657, "org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue");
         pin(table, 1658, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue");
         pin(table, 1659, "org.pragmatica.aether.slice.kvstore.CommunityState");
-
         // entity owner-forwarding (#596)  [base 1660]
         pin(table, 1660, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForward");
         pin(table, 1661, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCreateForward");
         pin(table, 1662, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityDeleteForward");
         pin(table, 1663, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse");
-
         // cluster command forwarding (#634 boot-guard catch — the pair was routed but never encodable)  [base 1664]
         pin(table, 1664, "org.pragmatica.cluster.node.forward.ForwardApplyRequest");
         pin(table, 1665, "org.pragmatica.cluster.node.forward.ForwardApplyResponse");
-
         // entity owner-forwarding, read half (#596)  [base 1666]
         pin(table, 1666, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForward");
         pin(table, 1667, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForwardResponse");
-
         // entity owner-forwarding, timer verbs (#345 I4)  [base 1668]
         // Cancel has no response of its own — it answers with EntityUpdateForwardResponse (1663) and an
         // empty state, exactly as delete does, so no tag is spent on a second Unit-shaped carrier.
         pin(table, 1668, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForward");
-        pin(table, 1669, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForwardResponse");
+        pin(table,
+            1669,
+            "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForwardResponse");
         pin(table, 1670, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCancelTimerForward");
-
         // durable per-blueprint deployment outcome (#759 review BLOCKING 3 / #760 #724 review round
         // 2 item g) [base 1671] — the natural homes (AetherKey block 1088..1137, AetherValue block
         // 1600..1659) are both flush against the next block with no free slot, so per this file's
@@ -489,7 +468,6 @@ public interface SystemTags {
         pin(table, 1671, "org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey");
         pin(table, 1672, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus");
         pin(table, 1673, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue");
-
         // durable operator auto-heal disable/enable flag (#685 review round 1 BLOCKING 1) [base 1674]
         // — same situation as the deployment-outcome pair above: both natural homes (AetherKey block
         // 1088..1137, AetherValue block 1600..1659) are full, so these take the next free slot after
@@ -499,7 +477,6 @@ public interface SystemTags {
         // this class of gap — see its history in aether/node for why a stubbed serializer cannot.
         pin(table, 1674, "org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey");
         pin(table, 1675, "org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue");
-
         // ---- 2112..16383 RESERVED ----
         rejectDuplicateTags(table);
 
