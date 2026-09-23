@@ -74,7 +74,8 @@ public sealed interface SnapshotError extends Cause {
     record DataRootUnreachable(Path dataRoot, String detail) implements SnapshotError {
         @Override
         public String message() {
-            return "Snapshot directory is absent and its data root " + dataRoot + " " + detail
+            return "Snapshot directory is absent and its data root " + dataRoot
+                 + " " + detail
                  + "; cannot tell a first boot from a volume that never mounted, "
                  + "refusing to start with EMPTY metadata. "
                  + "See docs/operators/runbooks/backup-recovery.md";

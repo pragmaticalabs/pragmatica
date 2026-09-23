@@ -28,7 +28,6 @@ import org.slf4j.LoggerFactory;
 @FunctionalInterface
 public interface DurableSealedOffsetSource {
     Logger LOG = LoggerFactory.getLogger(DurableSealedOffsetSource.class);
-
     LastSealedOffsetSource current();
 
     /// Nothing durable — truncation never discards anything.

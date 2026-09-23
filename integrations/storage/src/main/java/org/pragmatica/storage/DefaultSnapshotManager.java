@@ -304,26 +304,25 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// presents an empty, listable directory, and is still read here as a first boot. Closing that
     /// needs evidence this layer does not hold -- a provisioning-time sentinel written onto the
     /// volume itself, or a mount check at the layer that owns the data-dir configuration.
+    /// `getParent()` is null only for a filesystem root, which has no enclosing volume to establish --
+    /// wrapped here rather than null-checked, so the "no root to check" case stays a first boot.
     private Result<List<Path>> noSnapshotDirectory() {
-        var dataRoot = config.snapshotPath().getParent();
-
-        if (dataRoot == null || exists(dataRoot)) {
-            return rootPresent(dataRoot);
-        }
-
-        return new SnapshotError.DataRootUnreachable(dataRoot, "does not exist").result();
+        return Option.option(config.snapshotPath().getParent())
+                     .map(DefaultSnapshotManager::dataRootReachable)
+                     .or(Result.success(List.of()));
     }
 
-    /// A data root that exists must also be readable: an unlistable one cannot establish that the
-    /// snapshot directory is genuinely absent rather than merely invisible.
-    private static Result<List<Path>> rootPresent(Path dataRoot) {
-        if (dataRoot == null) {
-            return Result.success(List.of());
+    /// A data root must be present AND readable: an absent one means the volume never mounted, and an
+    /// unlistable one cannot establish that the snapshot directory is genuinely absent rather than
+    /// merely invisible.
+    private static Result<List<Path>> dataRootReachable(Path dataRoot) {
+        if (!exists(dataRoot)) {
+            return new SnapshotError.DataRootUnreachable(dataRoot, "does not exist").result();
         }
 
         return list(dataRoot).mapError(cause -> new SnapshotError.DataRootUnreachable(dataRoot,
                                                                                       "cannot be listed: " + cause.message()))
-                    .map(_ -> List.of());
+                   .map(_ -> List.of());
     }
 
     private static List<Path> excludingUnreadable(List<Path> files, Option<Path> unreadableLatest) {
@@ -351,9 +350,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
             return Result.success(none());
         }
 
-        return new SnapshotError.NothingRestorable(describeLatest(unreadableLatest),
-                                                   candidates.size()).<Option<MetadataSnapshot>>result()
-                                                                     .onFailure(DefaultSnapshotManager::reportNothingRestorable);
+        return new SnapshotError.NothingRestorable(describeLatest(unreadableLatest), candidates.size()).<Option<MetadataSnapshot>> result()
+                                                                                                       .onFailure(DefaultSnapshotManager::reportNothingRestorable);
     }
 
     /// #1013 round 2: the AGGREGATE verdict, restored after the fix that made this state detectable
