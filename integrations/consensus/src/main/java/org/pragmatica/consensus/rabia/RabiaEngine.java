@@ -58,6 +58,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -89,7 +90,6 @@ public class RabiaEngine<C extends Command> {
     /// Apply-task duration probe threshold (5 ms). Diagnostic only — tasks at or above this on
     /// the single consensus apply worker are logged as `SLOW-APPLY` with the executor queue depth.
     private static final long SLOW_APPLY_THRESHOLD_NANOS = 5_000_000L;
-
     /// One stuck-in-`Syncing` WARN per this many unsatisfied sync rounds (#660) — roughly every 30s at
     /// the default 5s `syncRetryInterval`.
     private static final int WARN_EVERY_N_SYNC_ROUNDS = 6;
@@ -131,7 +131,6 @@ public class RabiaEngine<C extends Command> {
     private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
     private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
     private final RabiaPersistence<C> persistence;
-
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
     /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and
     /// when the engine activates, so the reported count is the length of the current stall.
@@ -595,6 +594,7 @@ public class RabiaEngine<C extends Command> {
         if (stopping.get()) {
             return new ConsensusError.NodeInactive(self).promise();
         }
+
         var promise = Promise.<Unit> promise();
 
         safeExecute(() -> doReconfigure(newConfig, promise));
@@ -854,12 +854,22 @@ public class RabiaEngine<C extends Command> {
 
     public synchronized Promise<Unit> stop() {
         if (stopping.compareAndSet(false, true)) {
-            Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
-                        () -> executor.execute(() -> performStop(stoppedCompletion)))
-                  .onFailure(stoppedCompletion::fail);
+            submitStop();
         }
 
         return stoppedCompletion;
+    }
+
+    /// #1442: the submission's own `Result` is consumed here instead of being dropped in a statement
+    /// inside [#stop]. Nothing about the shutdown changes — the executor refuses the task once it is
+    /// itself shutting down, and routing that refusal into `stoppedCompletion` is what makes `stop()`
+    /// settle rather than hang; on success there is nothing to carry, because completion arrives from
+    /// [#performStop].
+    private Unit submitStop() {
+        return Result.lift(Causes::fromThrowable,
+                           () -> executor.execute(() -> performStop(stoppedCompletion)))
+                     .onFailure(stoppedCompletion::fail)
+                     .or(Unit.unit());
     }
 
     private void performStop(Promise<Unit> promise) {
@@ -1123,8 +1133,7 @@ public class RabiaEngine<C extends Command> {
     /// ([#triggerResync], reachable from a far-future Propose or Decision) has live state that the
     /// persisted snapshot does not describe.
     private Phase ownStateFloor(Option<SavedState<C>> persisted) {
-        var persistedPhase = persisted.map(SavedState::lastCommittedPhase)
-                                      .or(Phase.ZERO);
+        var persistedPhase = persisted.map(SavedState::lastCommittedPhase).or(Phase.ZERO);
         var livePhase = currentPhase.get();
 
         return persistedPhase.compareTo(livePhase) > 0
@@ -1148,7 +1157,6 @@ public class RabiaEngine<C extends Command> {
                                   .toList();
 
         syncRounds.set(0);
-
         if (responses.isEmpty()) {
             // Only reachable at clusterSize 1, where the requirement is zero responses: self is the
             // whole majority and there is no peer to adopt from.
@@ -1160,17 +1168,13 @@ public class RabiaEngine<C extends Command> {
         var candidate = responses.getLast();
 
         detectBootFutureHistory(persisted, candidate);
-
         if (candidate.lastCommittedPhase().compareTo(ownStateFloor(persisted)) < 0) {
             activateWithoutAdoption(persisted, "every response is behind this node's own state");
 
             return;
         }
 
-        log.trace("Node {} uses {} as synchronization candidate out of {} responses",
-                  self,
-                  candidate,
-                  responses.size());
+        log.trace("Node {} uses {} as synchronization candidate out of {} responses", self, candidate, responses.size());
         restoreState(candidate);
     }
 
@@ -1339,7 +1343,8 @@ public class RabiaEngine<C extends Command> {
 
         persisted.map(SavedState::lastCommittedPhase)
                  .filter(phase -> phase.compareTo(candidate.lastCommittedPhase()) > 0)
-                 .onPresent(phase -> warnBootFutureHistory(phase, candidate.lastCommittedPhase()));
+                 .onPresent(phase -> warnBootFutureHistory(phase,
+                                                           candidate.lastCommittedPhase()));
     }
 
     @Contract

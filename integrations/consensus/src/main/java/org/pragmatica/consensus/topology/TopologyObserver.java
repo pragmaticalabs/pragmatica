@@ -461,7 +461,6 @@ public interface TopologyObserver extends TopologyManager {
                 // would violate the §3.1 constraint documented on that method; the periodic
                 // `initReconcile` tick consumes the freshly latched set instead.
                 observedConnections.set(Set.copyOf(connectedNodesList.connected()));
-
                 var snapshot = new HashSet<>(nodeStatesById.keySet());
                 // Self node is never in peerLinks (no self-connection), so always exclude it
                 // to avoid routing a ConnectNode(self) message every reconciliation interval.
@@ -485,8 +484,7 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             private void requestConnectionIfEligible(NodeId id) {
-                Option.option(nodeStatesById.get(id))
-                      .onPresent(_ -> requestConnection(id));
+                Option.option(nodeStatesById.get(id)).onPresent(_ -> requestConnection(id));
             }
 
             @Contract
@@ -897,8 +895,7 @@ public interface TopologyObserver extends TopologyManager {
                                            .filter(state -> !state.info()
                                                                   .id()
                                                                   .equals(config.self()))
-                                           .filter(state -> connected.contains(state.info()
-                                                                                    .id()))
+                                           .filter(state -> connected.contains(state.info().id()))
                                            .count();
             }
 
