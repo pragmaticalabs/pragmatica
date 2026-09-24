@@ -368,6 +368,39 @@ capture_node_logs() {
                 remote_exec "tail -c 2000000 ${f}" > "${out_dir}/streamed-$(basename "$f")" 2>&1 || true
             done
             ;;
+        cloud)
+            # Capture from every VM of this cluster AT THE MOMENT OF FAILURE. Previously this
+            # branch did not exist: cloud fell through to `return 0` after writing the manifest,
+            # so every failed cloud suite carried a "captured" manifest and no logs (2026-09-23,
+            # 8 of 8 failed suites). By the end of the run those VMs are gone — mid-run recovery
+            # reaps and re-bootstraps them — so this is the only point their logs exist.
+            # _cloud_running_vm_ips matches seeds by IP and CTM replacements by node-id name, so
+            # a replacement labelled with a different `aether-cluster` value is still captured.
+            local cluster_name ips ip n=0
+            if [ -z "${AETHER_SSH_KEY:-}" ]; then
+                echo "AETHER_SSH_KEY unset — cannot reach VMs, nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: AETHER_SSH_KEY unset — cloud node-log capture skipped"
+                return 0
+            fi
+            if [ "$target_cluster" = "a" ]; then cluster_name="$CLUSTER_A_NAME"; else cluster_name="$CLUSTER_B_NAME"; fi
+            ips=$(_cloud_running_vm_ips "$cluster_name" 2>/dev/null || true)
+            local remote_cmd="docker logs --timestamps --tail 5000 aether-node"
+            [ "${CLOUD_RUNTIME:-container}" = "jvm" ] && remote_cmd="journalctl -u aether-node --no-pager -n 5000 -o short-iso"
+            for ip in $ips; do
+                ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY}" "${CLOUD_SSH_USER:-root}@${ip}" \
+                    "hostname; ${remote_cmd}" > "${out_dir}/vm-${ip}.log" 2>&1 || true
+                printf 'vm %s lines=%s\n' "$ip" "$(wc -l < "${out_dir}/vm-${ip}.log" | tr -d ' ')" \
+                    >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                n=$((n + 1))
+            done
+            provisioning_snapshot > "${out_dir}/provisioning-snapshot.json" 2>&1 || true
+            if [ "$n" -eq 0 ]; then
+                # Say so: a manifest with nothing beside it must never read as a capture.
+                echo "NO VMs found for cluster ${cluster_name} — nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: node-log capture found NO VMs for cluster ${cluster_name} — nothing captured"
+                return 0
+            fi
+            ;;
         *) return 0 ;;
     esac
 
