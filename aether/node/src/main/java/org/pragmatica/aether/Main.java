@@ -846,8 +846,8 @@ public record Main(String[] args) {
     /// discovers its core peers from the provider API instead of having them pushed over SSH.
     ///
     /// Placement in the chain is deliberate: AFTER the explicit arms — an operator's list always
-    /// wins, and CTM-provisioned replacements keep their user-data `CLUSTER_PEERS` path
-    /// byte-identical — but BEFORE `generatePeersFromConfig`, whose hostname-indexed synthesis is
+    /// wins, and a CTM-provisioned replacement is launched with `--peers=` (its user-data `PEERS`,
+    /// turned into the argument by the image entrypoint), so it never reaches this arm — but BEFORE `generatePeersFromConfig`, whose hostname-indexed synthesis is
     /// meaningless on cloud and is exactly why the SSH push existed. Forge/compose/bare-metal nodes
     /// configure no `[cloud]` section, so no provider materializes and their resolution is
     /// unchanged.

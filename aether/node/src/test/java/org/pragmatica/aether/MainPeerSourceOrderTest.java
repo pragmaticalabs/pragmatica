@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /// #1475 — [Main#parsePeers] resolution order is explicit peers first, and the later arms must not
 /// RUN when an earlier one wins. The discovery arm used to be passed to `Option.orElse(Option)`,
@@ -56,6 +57,10 @@ class MainPeerSourceOrderTest {
     /// above cannot pass merely because discovery is unreachable from `parsePeers`.
     @Test
     void parsePeers_usesDiscovery_whenNoExplicitPeers() {
+        // CLUSTER_PEERS is read from the real process environment and wins over discovery, so this
+        // control is only meaningful where it is unset. Skipped (reported), never silently passed.
+        assumeTrue(System.getenv("CLUSTER_PEERS") == null,
+                   "CLUSTER_PEERS is set in this environment; it would legitimately win over discovery");
         var calls = new AtomicInteger();
         var main = new Main(new String[]{});
         var discovered = List.of(corePeer("node-a", "10.0.0.1"),
