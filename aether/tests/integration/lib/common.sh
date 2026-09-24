@@ -406,11 +406,11 @@ _resolve_live_endpoint() {
         # Both numbers are validated BEFORE the arithmetic: a non-numeric operand is an expansion
         # error no redirect can contain — it kills the caller's `$(...)` before any probe and the
         # record is never rewritten, so every later call fails. Not an epoch → treated as expired.
-        case "${since:-}" in ''|*[!0-9]*) since='' ;; esac
+        case "${since:-}" in ''|*[!0-9]*) since=0 ;; esac
         retry_s="${CLOUD_PIN_RETRY_S:-30}"
         case "$retry_s" in ''|*[!0-9]*) retry_s=30 ;; esac
         now=$(date +%s)
-        if [ -n "$since" ] && [ "${pinned_then:-}" = "${CLUSTER_ENDPOINT}" ] \
+        if [ "${pinned_then:-}" = "${CLUSTER_ENDPOINT}" ] \
             && [ $(( now - since )) -lt "$retry_s" ]; then
             skip_pin=true
         fi
