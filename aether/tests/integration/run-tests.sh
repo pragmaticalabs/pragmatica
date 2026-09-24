@@ -1238,6 +1238,13 @@ on_exit() {
     exit "$rc"
 }
 
+# The `name` under `[cluster]` in a cloud TOML — the label value CTM stamps on the replacements
+# it provisions. Prints nothing when the file is absent or has no such key.
+_toml_cluster_name() {
+    [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+    awk '/^\[/ { in_cluster = ($0 == "[cluster]") } in_cluster && /^[[:space:]]*name[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*"/, ""); sub(/".*$/, ""); print; exit }' "$1"
+}
+
 # --keep-on-failure path: nothing is destroyed; the PG firewall is still closed because log
 # extraction does not need the shared PG VM reachable.
 preserve_on_failure() {
@@ -1247,9 +1254,16 @@ preserve_on_failure() {
             log_warn "Preserved cloud VMs are BILLABLE. Reap this run's clusters when done:"
             log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_A_NAME} --destroy --force"
             log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_B_NAME} --destroy --force"
-            log_warn "  CTM replacement VMs may carry no matching cluster label; the bare"
-            log_warn "  'cloud-reaper.sh --destroy --force' catches them but destroys EVERY aether-labelled"
-            log_warn "  resource in the account except test-pg — never run it while another run is live."
+            # CTM replacements are labelled with the TOML's [cluster] name, which is not the
+            # harness cluster name on the container runtime (`cloud-test-b` vs `test-b`), so the
+            # two lines above never match them (2026-09-24: both surviving VMs were missed).
+            local toml toml_name
+            for toml in "${CLOUD_TOML_A:-}" "${CLOUD_TOML_B:-}"; do
+                toml_name=$(_toml_cluster_name "$toml")
+                if [ -n "$toml_name" ] && [ "$toml_name" != "$CLUSTER_A_NAME" ] && [ "$toml_name" != "$CLUSTER_B_NAME" ]; then
+                    log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${toml_name} --destroy --force   # CTM replacements"
+                fi
+            done
         else
             # No bootstrap COMPLETED. That is not "nothing exists": a bootstrap that failed under
             # --keep-on-failure keeps the VMs it created. List without deleting:

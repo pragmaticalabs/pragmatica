@@ -9,9 +9,10 @@
 #          time window, and an explicit statement when nothing was captured.
 #   F1-F2  cloud_partition_node (lib/cluster.sh): the partition firewall carries the cluster
 #          label on create, and is relabelled when an earlier run's firewall is reused.
-#   P1-P5  CLOUD_RESOURCES_PROVISIONED (run-tests.sh): a cluster-B-only run sets it after B's
+#   P1-P7  CLOUD_RESOURCES_PROVISIONED (run-tests.sh): a cluster-B-only run sets it after B's
 #          bootstrap succeeds — not when it fails, not on --skip-deploy — and --keep-on-failure
-#          never reports "nothing to reap" over live VMs.
+#          never reports "nothing to reap" over live VMs; its reap commands reach CTM
+#          replacements, which carry the TOML's cluster name.
 #
 # No external test runner; invoke directly:
 #   bash aether/tests/integration/test/test-restore-gate.sh
@@ -134,7 +135,7 @@ else fail "F2 no relabel on the exists path: $(printf '%s' "$calls" | tr '\n' '|
 
 # --- P: provisioned flag and the preserve message -----------------------------------------
 awk '/^cloud_bringup_cluster_b\(\) \{/,/^\}/' "${INTEG_DIR}/run-tests.sh" > "${WORK}/bringup_fn.sh"
-awk '/^preserve_on_failure\(\) \{/,/^\}/' "${INTEG_DIR}/run-tests.sh" > "${WORK}/preserve_fn.sh"
+awk '/^(preserve_on_failure|_toml_cluster_name)\(\) \{/,/^\}/' "${INTEG_DIR}/run-tests.sh" > "${WORK}/preserve_fn.sh"
 if [ ! -s "${WORK}/bringup_fn.sh" ] || [ ! -s "${WORK}/preserve_fn.sh" ]; then
     fail "P0 cloud_bringup_cluster_b / preserve_on_failure not found (extraction examined NOTHING)"
 fi
@@ -164,8 +165,8 @@ got=$(bringup false 1)
 [ "$got" = "flag=unset" ] && ok "P4 failed B bootstrap (errexit) leaves the flag unset" || fail "P4 failed bootstrap: ${got}"
 got=$(bringup true 0)
 [ "$got" = "flag=unset" ] && ok "P5 --skip-deploy (reused cluster) does not mark resources provisioned" || fail "P5 skip-deploy: ${got}"
-preserve() {  # flag -> preserve output
-    ( ENV_TYPE=cloud; REPO_ROOT=/stub; CLUSTER_A_NAME=test-a; CLUSTER_B_NAME=test-b
+preserve() {  # flag [cluster_b_name toml_b] -> preserve output
+    ( ENV_TYPE=cloud; REPO_ROOT=/stub; CLUSTER_A_NAME=test-a; CLUSTER_B_NAME="${2:-test-b}"; CLOUD_TOML_B="${3:-}"
       [ "$1" = set ] && CLOUD_RESOURCES_PROVISIONED=true
       log_step() { echo "STEP $*"; }; log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }
       source "${WORK}/preserve_fn.sh"; preserve_on_failure 1 ) 2>&1
@@ -177,6 +178,14 @@ else fail "P2 unset flag: $(printf '%s' "$out" | tr '\n' '|')"; fi
 out=$(preserve set)
 if printf '%s' "$out" | grep -q -- '--cluster test-b --destroy --force'; then ok "P3 provisioned: prints the per-cluster reap commands"
 else fail "P3 set flag: $(printf '%s' "$out" | tr '\n' '|')"; fi
+out=$(preserve set test-b "${INTEG_DIR}/env/cloud-hetzner-b.toml")
+if printf '%s' "$out" | grep -q -- '--cluster cloud-test-b --destroy --force'; then
+    ok "P6 container runtime: also prints a reap for the TOML cluster name CTM replacements carry"
+else fail "P6 container TOML: $(printf '%s' "$out" | tr '\n' '|')"; fi
+out=$(preserve set cloud-test-b-jvm "${INTEG_DIR}/env/cloud-hetzner-jvm-b.toml")
+if [ "$(printf '%s' "$out" | grep -c -- '--cluster cloud-test-b-jvm ')" = 1 ]; then
+    ok "P7 jvm runtime (TOML name = harness name): no duplicate reap line"
+else fail "P7 jvm TOML: $(printf '%s' "$out" | tr '\n' '|')"; fi
 
 echo ""
 echo "  ----"
