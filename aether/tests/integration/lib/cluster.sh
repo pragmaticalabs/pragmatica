@@ -1313,9 +1313,33 @@ first_seed_host_app_port() {
 # Newline-separated stdout rather than a global array: bash 3.2 (macOS) errors on `"${arr[@]}"`
 # for an EMPTY array under `set -u`, so a string keeps callers free of that trap.
 # Returns non-zero and prints nothing when no endpoint resolves.
+# Cloud: every VM exposes the SAME logical app port on its own public IP, so an endpoint is
+# `http://<public-ip>:<app port>` per live core member. Members come from the generation snapshot
+# (cloud_running_cores, which includes CTM replacements) and are resolved by cloud_public_ip
+# (bootstrap-state, then /api/v1/nodes/endpoint for replacements). Until 2026-09-24 this branch did
+# not exist: cloud returned 1 unconditionally, so 02y/02w sent no app traffic at all and their
+# durability assertions failed in 0s against nothing.
+#
+# A member that does not resolve is SKIPPED, not failed: cloud_public_ip reports a miss through
+# log_fail on STDOUT, which a capture would otherwise read as the address (and would add a counted
+# [FAIL] to whatever test happens to be enumerating). Only a bare host is accepted.
+_cloud_node_app_endpoints() {
+    local inport="$1" id ip out=""
+    for id in $(cloud_running_cores); do
+        ip=$(cloud_public_ip "$id" 2>/dev/null) || continue
+        printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+        out="${out}http://${ip}:${inport}"$'\n'
+    done
+    [ -n "$out" ] || return 1
+    printf '%s' "$out"
+}
+
 node_app_endpoints() {
     local inport="${APP_PORT:-8070}"
-    [ "${CLOUD_MODE:-false}" = "true" ] && return 1
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        _cloud_node_app_endpoints "$inport"
+        return $?
+    fi
 
     local prefix="${CLUSTER_NAME:-aether-${CLUSTER_ID:-b}-node-}"
     local names name hp out="" saved_ifs
@@ -1423,7 +1447,10 @@ retarget_app_endpoint_to_active_slice() {
     if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
         # Cloud: each node has its own public IP at the same logical app port.
         local owner_ip
-        owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
+        # `|| owner_ip=""`, not `|| true`: on a miss cloud_public_ip prints its [FAIL] diagnostic on
+        # stdout, which `|| true` kept as the "address" and turned into APP_ENDPOINT=http://[FAIL]...
+        owner_ip=$(cloud_public_ip "$owner" 2>/dev/null) || owner_ip=""
+        printf '%s' "$owner_ip" | grep -Eq '^[A-Za-z0-9.-]+$' || owner_ip=""
         if [ -z "$owner_ip" ]; then
             log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged. (Owner reported by /api/v1/slices is not in bootstrap-state.json — node may have been replaced by CTM and not re-recorded.)"
             return 1

@@ -37,7 +37,11 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
 source "${SCRIPT_DIR}/../../lib/generation.sh"
 
-ENTITY_BP="${ENTITY_BP:-org.pragmatica.aether.test:test-entity-entity-slice:1.0.0}"
+# The BLUEPRINT coordinate (`test-entity`, which carries META-INF/blueprint.toml), not the slice
+# artifact `test-entity-entity-slice`: deploying the slice coordinate is refused (no blueprint.toml),
+# and that refusal was swallowed, so the suite ran for 20 minutes against an entity slice that did
+# not exist (2026-09-24, after a full-drain recovery had wiped the runner's initial deployment).
+ENTITY_BP="${ENTITY_BP:-org.pragmatica.aether.test:test-entity:1.0.0}"
 N_PRE="${N_PRE:-40}"
 N_DURING="${N_DURING:-40}"
 
@@ -204,7 +208,12 @@ reap_creator() {
 
 test_deploy_entity_blueprint() {
     await_generation_quiesced >/dev/null 2>&1 || log_warn "generation not quiesced before deploy — proceeding"
-    deploy_blueprint "$ENTITY_BP" >/dev/null 2>&1 || true
+    # Push first — a recovery that re-bootstrapped the cluster also emptied its artifact store —
+    # then deploy, and let a refusal be SEEN: the readiness wait below is the gate, but its
+    # timeout cannot say why the slice never appeared.
+    push_blueprint "$ENTITY_BP" >/dev/null 2>&1 || log_warn "push_blueprint ${ENTITY_BP} failed — deploying anyway"
+    local deploy_out
+    deploy_out=$(deploy_blueprint "$ENTITY_BP" 2>&1) || log_warn "deploy_blueprint ${ENTITY_BP} failed: $(printf '%s' "$deploy_out" | head -c 400)"
 
     # Resolve endpoints FIRST. The readiness probe used to go through `app_post`, i.e. the pinned
     # APP_ENDPOINT — which in a full run points at whichever node a previous chaos suite killed.
@@ -218,7 +227,7 @@ test_deploy_entity_blueprint() {
     # Probe every node: the slice need not be placed on all of them, so ANY node answering is
     # readiness. `__probe__` does not exist, and a "not found" answer still proves the route is wired.
     if ! wait_for "entity slice answering on some node" \
-        'refresh_app_endpoints >/dev/null 2>&1; entity_post_any "/api/entity/get" "{\"orderId\":\"__probe__\"}" "\"outcome\"" >/dev/null' 240; then
+        'entity_post_any "/api/entity/get" "{\"orderId\":\"__probe__\"}" "\"outcome\"" >/dev/null' 240; then
         log_fail "entity slice never became reachable on any node"
         return 1
     fi

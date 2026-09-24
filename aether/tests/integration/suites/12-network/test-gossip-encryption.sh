@@ -47,34 +47,14 @@ test_gossip_encryption_active_via_config() {
     return 1
 }
 
-test_gossip_encryption_via_transport() {
-    # Verify TLS handshake failures are bounded: a healthy QUIC cluster has handshake
-    # successes vastly outnumbering failures (failures only occur on cert/version
-    # mismatches). The ratio is the canonical "are encrypted handshakes succeeding"
-    # signal — not just "are encryption-related metrics present".
-    local metrics handshake_total handshake_failures
-    metrics=$(api_get "/api/v1/metrics/transport")
-    if [ -z "$metrics" ]; then
-        log_fail "GET /api/v1/metrics/transport returned empty"
-        return 1
-    fi
-    handshake_total=$(json_value "$metrics" "quic_handshake_total")
-    handshake_failures=$(json_value "$metrics" "quic_handshake_failures_total")
-    handshake_total="${handshake_total:--1}"
-    handshake_failures="${handshake_failures:--1}"
-    if [ "$handshake_total" -lt 1 ] 2>/dev/null; then
-        log_fail "quic_handshake_total=${handshake_total}: no handshakes recorded"
-        return 1
-    fi
-    # Fail only if failures exceed half of total (catastrophic cert/version mismatch).
-    # Some failures are expected during chaos/restart cycles.
-    local failure_threshold=$((handshake_total / 2))
-    if [ "$handshake_failures" -gt "$failure_threshold" ] 2>/dev/null; then
-        log_fail "TLS handshake failures (${handshake_failures}) exceed half of total (${handshake_total}) — cert/protocol issue"
-        return 1
-    fi
-    log_pass "TLS handshakes succeeding: total=${handshake_total} failures=${handshake_failures} (failure ratio ≤ 50%)"
-}
+# `Gossip encryption via transport` was REMOVED (2026-09-24) because its premise was false: it
+# failed when quic_handshake_failures_total exceeded half of quic_handshake_total, on the belief
+# that "failures only occur on cert/version mismatches". The counter is incremented by EVERY failed
+# dial (QuicClusterNetwork.onConnectFailed -> quicMetrics.onHandshakeFailure), so a dial to a peer
+# that just departed counts the same as a TLS failure, and the ratio measured churn (5/20 on one run,
+# 5/9 on the next with identical failure counts). No exposed metric isolates TLS failures, so the
+# claim cannot be checked here. The TLS positive signal is `Gossip encryption via config`
+# (quic_handshake_total > 0). Restore it (see git history) once a TLS-specific failure count exists.
 
 test_nodes_communicating_encrypted() {
     # Verify cluster is functional (gossip is working = encrypted gossip is working)
@@ -95,7 +75,6 @@ test_health_probes_over_encrypted_transport() {
 run_test "Cluster ready" test_cluster_ready
 run_test "Cluster formed with encryption" test_cluster_formed_with_encryption
 run_test "Gossip encryption via config" test_gossip_encryption_active_via_config
-run_test "Gossip encryption via transport" test_gossip_encryption_via_transport
 run_test "Nodes communicating encrypted" test_nodes_communicating_encrypted
 run_test "Health probes over encrypted transport" test_health_probes_over_encrypted_transport
 print_summary

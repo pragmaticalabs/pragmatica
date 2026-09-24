@@ -126,9 +126,18 @@ stream_post_any() {
 # current pin stops answering, which is what the old `app_post` pin could not do.
 STREAM_PUBLISH_ENDPOINT=""
 
+# Optional $1: an endpoint to skip — the one that just failed. A killed member stays in the
+# membership (and so in the endpoint list) until its departure commits, so a plain `head -1` re-pick
+# hands back the node that was just killed.
 pick_publish_endpoint() {
-    STREAM_PUBLISH_ENDPOINT="$(node_app_endpoints 2>/dev/null | head -1)"
-    [ -n "$STREAM_PUBLISH_ENDPOINT" ]
+    local exclude="${1:-}"
+    STREAM_PUBLISH_ENDPOINT="$(node_app_endpoints 2>/dev/null | grep -vxF "${exclude:-}" | head -1)"
+    if [ -z "$STREAM_PUBLISH_ENDPOINT" ]; then
+        # Say it once, loudly. A publish that is never attempted used to fail the durability
+        # assertions downstream in 0s, reading as a stream defect when nothing had been sent.
+        log_fail "could not resolve any per-node app endpoint — no publish can be attempted"
+        return 1
+    fi
 }
 
 publish_marker() {
@@ -149,7 +158,7 @@ publish_marker() {
     # body there, and that is the only account of WHY a publish failed. Suppressing both attempts
     # (as the first version of this did) left "39 of 40 ACKED" with nothing to explain the missing
     # one — the same silent-stderr trap this suite's siblings were fixed for.
-    pick_publish_endpoint || return 1
+    pick_publish_endpoint "$STREAM_PUBLISH_ENDPOINT" || return 1
     body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload")
     if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
         return 0
@@ -391,6 +400,12 @@ test_kill_owner_under_concurrent_publish() {
     local during
     during=$(grep -c . "$ACKED_DURING" || true)
     log_info "Concurrent window: ${during}/${N_DURING} publishes ACKED across the kill"
+    # Zero acks means the crash happened with nothing in flight: the survival checks that follow
+    # would then hold the system to nothing from the window this test exists to exercise (#508).
+    if [ "${during:-0}" -eq 0 ]; then
+        log_fail "0/${N_DURING} publishes ACKED across the kill — the concurrent-publish crash window was not exercised"
+        return 1
+    fi
     log_pass "Owner ${OWNER_TO_KILL} hard-killed with ${during} concurrent acks recorded"
 }
 
