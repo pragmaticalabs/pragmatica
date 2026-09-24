@@ -334,6 +334,29 @@ got=$(pick_ep "http://10.0.0.1:8070")
 [ "$got" = "http://10.0.0.2:8070" ] && ok "02y pick_publish_endpoint: re-pick skips the endpoint that just failed" \
     || fail "02y pick_publish_endpoint (exclude first): got '${got}'"
 
+# --- _resolve_live_endpoint on cloud: this run's sticky endpoint first; another run's never -------
+# curl is stubbed to record every probed URL: the pinned endpoint is dead (rc 7), only LIVE answers.
+resolve_probe() {  # run_id sticky_run_id sticky_endpoint -> "result|probed urls"
+    ( export TMPDIR="$(mktemp -d)"; ENV_TYPE=cloud; CLUSTER_ID=b; NODE_COUNT=1
+      CLUSTER_ENDPOINT="http://pinned-dead:8080"; export AETHER_RUN_ID="$1"
+      printf '%s' "$3" > "${TMPDIR}/aether-live-endpoint-b-$2"
+      PROBES="${TMPDIR}/probes"; : > "$PROBES"
+      curl() { local u; for u in "$@"; do case "$u" in http*) echo "$u" >> "$PROBES" ;; esac; done
+               case "$*" in *"http://live:8080/health/live"*) return 0 ;; *) return 7 ;; esac; }
+      to_node_id() { return 1; }
+      out=$(_resolve_live_endpoint 2>/dev/null)
+      printf '%s|%s' "$out" "$(tr '\n' ',' < "$PROBES")"; rm -rf "$TMPDIR" )
+}
+got=$(resolve_probe r1 r1 "http://live:8080")
+[ "$got" = "http://live:8080|http://live:8080/health/live," ] \
+    && ok "_resolve_live_endpoint cloud: this run's live sticky endpoint answers without probing the dead pinned one" \
+    || fail "_resolve_live_endpoint cloud (sticky first): got '${got}'"
+got=$(resolve_probe r1 r0 "http://live:8080")
+case "$got" in
+    *"http://live:8080"*) fail "_resolve_live_endpoint cloud: probed ANOTHER run's sticky endpoint: '${got}'" ;;
+    *) ok "_resolve_live_endpoint cloud: a sticky file from another run is never read" ;;
+esac
+
 unset -f hcloud api_get ssh
 unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS
 

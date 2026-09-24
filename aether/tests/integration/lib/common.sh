@@ -372,7 +372,32 @@ _fork_bounded() {
 #   3. docker/remote: label discovery (CTM KSUID replacements with ephemeral host
 #      ports) — the only path that survives full seed replacement; see
 #      _discover_endpoint_by_label.
+# This run's last-known-live endpoint for a cluster. Named per RUN (AETHER_RUN_ID, exported once by
+# run-tests.sh) so a file left by an earlier run can never be read: its IP may since have been
+# recycled to another cluster, which would answer /health/live with the same API key — a successful
+# read from the wrong subject.
+_live_endpoint_sticky_file() {
+    printf '%s/aether-live-endpoint-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
+}
+
 _resolve_live_endpoint() {
+    # Cloud: try THIS run's last-known-live endpoint FIRST. Once the pinned node has been killed
+    # (common in chaos suites) the pinned probe below costs its full 2s timeout on EVERY call before
+    # anything else is tried — with several CTM replacements an endpoint enumeration paid that per
+    # member (2026-09-24 review: ~14s per 02w readiness poll). A live sticky endpoint answers at
+    # once; a dead one costs the same single probe the old order paid anyway.
+    if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
+        local sticky_first sticky_first_ep
+        sticky_first=$(_live_endpoint_sticky_file)
+        if [ -f "$sticky_first" ]; then
+            sticky_first_ep=$(cat "$sticky_first" 2>/dev/null || true)
+            if [ -n "$sticky_first_ep" ] && [ "$sticky_first_ep" != "${CLUSTER_ENDPOINT}" ] \
+                && curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${sticky_first_ep}/health/live" >/dev/null 2>&1; then
+                echo "${sticky_first_ep}"
+                return 0
+            fi
+        fi
+    fi
     if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
         echo "${CLUSTER_ENDPOINT}"
         return 0
@@ -410,7 +435,8 @@ _resolve_live_endpoint() {
         # Re-probed with the same cheap `-m 2` curl before trust (mirrors the
         # _LABEL_DISCOVERED_ENDPOINT TTL+reprobe idiom below), so a stale/dead
         # cached IP degrades to the normal scan rather than being trusted blindly.
-        local sticky_file="${TMPDIR:-/tmp}/aether-live-endpoint-${CLUSTER_ID:-default}"
+        local sticky_file
+        sticky_file=$(_live_endpoint_sticky_file)
         if [ -f "$sticky_file" ]; then
             local sticky_ep
             sticky_ep=$(cat "$sticky_file" 2>/dev/null || true)

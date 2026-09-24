@@ -23,6 +23,9 @@ MONOREPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 export TARGET_HOST
 
 source "${SCRIPT_DIR}/lib/common.sh"
+# One identity per run, inherited by every suite subshell: scopes per-run scratch state (the live-
+# endpoint sticky file) so nothing a previous run left behind is ever read as this run's.
+export AETHER_RUN_ID="${AETHER_RUN_ID:-$$-$(date +%s)}"
 source "${SCRIPT_DIR}/lib/cluster.sh"
 source "${SCRIPT_DIR}/lib/suite.sh"
 
