@@ -115,7 +115,7 @@ class BlueprintPublishOwnershipTest {
 
             [[slices]]
             artifact = "org.example:orders-api:1.0.0"
-            instances = 1
+            instances = 3
             """;
 
     @TempDir
@@ -835,11 +835,11 @@ class BlueprintPublishOwnershipTest {
 
                 [[slices]]
                 artifact = "org.example:stream-app-publisher:1.0.0"
-                instances = 1
+                instances = 3
 
                 [[slices]]
                 artifact = "org.example:stream-app-consumer:1.0.0"
-                instances = 1
+                instances = 3
                 """;
 
         private static final String MODULE_STREAMS = """

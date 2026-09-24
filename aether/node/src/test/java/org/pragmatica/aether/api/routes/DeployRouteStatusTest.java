@@ -8,6 +8,7 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -82,6 +83,8 @@ class DeployRouteStatusTest {
 
     private static final Cause CONSENSUS_FAILURE = DeploymentError.ConsensusFailure.consensusFailure(Causes.cause(
         "quorum not reached"));
+
+    private static final int NOT_STARTED = -1;
 
     private static final Cause NOT_CALLED = Causes.cause("DeploymentManager.start must not be reached by this request");
 
@@ -276,6 +279,45 @@ class DeployRouteStatusTest {
         }
     }
 
+    /// #1495: a rollout writes `instances` onto every slice target of the blueprint, so the route applies
+    /// the blueprint floor. Absent means 3 (was 1); fewer than 3 is the caller's error and never reaches
+    /// the manager.
+    @Nested
+    class InstanceFloor {
+        @Test
+        void startRoute_instancesTwo_refusedBadRequestBeforeManager() {
+            var manager = new StubDeploymentManager(NOT_CALLED);
+            var cause = startCauseFrom(manager, rollingRequestWithInstances(2));
+
+            assertThat(cause).isEqualTo(DeployRouteError.INSTANCES_BELOW_MINIMUM);
+            assertThat(statusOf(cause, START_INSTANCE)).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(manager.startedWith().get()).as("a refused request must not reach the manager")
+                      .isEqualTo(NOT_STARTED);
+        }
+
+        @Test
+        void startRoute_instancesOmitted_startsWithThree() {
+            var manager = new StubDeploymentManager(CONSENSUS_FAILURE);
+
+            startCauseFrom(manager, ROLLING_REQUEST);
+
+            assertThat(manager.startedWith().get()).isEqualTo(3);
+        }
+
+        @Test
+        void startRoute_instancesThree_reachesManager() {
+            var manager = new StubDeploymentManager(CONSENSUS_FAILURE);
+
+            startCauseFrom(manager, rollingRequestWithInstances(3));
+
+            assertThat(manager.startedWith().get()).isEqualTo(3);
+        }
+
+        private static DeployRoutes.DeployRequest rollingRequestWithInstances(int instances) {
+            return new DeployRoutes.DeployRequest(COORDS, "rolling", instances, null, null, null, null, null);
+        }
+    }
+
     /// Load-bearing negative control. Without it, the 404s above could equally be explained by the
     /// change having blanket-downgraded every failure into a 4xx. A genuine cluster fault must still
     /// answer 500 — that is what makes the other codes informative.
@@ -317,8 +359,12 @@ class DeployRouteStatusTest {
     }
 
     private static Cause startCauseFrom(Cause managerFailure, DeployRoutes.DeployRequest request) {
+        return startCauseFrom(new StubDeploymentManager(managerFailure), request);
+    }
+
+    private static Cause startCauseFrom(DeploymentManager manager, DeployRoutes.DeployRequest request) {
         return causeFrom(ManagementRoute.DEPLOY_START,
-                         new StubDeploymentManager(managerFailure),
+                         manager,
                          new StubRequestContext(List.of(), Option.some(request), START_INSTANCE));
     }
 
@@ -369,7 +415,11 @@ class DeployRouteStatusTest {
     /// Fails every operation the tests exercise with the supplied cause, and reports every deployment
     /// id as unknown. `status` returning `none()` is precisely what `getDeployment` converts into
     /// `DeploymentNotFound(id)`.
-    private record StubDeploymentManager(Cause failure) implements DeploymentManager {
+    private record StubDeploymentManager(Cause failure, AtomicInteger startedWith) implements DeploymentManager {
+        StubDeploymentManager(Cause failure) {
+            this(failure, new AtomicInteger(NOT_STARTED));
+        }
+
         @Override
         public Promise<Unit> activate() {
             return unsupported("activate");
@@ -393,6 +443,7 @@ class DeployRouteStatusTest {
                                         HealthThresholds thresholds,
                                         CleanupPolicy cleanupPolicy,
                                         int instances) {
+            startedWith.set(instances);
             return failure.result();
         }
 

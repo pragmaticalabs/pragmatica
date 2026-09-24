@@ -29,7 +29,7 @@ class BlueprintExpanderTest {
         var blueprintId = BlueprintId.blueprintId("org.example:test-blueprint:1.0.0").unwrap();
         var sliceA = SliceSpec.sliceSpec(
                 Artifact.artifact("org.example:slice-a:1.0.0").unwrap(),
-                3
+                4
                                         ).unwrap();
 
         testBlueprint = Blueprint.blueprint(blueprintId, List.of(sliceA)).unwrap();
@@ -51,7 +51,7 @@ class BlueprintExpanderTest {
 
                                  var resolved = expanded.loadOrder().getFirst();
                                  assertThat(resolved.artifact().asString()).isEqualTo("org.example:slice-a:1.0.0");
-                                 assertThat(resolved.instances()).isEqualTo(3);
+                                 assertThat(resolved.instances()).isEqualTo(4);
                                  assertThat(resolved.isDependency()).isFalse();
                              });
         }
@@ -61,11 +61,11 @@ class BlueprintExpanderTest {
             var blueprintId = BlueprintId.blueprintId("org.example:multi-slice:1.0.0").unwrap();
             var sliceA = SliceSpec.sliceSpec(
                     Artifact.artifact("org.example:slice-a:1.0.0").unwrap(),
-                    2
+                    4
                                             ).unwrap();
             var sliceB = SliceSpec.sliceSpec(
                     Artifact.artifact("org.example:slice-b:1.0.0").unwrap(),
-                    1
+                    3
                                             ).unwrap();
 
             var blueprint = Blueprint.blueprint(blueprintId, List.of(sliceA, sliceB)).unwrap();
@@ -113,11 +113,11 @@ class BlueprintExpanderTest {
                                          "org.example:slice-a:1.0.0");
 
                                  // SliceA is explicit (from blueprint)
-                                 assertThat(loadOrder.get(1).instances()).isEqualTo(3);
+                                 assertThat(loadOrder.get(1).instances()).isEqualTo(4);
                                  assertThat(loadOrder.get(1).isDependency()).isFalse();
 
-                                 // SliceB is transitive dependency
-                                 assertThat(loadOrder.get(0).instances()).isEqualTo(1);
+                                 // SliceB is transitive dependency: deployed at the blueprint default (#1495)
+                                 assertThat(loadOrder.get(0).instances()).isEqualTo(SliceSpec.DEFAULT_INSTANCES);
                                  assertThat(loadOrder.get(0).isDependency()).isTrue();
                              });
         }
@@ -206,7 +206,7 @@ class BlueprintExpanderTest {
                                             ).unwrap();
             var sliceB = SliceSpec.sliceSpec(
                     Artifact.artifact("org.example:slice-b:1.0.0").unwrap(),
-                    2
+                    4
                                             ).unwrap();
 
             var blueprint = Blueprint.blueprint(blueprintId, List.of(sliceA, sliceB)).unwrap();
@@ -250,11 +250,11 @@ class BlueprintExpanderTest {
                                  assertThat(sliceAResolved.instances()).isEqualTo(5);
                                  assertThat(sliceAResolved.isDependency()).isFalse();
 
-                                 assertThat(sliceBResolved.instances()).isEqualTo(2);
+                                 assertThat(sliceBResolved.instances()).isEqualTo(4);
                                  assertThat(sliceBResolved.isDependency()).isFalse();
 
-                                 // Transitive dependency gets instances=1
-                                 assertThat(sliceCResolved.instances()).isEqualTo(1);
+                                 // Transitive dependency gets the blueprint default (#1495; was 1)
+                                 assertThat(sliceCResolved.instances()).isEqualTo(SliceSpec.DEFAULT_INSTANCES);
                                  assertThat(sliceCResolved.isDependency()).isTrue();
                              });
         }

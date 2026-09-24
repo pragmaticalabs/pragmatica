@@ -148,7 +148,7 @@ public interface BlueprintParser {
                                   var artifactStr = artifactObj.toString();
                                   var instanceCount = entry.get("instances") instanceof Number n
                                                       ? n.intValue()
-                                                      : 1;
+                                                      : SliceSpec.DEFAULT_INSTANCES;
 
                                   return Artifact.artifact(artifactStr)
                                                  .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))

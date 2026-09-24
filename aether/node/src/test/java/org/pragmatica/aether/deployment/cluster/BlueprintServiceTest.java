@@ -255,7 +255,7 @@ class BlueprintServiceTest {
 
                     [[slices]]
                     artifact = "org.example:user-service:1.0.0"
-                    instances = 2
+                    instances = 3
 
                     [[slices]]
                     artifact = "org.example:order-service:1.0.0"
@@ -284,7 +284,7 @@ class BlueprintServiceTest {
             var dsl = """
                     [[slices]]
                     artifact = "org.example:slice:1.0.0"
-                    instances = 1
+                    instances = 3
                     """;
 
             service.validate(dsl)
@@ -299,7 +299,7 @@ class BlueprintServiceTest {
 
                     [[slices]]
                     artifact = "invalid-artifact"
-                    instances = 1
+                    instances = 3
                     """;
 
             service.validate(dsl)
@@ -357,7 +357,7 @@ class BlueprintServiceTest {
 
                     [[slices]]
                     artifact = "org.example:redeploy-slice:1.0.0"
-                    instances = 2
+                    instances = 3
                     """;
 
             liveService.publish(dsl)
@@ -431,7 +431,7 @@ class BlueprintServiceTest {
 
                     [[slices]]
                     artifact = "org.example:redeploy-slice:1.0.0"
-                    instances = 2
+                    instances = 3
                     """;
 
             liveService.publish(dsl)

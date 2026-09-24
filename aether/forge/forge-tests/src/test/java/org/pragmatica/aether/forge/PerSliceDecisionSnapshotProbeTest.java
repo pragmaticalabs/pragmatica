@@ -90,11 +90,11 @@ class PerSliceDecisionSnapshotProbeTest {
 
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
 
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(BLUEPRINT_ID, SLICE_A, SLICE_B);
         var response = postBlueprint(leaderPort(), blueprint);
 

@@ -90,7 +90,7 @@ class SliceDeploymentCloudIT {
     @Order(3)
     void deployEchoSlice_becomesActive() {
         var node = cluster.nodes().getFirst();
-        var deployResult = node.deploy(TEST_ARTIFACT, 1);
+        var deployResult = node.deploy(TEST_ARTIFACT, 3);
 
         assertThat(deployResult.isSuccess())
             .as("Deploy should succeed: " + deployResult.fold(c -> c.message(), s -> s))
