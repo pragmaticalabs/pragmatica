@@ -16,3 +16,4 @@
   persisted config. [mechanism: `ClusterConfigRoutes` stores the POSTed TOML; CTM passes the resolved
   name through `ProvisionContext.forReplacement` to `HetznerComputeProvider.buildLabels`]
   [design intent — unverified: no cloud run of a replacement under `--cluster` has been made]
+- **The integration harness now matches replacements by the persisted name.** Its cloud membership and drain checks matched CTM replacements as `aether-cloud-<cluster>-node-*`. That pattern only worked because the TOML name happened to be `cloud-` plus the harness name, and it never matched on the jvm runtime (`aether-cloud-cloud-test-b-jvm-node-*`). It is now `aether-<cluster>-node-*`, the node id CTM derives from the persisted cluster name. [verified: `aether/tests/integration/test/test-chaos-harness.sh` R2-R3 — restoring the old pattern reddens both]

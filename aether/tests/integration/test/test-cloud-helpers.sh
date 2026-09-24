@@ -41,7 +41,7 @@ fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 # Stub api_get for the whole file so the harness never touches the network: return
 # the A1 wire shape for the known CTM-replacement node, rc 1 (no endpoint) for
 # everything else — so unknown ids fail cleanly and instantly.
-CTM_NODE="aether-cloud-test-b-node-01JCTMREPLACEMENT0000000001"
+CTM_NODE="aether-test-b-node-01JCTMREPLACEMENT0000000001"
 api_get() {
     case "$1" in
         "/api/v1/nodes/endpoint/${CTM_NODE}")
