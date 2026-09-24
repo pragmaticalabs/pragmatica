@@ -79,8 +79,8 @@ fi
 # The failure this guards against is "the artifact was never built into THIS repository"
 # — that is what produced `Artifact not found: ...:jar` and an empty .m2-local directory.
 # Requiring a -blueprint.jar specifically produces FALSE POSITIVES: some referenced
-# coordinates are slice artifacts (e.g. test-entity-entity-slice) that legitimately ship
-# only a plain jar. So: FAIL when the version directory holds no jar at all, and report
+# coordinates may be slice artifacts, which legitimately ship only a plain jar (02w referenced
+# `test-entity-entity-slice` this way until 2026-09-24, when it moved to the `test-entity` blueprint). So: FAIL when the version directory holds no jar at all, and report
 # the blueprint-jar shape separately without blocking on it.
 missing=()
 noblueprint=()
