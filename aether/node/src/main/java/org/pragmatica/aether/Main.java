@@ -819,19 +819,25 @@ public record Main(String[] args) {
     /// parsed list is returned UNCHANGED and no resolution runs — `selfInfo` was discarded there
     /// anyway. The CTM-provisioned-replacement case (self ABSENT) is the one that previously
     /// appended a poisoned hostname-based entry; it now appends a resolved one.
-    private List<NodeInfo> parsePeers(NodeId self,
-                                      int selfPort,
-                                      Map<String, String> labels,
-                                      Option<AetherConfig> aetherConfig,
-                                      Option<EnvironmentIntegration> environment) {
+    ///
+    /// #1475: every fallback arm is passed as a SUPPLIER. `Option.orElse(Option)` evaluates its
+    /// argument before `orElse` runs, so the discovery arm used to execute even when `--peers=` had
+    /// already won: a CTM replacement (which always carries `--peers=`) blocked up to 300s polling the
+    /// provider for a full core set it cannot find while drained or killed nodes are dead, then either
+    /// joined late or — below a quorum — threw and exited, leaving the leader counting it in flight.
+    List<NodeInfo> parsePeers(NodeId self,
+                              int selfPort,
+                              Map<String, String> labels,
+                              Option<AetherConfig> aetherConfig,
+                              Option<EnvironmentIntegration> environment) {
         return findArg("--peers=").map(peersStr -> resolvePeersFromString(peersStr, self, selfPort, labels, aetherConfig))
-                      .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> resolvePeersFromString(peersStr,
-                                                                                              self,
-                                                                                              selfPort,
-                                                                                              labels,
-                                                                                              aetherConfig)))
-                      .orElse(discoverCloudCorePeers(self, selfPort, labels, aetherConfig, environment))
-                      .orElse(aetherConfig.map(cfg -> generatePeersFromConfig(cfg, self)))
+                      .orElse(() -> findEnv("CLUSTER_PEERS").map(peersStr -> resolvePeersFromString(peersStr,
+                                                                                                    self,
+                                                                                                    selfPort,
+                                                                                                    labels,
+                                                                                                    aetherConfig)))
+                      .orElse(() -> discoverCloudCorePeers(self, selfPort, labels, aetherConfig, environment))
+                      .orElse(() -> aetherConfig.map(cfg -> generatePeersFromConfig(cfg, self)))
                       .or(() -> List.of(bootstrapSelfInfo(self, selfPort, labels)));
     }
 
