@@ -934,6 +934,12 @@ cloud_bringup_cluster_b() {
     if [ "$SKIP_DEPLOY" = false ]; then
         log_step "Bootstrapping cloud Cluster B (runtime=${CLOUD_RUNTIME})"
         bootstrap_cloud_cluster_b
+        # Same meaning as after cluster A's bootstrap (Step 2): resources exist now. Without it a
+        # B-only run (`--suites` naming only cluster-B suites) never set the flag, so teardown
+        # skipped the bare orphan sweep — and CTM replacements, labelled `cloud-<cluster>`, are
+        # matched by no scoped reap — and --keep-on-failure reported "nothing to reap" over live
+        # VMs (2026-09-24: 5 VMs running while the handler printed that).
+        CLOUD_RESOURCES_PROVISIONED=true
     fi
 
     # Step 3 analog
@@ -1245,7 +1251,10 @@ preserve_on_failure() {
             log_warn "  'cloud-reaper.sh --destroy --force' catches them but destroys EVERY aether-labelled"
             log_warn "  resource in the account except test-pg — never run it while another run is live."
         else
-            log_info "No cloud resources were provisioned this run — nothing to reap."
+            # No bootstrap COMPLETED. That is not "nothing exists": a bootstrap that failed under
+            # --keep-on-failure keeps the VMs it created. List without deleting:
+            log_warn "No cluster bootstrap completed this run, but a failed bootstrap under --keep-on-failure keeps its VMs."
+            log_warn "  List (dry run, deletes nothing): with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh"
         fi
         "${REPO_ROOT}/../tools/pg-firewall.sh" close 2>&1 | tail -1 || true
     else
