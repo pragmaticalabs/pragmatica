@@ -27,9 +27,15 @@ LB_MGMT_PORT="${LB_MGMT_PORT:-9091}"
 MGMT_ENTRY_POINT="${MGMT_ENTRY_POINT:-http://${TARGET_HOST}:5150}"
 # App traffic → LB public port; management API → MGMT_ENTRY_POINT (witness or LB).
 CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-${MGMT_ENTRY_POINT}}"
-# One identity per run for per-run scratch state (see _live_endpoint_sticky_file): inherited from
-# run-tests.sh, which sources this file first; minted here for a standalone suite or tool run.
+# One identity per run for per-run scratch state (see _live_endpoint_sticky_file). Minted and
+# exported here when run-tests.sh sources this file; each suite it spawns inherits the exported
+# value and keeps it on its own `source`. A standalone suite or tool run mints its own. Exporting
+# AETHER_RUN_ID by hand shares that state across runs — the stale-endpoint hazard it exists to stop.
 export AETHER_RUN_ID="${AETHER_RUN_ID:-$$-$(date +%s)}"
+case "${CLOUD_PIN_RETRY_S:-30}" in
+    ''|*[!0-9]*) echo "[WARN]  CLOUD_PIN_RETRY_S='${CLOUD_PIN_RETRY_S}' is not whole seconds; using 30" >&2
+                 export CLOUD_PIN_RETRY_S=30 ;;
+esac
 APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 LB_ENDPOINT="${LB_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 # Direct node access (legitimate per-node queries — e.g., "is METRICS ACTIVE on node-2?").
@@ -392,14 +398,20 @@ _pin_dead_file() {
 # Chaos suites kill the pinned node routinely; before this, every later call paid the 2s timeout
 # first, which one cloud endpoint enumeration multiplied into ~14s (2026-09-24 review of #1486).
 _resolve_live_endpoint() {
-    local pin_dead_file skip_pin=false now since pinned_then
+    local pin_dead_file skip_pin=false now since pinned_then retry_s
     pin_dead_file=$(_pin_dead_file)
     if [ "${ENV_TYPE:-docker}" = "cloud" ] && [ -f "$pin_dead_file" ]; then
         # "<epoch> <endpoint>": skip only for the SAME pin, and only inside the window.
         read -r since pinned_then < "$pin_dead_file" 2>/dev/null || true
+        # Both numbers are validated BEFORE the arithmetic: a non-numeric operand is an expansion
+        # error no redirect can contain — it kills the caller's `$(...)` before any probe and the
+        # record is never rewritten, so every later call fails. Not an epoch → treated as expired.
+        case "${since:-}" in ''|*[!0-9]*) since='' ;; esac
+        retry_s="${CLOUD_PIN_RETRY_S:-30}"
+        case "$retry_s" in ''|*[!0-9]*) retry_s=30 ;; esac
         now=$(date +%s)
-        if [ "${pinned_then:-}" = "${CLUSTER_ENDPOINT}" ] \
-            && [ $(( now - ${since:-0} )) -lt "${CLOUD_PIN_RETRY_S:-30}" ] 2>/dev/null; then
+        if [ -n "$since" ] && [ "${pinned_then:-}" = "${CLUSTER_ENDPOINT}" ] \
+            && [ $(( now - since )) -lt "$retry_s" ]; then
             skip_pin=true
         fi
     fi
@@ -465,6 +477,8 @@ _resolve_live_endpoint() {
             node_ip=$(cloud_public_ip "$node_id" 2>/dev/null || true)
             [ -z "$node_ip" ] && continue
             endpoint="${MGMT_SCHEME:-http}://${node_ip}:${mgmt_port}"
+            # The pin is often node-1's own address; it was just probed dead or is known dead.
+            [ "$endpoint" = "${CLUSTER_ENDPOINT}" ] && continue
             if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
                 printf '%s' "${endpoint}" > "$sticky_file" 2>/dev/null || true
                 echo "${endpoint}"

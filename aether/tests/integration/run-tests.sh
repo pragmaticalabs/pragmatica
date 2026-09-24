@@ -982,9 +982,6 @@ cloud_bringup_cluster_b() {
 # ---------------------------------------------------------------------------
 teardown() {
     log_step "Tearing down clusters"
-    # This run's per-run scratch state (endpoint memory) — keyed by AETHER_RUN_ID, so only ours.
-    rm -f "${TMPDIR:-/tmp}/aether-live-endpoint-"*"-${AETHER_RUN_ID:-norun}" \
-          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" 2>/dev/null || true
     # Clean up snapshot-override temp TOMLs (set when AETHER_VM_SNAPSHOT_ID is used).
     if [ -n "${CLOUD_TOML_TMPDIR:-}" ] && [ -d "$CLOUD_TOML_TMPDIR" ]; then
         rm -rf "$CLOUD_TOML_TMPDIR"
@@ -1231,6 +1228,10 @@ on_exit() {
         log_error "Run aborted before completion (no final result) — exiting 1, not 0"
         rc=1
     fi
+    # This run's scratch state (endpoint memory), keyed by AETHER_RUN_ID so only ours. Removed on
+    # EVERY exit path: it is useless to any later run, so preserving clusters is no reason to keep it.
+    rm -f "${TMPDIR:-/tmp}/aether-live-endpoint-"*"-${AETHER_RUN_ID:-norun}" \
+          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" 2>/dev/null
     if [ "$SKIP_TEARDOWN" = false ]; then
         if [ -n "$KEEP_ON_FAILURE_FLAG" ] && [ "$rc" -ne 0 ]; then
             preserve_on_failure "$rc"

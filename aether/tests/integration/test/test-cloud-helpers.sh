@@ -371,6 +371,61 @@ case "$got" in
     *) ok "_resolve_live_endpoint cloud: a dead remembered endpoint is forgotten, not re-probed every call" ;;
 esac
 
+# resolve_seq SETUP BETWEEN -> "probes1|out2|probes2|record": SETUP is eval'd before the first call and
+# BETWEEN before the second, so a case can stage files, flip liveness or change the pin. record is the
+# dead-pin record after the second call ("none" if absent).
+resolve_seq() {
+    ( export TMPDIR="$(mktemp -d)"; ENV_TYPE=cloud; CLUSTER_ID=b; NODE_COUNT=1; CLOUD_PIN_RETRY_S=30
+      CLOUD_MGMT_PORT=8080; CLUSTER_ENDPOINT="http://pin:8080"; export AETHER_RUN_ID=r1
+      ALIVE="${TMPDIR}/alive"; printf 'http://live:8080/health/live\n' > "$ALIVE"
+      PROBES="${TMPDIR}/probes"; : > "$PROBES"
+      curl() { local u; for u in "$@"; do case "$u" in http*) echo "$u" >> "$PROBES" ;; esac; done
+               local x; for x in "$@"; do case "$x" in http*) grep -qxF "$x" "$ALIVE" && return 0 ;; esac; done; return 7; }
+      to_node_id() { return 1; }
+      eval "$1"; _resolve_live_endpoint >/dev/null 2>&1; p1=$(tr '\n' ',' < "$PROBES")
+      eval "$2"; : > "$PROBES"; out=$(_resolve_live_endpoint 2>/dev/null); p2=$(tr '\n' ',' < "$PROBES")
+      rec=$(cat "$(_pin_dead_file)" 2>/dev/null || echo none)
+      printf '%s|%s|%s|%s' "$p1" "$out" "$p2" "$rec"; rm -rf "$TMPDIR" )
+}
+PIN_PROBE="http://pin:8080/health/live,"
+got=$(resolve_seq '' 'echo "http://pin:8080/health/live" >> "$ALIVE"; CLOUD_PIN_RETRY_S=0')
+[ "$got" = "${PIN_PROBE}|http://pin:8080|${PIN_PROBE}|none" ] \
+    && ok "_resolve_live_endpoint cloud: a pin that answers again clears its dead-pin record" \
+    || fail "_resolve_live_endpoint cloud (record cleared on pin success): got '${got}'"
+got=$(resolve_seq '' 'CLUSTER_ENDPOINT="http://pin2:8080"')
+case "$got" in
+    *"|http://pin2:8080/health/live,"*) ok "_resolve_live_endpoint cloud: the skip applies only to the pin that died, not a new pin" ;;
+    *) fail "_resolve_live_endpoint cloud (same-pin guard): a new pin was not probed first: '${got}'" ;;
+esac
+STAGE_OTHER='now=$(date +%s); for f in b b- b-r0 b-norun; do printf "%s http://pin:8080\n" "$now" > "${TMPDIR}/aether-pin-dead-$f"; done'
+got=$(resolve_seq "$STAGE_OTHER" '')
+case "$got" in
+    "${PIN_PROBE}"*) ok "_resolve_live_endpoint cloud: another run's dead-pin record (or an unscoped one) never skips this run's pin" ;;
+    *) fail "_resolve_live_endpoint cloud (dead-pin record scoped per run): pin not probed first: '${got}'" ;;
+esac
+for bad in garbage 12abc; do
+    got=$(resolve_seq "printf '%s http://pin:8080\n' $bad > \"\$(_pin_dead_file)\"" '')
+    case "$got" in
+        "${PIN_PROBE}|"*"|"[0-9]*" http://pin:8080") ok "_resolve_live_endpoint cloud: a malformed record ('${bad}') is treated as expired and rewritten" ;;
+        *) fail "_resolve_live_endpoint cloud (malformed record '${bad}'): got '${got}'" ;;
+    esac
+done
+got=$(resolve_seq 'printf "%s http://pin:8080\n" "$(( $(date +%s) - 31 ))" > "$(_pin_dead_file)"' '')
+case "$got" in
+    "${PIN_PROBE}"*) ok "_resolve_live_endpoint cloud: a record older than the window no longer skips the pin" ;;
+    *) fail "_resolve_live_endpoint cloud (expired record): pin not probed: '${got}'" ;;
+esac
+got=$(resolve_seq 'NODE_COUNT=2; to_node_id() { echo "$1"; }; cloud_public_ip() { case "$1" in node-1) echo pin ;; node-2) echo live ;; esac; }' '')
+case "$got" in
+    "${PIN_PROBE}http://live:8080/health/live,|"*) ok "_resolve_live_endpoint cloud: the fallback scan does not re-probe the dead pin under node-1's address" ;;
+    *) fail "_resolve_live_endpoint cloud (scan skips the pin): got '${got}'" ;;
+esac
+got=$(CLOUD_PIN_RETRY_S=abc bash -c 'source "$1/lib/common.sh" 2>&1 >/dev/null; echo "=$CLOUD_PIN_RETRY_S"' _ "$INTEG_DIR" 2>&1)
+case "$got" in
+    *"CLOUD_PIN_RETRY_S='abc'"*"=30") ok "common.sh: a non-numeric CLOUD_PIN_RETRY_S warns and falls back to 30" ;;
+    *) fail "common.sh (CLOUD_PIN_RETRY_S validation): got '${got}'" ;;
+esac
+
 unset -f hcloud api_get ssh
 unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS
 
