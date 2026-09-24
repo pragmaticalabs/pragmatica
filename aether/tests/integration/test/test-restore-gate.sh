@@ -9,6 +9,9 @@
 #          time window, and an explicit statement when nothing was captured.
 #   F1-F2  cloud_partition_node (lib/cluster.sh): the partition firewall carries the cluster
 #          label on create, and is relabelled when an earlier run's firewall is reused.
+#   P1-P5  CLOUD_RESOURCES_PROVISIONED (run-tests.sh): a cluster-B-only run sets it after B's
+#          bootstrap succeeds — not when it fails, not on --skip-deploy — and --keep-on-failure
+#          never reports "nothing to reap" over live VMs.
 #
 # No external test runner; invoke directly:
 #   bash aether/tests/integration/test/test-restore-gate.sh
@@ -128,6 +131,52 @@ calls=$(partition 1)
 if printf '%s' "$calls" | grep -q 'firewall add-label --overwrite .* aether-cluster=test-b aether-role=partition'; then
     ok "F2 reused (pre-existing) firewall is relabelled"
 else fail "F2 no relabel on the exists path: $(printf '%s' "$calls" | tr '\n' '|')"; fi
+
+# --- P: provisioned flag and the preserve message -----------------------------------------
+awk '/^cloud_bringup_cluster_b\(\) \{/,/^\}/' "${INTEG_DIR}/run-tests.sh" > "${WORK}/bringup_fn.sh"
+awk '/^preserve_on_failure\(\) \{/,/^\}/' "${INTEG_DIR}/run-tests.sh" > "${WORK}/preserve_fn.sh"
+if [ ! -s "${WORK}/bringup_fn.sh" ] || [ ! -s "${WORK}/preserve_fn.sh" ]; then
+    fail "P0 cloud_bringup_cluster_b / preserve_on_failure not found (extraction examined NOTHING)"
+fi
+got=$( ( set -euo pipefail
+         SKIP_DEPLOY=false; B_SUITES=(13); CLUSTER_B_MGMT=http://stub; LB_APP_ENDPOINT=a; LB_MGMT_ENDPOINT=m; CLOUD_RUNTIME=container
+         log_step() { :; }; log_info() { :; }; log_warn() { :; }; log_error() { :; }
+         bootstrap_cloud_cluster_b() { :; }; wait_for_node_count_on() { :; }; wait_for_leader_on() { :; }
+         await_generation_quiesced() { :; }; discover_endpoints() { :; }; collect_blueprints() { :; }
+         deploy_blueprints() { :; }; connectivity_preflight() { :; }
+         source "${WORK}/bringup_fn.sh"
+         cloud_bringup_cluster_b
+         echo "flag=${CLOUD_RESOURCES_PROVISIONED:-unset}" ) 2>&1 )
+[ "$got" = "flag=true" ] && ok "P1 cluster-B bring-up marks cloud resources provisioned" || fail "P1 after B bring-up: ${got}"
+bringup() {  # skip_deploy bootstrap_rc -> "flag=<value>" printed by the EXIT of the subshell
+    ( set -euo pipefail
+      SKIP_DEPLOY="$1"; BOOT_RC="$2"; B_SUITES=(13); CLUSTER_B_MGMT=http://stub; LB_APP_ENDPOINT=a; LB_MGMT_ENDPOINT=m; CLOUD_RUNTIME=container
+      trap 'echo "flag=${CLOUD_RESOURCES_PROVISIONED:-unset}"' EXIT
+      log_step() { :; }; log_info() { :; }; log_warn() { :; }; log_error() { :; }
+      bootstrap_cloud_cluster_b() { return "$BOOT_RC"; }; wait_for_node_count_on() { :; }; wait_for_leader_on() { :; }
+      await_generation_quiesced() { :; }; discover_endpoints() { :; }; collect_blueprints() { :; }
+      deploy_blueprints() { :; }; connectivity_preflight() { :; }
+      source "${WORK}/bringup_fn.sh"
+      cloud_bringup_cluster_b ) 2>/dev/null
+}
+# No `|| true` inside: errexit must stay live, or a failed bootstrap would fall through to the flag.
+got=$(bringup false 1)
+[ "$got" = "flag=unset" ] && ok "P4 failed B bootstrap (errexit) leaves the flag unset" || fail "P4 failed bootstrap: ${got}"
+got=$(bringup true 0)
+[ "$got" = "flag=unset" ] && ok "P5 --skip-deploy (reused cluster) does not mark resources provisioned" || fail "P5 skip-deploy: ${got}"
+preserve() {  # flag -> preserve output
+    ( ENV_TYPE=cloud; REPO_ROOT=/stub; CLUSTER_A_NAME=test-a; CLUSTER_B_NAME=test-b
+      [ "$1" = set ] && CLOUD_RESOURCES_PROVISIONED=true
+      log_step() { echo "STEP $*"; }; log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }
+      source "${WORK}/preserve_fn.sh"; preserve_on_failure 1 ) 2>&1
+}
+out=$(preserve unset)
+if ! printf '%s' "$out" | grep -q 'nothing to reap' && printf '%s' "$out" | grep -q 'cloud-reaper.sh$'; then
+    ok "P2 no completed bootstrap: points at a dry-run listing instead of claiming nothing exists"
+else fail "P2 unset flag: $(printf '%s' "$out" | tr '\n' '|')"; fi
+out=$(preserve set)
+if printf '%s' "$out" | grep -q -- '--cluster test-b --destroy --force'; then ok "P3 provisioned: prints the per-cluster reap commands"
+else fail "P3 set flag: $(printf '%s' "$out" | tr '\n' '|')"; fi
 
 echo ""
 echo "  ----"
