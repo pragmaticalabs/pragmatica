@@ -420,6 +420,11 @@ case "$got" in
     "${PIN_PROBE}http://live:8080/health/live,|"*) ok "_resolve_live_endpoint cloud: the fallback scan does not re-probe the dead pin under node-1's address" ;;
     *) fail "_resolve_live_endpoint cloud (scan skips the pin): got '${got}'" ;;
 esac
+got=$(resolve_seq 'NODE_COUNT=2; to_node_id() { echo "$1"; }; cloud_public_ip() { case "$1" in node-1) echo pin ;; node-2) echo dead2 ;; esac; }' \
+                  'echo "http://pin:8080/health/live" >> "$ALIVE"')
+[ "$got" = "${PIN_PROBE}http://dead2:8080/health/live,|http://pin:8080|http://dead2:8080/health/live,${PIN_PROBE}|none" ] \
+    && ok "_resolve_live_endpoint cloud: a pin revived inside the window is still found when every other node is dead" \
+    || fail "_resolve_live_endpoint cloud (revived pin, last resort): got '${got}'"
 got=$(CLOUD_PIN_RETRY_S=abc bash -c 'source "$1/lib/common.sh" 2>&1 >/dev/null; echo "=$CLOUD_PIN_RETRY_S"' _ "$INTEG_DIR" 2>&1)
 case "$got" in
     *"CLOUD_PIN_RETRY_S='abc'"*"=30") ok "common.sh: a non-numeric CLOUD_PIN_RETRY_S warns and falls back to 30" ;;

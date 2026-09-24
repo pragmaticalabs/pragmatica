@@ -531,6 +531,13 @@ _resolve_live_endpoint() {
                 fi
             done
         fi
+        # Everything else is dead; a pin skipped as known-dead may have revived inside the window.
+        if [ "$skip_pin" = true ] \
+            && curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
+            rm -f "$pin_dead_file" 2>/dev/null || true
+            echo "${CLUSTER_ENDPOINT}"
+            return 0
+        fi
         # No surviving VM responded; fall back so the caller surfaces a curl failure.
         # #426 item 4: this was a silent fallback (comment-only) — a dead pinned
         # endpoint returned here reads downstream as an ordinary empty/absent API
