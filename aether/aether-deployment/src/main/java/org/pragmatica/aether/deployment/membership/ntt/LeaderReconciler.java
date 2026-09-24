@@ -213,15 +213,17 @@ public final class LeaderReconciler {
     /// Used only to scope auto-heal replacement node ids to the cluster (`aether-<cluster>-node-<ulid>`)
     /// so a replacement is shape-identical to its compose-seeded siblings (NodeId == container name).
     private final Supplier<Option<ClusterName>> clusterNameSupplier;
-    /// Slice-ownership predicate (NEW narrow injected seam — drain-victim slice-owner exclusion).
-    /// `true` when the given node currently OWNS / is serving active deployed slices, so it must
-    /// NEVER be selected as a scale-down / over-provision drain victim — draining a node that is
-    /// serving load drops the slices it hosts (the 7→5 scale-down-under-load 96%-error incident).
+    /// Slice-ownership predicate (narrow injected seam — drain-victim slice-owner demotion).
+    /// `true` when the given node currently OWNS / is serving active deployed slices, so it is
+    /// selected as a scale-down / over-provision drain victim only after every eligible non-owner
+    /// (#1488 — ownership lowers preference, never excludes; see [`#selectDrainVictims`]). Preferring
+    /// non-owners avoids moving slices a scale-down need not move (the 7→5 scale-down-under-load
+    /// 96%-error incident).
     /// The reconciler lives in the MEMBERSHIP layer and must not hard-depend on the deployment FSM
     /// where the authoritative `NodeId → slices` map lives ([`ClusterDeploymentState.Active#sliceStates`]),
     /// so ownership is consulted through this narrow [`Predicate`] rather than a concrete deployment
     /// type. Defaults to `() -> false` ("owns nothing") so existing construction / tests keep working
-    /// and a node is only ever shielded when production wires the real source via
+    /// and a node is only ever demoted when production wires the real source via
     /// [`#setOwnsActiveSlices`]. A predicate (not a snapshot set) is intentional: ownership is read
     /// fresh per drain pass, never staged stale.
     private final AtomicReference<Predicate<NodeId>> ownsActiveSlices = new AtomicReference<>(id -> false);
@@ -290,7 +292,7 @@ public final class LeaderReconciler {
     /// drain does not re-fire the surplus-detecting `MEMBER_APPEARED` ingress — so without this the
     /// leader drains a single batch and then never re-checks, leaving the cluster over-provisioned
     /// past the settle window (the 02-chaos 6-where-5-expected convergence gap). Distinct from
-    /// [`#drainGraceReEvalFutureRef`], which fires only when a drain was DEFERRED (young / shielded
+    /// [`#drainGraceReEvalFutureRef`], which fires only when a drain was DEFERRED (young
     /// candidates); this one fires whenever the surplus simply has not yet CLOSED, covering the
     /// dispatched-but-not-yet-departed and floor-capped cases that the deferral path misses. Same
     /// dedupe/CAS-arm discipline (a non-null ref short-circuits, CAS-arm cancels a lost race) with
@@ -646,11 +648,11 @@ public final class LeaderReconciler {
     }
 
     /// Inject the slice-ownership predicate consulted during drain-victim selection (the
-    /// slice-owner-exclusion guard). `AetherNode` wires this to the deployment layer's authoritative
-    /// `NodeId → active slices` source so a node currently serving load is never drained as
-    /// scale-down / over-provision surplus. `null` resets to the "owns nothing" default (no node
-    /// shielded) so the reconciler degrades to the ephemeral-preference half alone when no real
-    /// source is wired. See the [`#ownsActiveSlices`] field doc for the layering rationale.
+    /// slice-owner-demotion ordering). `AetherNode` wires this to the deployment layer's authoritative
+    /// `NodeId → active slices` source so a node currently serving load is drained as scale-down /
+    /// over-provision surplus only when non-owners cannot cover it (#1488). `null` resets to the
+    /// "owns nothing" default (no node demoted) so the reconciler degrades to the
+    /// ephemeral-preference half alone when no real source is wired. See the [`#ownsActiveSlices`] field doc for the layering rationale.
     @Contract
     public void setOwnsActiveSlices(Predicate<NodeId> predicate) {
         ownsActiveSlices.set(predicate == null
@@ -1126,7 +1128,7 @@ public final class LeaderReconciler {
     }
 
     /// Pick drain victims from the observed member set via the Approach-3 selection (slice-owner
-    /// exclusion + ephemeral-over-configured preference — see [`#selectDrainVictims`]), gated by a
+    /// demotion + ephemeral-over-configured preference — see [`#selectDrainVictims`]), gated by a
     /// HARD FLOOR (safety-critical, symmetric with the provisioning arm-gate). The reconciler must
     /// NEVER drain a confirmed core member below
     /// `configuredCoreCount` in a single pass — doing so drops the cluster below quorum and
@@ -1171,38 +1173,67 @@ public final class LeaderReconciler {
         return victims;
     }
 
-    /// Victim selection (Approach 3 — slice-owner exclusion + ephemeral preference). Two guards
-    /// applied in order, then a stable cap at `drainCount`:
+    /// Victim selection (Approach 3 — slice-owner demotion + ephemeral preference). Two orderings
+    /// applied in turn, then a stable cap at `drainCount`:
     ///
-    /// 1. **Slice-owner exclusion** ([`#ownsActiveSlices`]): a node currently serving / owning
-    ///    active deployed slices is removed from the candidate pool ENTIRELY — never a victim,
-    ///    regardless of provenance or age. Draining a slice owner under load drops the slices it
-    ///    hosts (the 7→5 scale-down 96%-error incident this fix addresses).
-    /// 2. **Ephemeral preference** ([`#isEphemeral`]): the remaining pool is partitioned into
-    ///    EPHEMERAL (CTM-provisioned, id carries a ULID suffix) and CONFIGURED (compose-seeded,
-    ///    `<prefix>-<ordinal>`) candidates. Victims are drawn from the ephemeral partition FIRST
-    ///    (the nodes added for scale-up), falling back to configured seeds only when ephemeral
-    ///    candidates cannot cover the surplus — so a scale-down drains the ephemeral fleet and
-    ///    preserves the originally-configured cluster.
+    /// 1. **Slice-owner demotion** ([`#ownsActiveSlices`], #1488): a node currently serving /
+    ///    owning active deployed slices is drawn from ONLY after every eligible non-owner — slice
+    ///    ownership LOWERS a node's preference, it never excludes it. Preferring non-owners keeps a
+    ///    scale-down from moving slices it does not have to move (the 7→5 scale-down 96%-error
+    ///    incident). Excluding owners outright was the #1488 defect: once every member hosted a
+    ///    slice (an autoscaler scale-up under load puts an instance on each node) the pool was empty
+    ///    on every pass and the surplus was deferred forever. Draining an owner is safe by the
+    ///    owner ruling of 2026-09-24: a draining node reports `DRAINING`, which takes it out of the
+    ///    READY set placement allocates from, and the deployment manager's drain-eviction loop
+    ///    starts a replacement instance on another node before unloading the drained one.
+    /// 2. **Ephemeral preference** ([`#isEphemeral`]): within each ownership tier the pool is
+    ///    partitioned into EPHEMERAL (CTM-provisioned, id carries a ULID suffix) and CONFIGURED
+    ///    (compose-seeded, `<prefix>-<ordinal>`) candidates. Victims are drawn from the ephemeral
+    ///    partition FIRST (the nodes added for scale-up), falling back to configured seeds only when
+    ///    ephemeral candidates cannot cover the surplus — so a scale-down drains the ephemeral fleet
+    ///    and preserves the originally-configured cluster.
     ///
-    /// Maturity-grace resolution: ephemeral candidates (non-slice-owners by guard 1) are drainable
-    /// regardless of age — they own nothing, so there is no role-propagation-into-ownership race to
-    /// guard against. The drain-safety grace ([`#pastDrainSafetyGrace`]) is applied ONLY to the
-    /// configured-seed partition, where a just-joined seed's role labels may still be in flight.
-    /// This is what stops the grace from forcing seed-draining (the compounding half of the bug).
-    /// Within each partition the legacy stable reversed-id iteration order is preserved for
-    /// determinism. A configured member with no readable age is treated as mature (legacy behaviour).
+    /// Maturity-grace resolution: ephemeral NON-owners are drainable regardless of age — they own
+    /// nothing, so there is no role-propagation-into-ownership race to guard against. Every other
+    /// partition (configured non-owners, and both owner partitions) passes the drain-safety grace
+    /// ([`#pastDrainSafetyGrace`]) first: a just-joined seed's role labels may still be in flight,
+    /// and an ephemeral owner no longer has the "owns nothing" argument that exempts its non-owner
+    /// sibling. Candidates the grace holds back are deferred, never dropped
+    /// ([`#deferYoungSurplusDrain`]). Within each partition the legacy stable reversed-id iteration
+    /// order is preserved for determinism. A member with no readable age is treated as mature
+    /// (legacy behaviour).
+    ///
+    /// The leader is NOT excluded here, in either tier: this selection has no notion of which member
+    /// is `self`, exactly as before #1488. A leader chosen as a victim is #1089's defect and its fix,
+    /// not this one's; the non-owner tier is unchanged, so every pass that selected (or skipped) the
+    /// leader before still does.
     private Set<NodeId> selectDrainVictims(Set<NodeId> currentMembers, int drainCount) {
-        var candidates = currentMembers.stream()
-                                       .filter(this::doesNotOwnActiveSlices)
-                                       .sorted(Comparator.comparing(NodeId::id).reversed())
-                                       .toList();
-        var ordered = new LinkedHashSet<NodeId>();
+        var ordered = currentMembers.stream().sorted(Comparator.comparing(NodeId::id).reversed()).toList();
+        var nonOwners = nonSliceOwners(ordered);
+        var owners = sliceOwners(ordered);
+        var victims = new LinkedHashSet<NodeId>();
 
-        appendVictims(ordered, ephemeralCandidates(candidates), drainCount);
-        appendVictims(ordered, matureConfiguredCandidates(candidates), drainCount);
+        appendVictims(victims, ephemeralCandidates(nonOwners), drainCount);
+        appendVictims(victims, matureConfiguredCandidates(nonOwners), drainCount);
+        appendVictims(victims, matureEphemeralCandidates(owners), drainCount);
+        appendVictims(victims, matureConfiguredCandidates(owners), drainCount);
 
-        return Set.copyOf(ordered);
+        return Set.copyOf(victims);
+    }
+
+    /// The members that own no active slices — the preferred victim tier.
+    private List<NodeId> nonSliceOwners(List<NodeId> members) {
+        return members.stream()
+                      .filter(this::doesNotOwnActiveSlices)
+                      .toList();
+    }
+
+    /// The members that own active slices — the fallback victim tier (#1488), drawn from only when
+    /// the non-owners cannot cover the surplus.
+    private List<NodeId> sliceOwners(List<NodeId> members) {
+        return members.stream()
+                      .filter(this::isSliceOwner)
+                      .toList();
     }
 
     /// Append candidates to the accumulating victim set up to the `drainCount` cap, preserving the
@@ -1218,11 +1249,20 @@ public final class LeaderReconciler {
         }
     }
 
-    /// The EPHEMERAL (CTM-provisioned) partition of the candidate pool — drainable regardless of
-    /// age (they own no slices by guard 1, so the maturity grace does not apply).
+    /// The EPHEMERAL (CTM-provisioned) partition of the NON-OWNER tier — drainable regardless of
+    /// age (they own no slices, so the maturity grace does not apply).
     private List<NodeId> ephemeralCandidates(List<NodeId> candidates) {
         return candidates.stream()
                          .filter(this::isEphemeral)
+                         .toList();
+    }
+
+    /// The EPHEMERAL partition of the SLICE-OWNER tier that has also passed the drain-safety grace —
+    /// an owner lacks the "owns nothing" argument that exempts [`#ephemeralCandidates`] from it.
+    private List<NodeId> matureEphemeralCandidates(List<NodeId> candidates) {
+        return candidates.stream()
+                         .filter(this::isEphemeral)
+                         .filter(this::pastDrainSafetyGrace)
                          .toList();
     }
 
@@ -1235,11 +1275,17 @@ public final class LeaderReconciler {
                          .toList();
     }
 
-    /// Negation of [`#ownsActiveSlices`] for stream filtering — `true` when the node is eligible
-    /// to be a drain victim on the slice-ownership axis (owns no active slices).
+    /// Whether the node currently owns active slices, read fresh from the injected
+    /// [`#ownsActiveSlices`] predicate — places it in the fallback victim tier.
+    private boolean isSliceOwner(NodeId id) {
+        return ownsActiveSlices.get()
+                               .test(id);
+    }
+
+    /// Negation of [`#isSliceOwner`] for stream filtering — `true` when the node belongs to the
+    /// preferred victim tier on the slice-ownership axis (owns no active slices).
     private boolean doesNotOwnActiveSlices(NodeId id) {
-        return ! ownsActiveSlices.get()
-                                 .test(id);
+        return ! isSliceOwner(id);
     }
 
     /// Whether `id` is an EPHEMERAL (CTM-provisioned / bootstrap-minted) node rather than a
@@ -1279,14 +1325,15 @@ public final class LeaderReconciler {
     /// Deferral of the un-covered surplus shortfall: WARN with the young candidates' ages (the
     /// operator-facing trace of WHY the surplus was not fully drained) and arm a single
     /// follow-up reconcile for when the oldest young candidate matures. The shortfall can arise
-    /// from two eligibility filters — a configured seed still inside the drain-safety grace, OR
-    /// every remaining surplus node being shielded as a slice owner — and either way the surplus
+    /// from one eligibility filter — every remaining candidate (a configured seed, or a slice owner of
+    /// either kind) still inside the drain-safety grace; slice owners are a fallback tier, never
+    /// excluded (#1488) — and the surplus
     /// is stable-state (no SWIM edge re-fires the reconciler), so this never silently drops it: the
     /// follow-up re-evaluates after the grace window (when seeds mature and/or slice ownership may
     /// have shifted), bounded and deduped exactly like the deficit follow-up.
     @Contract
     private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount) {
-        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or shielded as active-slice owners; youngAgesMs={}",
+        log.warn("LeaderReconciler deferring surplus drain of {} member(s): every remaining candidate is younger than the drain-safety grace ({} ms — role propagation may still be in flight); slice owners are a fallback tier, not excluded; youngAgesMs={}",
                  deferredCount,
                  drainSafetyGraceWindow.millis(),
                  youngMemberAgesMs(currentMembers));

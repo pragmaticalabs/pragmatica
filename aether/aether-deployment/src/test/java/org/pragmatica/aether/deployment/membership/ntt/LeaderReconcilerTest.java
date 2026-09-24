@@ -787,8 +787,9 @@ class LeaderReconcilerTest {
             configuredCoreCount.set(2);
             // SELF (ephemeral, young) is drainable; the only non-SELF candidates are young
             // CONFIGURED seeds. Surplus = 3 - 2 = 1, floor headroom = 3 - 2 = 1. The single
-            // eligible (ephemeral SELF) covers it... so to force an all-young-CONFIGURED deferral
-            // we exclude SELF as a slice owner, leaving only the two young seeds in the pool.
+            // eligible (ephemeral SELF) covers it... so to force an all-young deferral SELF is made a
+            // slice owner: owners are a fallback tier (#1488) whose grace holds young SELF back too,
+            // leaving only the two young seeds, which the grace also defers.
             reconciler.setOwnsActiveSlices(id -> id.equals(SELF));
             seedYoungPeers(youngSeed1, youngSeed2);
 
@@ -809,7 +810,7 @@ class LeaderReconcilerTest {
         @Test
         void deferredConfiguredSurplusDrain_firesAfterGraceElapses_viaArmedFollowUp() {
             configuredCoreCount.set(2);
-            // Same shielded-SELF setup so the only candidates are the two young configured seeds.
+            // Same young-owner-SELF setup: nothing is drainable until the members mature.
             reconciler.setOwnsActiveSlices(id -> id.equals(SELF));
             seedYoungPeers(youngSeed1, youngSeed2);
             reconciler.activate();
@@ -865,9 +866,10 @@ class LeaderReconcilerTest {
         }
     }
 
-    /// Approach-3 drain-victim selection (the 7→5-scale-down-under-load fix). Two guards:
-    /// (1) a node OWNING active slices is never a victim; (2) EPHEMERAL (CTM-provisioned,
-    /// ULID-suffix) nodes are preferred over CONFIGURED compose seeds (`<prefix>-<ordinal>`).
+    /// Approach-3 drain-victim selection (the 7→5-scale-down-under-load fix). Two orderings:
+    /// (1) a node OWNING active slices is a victim only after every eligible non-owner — ownership
+    /// lowers preference and never excludes (#1488); (2) EPHEMERAL (CTM-provisioned, ULID-suffix)
+    /// nodes are preferred over CONFIGURED compose seeds (`<prefix>-<ordinal>`) within each tier.
     /// Slice ownership is consulted through the injected [`LeaderReconciler#setOwnsActiveSlices`]
     /// predicate; ephemeral detection rides the minted-id ULID-suffix shape. The legacy bug:
     /// descending-NodeId order sorted seeds (`...-3`,`-4`,`-5`) ahead of ULID-named replacements
@@ -884,25 +886,111 @@ class LeaderReconcilerTest {
         private final NodeId ctm1 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix(maybeClusterName("test-cluster")));
         private final NodeId ctm2 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix(maybeClusterName("test-cluster")));
 
-        /// A slice owner is removed from the victim pool entirely: with configured=1 and a 2-node
-        /// surplus, the ONLY ephemeral candidate that would otherwise be drained is shielded as a
-        /// slice owner, so the drain falls back to the next eligible candidate and never touches it.
+        /// Mixed owners and non-owners: when the non-owners cover the surplus, the slice owner is
+        /// never touched — ownership demotes a node below every eligible non-owner (the preference
+        /// the 7→5 scale-down-under-load fix introduced, kept by #1488).
         @Test
-        void surplusDrain_sliceOwnerExcluded_evenWhenOtherwiseSelected() {
+        void surplusDrain_mixedOwnersAndNonOwners_nonOwnersPreferred() {
             configuredCoreCount.set(1);
-            // Members = SELF(ephemeral) + ctm1 + ctm2 = 3. ctm1 owns active slices → shielded.
+            // Members = SELF(ephemeral) + ctm1 + ctm2 = 3. ctm1 owns active slices → demoted.
             seedClusterWithPeers(ctm1, ctm2);
             reconciler.setOwnsActiveSlices(id -> id.equals(ctm1));
 
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            // Surplus = 3 - 1 = 2, but only SELF + ctm2 are eligible (ctm1 shielded). Drains exactly
-            // those two — never the slice owner.
+            // Surplus = 3 - 1 = 2, covered exactly by the non-owners SELF + ctm2 — the owner stays.
             assertThat(ctm.drainNodeCalls())
-                .as("a slice owner must never be a drain victim")
+                .as("non-owners covering the surplus are drained before any slice owner")
                 .doesNotContain(ctm1)
                 .containsExactlyInAnyOrder(SELF, ctm2);
+        }
+
+        /// #1488 — every member hosts a slice instance (an autoscaler scale-up under load puts one on
+        /// each node). Excluding owners emptied the pool and deferred the surplus on every pass (61
+        /// deferrals, 6 members where 5 were configured). Owners are a fallback tier, so exactly the
+        /// surplus is drained — and the owner tier keeps ephemeral-before-configured.
+        @Test
+        void surplusDrain_everyMemberOwnsSlices_drainsExactlySurplus() {
+            configuredCoreCount.set(4);
+            // Members = SELF(ephemeral) + seed1 + seed2 + seed3 + ctm1 = 5, all mature, all owners.
+            seedClusterWithPeers(seed1, seed2, seed3, ctm1);
+            reconciler.setOwnsActiveSlices(id -> true);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(listener.events().getFirst().drainCount())
+                .as("an all-owner cluster must still drain its surplus, not defer it")
+                .isEqualTo(1);
+            assertThat(ctm.drainNodeCalls())
+                .as("exactly one victim for a surplus of one")
+                .hasSize(1);
+            assertThat(ctm.drainNodeCalls().getFirst())
+                .as("the owner tier drains an ephemeral node before any configured seed")
+                .isIn(SELF, ctm1);
+        }
+
+        /// #1488 — the owner tier keeps ephemeral-before-configured. Surplus 2 over an all-owner pool
+        /// drains both ephemeral owners; the plain reversed-id order would have taken a seed
+        /// (`aether-test-cluster-node-3` sorts above a ULID-suffixed `ctm1`).
+        @Test
+        void surplusDrain_everyMemberOwnsSlices_ephemeralOwnersBeforeConfigured() {
+            configuredCoreCount.set(3);
+            // Members = SELF(ephemeral) + seed1 + seed2 + seed3 + ctm1 = 5, all mature, all owners.
+            seedClusterWithPeers(seed1, seed2, seed3, ctm1);
+            reconciler.setOwnsActiveSlices(id -> true);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("both ephemeral owners are drained before any configured owner")
+                .containsExactlyInAnyOrder(SELF, ctm1);
+        }
+
+        /// #1488 — when the non-owners cover only part of the surplus, the shortfall comes from the
+        /// owner tier rather than being deferred; the non-owner is still taken first.
+        @Test
+        void surplusDrain_nonOwnersShortOfSurplus_fallsBackToOwners() {
+            configuredCoreCount.set(3);
+            // Members = SELF + seed1 + seed2 + seed3 + seed4 = 5; only seed4 owns nothing. Surplus = 2.
+            seedClusterWithPeers(seed1, seed2, seed3, seed4);
+            reconciler.setOwnsActiveSlices(id -> !id.equals(seed4));
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            // seed4 (the non-owner) plus one owner — the ephemeral SELF, ahead of the owning seeds.
+            assertThat(ctm.drainNodeCalls())
+                .as("the non-owner is drained and the shortfall is covered by an owner, ephemeral first")
+                .containsExactlyInAnyOrder(seed4, SELF);
+        }
+
+        /// The owner tier keeps the drain-safety grace for EPHEMERAL owners too: the "owns nothing"
+        /// argument that lets a young ephemeral non-owner be drained does not hold for an owner, so
+        /// a young all-owner pool is deferred (with a follow-up), not drained.
+        @Test
+        void surplusDrain_youngEphemeralOwners_deferredByGrace() {
+            configuredCoreCount.set(2);
+            // SELF + ctm1 (both ephemeral) + seed1, none aged past the grace; every member owns
+            // slices. Surplus = 3 - 2 = 1. Without the grace on the owner tier SELF or ctm1 would go.
+            health.markHealthy(seed1);
+            membershipFsm.onSwimHealthy(seed1, fsmIncarnation.getAndIncrement());
+            health.markHealthy(ctm1);
+            membershipFsm.onSwimHealthy(ctm1, fsmIncarnation.getAndIncrement());
+            sampler.sample();
+            reconciler.setOwnsActiveSlices(id -> true);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(listener.events().getFirst().drainCount())
+                .as("a young owner pool is deferred by the drain-safety grace")
+                .isZero();
+            assertThat(ctm.drainNodeCalls())
+                .as("no young slice owner is drained, ephemeral or configured")
+                .isEmpty();
         }
 
         /// Ephemeral preference: a mix of configured seeds and ephemeral CTM nodes drains the
@@ -996,13 +1084,13 @@ class LeaderReconcilerTest {
                 .containsExactly(ctm1);
         }
 
-        /// Combined guards: every ephemeral candidate is a slice owner, so the drain falls back to a
-        /// mature configured seed (slice-owner exclusion takes precedence over ephemeral preference).
+        /// Combined orderings: every ephemeral candidate is a slice owner, so the drain takes a mature
+        /// configured NON-owner seed (the non-owner tier precedes ephemeral preference, #1488).
         @Test
         void allEphemeralOwnSlices_fallsBackToMatureConfiguredSeed() {
             configuredCoreCount.set(3);
-            // SELF + seed1 + seed2 + ctm1 = 4 (all mature). ctm1 AND SELF own slices → shielded.
-            // Surplus = 4 - 3 = 1; ephemeral pool {ctm1} is fully shielded → fall back to a seed.
+            // SELF + seed1 + seed2 + ctm1 = 4 (all mature). ctm1 AND SELF own slices → demoted.
+            // Surplus = 4 - 3 = 1; the non-owner tier {seed1, seed2} covers it → a seed is drained.
             seedClusterWithPeers(seed1, seed2, ctm1);
             reconciler.setOwnsActiveSlices(id -> id.equals(SELF) || id.equals(ctm1));
 
@@ -1010,7 +1098,7 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             assertThat(ctm.drainNodeCalls())
-                .as("with all ephemeral candidates shielded, a mature seed is the fallback victim")
+                .as("with every ephemeral candidate an owner, a mature non-owner seed is drained first")
                 .hasSize(1);
             assertThat(ctm.drainNodeCalls().getFirst())
                 .isIn(seed1, seed2);
