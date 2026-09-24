@@ -64,7 +64,7 @@ affinity_key = "customerId"
 
 | Property | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
-| `instances` | integer | Yes | 1 | Number of slice instances to deploy |
+| `instances` | integer | Yes | 3 | Number of slice instances to deploy (minimum 3, #1495) |
 | `timeout_ms` | integer | No | runtime default | Request timeout in milliseconds |
 | `memory_mb` | integer | No | runtime default | Memory allocation per instance |
 | `load_balancing` | string | No | `round_robin` | Load balancing strategy |
@@ -76,7 +76,7 @@ If no config file exists for a slice:
 
 ```java
 SliceConfig.defaults()
-// instances = 1
+// instances = 3
 // timeout_ms = none (use runtime default)
 // memory_mb = none (use runtime default)
 // load_balancing = none (use runtime default)
@@ -100,7 +100,7 @@ instances = 5  # Deploy 5 instances of this slice
 **Guidelines:**
 - Stateless slices: Scale based on expected load
 - Stateful slices: Consider affinity routing
-- Minimum: 1 (single instance)
+- Minimum: 3 (#1495)
 - Maximum: Limited by cluster capacity
 
 ### 6. Timeout Configuration
@@ -189,7 +189,7 @@ Generator reads this path relative to `target/classes/` during blueprint generat
 
 ```toml
 [blueprint]
-instances = 2
+instances = 3
 ```
 
 ### High-Traffic Service
@@ -256,7 +256,7 @@ If config file has syntax errors, generator logs warning and uses defaults.
 
 ### Zero Instances
 
-`instances = 0` is invalid. Minimum is 1.
+`instances` below 3 is invalid. Minimum is 3 (#1495).
 
 ### Unknown Properties
 

@@ -215,7 +215,7 @@ Configure per-slice:
 ```toml
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
-instances = 1
+instances = 3
 timeout_ms = 60000
 ```
 
@@ -288,7 +288,7 @@ Configure per-slice:
 ```toml
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
-instances = 1
+instances = 3
 memory_mb = 512
 ```
 
@@ -377,7 +377,7 @@ Configure scaling rules:
 ```toml
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
-instances = 1
+instances = 3
 autoscale.min = 1
 autoscale.max = 10
 autoscale.metric = "cpu"

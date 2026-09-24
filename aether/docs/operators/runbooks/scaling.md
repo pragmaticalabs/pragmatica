@@ -152,7 +152,7 @@ ssh aether@<leader-host> 'journalctl -u aether-node --since "10 min ago" | grep 
 
 1. **Update blueprint**
    ```bash
-   aether> blueprint update org.example:my-slice:1.0.0 --instances=2
+   aether> blueprint update org.example:my-slice:1.0.0 --instances=3
    ```
 
 2. **Verify deactivation**
