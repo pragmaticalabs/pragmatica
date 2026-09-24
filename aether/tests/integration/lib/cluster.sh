@@ -2207,11 +2207,24 @@ cloud_partition_node() {
             #    the name already exists — treat "already exists" as success and
             #    resolve the existing id. Rules are set explicitly below (an empty
             #    rule set would deny-all inbound, also cutting mgmt+ssh).
+            # Labelled with the cluster so cloud-reaper.sh (which selects by `aether-cluster`)
+            # finds it: unlabelled, a partition firewall left behind by a failed or killed
+            # heal was invisible to every reaper mode (2 leaked on 2026-09-23).
             local out rc fw_id
-            out=$(hcloud firewall create --name "$fw_name" 2>&1); rc=$?
+            out=$(hcloud firewall create --name "$fw_name" \
+                --label "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                --label "aether-role=partition" 2>&1); rc=$?
             if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'already exists|uniqueness'; then
                 log_fail "cloud_partition_node: hcloud firewall create '${fw_name}' failed (rc=${rc}): ${out}"
                 return "$rc"
+            fi
+            if [ "$rc" -ne 0 ]; then
+                # Reused under its deterministic name: a firewall left by an earlier run may
+                # predate the labels, so apply them here too (idempotent with --overwrite).
+                hcloud firewall add-label --overwrite "$fw_name" \
+                    "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                    "aether-role=partition" >/dev/null 2>&1 \
+                    || log_warn "cloud_partition_node: could not label existing firewall '${fw_name}' — reapers will not see it"
             fi
             fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null)
             if [ -z "$fw_id" ]; then
@@ -3790,16 +3803,30 @@ provisioning_snapshot() {
 }
 
 # cluster_no_deficit — returns 0 iff the LEADER's provisioning view reports a WHOLE
-# cluster: no missing cores (deficit==0) AND full membership reached. This is the
-# lag-free authority for "all N cores present". The harness's own counts
+# cluster: no missing cores (deficit==0) AND the leader COUNTS all N core members
+# (countedCoreMembers >= N). This is the lag-free authority for "all N cores present".
+#
+# deficit==0 alone is NOT that: the product computes deficit = configured - effective, and
+# `effective` counts a dispatched-but-not-yet-joined replacement as present
+# (LeaderReconciler: "A dispatched replacement stays in-flight (counted toward effective
+# capacity)"), until a backstop expires it. So a 4-member cluster with one replacement in
+# flight reads deficit=0 — and did on 2026-09-23, where this gate passed and logged "5 cores
+# present" while every following suite measured 4. `reachedFullMembership` is a LATCH (set
+# once, even pre-latched on re-election) and says nothing about current membership; it is
+# kept only as a non-leader guard.
+#
+# Still NOT a liveness check: countedCoreMembers is MEMBER + SUSPECT (LeaderReconciler
+# coreCountedMembers), so a dead core the leader still holds as SUSPECT counts. Which of the
+# two shapes passed on 2026-09-23 was never recorded — this gate logged nothing measured on
+# success — so restore now logs the measured counts it passed on. The harness's own counts
 # (cluster_active_core_count, ready_core_count) are fed by the SWIM-projection /
 # per-node lifecycle query, which can lag the leader's membership view by 10s-100s of
 # seconds on a genuinely-whole cluster — a present, counted core routinely reads
 # not-yet-READY for a while (see restore step 5b). Gating terminal convergence on the
 # leader's deficit (the #336 provisioning surface) instead of ready_core_count avoids
 # falsely DEGRADING a healthy cluster, and is exactly the signal that matters for the
-# next test's "N running cores" precondition (a killed-not-replaced node shows
-# deficit>0, so the gate correctly waits for CTM auto-heal to bring deficit→0).
+# next test's "N running cores" precondition (a killed node lowers countedCoreMembers
+# until its replacement actually JOINS, so the gate waits for the join, not the dispatch).
 # Quiet (no logging) — called in a wait_for poll loop; provisioning_snapshot is the
 # loud diagnostic for the failure path.
 cluster_no_deficit() {
@@ -3807,8 +3834,11 @@ cluster_no_deficit() {
     ep=$(_resolve_live_endpoint) || return 1
     snap=$(curl -sk -m 10 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/cluster/provisioning" 2>/dev/null) || return 1
     [ -n "$snap" ] || return 1
-    printf '%s' "$snap" | grep -q '"deficit"[[:space:]]*:[[:space:]]*0' \
-        && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true'
+    local counted
+    counted=$(printf '%s' "$snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    printf '%s' "$snap" | grep -qE '"deficit"[[:space:]]*:[[:space:]]*0([^0-9.]|$)' \
+        && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true' \
+        && [ "${counted:-0}" -ge "${NODE_COUNT:-5}" ]
 }
 
 # Operator-controlled toggle of CTM auto-heal (deficit-driven replacement
@@ -4190,7 +4220,7 @@ restore_cluster_baseline() {
     # AETHER_RESTORE_RECOVERY_TIMEOUT (shared with the step-4b active-recovery budget).
     local converge_base="${AETHER_RESTORE_RECOVERY_TIMEOUT:-240}"
     [ "$converge_base" -lt 300 ] 2>/dev/null && converge_base=300
-    if ! wait_for "cluster WHOLE (leader deficit=0, all ${target} cores present) — terminal convergence" \
+    if ! wait_for "cluster WHOLE (leader deficit=0 and counts all ${target} core members) — terminal convergence" \
         "cluster_no_deficit" \
         "$converge_base"; then
         # DEGRADED return (matches steps 4b/5/6's contract): the runner's post-suite
@@ -4199,11 +4229,18 @@ restore_cluster_baseline() {
         # diagnosable in minutes, not hours — #336 observability surface.
         local snap
         snap=$(provisioning_snapshot)
-        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader-deficit). provisioning: ${snap}"
+        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader deficit==0 + reachedFullMembership + countedCoreMembers>=${target}). provisioning: ${snap}"
         return 1
     fi
 
-    log_info "restore_cluster_baseline: cluster at baseline (${target} cores present, leader deficit=0, generation quiesced)"
+    # Log what was MEASURED, not the target: the previous line printed ${target} whatever the
+    # leader reported, so a run could not tell which snapshot shape the gate passed on.
+    local _passed_snap _pc _pe _pd
+    _passed_snap=$(provisioning_snapshot 2>/dev/null)
+    _pc=$(printf '%s' "$_passed_snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    _pe=$(printf '%s' "$_passed_snap" | grep -oE '"effective"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    _pd=$(printf '%s' "$_passed_snap" | grep -oE '"deficit"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    log_info "restore_cluster_baseline: cluster at baseline (target=${target}; leader counted=${_pc:-?} effective=${_pe:-?} deficit=${_pd:-?}; active=$(cluster_active_core_count) READY=$(ready_core_count); generation quiesced)"
     return 0
 }
 

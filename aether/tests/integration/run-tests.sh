@@ -335,13 +335,16 @@ collect_blueprints() {
 # preserve evidence, and losing evidence must not also lose the result that produced it.
 capture_node_logs() {
     local suite_name="$1" target_cluster="$2"
+    # Start of the window to capture (epoch seconds); the suite's start when called from
+    # run_suite. Defaults to the last hour so a caller that omits it still gets a bound.
+    local since_epoch="${3:-$(( $(date +%s) - 3600 ))}"
     local out_dir="${SCRIPT_DIR}/failure-logs/${suite_name}"
 
     mkdir -p "$out_dir" 2>/dev/null || return 0
     # Clear STALE captures first: this dir accumulates across runs, and run3's diagnosis
     # nearly used run2's node-5.log sitting beside run3's fresh files. A capture must
     # only ever contain THIS run's evidence.
-    rm -f "${out_dir}"/*.log 2>/dev/null || true
+    rm -f "${out_dir}"/*.log "${out_dir}/provisioning-snapshot.txt" 2>/dev/null || true
     date -u '+captured %Y-%m-%dT%H:%M:%SZ' > "${out_dir}/capture-manifest.txt" 2>/dev/null || true
 
     local names
@@ -367,6 +370,60 @@ capture_node_logs() {
             for f in $streamed; do
                 remote_exec "tail -c 2000000 ${f}" > "${out_dir}/streamed-$(basename "$f")" 2>&1 || true
             done
+            ;;
+        cloud)
+            # Capture from every VM of this cluster at SUITE END (after each test's own cleanup
+            # restore — NOT at the instant of failure; a restore that re-bootstrapped the cluster
+            # leaves only the new generation to read, and the manifest says which VMs answered).
+            # Previously this branch did not exist: cloud fell through to `return 0` after writing
+            # the manifest, so every failed cloud suite carried a "captured" manifest and no logs
+            # (2026-09-23, 8 of 8 failed suites), and by run end those VMs had been reaped.
+            # Bounded by TIME, not lines: `--since` the suite's start, because nodes log thousands
+            # of lines a minute during churn and a fixed tail can end before the failing test.
+            # _cloud_running_vm_ips matches seeds by IP and CTM replacements by node-id name, so
+            # a replacement labelled with a different `aether-cluster` value is still captured.
+            local cluster_name ips ip enum_rc=0 rc ok=0 attempted=0
+            if [ -z "${AETHER_SSH_KEY:-}" ]; then
+                echo "AETHER_SSH_KEY unset — cannot reach VMs, nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: AETHER_SSH_KEY unset — cloud node-log capture skipped"
+                return 0
+            fi
+            if [ "$target_cluster" = "a" ]; then cluster_name="$CLUSTER_A_NAME"; else cluster_name="$CLUSTER_B_NAME"; fi
+            ips=$(_cloud_running_vm_ips "$cluster_name" 2>/dev/null) || enum_rc=$?
+            if [ "$enum_rc" -ne 0 ]; then
+                # Unavailable is not empty (_cloud_running_vm_ips's own contract).
+                echo "VM enumeration UNAVAILABLE for cluster ${cluster_name} (rc=${enum_rc}) — nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: cloud VM enumeration unavailable (rc=${enum_rc}) — nothing captured"
+                return 0
+            fi
+            local remote_cmd="docker logs --timestamps --since ${since_epoch} aether-node"
+            [ "${CLOUD_RUNTIME:-container}" = "jvm" ] && remote_cmd="journalctl -u aether-node --no-pager --since @${since_epoch} -o short-iso"
+            echo "window: since epoch ${since_epoch} (suite start)" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            for ip in $ips; do
+                attempted=$((attempted + 1))
+                # Outer bound covers connect + transfer; the remote `timeout` covers a command that
+                # hangs on a live connection, which ssh keepalives cannot detect (#628 note at
+                # common.sh remote_exec_bounded). A capture must never stall the run it serves.
+                rc=0
+                _run_with_timeout "${CLOUD_CAPTURE_SSH_TIMEOUT_S:-90}" \
+                    ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY}" "${CLOUD_SSH_USER:-root}@${ip}" \
+                    "hostname; timeout 60 ${remote_cmd}" > "${out_dir}/vm-${ip}.log" 2>&1 || rc=$?
+                [ "$rc" -eq 0 ] && ok=$((ok + 1))
+                printf 'vm %s rc=%s lines=%s\n' "$ip" "$rc" "$(wc -l < "${out_dir}/vm-${ip}.log" | tr -d ' ')" \
+                    >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            done
+            provisioning_snapshot > "${out_dir}/provisioning-snapshot.txt" 2>&1 || true
+            if [ "$attempted" -eq 0 ]; then
+                # Say so: a manifest with nothing beside it must never read as a capture.
+                echo "NO VMs found for cluster ${cluster_name} — nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: node-log capture found NO VMs for cluster ${cluster_name} — nothing captured"
+                return 0
+            fi
+            echo "captured ${ok} of ${attempted} VM(s)" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            if [ "$ok" -eq 0 ]; then
+                log_warn "${suite_name}: node-log capture reached ${attempted} VM(s) and NONE returned logs (see rc= in ${out_dir}/capture-manifest.txt)"
+                return 0
+            fi
             ;;
         *) return 0 ;;
     esac
@@ -480,7 +537,7 @@ run_suite() {
         fi
         if [ -f "$restore_marker" ]; then
             log_fail "${suite_name}: baseline restore failed after $(basename "$test_file") — capturing evidence and aborting the remaining test files (quarantine)"
-            capture_node_logs "${suite_name}-restore-failed" "$target_cluster" || true
+            capture_node_logs "${suite_name}-restore-failed" "$target_cluster" "$start_time" || true
             suite_fail=$((suite_fail + 1))
             break
         fi
@@ -497,7 +554,7 @@ run_suite() {
     # so without this a failed suite leaves no evidence and the only way to investigate
     # is to reproduce it — which does not work for a failure that does not reproduce.
     if [ "$status" = "failed" ]; then
-        capture_node_logs "$suite_name" "$target_cluster" || true
+        capture_node_logs "$suite_name" "$target_cluster" "$start_time" || true
     fi
 
     echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration}}" >> "$RESULTS_FILE"
