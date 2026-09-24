@@ -1239,10 +1239,22 @@ on_exit() {
 }
 
 # The `name` under `[cluster]` in a cloud TOML — the label value CTM stamps on the replacements
-# it provisions. Prints nothing when the file is absent or has no such key.
+# it provisions (the CLI's --cluster override is not what reaches the persisted cluster config).
+# Lines are normalised the way the TOML parser reads them (CR, indentation, trailing comment),
+# either quote style is accepted, and the result must match the Hetzner label grammar the harness
+# already enforces for cluster names (lib/cluster.sh resolve_cluster_name). Anything else prints
+# NOTHING: a printed reap command naming the wrong cluster is worse than none.
 _toml_cluster_name() {
     [ -n "${1:-}" ] && [ -f "$1" ] || return 0
-    awk '/^\[/ { in_cluster = ($0 == "[cluster]") } in_cluster && /^[[:space:]]*name[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*"/, ""); sub(/".*$/, ""); print; exit }' "$1"
+    local name
+    name=$(awk '
+        { sub(/\r$/, ""); h = $0; sub(/^[[:space:]]+/, "", h); sub(/[[:space:]]*(#.*)?$/, "", h) }
+        h ~ /^\[/ { in_cluster = (h == "[cluster]"); next }
+        in_cluster && h ~ /^name[[:space:]]*=[[:space:]]*["\047][^"\047]*["\047]$/ {
+            v = h; sub(/^name[[:space:]]*=[[:space:]]*["\047]/, "", v); sub(/["\047]$/, "", v); print v; exit
+        }' "$1")
+    printf '%s' "$name" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$' && printf '%s\n' "$name"
+    return 0
 }
 
 # --keep-on-failure path: nothing is destroyed; the PG firewall is still closed because log
@@ -1257,11 +1269,19 @@ preserve_on_failure() {
             # CTM replacements are labelled with the TOML's [cluster] name, which is not the
             # harness cluster name on the container runtime (`cloud-test-b` vs `test-b`), so the
             # two lines above never match them (2026-09-24: both surviving VMs were missed).
-            local toml toml_name
-            for toml in "${CLOUD_TOML_A:-}" "${CLOUD_TOML_B:-}"; do
+            # A's TOML only when cluster A was in play this run (the teardown's own guard).
+            local toml toml_name tomls=("${CLOUD_TOML_B:-}")
+            [ "${A_SUITES_SELECTED:-0}" -gt 0 ] && tomls=("${CLOUD_TOML_A:-}" "${CLOUD_TOML_B:-}")
+            for toml in "${tomls[@]}"; do
                 toml_name=$(_toml_cluster_name "$toml")
-                if [ -n "$toml_name" ] && [ "$toml_name" != "$CLUSTER_A_NAME" ] && [ "$toml_name" != "$CLUSTER_B_NAME" ]; then
-                    log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${toml_name} --destroy --force   # CTM replacements"
+                [ -n "$toml_name" ] && [ "$toml_name" != "$CLUSTER_A_NAME" ] && [ "$toml_name" != "$CLUSTER_B_NAME" ] || continue
+                if [ -n "${CLUSTER_A_NAME_EXPLICIT:-}${CLUSTER_B_NAME_EXPLICIT:-}" ]; then
+                    # Explicit per-arm names: every arm reading this TOML shares its name, so its
+                    # replacements are indistinguishable by label. Do not print a paste-ready reap.
+                    log_warn "  CTM replacements carry '${toml_name}', shared by every arm using this TOML — reap them only when no other arm is live:"
+                    log_warn "    with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${toml_name} --strict-cluster   # dry run first"
+                else
+                    log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${toml_name} --strict-cluster --destroy --force   # CTM replacements"
                 fi
             done
         else

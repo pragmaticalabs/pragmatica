@@ -9,10 +9,12 @@
 #          time window, and an explicit statement when nothing was captured.
 #   F1-F2  cloud_partition_node (lib/cluster.sh): the partition firewall carries the cluster
 #          label on create, and is relabelled when an earlier run's firewall is reused.
-#   P1-P7  CLOUD_RESOURCES_PROVISIONED (run-tests.sh): a cluster-B-only run sets it after B's
+#   P1-P11 CLOUD_RESOURCES_PROVISIONED (run-tests.sh): a cluster-B-only run sets it after B's
 #          bootstrap succeeds — not when it fails, not on --skip-deploy — and --keep-on-failure
 #          never reports "nothing to reap" over live VMs; its reap commands reach CTM
 #          replacements, which carry the TOML's cluster name.
+#   T1-T7  _toml_cluster_name (run-tests.sh): reads what the TOML parser accepts, prints nothing
+#          (never a wrong name) for what it cannot resolve.
 #
 # No external test runner; invoke directly:
 #   bash aether/tests/integration/test/test-restore-gate.sh
@@ -165,8 +167,9 @@ got=$(bringup false 1)
 [ "$got" = "flag=unset" ] && ok "P4 failed B bootstrap (errexit) leaves the flag unset" || fail "P4 failed bootstrap: ${got}"
 got=$(bringup true 0)
 [ "$got" = "flag=unset" ] && ok "P5 --skip-deploy (reused cluster) does not mark resources provisioned" || fail "P5 skip-deploy: ${got}"
-preserve() {  # flag [cluster_b_name toml_b] -> preserve output
-    ( ENV_TYPE=cloud; REPO_ROOT=/stub; CLUSTER_A_NAME=test-a; CLUSTER_B_NAME="${2:-test-b}"; CLOUD_TOML_B="${3:-}"
+preserve() {  # flag [cluster_b_name toml_b toml_a a_suites explicit cluster_a_name] -> preserve output
+    ( ENV_TYPE=cloud; REPO_ROOT=/stub; CLUSTER_A_NAME="${7:-test-a}"; CLUSTER_B_NAME="${2:-test-b}"; CLOUD_TOML_B="${3:-}"
+      CLOUD_TOML_A="${4:-}"; A_SUITES_SELECTED="${5:-0}"; CLUSTER_A_NAME_EXPLICIT=""; CLUSTER_B_NAME_EXPLICIT="${6:-}"
       [ "$1" = set ] && CLOUD_RESOURCES_PROVISIONED=true
       log_step() { echo "STEP $*"; }; log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }
       source "${WORK}/preserve_fn.sh"; preserve_on_failure 1 ) 2>&1
@@ -179,13 +182,42 @@ out=$(preserve set)
 if printf '%s' "$out" | grep -q -- '--cluster test-b --destroy --force'; then ok "P3 provisioned: prints the per-cluster reap commands"
 else fail "P3 set flag: $(printf '%s' "$out" | tr '\n' '|')"; fi
 out=$(preserve set test-b "${INTEG_DIR}/env/cloud-hetzner-b.toml")
-if printf '%s' "$out" | grep -q -- '--cluster cloud-test-b --destroy --force'; then
+if printf '%s' "$out" | grep -q -- '--cluster cloud-test-b --strict-cluster --destroy --force'; then
     ok "P6 container runtime: also prints a reap for the TOML cluster name CTM replacements carry"
 else fail "P6 container TOML: $(printf '%s' "$out" | tr '\n' '|')"; fi
 out=$(preserve set cloud-test-b-jvm "${INTEG_DIR}/env/cloud-hetzner-jvm-b.toml")
 if [ "$(printf '%s' "$out" | grep -c -- '--cluster cloud-test-b-jvm ')" = 1 ]; then
     ok "P7 jvm runtime (TOML name = harness name): no duplicate reap line"
 else fail "P7 jvm TOML: $(printf '%s' "$out" | tr '\n' '|')"; fi
+A_TOML="${INTEG_DIR}/env/cloud-hetzner.toml"; B_TOML="${INTEG_DIR}/env/cloud-hetzner-b.toml"
+out=$(preserve set test-b "$B_TOML" "$A_TOML" 1)
+if printf '%s' "$out" | grep -q -- '--cluster cloud-test-a --strict-cluster --destroy --force'; then
+    ok "P8 cluster A in play: also prints the reap for A's TOML cluster name"
+else fail "P8 A in play: $(printf '%s' "$out" | tr '\n' '|')"; fi
+out=$(preserve set test-b "$B_TOML" "$A_TOML" 0)
+if ! printf '%s' "$out" | grep -q -- 'cloud-test-a'; then ok "P9 B-only run: no reap line for a cluster A that never ran"
+else fail "P9 B-only: $(printf '%s' "$out" | tr '\n' '|')"; fi
+out=$(preserve set arm2-b "$B_TOML" "" 0 arm2-b)
+if printf '%s' "$out" | grep -q 'shared by every arm' && ! printf '%s' "$out" | grep -q -- '--cluster cloud-test-b.*--destroy'; then
+    ok "P10 explicit per-arm names: warns instead of printing a destructive reap for the shared TOML name"
+else fail "P10 explicit names: $(printf '%s' "$out" | tr '\n' '|')"; fi
+out=$(preserve set cloud-test-b-jvm "${INTEG_DIR}/env/cloud-hetzner-jvm-b.toml" "${INTEG_DIR}/env/cloud-hetzner-jvm.toml" 1 "" cloud-test-a-jvm)
+if [ "$(printf '%s' "$out" | grep -c -- '--cluster cloud-test-a-jvm ')" = 1 ]; then ok "P11 jvm cluster A (TOML name = harness name): no duplicate reap line"
+else fail "P11 jvm A: $(printf '%s' "$out" | tr '\n' '|')"; fi
+
+# Parse fixtures: what the TOML parser accepts must be read; what it cannot must print NOTHING.
+tname() { ( source "${WORK}/preserve_fn.sh"; _toml_cluster_name "$1" ); }
+fx() { printf "$2" > "${WORK}/$1.toml"; tname "${WORK}/$1.toml"; }
+expect_name() {  # label expected actual
+    [ "$3" = "$2" ] && ok "$1 → '${3}'" || fail "$1 → expected '$2', got '$3'"
+}
+expect_name "T1 a name key before [cluster] is not the cluster name" cloud-test-b "$(fx before 'name = "wrong"\n[cluster]\nname = "cloud-test-b"\n')"
+expect_name "T2 [cluster.core] before [cluster] is not the cluster section" cloud-test-b "$(fx subsec '[cluster.core]\nname = "wrong"\n[cluster]\nname = "cloud-test-b"\n')"
+expect_name "T3 single-quoted value is read" cloud-test-b "$(fx single "[cluster]\nname = 'cloud-test-b'\n")"
+expect_name "T4 indented header, CRLF, trailing comment are read" cloud-test-b "$(fx messy '  [cluster]  # c\r\nname = "cloud-test-b" # c\r\n')"
+expect_name "T5 bare (unquoted) value prints nothing" "" "$(fx bare '[cluster]\nname = cloud-test-b\n')"
+expect_name "T6 [cluster] without name never borrows a later section's name" "" "$(fx noname '[cluster]\nversion = "1"\n  [source.x.api-keys.k]\nname = "integration-test"\n')"
+expect_name "T7 a quoted value that is not a valid label name prints nothing" "" "$(fx badlabel '[cluster]\nname = "not a -label!"\n')"
 
 echo ""
 echo "  ----"
