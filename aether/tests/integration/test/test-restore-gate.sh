@@ -2,7 +2,7 @@
 # test-restore-gate.sh — pins the three cloud-evidence changes of #1482 with stubs only
 # (no network, no cloud, no ssh to a real host):
 #   R1-R5  cluster_no_deficit (lib/cluster.sh) against provisioning snapshots. R2 is the
-#          2026-09-23 shape: 4 core members counted, 1 replacement in flight, deficit 0 — the
+#          in-flight shape: 4 core members counted, 1 replacement in flight, deficit 0 — the
 #          product's `effective` includes the in-flight replacement, so deficit alone passes
 #          it. R1 is the positive control (a whole cluster must pass).
 #   C1-C5  capture_node_logs' cloud branch (run-tests.sh): logs per VM with rc recorded, a
@@ -48,7 +48,7 @@ expect_gate() {  # label expected snapshot
     [ "$got" = "$2" ] && ok "$1 → $got" || fail "$1 → expected $2, got $got"
 }
 expect_gate "R1 whole cluster: 5 counted, deficit 0 (positive control)" PASS "$(snapshot 5 5 0 true)"
-expect_gate "R2 4 counted + 1 in flight, deficit 0 (2026-09-23 shape)"   fail "$(snapshot 4 5 0 true)"
+expect_gate "R2 4 counted + 1 in flight, deficit 0 (in-flight shape)"   fail "$(snapshot 4 5 0 true)"
 expect_gate "R3 deficit 1"                                               fail "$(snapshot 4 4 1 true)"
 expect_gate "R4 not leader (zeroed snapshot)"                            fail "$(snapshot 0 0 0 false)"
 expect_gate "R5 deficit 10 (a leading 0 is not deficit 0)"               fail "$(snapshot 5 5 10 true)"
