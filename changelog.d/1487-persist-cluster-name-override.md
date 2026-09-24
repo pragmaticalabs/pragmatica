@@ -8,10 +8,26 @@
   the TOML that formation POSTs carries the same name as the seeds. Only that one line is replaced
   (including any trailing comment on it); the rest of the operator TOML, including unresolved
   `${env:...}` references, is posted verbatim. With no `--cluster` (or a blank one) the TOML is posted
-  unchanged. If the TOML's `[cluster]` section has no `name = ...` line that the edit can locate,
-  bootstrap now fails before provisioning instead of persisting a name the operator did not choose.
+  unchanged. The override is validated against the cluster-name pattern, and the rewritten TOML is
+  re-parsed: unless its `[cluster] name` then equals the override, `--cluster` fails before anything
+  is provisioned or applied instead of persisting a name the operator did not choose. This refuses
+  TOMLs that parse but that the line edit cannot handle: a root dotted `cluster.name = ...`, a quoted
+  `"name" = ...`, a multi-line string inside `[cluster]` holding a line that starts `name =`. The
+  recovery is to write the name as a plain `name = "..."` line under `[cluster]`, or to drop `--cluster`
+  and set the name in the file.
   [verified: `aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/ClusterNameOverridePersistenceTest.java`
   (unit level: the TOML and POST body the CLI builds, not a live cluster)]
+- **`aether cluster apply --cluster <name>` now applies the same rewrite.** `apply` already took
+  `--cluster` to choose the target cluster. It now also rewrites the file's `[cluster] name` to that
+  value before the config is sent (plain `apply`) or parsed and compared (`--resume`, `--rollback`).
+  Without the rewrite, a cluster bootstrapped with `--cluster X` from a file named `Y` refused every
+  later `apply` of that file with "cluster.name is immutable", because the stored name is now `X`.
+  Without `--cluster`, `apply` sends the file unchanged, so a file whose name differs from the stored
+  one is still refused. The recovery is to pass `--cluster <stored name>`.
+  [verified: `aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/ClusterNameOverridePersistenceTest.java`
+  (unit level: the CLI-side immutable-field check that `--resume`/`--rollback` run, not a live cluster)]
+  [mechanism: plain `apply` POSTs the rewritten TOML, and `ClusterConfigRoutes.executeDiff` runs the same
+  `ClusterBootstrapConfigDiff.diff` whose immutable-field result the test checks]
 - That replacements are now labelled with the override follows from CTM resolving the name out of the
   persisted config. [mechanism: `ClusterConfigRoutes` stores the POSTed TOML; CTM passes the resolved
   name through `ProvisionContext.forReplacement` to `HetznerComputeProvider.buildLabels`]

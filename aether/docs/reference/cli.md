@@ -2573,11 +2573,12 @@ aether cluster destroy --cluster=my-cluster --yes
 Apply cluster configuration changes with desired-state reconciliation.
 
 ```bash
-aether cluster apply <config-file> [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
+aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `--cluster <name>` | Target the named cluster instead of the active-context one, and rewrite the file's `[cluster].name` to `<name>` before applying — the same rewrite as `aether cluster bootstrap --cluster`, so a cluster bootstrapped under an override accepts its own TOML (`cluster.name` is immutable) |
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
 | `--resume` | Resume a halted apply from first unfinished wave |
