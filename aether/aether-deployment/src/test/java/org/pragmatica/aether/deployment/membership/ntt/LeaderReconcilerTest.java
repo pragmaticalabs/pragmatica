@@ -7,16 +7,29 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
+import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.SourceName;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -31,8 +44,11 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
@@ -57,6 +73,8 @@ import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
+import io.netty.buffer.ByteBuf;
+
 import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -78,6 +96,8 @@ class LeaderReconcilerTest {
     private static final NodeId PEER_B = NodeId.randomNodeId();
     private static final NodeId PEER_C = NodeId.randomNodeId();
     private static final NodeId PEER_D = NodeId.randomNodeId();
+    /// Slice version used by the #1488 KV-backed drain-guard fixtures.
+    private static final Version SLICE_VERSION = Version.version("1.0.0").unwrap();
     private static final TimeSpan EXPECTED_ACTIVATION_DELAY =
         timeSpan(membershipConfig().splitTimeout().nanos() * 3 / 2).nanos();
     /// #1049 — the in-flight sweep's provider-status poll cadence (= nttDepartureTimeout), and the
@@ -241,6 +261,22 @@ class LeaderReconcilerTest {
     /// A NodeInfo carrying the explicit `role=worker` label. The transport ACTIVE/PASSIVE
     /// `NodeRole` was retired in the cluster-topology-overhaul Wave 9; the worker classification
     /// now lives solely in the `role` label (the config CORE/WORKER/SPOT vocabulary).
+    /// No-op KV serializer — the #1488 guard fixtures never snapshot the store.
+    private static Serializer stubSerializer() {
+        return new Serializer() {
+            @Override public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    /// No-op KV deserializer — the #1488 guard fixtures never restore the store.
+    private static Deserializer stubDeserializer() {
+        return new Deserializer() {
+            @Override public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
+    }
+
     private static NodeInfo workerInfo(NodeId id) {
         var address = NodeAddress.nodeAddress("worker-host", 6000).unwrap();
 
@@ -866,10 +902,13 @@ class LeaderReconcilerTest {
         }
     }
 
-    /// Approach-3 drain-victim selection (the 7→5-scale-down-under-load fix). Two orderings:
+    /// Approach-3 drain-victim selection (the 7→5-scale-down-under-load fix). Orderings:
     /// (1) a node OWNING active slices is a victim only after every eligible non-owner — ownership
-    /// lowers preference and never excludes (#1488); (2) EPHEMERAL (CTM-provisioned, ULID-suffix)
-    /// nodes are preferred over CONFIGURED compose seeds (`<prefix>-<ordinal>`) within each tier.
+    /// lowers preference and never excludes (#1488); (2) an owner is taken only if every slice it
+    /// hosts keeps its `minAvailable` ACTIVE instances, counting victims already selected in the pass
+    /// (#1488 owner ruling); (3) EPHEMERAL (CTM-provisioned, ULID-suffix) nodes are preferred over
+    /// CONFIGURED compose seeds (`<prefix>-<ordinal>`) within each tier; (4) the leader (SELF) is
+    /// considered last, after every other member (#1089 option B).
     /// Slice ownership is consulted through the injected [`LeaderReconciler#setOwnsActiveSlices`]
     /// predicate; ephemeral detection rides the minted-id ULID-suffix shape. The legacy bug:
     /// descending-NodeId order sorted seeds (`...-3`,`-4`,`-5`) ahead of ULID-named replacements
@@ -886,71 +925,114 @@ class LeaderReconcilerTest {
         private final NodeId ctm1 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix(maybeClusterName("test-cluster")));
         private final NodeId ctm2 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix(maybeClusterName("test-cluster")));
 
+        /// KV-Store holding slice targets and placements for the #1488 guard tests — the SAME store
+        /// shape production reads, so the real [`SliceOwnershipQuery`] predicate and minAvailable
+        /// guard are exercised, not a test-side re-implementation of them.
+        private final KVStore<AetherKey, AetherValue> kvStore =
+            new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+
+        /// A slice target `org.example:<name>:1.0.0` with the given instance count and minAvailable.
+        private Artifact slice(String name, int instances, int minAvailable) {
+            var artifact = ArtifactBase.artifactBase("org.example:" + name).unwrap().withVersion(SLICE_VERSION);
+
+            applyKv(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                        SliceTargetValue.sliceTargetValue(SLICE_VERSION, instances, minAvailable, Option.none())));
+
+            return artifact;
+        }
+
+        /// Place one ACTIVE instance of `artifact` on each of `nodes`.
+        @Contract
+        private void host(Artifact artifact, NodeId... nodes) {
+            for (var node : nodes) {
+                hostInState(artifact, node, SliceState.ACTIVE);
+            }
+        }
+
+        @Contract
+        private void hostInState(Artifact artifact, NodeId node, SliceState state) {
+            applyKv(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(node, artifact),
+                                        NodeArtifactValue.nodeArtifactValue(state)));
+        }
+
+        @Contract
+        private void applyKv(KVCommand<AetherKey> command) {
+            kvStore.process(kvStore.createBatch(List.of(command)));
+        }
+
+        /// Wire both production KV-backed seams, exactly as `AetherNode` does.
+        @Contract
+        private void wireKvSliceSources() {
+            reconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
+            reconciler.setSliceDrainGuard(SliceOwnershipQuery.drainKeepsMinAvailable(kvStore));
+        }
+
+        @Contract
+        private void runActivationPass() {
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        }
+
         /// Mixed owners and non-owners: when the non-owners cover the surplus, the slice owner is
         /// never touched — ownership demotes a node below every eligible non-owner (the preference
         /// the 7→5 scale-down-under-load fix introduced, kept by #1488).
         @Test
         void surplusDrain_mixedOwnersAndNonOwners_nonOwnersPreferred() {
-            configuredCoreCount.set(1);
-            // Members = SELF(ephemeral) + ctm1 + ctm2 = 3. ctm1 owns active slices → demoted.
+            configuredCoreCount.set(2);
+            // Members = SELF + ctm1 + ctm2 = 3; surplus 1. ctm1 owns active slices → demoted.
             seedClusterWithPeers(ctm1, ctm2);
             reconciler.setOwnsActiveSlices(id -> id.equals(ctm1));
 
-            reconciler.activate();
-            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            runActivationPass();
 
-            // Surplus = 3 - 1 = 2, covered exactly by the non-owners SELF + ctm2 — the owner stays.
             assertThat(ctm.drainNodeCalls())
-                .as("non-owners covering the surplus are drained before any slice owner")
-                .doesNotContain(ctm1)
-                .containsExactlyInAnyOrder(SELF, ctm2);
+                .as("the non-owner covering the surplus is drained, never the slice owner or the leader")
+                .containsExactly(ctm2);
         }
 
-        /// #1488 — every member hosts a slice instance (an autoscaler scale-up under load puts one on
-        /// each node). Excluding owners emptied the pool and deferred the surplus on every pass (61
-        /// deferrals, 6 members where 5 were configured). Owners are a fallback tier, so exactly the
-        /// surplus is drained — and the owner tier keeps ephemeral-before-configured.
+        /// #1488 (a) — every member hosts a slice instance, every slice has instances=3 /
+        /// minAvailable=2. Excluding owners emptied the pool and deferred the surplus forever (61
+        /// deferrals, 6 members where 5 were configured). Owners are a guarded fallback tier and the
+        /// leader goes last, so exactly one NON-leader owner is drained: the ephemeral `ctm1`, whose
+        /// removal leaves slice B at 2 = minAvailable.
         @Test
-        void surplusDrain_everyMemberOwnsSlices_drainsExactlySurplus() {
+        void surplusDrain_everyMemberOwnsSlices_drainsOneNonLeaderOwner() {
             configuredCoreCount.set(4);
             // Members = SELF(ephemeral) + seed1 + seed2 + seed3 + ctm1 = 5, all mature, all owners.
             seedClusterWithPeers(seed1, seed2, seed3, ctm1);
-            reconciler.setOwnsActiveSlices(id -> true);
+            host(slice("slice-a", 3, 2), SELF, seed1, seed2);
+            host(slice("slice-b", 3, 2), seed3, ctm1, seed1);
+            wireKvSliceSources();
 
-            reconciler.activate();
-            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            runActivationPass();
 
             assertThat(listener.events().getFirst().drainCount())
                 .as("an all-owner cluster must still drain its surplus, not defer it")
                 .isEqualTo(1);
             assertThat(ctm.drainNodeCalls())
-                .as("exactly one victim for a surplus of one")
-                .hasSize(1);
-            assertThat(ctm.drainNodeCalls().getFirst())
-                .as("the owner tier drains an ephemeral node before any configured seed")
-                .isIn(SELF, ctm1);
+                .as("one non-leader owner, ephemeral first — never the leader while another owner qualifies")
+                .containsExactly(ctm1);
         }
 
         /// #1488 — the owner tier keeps ephemeral-before-configured. Surplus 2 over an all-owner pool
-        /// drains both ephemeral owners; the plain reversed-id order would have taken a seed
-        /// (`aether-test-cluster-node-3` sorts above a ULID-suffixed `ctm1`).
+        /// drains both non-leader ephemeral owners; the plain reversed-id order would have taken a seed
+        /// (`aether-test-cluster-node-3` sorts above a ULID-suffixed `ctm*`).
         @Test
         void surplusDrain_everyMemberOwnsSlices_ephemeralOwnersBeforeConfigured() {
-            configuredCoreCount.set(3);
-            // Members = SELF(ephemeral) + seed1 + seed2 + seed3 + ctm1 = 5, all mature, all owners.
-            seedClusterWithPeers(seed1, seed2, seed3, ctm1);
+            configuredCoreCount.set(4);
+            // Members = SELF(ephemeral) + seed1 + seed2 + seed3 + ctm1 + ctm2 = 6, all mature, all owners.
+            seedClusterWithPeers(seed1, seed2, seed3, ctm1, ctm2);
             reconciler.setOwnsActiveSlices(id -> true);
 
-            reconciler.activate();
-            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            runActivationPass();
 
             assertThat(ctm.drainNodeCalls())
-                .as("both ephemeral owners are drained before any configured owner")
-                .containsExactlyInAnyOrder(SELF, ctm1);
+                .as("both non-leader ephemeral owners are drained before any configured owner")
+                .containsExactlyInAnyOrder(ctm1, ctm2);
         }
 
         /// #1488 — when the non-owners cover only part of the surplus, the shortfall comes from the
-        /// owner tier rather than being deferred; the non-owner is still taken first.
+        /// owner tier rather than being deferred; the non-owner is taken first and the leader last.
         @Test
         void surplusDrain_nonOwnersShortOfSurplus_fallsBackToOwners() {
             configuredCoreCount.set(3);
@@ -958,13 +1040,129 @@ class LeaderReconcilerTest {
             seedClusterWithPeers(seed1, seed2, seed3, seed4);
             reconciler.setOwnsActiveSlices(id -> !id.equals(seed4));
 
-            reconciler.activate();
-            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            runActivationPass();
 
-            // seed4 (the non-owner) plus one owner — the ephemeral SELF, ahead of the owning seeds.
+            // seed4 (the non-owner) plus one owner — the first configured owner in order, never the
+            // leader even though it is the only ephemeral owner.
             assertThat(ctm.drainNodeCalls())
-                .as("the non-owner is drained and the shortfall is covered by an owner, ephemeral first")
-                .containsExactlyInAnyOrder(seed4, SELF);
+                .as("the non-owner is drained and the shortfall is covered by a non-leader owner")
+                .containsExactlyInAnyOrder(seed4, seed3);
+        }
+
+        /// #1488 (b) — surplus 2, and the two preferred owners `ctm1`/`ctm2` share slice S
+        /// (instances=3, minAvailable=2). The guard counts the victim already selected in the pass,
+        /// so only ONE of them is taken; the second victim comes from the next eligible owner.
+        @Test
+        void surplusDrain_twoOwnersShareMinAvailableSlice_onlyOnePickedPerPass() {
+            configuredCoreCount.set(3);
+            // Members = SELF + seed1 + seed2 + ctm1 + ctm2 = 5; surplus 2; all owners.
+            seedClusterWithPeers(seed1, seed2, ctm1, ctm2);
+            host(slice("slice-s", 3, 2), ctm1, ctm2, seed1);
+            host(slice("slice-t", 3, 1), SELF, seed2, seed1);
+            wireKvSliceSources();
+
+            runActivationPass();
+
+            var drained = ctm.drainNodeCalls();
+            assertThat(drained)
+                .as("two victims: one of the slice-S sharers plus seed2 — never both sharers, never the leader")
+                .hasSize(2)
+                .contains(seed2)
+                .doesNotContain(SELF);
+            assertThat(drained.stream().filter(id -> id.equals(ctm1) || id.equals(ctm2)).count())
+                .as("draining both would leave slice S at 1 instance, below minAvailable=2")
+                .isEqualTo(1);
+        }
+
+        /// #1488 (c) — the owner of a single-instance slice (instances=1, minAvailable=1) is never
+        /// picked: draining it would take the slice dark. The next eligible owner is drained instead.
+        @Test
+        void surplusDrain_singleInstanceSliceOwner_neverPicked() {
+            configuredCoreCount.set(2);
+            // Members = SELF + seed1 + ctm1 = 3; surplus 1; all owners. ctm1 alone hosts slice U.
+            seedClusterWithPeers(seed1, ctm1);
+            host(slice("slice-u", 1, 1), ctm1);
+            host(slice("slice-v", 3, 1), SELF, seed1, ctm1);
+            wireKvSliceSources();
+
+            runActivationPass();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("the sole holder of slice U is skipped; the next eligible owner covers the surplus")
+                .containsExactly(seed1);
+        }
+
+        /// #1488 guard counts only ACTIVE instances as remaining: a still-LOADING instance serves
+        /// nothing, so it cannot stand in for the ACTIVE instance a drain would remove.
+        @Test
+        void surplusDrain_remainingInstanceStillLoading_doesNotCountTowardMinAvailable() {
+            configuredCoreCount.set(2);
+            // Members = SELF + seed1 + ctm1 = 3; surplus 1; all owners. Slice W (2/1): ACTIVE on ctm1,
+            // LOADING on seed1. Draining ctm1 would leave W with 0 ACTIVE → refused; seed1 goes instead.
+            seedClusterWithPeers(seed1, ctm1);
+            var sliceW = slice("slice-w", 2, 1);
+            host(sliceW, ctm1);
+            hostInState(sliceW, seed1, SliceState.LOADING);
+            host(slice("slice-v", 3, 1), SELF, seed1, ctm1);
+            wireKvSliceSources();
+
+            runActivationPass();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("the only ACTIVE holder of W is kept; a LOADING instance is not availability")
+                .containsExactly(seed1);
+        }
+
+        /// #1488 (c) corollary — when every owner is guarded out, nothing is drained and the shortfall
+        /// is deferred (re-evaluated), never forced through.
+        @Test
+        void surplusDrain_everyOwnerGuardedOut_defersInsteadOfDraining() {
+            configuredCoreCount.set(2);
+            // Members = SELF + seed1 + ctm1 = 3; surplus 1. Each member is the sole holder of a slice.
+            seedClusterWithPeers(seed1, ctm1);
+            host(slice("slice-x", 1, 1), SELF);
+            host(slice("slice-y", 1, 1), seed1);
+            host(slice("slice-z", 1, 1), ctm1);
+            wireKvSliceSources();
+
+            runActivationPass();
+
+            assertThat(listener.events().getFirst().drainCount())
+                .as("no owner may be drained below minAvailable, so the drain is deferred")
+                .isZero();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+        }
+
+        /// #1089 option B (d) — the leader is ordered LAST: with another eligible candidate present it
+        /// is not chosen, even though its id sorts first and it is an ephemeral non-owner.
+        @Test
+        void surplusDrain_leaderAndAnotherCandidate_leaderNotChosen() {
+            configuredCoreCount.set(2);
+            // Members = SELF + seed1 + ctm1 = 3, all mature non-owners; surplus 1.
+            seedClusterWithPeers(seed1, ctm1);
+
+            runActivationPass();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("the leader is a victim only when nothing else can cover the surplus")
+                .containsExactly(ctm1);
+        }
+
+        /// #1089 option B (d) — a tie-break, never an exclusion: when the leader is the ONLY eligible
+        /// candidate (the other member is a young configured seed held back by the grace), it is chosen.
+        @Test
+        void surplusDrain_leaderSoleCandidate_leaderChosen() {
+            configuredCoreCount.set(1);
+            // Members = SELF + young seed1 = 2; surplus 1. seed1 is inside the drain-safety grace.
+            health.markHealthy(seed1);
+            membershipFsm.onSwimHealthy(seed1, fsmIncarnation.getAndIncrement());
+            sampler.sample();
+
+            runActivationPass();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("the leader is drained when it is the sole eligible candidate")
+                .containsExactly(SELF);
         }
 
         /// The owner tier keeps the drain-safety grace for EPHEMERAL owners too: the "owns nothing"

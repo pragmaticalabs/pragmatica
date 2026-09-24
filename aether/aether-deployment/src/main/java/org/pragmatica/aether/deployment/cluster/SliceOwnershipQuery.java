@@ -4,22 +4,35 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiPredicate;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 
 
 /// Active-slice-ownership query over the authoritative KV-Store. Produces the narrow
 /// [`Predicate`] consulted by [`org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler`]
-/// during drain-victim selection so a node currently serving / hosting active slices is never
-/// drained as scale-down or over-provision surplus (the 7→5-scale-down-under-load incident).
+/// during drain-victim selection so a node currently serving / hosting active slices is drained as
+/// scale-down or over-provision surplus only after every eligible non-owner (the 7→5-scale-down-
+/// under-load incident; #1488 made ownership a demotion, not an exclusion), and — through
+/// [`#drainKeepsMinAvailable`] — never when draining it would drop a hosted slice below its
+/// `minAvailable`.
 ///
 /// Ownership is read from the KV-Store entries the cluster-deployment FSM itself uses as its source
 /// of truth: `NodeArtifactKey(nodeId, artifact) → NodeArtifactValue(state, ...)`. A node OWNS an
@@ -58,6 +71,103 @@ public sealed interface SliceOwnershipQuery {
         if (key.nodeId().equals(nodeId) && isLiveState(value.state())) {
             found.set(true);
         }
+    }
+
+    /// Build the drain-availability guard backed by `kvStore` (#1488 owner ruling): `true` when
+    /// draining `candidate` — on top of the victims `alreadySelected` earlier in the same pass —
+    /// leaves every slice `candidate` hosts with at least its `minAvailable` ACTIVE instances on the
+    /// nodes that remain. `minAvailable` is the slice target's [`SliceTargetValue#effectiveMinInstances`]
+    /// (the blueprint `minAvailable`, default `ceil(instances/2)`, clamped to at least 1; a slice with
+    /// no target counts as 1). Instances are counted per exact artifact version and only in state
+    /// ACTIVE, so an instance still loading never counts toward what remains — the conservative side:
+    /// a guard that under-counts defers a drain, one that over-counts takes a slice dark. Counting the
+    /// already-selected victims as departing is what stops a multi-victim pass from taking two of a
+    /// slice's three instances. Reads the KV-Store fresh on each call, like [`#ownsActiveSlices`].
+    static BiPredicate<NodeId, Set<NodeId>> drainKeepsMinAvailable(KVStore<AetherKey, AetherValue> kvStore) {
+        return (candidate, alreadySelected) -> keepsMinAvailable(kvStore, candidate, alreadySelected);
+    }
+
+    private static boolean keepsMinAvailable(KVStore<AetherKey, AetherValue> kvStore,
+                                             NodeId candidate,
+                                             Set<NodeId> alreadySelected) {
+        var placements = livePlacements(kvStore);
+        var departing = departingNodes(candidate, alreadySelected);
+
+        return hostedArtifacts(placements, candidate).stream()
+                              .allMatch(artifact -> keepsSliceMinAvailable(kvStore, placements, artifact, departing));
+    }
+
+    /// The distinct artifacts `node` holds a LIVE placement of.
+    private static Set<Artifact> hostedArtifacts(Map<NodeArtifactKey, SliceState> placements, NodeId node) {
+        return placements.keySet()
+                         .stream()
+                         .filter(key -> key.isForNode(node))
+                         .map(NodeArtifactKey::artifact)
+                         .collect(Collectors.toSet());
+    }
+
+    private static boolean keepsSliceMinAvailable(KVStore<AetherKey, AetherValue> kvStore,
+                                                  Map<NodeArtifactKey, SliceState> placements,
+                                                  Artifact artifact,
+                                                  Set<NodeId> departing) {
+        return remainingActive(placements, artifact, departing) >= minAvailable(kvStore, artifact);
+    }
+
+    private static Set<NodeId> departingNodes(NodeId candidate, Set<NodeId> alreadySelected) {
+        var departing = new HashSet<>(alreadySelected);
+
+        departing.add(candidate);
+
+        return departing;
+    }
+
+    /// Every LIVE placement in the KV-Store, keyed by `(node, artifact)`, with its state.
+    private static Map<NodeArtifactKey, SliceState> livePlacements(KVStore<AetherKey, AetherValue> kvStore) {
+        var placements = new HashMap<NodeArtifactKey, SliceState>();
+
+        kvStore.forEach(NodeArtifactKey.class,
+                        NodeArtifactValue.class,
+                        (key, value) -> recordIfLive(placements, key, value));
+
+        return placements;
+    }
+
+    @Contract
+    private static void recordIfLive(Map<NodeArtifactKey, SliceState> placements,
+                                     NodeArtifactKey key,
+                                     NodeArtifactValue value) {
+        if (isLiveState(value.state())) {
+            placements.put(key, value.state());
+        }
+    }
+
+    private static long remainingActive(Map<NodeArtifactKey, SliceState> placements,
+                                        Artifact artifact,
+                                        Set<NodeId> departing) {
+        return placements.entrySet()
+                         .stream()
+                         .filter(placement -> isRemainingActiveInstance(placement, artifact, departing))
+                         .count();
+    }
+
+    /// An ACTIVE instance of `artifact` on a node that is not departing in this pass.
+    private static boolean isRemainingActiveInstance(Map.Entry<NodeArtifactKey, SliceState> placement,
+                                                     Artifact artifact,
+                                                     Set<NodeId> departing) {
+        var key = placement.getKey();
+
+        return key.artifact()
+                  .equals(artifact)
+               && !departing.contains(key.nodeId())
+               && placement.getValue() == SliceState.ACTIVE;
+    }
+
+    private static int minAvailable(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact) {
+        return kvStore.get(SliceTargetKey.sliceTargetKey(artifact.base()))
+                      .filter(SliceTargetValue.class::isInstance)
+                      .map(SliceTargetValue.class::cast)
+                      .map(SliceTargetValue::effectiveMinInstances)
+                      .or(1);
     }
 
     /// A slice state in which the node is actively hosting (or ramping toward hosting) the slice —

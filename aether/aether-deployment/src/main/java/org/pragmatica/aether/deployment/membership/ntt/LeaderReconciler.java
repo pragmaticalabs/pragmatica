@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
@@ -227,6 +228,16 @@ public final class LeaderReconciler {
     /// [`#setOwnsActiveSlices`]. A predicate (not a snapshot set) is intentional: ownership is read
     /// fresh per drain pass, never staged stale.
     private final AtomicReference<Predicate<NodeId>> ownsActiveSlices = new AtomicReference<>(id -> false);
+
+    /// Drain-availability guard (#1488 owner ruling), consulted for SLICE-OWNER candidates only:
+    /// `test(candidate, alreadySelected)` is `true` when draining `candidate` on top of the victims
+    /// already selected in the same pass keeps every slice it hosts at or above its `minAvailable`.
+    /// A candidate it refuses is skipped, never drained. Same layering as [`#ownsActiveSlices`]: the
+    /// KV-backed source lives in the deployment layer and is wired by `AetherNode` via
+    /// [`#setSliceDrainGuard`]; defaults to "always permits" so construction without it keeps the
+    /// ownership ordering alone.
+    private final AtomicReference<BiPredicate<NodeId, Set<NodeId>>> sliceDrainGuard = new AtomicReference<>((id, selected) -> true);
+
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
@@ -658,6 +669,18 @@ public final class LeaderReconciler {
         ownsActiveSlices.set(predicate == null
                              ? id -> false
                              : predicate);
+    }
+
+    /// Inject the drain-availability guard consulted for slice-owner drain candidates (#1488 owner
+    /// ruling). `AetherNode` wires this to the KV-backed minAvailable check so an owner whose removal
+    /// would drop a hosted slice below its `minAvailable` — counting victims already selected in the
+    /// same pass — is never drained. `null` resets to the "always permits" default. See the
+    /// [`#sliceDrainGuard`] field doc.
+    @Contract
+    public void setSliceDrainGuard(BiPredicate<NodeId, Set<NodeId>> guard) {
+        sliceDrainGuard.set(guard == null
+                            ? (id, selected) -> true
+                            : guard);
     }
 
     /// Observability — the one-shot leader-activation delay, computed once as
@@ -1173,8 +1196,8 @@ public final class LeaderReconciler {
         return victims;
     }
 
-    /// Victim selection (Approach 3 — slice-owner demotion + ephemeral preference). Two orderings
-    /// applied in turn, then a stable cap at `drainCount`:
+    /// Victim selection (Approach 3 — slice-owner demotion + ephemeral preference, leader last).
+    /// Orderings applied in turn, then a stable cap at `drainCount`:
     ///
     /// 1. **Slice-owner demotion** ([`#ownsActiveSlices`], #1488): a node currently serving /
     ///    owning active deployed slices is drawn from ONLY after every eligible non-owner — slice
@@ -1182,43 +1205,67 @@ public final class LeaderReconciler {
     ///    scale-down from moving slices it does not have to move (the 7→5 scale-down 96%-error
     ///    incident). Excluding owners outright was the #1488 defect: once every member hosted a
     ///    slice (an autoscaler scale-up under load puts an instance on each node) the pool was empty
-    ///    on every pass and the surplus was deferred forever. Draining an owner is safe by the
-    ///    owner ruling of 2026-09-24: a draining node reports `DRAINING`, which takes it out of the
-    ///    READY set placement allocates from, and the deployment manager's drain-eviction loop
-    ///    starts a replacement instance on another node before unloading the drained one.
-    /// 2. **Ephemeral preference** ([`#isEphemeral`]): within each ownership tier the pool is
+    ///    on every pass and the surplus was deferred forever.
+    /// 2. **Availability guard on owners** ([`#sliceDrainGuard`], #1488 owner ruling): draining an
+    ///    owner is NOT make-before-break — the drained node stops accepting work and exits on its
+    ///    own drain grace, independently of the deployment manager's eviction loop, so every slice it
+    ///    hosts loses one instance until the deficit is re-placed. An owner is therefore taken only
+    ///    if the guard confirms each hosted slice keeps at least its `minAvailable` instances,
+    ///    counting the victims already selected in this pass; a refused owner is skipped.
+    /// 3. **Ephemeral preference** ([`#isEphemeral`]): within each ownership tier the pool is
     ///    partitioned into EPHEMERAL (CTM-provisioned, id carries a ULID suffix) and CONFIGURED
     ///    (compose-seeded, `<prefix>-<ordinal>`) candidates. Victims are drawn from the ephemeral
     ///    partition FIRST (the nodes added for scale-up), falling back to configured seeds only when
     ///    ephemeral candidates cannot cover the surplus — so a scale-down drains the ephemeral fleet
     ///    and preserves the originally-configured cluster.
+    /// 4. **Leader last** ([`PresenceSampler#self`], #1089 option B): the local node — the leader,
+    ///    since only the leader reconciles — is held out of every tier above and considered only
+    ///    after all of them, under the same tier rules. It is a tie-break, never an exclusion: the
+    ///    leader is chosen only when no other member can cover the surplus.
     ///
     /// Maturity-grace resolution: ephemeral NON-owners are drainable regardless of age — they own
     /// nothing, so there is no role-propagation-into-ownership race to guard against. Every other
     /// partition (configured non-owners, and both owner partitions) passes the drain-safety grace
     /// ([`#pastDrainSafetyGrace`]) first: a just-joined seed's role labels may still be in flight,
     /// and an ephemeral owner no longer has the "owns nothing" argument that exempts its non-owner
-    /// sibling. Candidates the grace holds back are deferred, never dropped
+    /// sibling. Candidates the grace or the availability guard hold back are deferred, never dropped
     /// ([`#deferYoungSurplusDrain`]). Within each partition the legacy stable reversed-id iteration
     /// order is preserved for determinism. A member with no readable age is treated as mature
     /// (legacy behaviour).
-    ///
-    /// The leader is NOT excluded here, in either tier: this selection has no notion of which member
-    /// is `self`, exactly as before #1488. A leader chosen as a victim is #1089's defect and its fix,
-    /// not this one's; the non-owner tier is unchanged, so every pass that selected (or skipped) the
-    /// leader before still does.
     private Set<NodeId> selectDrainVictims(Set<NodeId> currentMembers, int drainCount) {
-        var ordered = currentMembers.stream().sorted(Comparator.comparing(NodeId::id).reversed()).toList();
-        var nonOwners = nonSliceOwners(ordered);
-        var owners = sliceOwners(ordered);
+        var self = presenceSampler.self();
+        var others = currentMembers.stream()
+                                   .filter(id -> !id.equals(self))
+                                   .sorted(Comparator.comparing(NodeId::id).reversed())
+                                   .toList();
         var victims = new LinkedHashSet<NodeId>();
+
+        appendTieredVictims(victims, others, drainCount);
+        appendTieredVictims(victims, selfIfMember(currentMembers, self), drainCount);
+
+        return Set.copyOf(victims);
+    }
+
+    /// The leader's own id as a one-element candidate list when it is a member, else empty — the
+    /// final, leader-last pass of [`#selectDrainVictims`].
+    private static List<NodeId> selfIfMember(Set<NodeId> currentMembers, NodeId self) {
+        return currentMembers.contains(self)
+               ? List.of(self)
+               : List.of();
+    }
+
+    /// Append victims from `candidates` in tier order — ephemeral non-owners, mature configured
+    /// non-owners, then the guarded owner tier (mature ephemeral, mature configured) — up to the
+    /// `drainCount` cap.
+    @Contract
+    private void appendTieredVictims(Set<NodeId> victims, List<NodeId> candidates, int drainCount) {
+        var nonOwners = nonSliceOwners(candidates);
+        var owners = sliceOwners(candidates);
 
         appendVictims(victims, ephemeralCandidates(nonOwners), drainCount);
         appendVictims(victims, matureConfiguredCandidates(nonOwners), drainCount);
-        appendVictims(victims, matureEphemeralCandidates(owners), drainCount);
-        appendVictims(victims, matureConfiguredCandidates(owners), drainCount);
-
-        return Set.copyOf(victims);
+        appendGuardedVictims(victims, matureEphemeralCandidates(owners), drainCount);
+        appendGuardedVictims(victims, matureConfiguredCandidates(owners), drainCount);
     }
 
     /// The members that own no active slices — the preferred victim tier.
@@ -1246,6 +1293,23 @@ public final class LeaderReconciler {
             }
 
             ordered.add(id);
+        }
+    }
+
+    /// Owner-tier counterpart of [`#appendVictims`]: each candidate is added only when the
+    /// [`#sliceDrainGuard`] confirms draining it — on top of the victims accumulated so far — keeps
+    /// every slice it hosts at or above `minAvailable`. Order-sensitive by design: the guard sees
+    /// the growing victim set, so a second owner sharing a slice with an earlier victim is refused.
+    @Contract
+    private void appendGuardedVictims(Set<NodeId> victims, List<NodeId> candidates, int drainCount) {
+        for (var id : candidates) {
+            if (victims.size() >= drainCount) {
+                return;
+            }
+
+            if (sliceDrainGuard.get().test(id, Set.copyOf(victims))) {
+                victims.add(id);
+            }
         }
     }
 
@@ -1325,15 +1389,16 @@ public final class LeaderReconciler {
     /// Deferral of the un-covered surplus shortfall: WARN with the young candidates' ages (the
     /// operator-facing trace of WHY the surplus was not fully drained) and arm a single
     /// follow-up reconcile for when the oldest young candidate matures. The shortfall can arise
-    /// from one eligibility filter — every remaining candidate (a configured seed, or a slice owner of
-    /// either kind) still inside the drain-safety grace; slice owners are a fallback tier, never
-    /// excluded (#1488) — and the surplus
-    /// is stable-state (no SWIM edge re-fires the reconciler), so this never silently drops it: the
-    /// follow-up re-evaluates after the grace window (when seeds mature and/or slice ownership may
-    /// have shifted), bounded and deduped exactly like the deficit follow-up.
+    /// from two eligibility filters — a remaining candidate (a configured seed, or a slice owner of
+    /// either kind) still inside the drain-safety grace, OR a slice owner refused by the
+    /// availability guard because draining it would drop a hosted slice below `minAvailable`
+    /// (#1488) — and the surplus is stable-state (no SWIM edge re-fires the reconciler), so this
+    /// never silently drops it: the follow-up re-evaluates after the oldest young candidate matures,
+    /// or after the full grace window when none is young (when seeds mature and/or slice placement
+    /// may have shifted), bounded and deduped exactly like the deficit follow-up.
     @Contract
     private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount) {
-        log.warn("LeaderReconciler deferring surplus drain of {} member(s): every remaining candidate is younger than the drain-safety grace ({} ms — role propagation may still be in flight); slice owners are a fallback tier, not excluded; youngAgesMs={}",
+        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable; youngAgesMs={}",
                  deferredCount,
                  drainSafetyGraceWindow.millis(),
                  youngMemberAgesMs(currentMembers));
