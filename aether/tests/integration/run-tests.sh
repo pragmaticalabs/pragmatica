@@ -23,9 +23,6 @@ MONOREPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 export TARGET_HOST
 
 source "${SCRIPT_DIR}/lib/common.sh"
-# One identity per run, inherited by every suite subshell: scopes per-run scratch state (the live-
-# endpoint sticky file) so nothing a previous run left behind is ever read as this run's.
-export AETHER_RUN_ID="${AETHER_RUN_ID:-$$-$(date +%s)}"
 source "${SCRIPT_DIR}/lib/cluster.sh"
 source "${SCRIPT_DIR}/lib/suite.sh"
 
@@ -985,6 +982,9 @@ cloud_bringup_cluster_b() {
 # ---------------------------------------------------------------------------
 teardown() {
     log_step "Tearing down clusters"
+    # This run's per-run scratch state (endpoint memory) — keyed by AETHER_RUN_ID, so only ours.
+    rm -f "${TMPDIR:-/tmp}/aether-live-endpoint-"*"-${AETHER_RUN_ID:-norun}" \
+          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" 2>/dev/null || true
     # Clean up snapshot-override temp TOMLs (set when AETHER_VM_SNAPSHOT_ID is used).
     if [ -n "${CLOUD_TOML_TMPDIR:-}" ] && [ -d "$CLOUD_TOML_TMPDIR" ]; then
         rm -rf "$CLOUD_TOML_TMPDIR"

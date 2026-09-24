@@ -334,27 +334,41 @@ got=$(pick_ep "http://10.0.0.1:8070")
 [ "$got" = "http://10.0.0.2:8070" ] && ok "02y pick_publish_endpoint: re-pick skips the endpoint that just failed" \
     || fail "02y pick_publish_endpoint (exclude first): got '${got}'"
 
-# --- _resolve_live_endpoint on cloud: this run's sticky endpoint first; another run's never -------
-# curl is stubbed to record every probed URL: the pinned endpoint is dead (rc 7), only LIVE answers.
-resolve_probe() {  # run_id sticky_run_id sticky_endpoint -> "result|probed urls"
-    ( export TMPDIR="$(mktemp -d)"; ENV_TYPE=cloud; CLUSTER_ID=b; NODE_COUNT=1
-      CLUSTER_ENDPOINT="http://pinned-dead:8080"; export AETHER_RUN_ID="$1"
-      printf '%s' "$3" > "${TMPDIR}/aether-live-endpoint-b-$2"
+# --- _resolve_live_endpoint on cloud: dead-pin memory and per-run endpoint state --------------------
+# curl is stubbed to record every probed URL. A URL answers iff it is listed in "$ALIVE" (a file, so
+# liveness can flip between calls). Two calls are made; the result and probes of the SECOND are returned.
+resolve2() {  # retry_s pin_alive_on_2nd sticky_run sticky_ep -> "result2|probes2"
+    ( export TMPDIR="$(mktemp -d)"; ENV_TYPE=cloud; CLUSTER_ID=b; NODE_COUNT=1; CLOUD_PIN_RETRY_S="$1"
+      CLUSTER_ENDPOINT="http://pin:8080"; export AETHER_RUN_ID=r1
+      [ -n "$4" ] && printf '%s' "$4" > "${TMPDIR}/aether-live-endpoint-b-$3"
+      [ "$3" != r1 ] && [ -n "$4" ] && printf '%s' "$4" > "${TMPDIR}/aether-live-endpoint-b"  # pre-scoping name
+      ALIVE="${TMPDIR}/alive"; printf 'http://live:8080/health/live\n' > "$ALIVE"
       PROBES="${TMPDIR}/probes"; : > "$PROBES"
       curl() { local u; for u in "$@"; do case "$u" in http*) echo "$u" >> "$PROBES" ;; esac; done
-               case "$*" in *"http://live:8080/health/live"*) return 0 ;; *) return 7 ;; esac; }
+               local x; for x in "$@"; do case "$x" in http*) grep -qxF "$x" "$ALIVE" && return 0 ;; esac; done; return 7; }
       to_node_id() { return 1; }
-      out=$(_resolve_live_endpoint 2>/dev/null)
+      _resolve_live_endpoint >/dev/null 2>&1
+      [ "$2" = yes ] && echo "http://pin:8080/health/live" >> "$ALIVE"
+      : > "$PROBES"; out=$(_resolve_live_endpoint 2>/dev/null)
       printf '%s|%s' "$out" "$(tr '\n' ',' < "$PROBES")"; rm -rf "$TMPDIR" )
 }
-got=$(resolve_probe r1 r1 "http://live:8080")
+got=$(resolve2 30 no r1 "http://live:8080")
 [ "$got" = "http://live:8080|http://live:8080/health/live," ] \
-    && ok "_resolve_live_endpoint cloud: this run's live sticky endpoint answers without probing the dead pinned one" \
-    || fail "_resolve_live_endpoint cloud (sticky first): got '${got}'"
-got=$(resolve_probe r1 r0 "http://live:8080")
+    && ok "_resolve_live_endpoint cloud: a dead pin is probed once, then skipped inside the retry window" \
+    || fail "_resolve_live_endpoint cloud (dead-pin memory): got '${got}'"
+got=$(resolve2 0 yes r1 "http://live:8080")
+[ "$got" = "http://pin:8080|http://pin:8080/health/live," ] \
+    && ok "_resolve_live_endpoint cloud: after the window a revived pin is preferred again" \
+    || fail "_resolve_live_endpoint cloud (pin revived): got '${got}'"
+got=$(resolve2 30 no r0 "http://live:8080")
 case "$got" in
-    *"http://live:8080"*) fail "_resolve_live_endpoint cloud: probed ANOTHER run's sticky endpoint: '${got}'" ;;
-    *) ok "_resolve_live_endpoint cloud: a sticky file from another run is never read" ;;
+    *"http://live:8080"*) fail "_resolve_live_endpoint cloud: read ANOTHER run's (or the pre-scoping) endpoint file: '${got}'" ;;
+    *) ok "_resolve_live_endpoint cloud: endpoint files from another run, or the pre-scoping name, are never read" ;;
+esac
+got=$(resolve2 30 no r1 "http://dead-sticky:8080")
+case "$got" in
+    *"dead-sticky"*) fail "_resolve_live_endpoint cloud: re-probed a dead remembered endpoint: '${got}'" ;;
+    *) ok "_resolve_live_endpoint cloud: a dead remembered endpoint is forgotten, not re-probed every call" ;;
 esac
 
 unset -f hcloud api_get ssh

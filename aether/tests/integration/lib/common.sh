@@ -27,6 +27,9 @@ LB_MGMT_PORT="${LB_MGMT_PORT:-9091}"
 MGMT_ENTRY_POINT="${MGMT_ENTRY_POINT:-http://${TARGET_HOST}:5150}"
 # App traffic → LB public port; management API → MGMT_ENTRY_POINT (witness or LB).
 CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-${MGMT_ENTRY_POINT}}"
+# One identity per run for per-run scratch state (see _live_endpoint_sticky_file): inherited from
+# run-tests.sh, which sources this file first; minted here for a standalone suite or tool run.
+export AETHER_RUN_ID="${AETHER_RUN_ID:-$$-$(date +%s)}"
 APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 LB_ENDPOINT="${LB_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 # Direct node access (legitimate per-node queries — e.g., "is METRICS ACTIVE on node-2?").
@@ -358,6 +361,17 @@ _fork_bounded() {
     return "$rc"
 }
 
+# Per-run scratch state (`AETHER_RUN_ID`, minted once near the top of this file; run-tests.sh sources
+# it first, so every suite inherits one id) so nothing an earlier run left behind is read as this run's: an endpoint it
+# recorded may since have been recycled to another cluster, which would answer /health/live with the
+# same API key — a successful read from the wrong subject.
+_live_endpoint_sticky_file() {
+    printf '%s/aether-live-endpoint-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
+}
+_pin_dead_file() {
+    printf '%s/aether-pin-dead-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
+}
+
 # Resolve an endpoint that actually responds to /health/live. Preserves the pinned
 # CLUSTER_ENDPOINT when it's up; rotates once to any live core node when the pinned
 # endpoint is dead (e.g., during chaos-suite recovery where the pinned node was killed).
@@ -372,35 +386,31 @@ _fork_bounded() {
 #   3. docker/remote: label discovery (CTM KSUID replacements with ephemeral host
 #      ports) — the only path that survives full seed replacement; see
 #      _discover_endpoint_by_label.
-# This run's last-known-live endpoint for a cluster. Named per RUN (AETHER_RUN_ID, exported once by
-# run-tests.sh) so a file left by an earlier run can never be read: its IP may since have been
-# recycled to another cluster, which would answer /health/live with the same API key — a successful
-# read from the wrong subject.
-_live_endpoint_sticky_file() {
-    printf '%s/aether-live-endpoint-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
-}
-
+#
+# Dead-pin memory (cloud): once the pinned probe fails, it is skipped for
+# CLOUD_PIN_RETRY_S (default 30s) — the pin is still preferred, just not re-probed on every call.
+# Chaos suites kill the pinned node routinely; before this, every later call paid the 2s timeout
+# first, which one cloud endpoint enumeration multiplied into ~14s (2026-09-24 review of #1486).
 _resolve_live_endpoint() {
-    # Cloud: try THIS run's last-known-live endpoint FIRST. Once the pinned node has been killed
-    # (common in chaos suites) the pinned probe below costs its full 2s timeout on EVERY call before
-    # anything else is tried — with several CTM replacements an endpoint enumeration paid that per
-    # member (2026-09-24 review: ~14s per 02w readiness poll). A live sticky endpoint answers at
-    # once; a dead one costs the same single probe the old order paid anyway.
-    if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-        local sticky_first sticky_first_ep
-        sticky_first=$(_live_endpoint_sticky_file)
-        if [ -f "$sticky_first" ]; then
-            sticky_first_ep=$(cat "$sticky_first" 2>/dev/null || true)
-            if [ -n "$sticky_first_ep" ] && [ "$sticky_first_ep" != "${CLUSTER_ENDPOINT}" ] \
-                && curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${sticky_first_ep}/health/live" >/dev/null 2>&1; then
-                echo "${sticky_first_ep}"
-                return 0
-            fi
+    local pin_dead_file skip_pin=false now since pinned_then
+    pin_dead_file=$(_pin_dead_file)
+    if [ "${ENV_TYPE:-docker}" = "cloud" ] && [ -f "$pin_dead_file" ]; then
+        # "<epoch> <endpoint>": skip only for the SAME pin, and only inside the window.
+        read -r since pinned_then < "$pin_dead_file" 2>/dev/null || true
+        now=$(date +%s)
+        if [ "${pinned_then:-}" = "${CLUSTER_ENDPOINT}" ] \
+            && [ $(( now - ${since:-0} )) -lt "${CLOUD_PIN_RETRY_S:-30}" ] 2>/dev/null; then
+            skip_pin=true
         fi
     fi
-    if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
-        echo "${CLUSTER_ENDPOINT}"
-        return 0
+    if [ "$skip_pin" = false ]; then
+        if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
+            rm -f "$pin_dead_file" 2>/dev/null || true
+            echo "${CLUSTER_ENDPOINT}"
+            return 0
+        fi
+        [ "${ENV_TYPE:-docker}" = "cloud" ] \
+            && printf '%s %s\n' "$(date +%s)" "${CLUSTER_ENDPOINT}" > "$pin_dead_file" 2>/dev/null || true
     fi
     # Cloud: the pinned endpoint is dead. Each node lives on its OWN VM public IP at
     # the uniform CLOUD_MGMT_PORT (8080) — there is no shared TARGET_HOST port range
@@ -444,6 +454,9 @@ _resolve_live_endpoint() {
                 echo "${sticky_ep}"
                 return 0
             fi
+            # Dead: forget it. Only the scan below re-writes this file, so a kept dead entry taxed
+            # every call by 2s, and its IP stayed first in line if it was ever recycled.
+            rm -f "$sticky_file" 2>/dev/null || true
         fi
         local n node_id node_ip endpoint
         for n in $(seq 0 $((NODE_COUNT - 1))); do
