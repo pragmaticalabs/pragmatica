@@ -2218,6 +2218,14 @@ cloud_partition_node() {
                 log_fail "cloud_partition_node: hcloud firewall create '${fw_name}' failed (rc=${rc}): ${out}"
                 return "$rc"
             fi
+            if [ "$rc" -ne 0 ]; then
+                # Reused under its deterministic name: a firewall left by an earlier run may
+                # predate the labels, so apply them here too (idempotent with --overwrite).
+                hcloud firewall add-label --overwrite "$fw_name" \
+                    "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                    "aether-role=partition" >/dev/null 2>&1 \
+                    || log_warn "cloud_partition_node: could not label existing firewall '${fw_name}' — reapers will not see it"
+            fi
             fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null)
             if [ -z "$fw_id" ]; then
                 log_fail "cloud_partition_node: could not resolve firewall id for '${fw_name}' after create"
@@ -3805,7 +3813,12 @@ provisioning_snapshot() {
 # flight reads deficit=0 — and did on 2026-09-23, where this gate passed and logged "5 cores
 # present" while every following suite measured 4. `reachedFullMembership` is a LATCH (set
 # once, even pre-latched on re-election) and says nothing about current membership; it is
-# kept only as a non-leader guard. The harness's own counts
+# kept only as a non-leader guard.
+#
+# Still NOT a liveness check: countedCoreMembers is MEMBER + SUSPECT (LeaderReconciler
+# coreCountedMembers), so a dead core the leader still holds as SUSPECT counts. Which of the
+# two shapes passed on 2026-09-23 was never recorded — this gate logged nothing measured on
+# success — so restore now logs the measured counts it passed on. The harness's own counts
 # (cluster_active_core_count, ready_core_count) are fed by the SWIM-projection /
 # per-node lifecycle query, which can lag the leader's membership view by 10s-100s of
 # seconds on a genuinely-whole cluster — a present, counted core routinely reads
@@ -3823,7 +3836,7 @@ cluster_no_deficit() {
     [ -n "$snap" ] || return 1
     local counted
     counted=$(printf '%s' "$snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
-    printf '%s' "$snap" | grep -q '"deficit"[[:space:]]*:[[:space:]]*0[,}[:space:]]' \
+    printf '%s' "$snap" | grep -qE '"deficit"[[:space:]]*:[[:space:]]*0([^0-9.]|$)' \
         && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true' \
         && [ "${counted:-0}" -ge "${NODE_COUNT:-5}" ]
 }
@@ -4216,11 +4229,18 @@ restore_cluster_baseline() {
         # diagnosable in minutes, not hours — #336 observability surface.
         local snap
         snap=$(provisioning_snapshot)
-        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader-deficit). provisioning: ${snap}"
+        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader deficit==0 + reachedFullMembership + countedCoreMembers>=${target}). provisioning: ${snap}"
         return 1
     fi
 
-    log_info "restore_cluster_baseline: cluster at baseline (${target} cores present, leader deficit=0, generation quiesced)"
+    # Log what was MEASURED, not the target: the previous line printed ${target} whatever the
+    # leader reported, so a run could not tell which snapshot shape the gate passed on.
+    local _passed_snap _pc _pe _pd
+    _passed_snap=$(provisioning_snapshot 2>/dev/null)
+    _pc=$(printf '%s' "$_passed_snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    _pe=$(printf '%s' "$_passed_snap" | grep -oE '"effective"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    _pd=$(printf '%s' "$_passed_snap" | grep -oE '"deficit"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    log_info "restore_cluster_baseline: cluster at baseline (target=${target}; leader counted=${_pc:-?} effective=${_pe:-?} deficit=${_pd:-?}; active=$(cluster_active_core_count) READY=$(ready_core_count); generation quiesced)"
     return 0
 }
 
