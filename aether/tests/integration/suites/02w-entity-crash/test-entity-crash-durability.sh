@@ -227,7 +227,7 @@ test_deploy_entity_blueprint() {
     # Probe every node: the slice need not be placed on all of them, so ANY node answering is
     # readiness. `__probe__` does not exist, and a "not found" answer still proves the route is wired.
     if ! wait_for "entity slice answering on some node" \
-        'refresh_app_endpoints >/dev/null 2>&1; entity_post_any "/api/entity/get" "{\"orderId\":\"__probe__\"}" "\"outcome\"" >/dev/null' 240; then
+        'entity_post_any "/api/entity/get" "{\"orderId\":\"__probe__\"}" "\"outcome\"" >/dev/null' 240; then
         log_fail "entity slice never became reachable on any node"
         return 1
     fi

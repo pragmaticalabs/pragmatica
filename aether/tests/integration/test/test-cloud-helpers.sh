@@ -318,6 +318,22 @@ got=$(app_eps)
     && ok "node_app_endpoints cloud: no members -> rc 1, no output" \
     || fail "node_app_endpoints cloud (no members): expected '1|', got '${got}'"
 
+# --- 02y pick_publish_endpoint: a re-pick must not hand back the endpoint that just failed ---------
+# A killed member stays in the membership (and the endpoint list) until its departure commits, so a
+# plain `head -1` re-pick returned the node that had just been killed.
+pick_ep() {  # exclude -> picked endpoint (or "rc=N")
+    ( log_fail() { :; }
+      node_app_endpoints() { printf 'http://10.0.0.1:8070\nhttp://10.0.0.2:8070\nhttp://10.0.0.3:8070\n'; }
+      eval "$(awk '/^pick_publish_endpoint\(\) \{/,/^\}/' "${INTEG_DIR}/suites/02y-stream-crash/test-stream-crash-durability.sh")"
+      pick_publish_endpoint "$1" && printf '%s' "$STREAM_PUBLISH_ENDPOINT" || printf 'rc=%s' "$?" )
+}
+got=$(pick_ep "")
+[ "$got" = "http://10.0.0.1:8070" ] && ok "02y pick_publish_endpoint: first live endpoint when nothing failed" \
+    || fail "02y pick_publish_endpoint (no exclude): got '${got}'"
+got=$(pick_ep "http://10.0.0.1:8070")
+[ "$got" = "http://10.0.0.2:8070" ] && ok "02y pick_publish_endpoint: re-pick skips the endpoint that just failed" \
+    || fail "02y pick_publish_endpoint (exclude first): got '${got}'"
+
 unset -f hcloud api_get ssh
 unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS
 
