@@ -128,7 +128,12 @@ STREAM_PUBLISH_ENDPOINT=""
 
 pick_publish_endpoint() {
     STREAM_PUBLISH_ENDPOINT="$(node_app_endpoints 2>/dev/null | head -1)"
-    [ -n "$STREAM_PUBLISH_ENDPOINT" ]
+    if [ -z "$STREAM_PUBLISH_ENDPOINT" ]; then
+        # Say it once, loudly. A publish that is never attempted used to fail the durability
+        # assertions downstream in 0s, reading as a stream defect when nothing had been sent.
+        log_fail "could not resolve any per-node app endpoint — no publish can be attempted"
+        return 1
+    fi
 }
 
 publish_marker() {
