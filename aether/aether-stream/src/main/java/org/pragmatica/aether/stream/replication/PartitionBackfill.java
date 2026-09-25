@@ -128,7 +128,7 @@ public final class PartitionBackfill {
     private final ReplicationReceiveHandler.ReplicaDurability durability;
 
     /// #1505 F2: this node's quarantine record. A quarantined partition holds a divergent entry, so every path
-    /// that would mark self CAUGHT_UP or ack the owner refuses instead ({@link #refuseIfQuarantined}).
+    /// that would mark self CAUGHT_UP or ack the owner refuses instead ({@link #promoteUnlessQuarantined}).
     private final QuarantineView quarantine;
 
     /// First wall-clock instant (ms) at which each partition was observed to have NO caught-up source.
@@ -411,11 +411,17 @@ public final class PartitionBackfill {
     }
 
     /// The last gate before a self-promotion, and before the completion ack a non-owner sends with it. Every
-    /// promotion path reaches its terminal step asynchronously, after a probe or a pull, so a quarantine
-    /// recorded while that step was in flight is caught here rather than at [#backfill]'s entry.
-    private Option<Promise<Long>> refuseIfQuarantined(String streamName, int partition) {
-        return quarantine.quarantinedAt(streamName, partition)
-                         .map(divergedAt -> quarantineRefusal(streamName, partition, divergedAt));
+    /// promotion path reaches its terminal step asynchronously, after a probe or a pull, so a quarantine recorded
+    /// while that step was in flight is caught here rather than at [#backfill]'s entry. The check and `promotion`
+    /// (registry write plus ack) run under the SAME lock that records a divergence (#1505 R3,
+    /// [QuarantineView#unlessQuarantined]): no ack can leave after a divergence is recorded and before it is seen.
+    private Promise<Long> promoteUnlessQuarantined(String streamName,
+                                                   int partition,
+                                                   Supplier<Promise<Long>> promotion) {
+        return quarantine.unlessQuarantined(streamName, partition, promotion)
+                         .or(() -> quarantineRefusal(streamName,
+                                                     partition,
+                                                     quarantine.quarantinedAt(streamName, partition).or(0L)));
     }
 
     private static Promise<Long> quarantineRefusal(String streamName, int partition, long divergedAt) {
@@ -597,12 +603,11 @@ public final class PartitionBackfill {
                : reverifyNoOp(streamName, partition, selfConfirmed, ownerHead);
     }
 
-    /// #1505 F2: a quarantined partition sends no completion re-ack ([#refuseIfQuarantined]).
+    /// #1505 F2: a quarantined partition sends no completion re-ack ([#promoteUnlessQuarantined]).
     private Promise<Long> reverifyNoOp(String streamName, int partition, long selfConfirmed, long ownerHead) {
-        return refuseIfQuarantined(streamName, partition).or(() -> reverifyNoOpUnquarantined(streamName,
-                                                                                             partition,
-                                                                                             selfConfirmed,
-                                                                                             ownerHead));
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> reverifyNoOpUnquarantined(streamName, partition, selfConfirmed, ownerHead));
     }
 
     /// No-op arm of the probe-first re-verify: the HRW owner's head is not ahead of self, so the CAUGHT_UP
@@ -776,13 +781,11 @@ public final class PartitionBackfill {
                          .flatMap(_ -> promote(streamName, partition, fromOffset, watermark, applied));
     }
 
-    /// #1505 F2: a quarantined partition is never promoted after a pull ([#refuseIfQuarantined]).
+    /// #1505 F2: a quarantined partition is never promoted after a pull ([#promoteUnlessQuarantined]).
     private Promise<Long> promote(String streamName, int partition, long fromOffset, long watermark, long applied) {
-        return refuseIfQuarantined(streamName, partition).or(() -> promoteUnquarantined(streamName,
-                                                                                        partition,
-                                                                                        fromOffset,
-                                                                                        watermark,
-                                                                                        applied));
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> promoteUnquarantined(streamName, partition, fromOffset, watermark, applied));
     }
 
     /// Promote self to CAUGHT_UP only when the highest applied offset actually reaches the source
@@ -1217,9 +1220,11 @@ public final class PartitionBackfill {
         return ownerSelfPromote(streamName, partition);
     }
 
-    /// #1505 F2: a quarantined partition is never owner-self-promoted ([#refuseIfQuarantined]).
+    /// #1505 F2: a quarantined partition is never owner-self-promoted ([#promoteUnlessQuarantined]).
     private Promise<Long> ownerSelfPromote(String streamName, int partition) {
-        return refuseIfQuarantined(streamName, partition).or(() -> ownerSelfPromoteUnquarantined(streamName, partition));
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> ownerSelfPromoteUnquarantined(streamName, partition));
     }
 
     /// Owner self-promotion: self IS the HRW owner and no REACHABLE source proves more history exists ahead
@@ -1386,19 +1391,21 @@ public final class PartitionBackfill {
         NOT_APPLICABLE
     }
 
-    /// #1505 F2: a quarantined partition never enters the cold-start promotion contest ([#refuseIfQuarantined]).
+    /// #1505 F2: a quarantined partition never enters the cold-start promotion contest ([#promoteUnlessQuarantined]).
     private Promise<Long> decidePromotion(String streamName,
                                           int partition,
                                           List<NodeId> peers,
                                           long selfWm,
                                           List<Result<Long>> results,
                                           TieBreak tieBreak) {
-        return refuseIfQuarantined(streamName, partition).or(() -> decidePromotionUnquarantined(streamName,
-                                                                                                partition,
-                                                                                                peers,
-                                                                                                selfWm,
-                                                                                                results,
-                                                                                                tieBreak));
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> decidePromotionUnquarantined(streamName,
+                                                                           partition,
+                                                                           peers,
+                                                                           selfWm,
+                                                                           results,
+                                                                           tieBreak));
     }
 
     /// Promotion predicate. Promote self iff (a) EVERY peer probe succeeded (all reachable) AND (b)
@@ -1507,15 +1514,17 @@ public final class PartitionBackfill {
         return ownerWatermark >= 0 && selfConfirmed >= ownerWatermark;
     }
 
-    /// #1505 F2: a quarantined partition is never promoted at the owner's tail (#559 path, [#refuseIfQuarantined]).
+    /// #1505 F2: a quarantined partition is never promoted at the owner's tail (#559 path, [#promoteUnlessQuarantined]).
     private Promise<Long> promoteAtOwnerTail(String streamName,
                                              int partition,
                                              long selfConfirmed,
                                              long ownerWatermark) {
-        return refuseIfQuarantined(streamName, partition).or(() -> promoteAtOwnerTailUnquarantined(streamName,
-                                                                                                   partition,
-                                                                                                   selfConfirmed,
-                                                                                                   ownerWatermark));
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> promoteAtOwnerTailUnquarantined(streamName,
+                                                                              partition,
+                                                                              selfConfirmed,
+                                                                              ownerWatermark));
     }
 
     private Promise<Long> promoteAtOwnerTailUnquarantined(String streamName,

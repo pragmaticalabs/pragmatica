@@ -20,6 +20,8 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -62,6 +64,7 @@ class PartitionBackfillLiveInterleaveTest {
     private final ConcurrentLinkedQueue<ReplicationMessage.CatchupRequest> catchupRequests = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<ReplicationMessage.ReplicateAck> backfillAcks = new ConcurrentLinkedQueue<>();
     private final Promise<Long> probeAnswer = Promise.promise();
+    private volatile Runnable duringBackfillAck = () -> {};
 
     @BeforeEach
     void setUp() {
@@ -316,6 +319,64 @@ class PartitionBackfillLiveInterleaveTest {
         assertThat(backfillAcks).isEmpty();
     }
 
+    /// #1505 R3: the terminal promotion step and its completion ack run under the same lock that records a
+    /// divergence. While the ack is being sent, another thread meets a divergent entry (offset 5 re-offered with
+    /// different content), and the ack waits up to 300 ms for it. With the guard in place the divergence cannot be
+    /// recorded until the promotion has returned, so the ack never observes a quarantine. Without it, the
+    /// divergence lands mid-ack: the one completion ack the reviewer's window allowed.
+    @Test
+    void quarantine_divergenceRecordedDuringCompletionAck_waitsForThePromotionToFinish() {
+        var handler = receiveHandler();
+        var backfill = backfill();
+        var quarantinedDuringAck = new AtomicBoolean(false);
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
+        duringBackfillAck = () -> quarantinedDuringAck.set(divergenceLandsWithin(handler, 300));
+        var run = backfill.backfill(STREAM, PARTITION);
+        catchupInFlight.resolve(Result.success(ownerResponse(13, 1)));
+
+        assertThat(run.await().isSuccess()).isTrue();
+        assertThat(backfillAcks).as("the promotion completed and acked").isNotEmpty();
+        assertThat(quarantinedDuringAck.get()).as("a divergence was recorded while the completion ack was in flight").isFalse();
+        awaitQuarantine();
+        assertThat(replica.quarantinedAt(STREAM, PARTITION).or(-1L)).as("the divergence is recorded once the promotion returns").isEqualTo(5L);
+    }
+
+    /// Offers a divergent event at held offset 5 on another thread and reports whether the quarantine became visible
+    /// within `millis`.
+    private boolean divergenceLandsWithin(ReplicationReceiveHandler handler, long millis) {
+        Thread.ofPlatform().start(() -> handler.onReplicateEvents(replicateEvents(owner,
+                                                                                  STREAM,
+                                                                                  PARTITION,
+                                                                                  5,
+                                                                                  List.of("forged-5".getBytes(UTF_8)),
+                                                                                  List.of(1005L),
+                                                                                  Epoch.ZERO)));
+        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+
+        while (System.nanoTime() < deadline) {
+            if (replica.quarantinedAt(STREAM, PARTITION).isPresent()) {
+                return true;
+            }
+            Thread.onSpinWait();
+        }
+
+        return false;
+    }
+
+    private void awaitQuarantine() {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+        while (replica.quarantinedAt(STREAM, PARTITION).isEmpty() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
+
+    private void recordBackfillAck(ReplicationMessage.ReplicateAck ack) {
+        duringBackfillAck.run();
+        backfillAcks.add(ack);
+    }
+
     private ReplicationReceiveHandler receiveHandler() {
         return replicationReceiveHandler(self,
                                          replica::appendRecovered,
@@ -330,7 +391,7 @@ class PartitionBackfillLiveInterleaveTest {
         return partitionBackfill(registry,
                                  replica::appendRecovered,
                                  this::deferredCatchup,
-                                 (_, message) -> backfillAcks.add((ReplicationMessage.ReplicateAck) message),
+                                 (_, message) -> recordBackfillAck((ReplicationMessage.ReplicateAck) message),
                                  (_, _, _) -> probeAnswer,
                                  (stream, partition) -> replica.partitionInfo(stream, partition)
                                                                .map(StreamPartitionManager.PartitionInfo::headOffset)
@@ -340,7 +401,7 @@ class PartitionBackfillLiveInterleaveTest {
                                  () -> MEMBERS,
                                  CommittedStreamOwnerSource.none(),
                                  replica::syncReplicated,
-                                 replica::quarantinedAt);
+                                 replica.quarantineView());
     }
 
     private Promise<ReplicationMessage.CatchupResponse> deferredCatchup(NodeId target,

@@ -94,7 +94,7 @@ class PartitionBackfillDurabilityTest {
                                  List::of,
                                  CommittedStreamOwnerSource.none(),
                                  durability,
-                                 manager::quarantinedAt);
+                                 manager.quarantineView());
     }
 
     private static Promise<Unit> recordSync(ConcurrentLinkedQueue<String> calls,

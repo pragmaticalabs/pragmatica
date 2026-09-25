@@ -23,6 +23,7 @@ import java.util.function.IntPredicate;
 import java.util.function.IntSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -41,6 +42,7 @@ import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
+import org.pragmatica.aether.stream.replication.QuarantineView;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
@@ -67,7 +69,9 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -186,6 +190,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// process restart: persisting it would be a new persisted-state format, which is out of scope. Cleared
     /// only when the stream is destroyed.
     private final ConcurrentHashMap<PartitionRef, Long> divergedAt = new ConcurrentHashMap<>();
+    /// #1505 R3: serialises RECORDING a divergence ([PartitionQuarantine#recordDivergence], called inside a ring's
+    /// ordered section) against a self-promotion and its completion ack ([#quarantineView]). A promotion that runs
+    /// under it either completes before the divergence is recorded, or sees the record and refuses; no ack can
+    /// leave in between. Lock order is always ring section → this lock, never the reverse, because a promotion
+    /// never appends to a ring.
+    private final Object quarantineLock = new Object();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -1573,10 +1583,29 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// The lowest offset at which `(streamName, partition)` holds a divergent entry on this replica (#1505 F2), or
-    /// [Option#none] when the partition is not quarantined. The backfill orchestrator gates every self-promotion
-    /// on it.
+    /// [Option#none] when the partition is not quarantined.
     public Option<Long> quarantinedAt(String streamName, int partition) {
         return option(divergedAt.get(new PartitionRef(streamName, partition)));
+    }
+
+    /// This manager's quarantine record as the backfill orchestrator consumes it (#1505 F2/R3). Its promotion guard
+    /// runs under [#quarantineLock], the same lock that records a divergence.
+    public QuarantineView quarantineView() {
+        return new ManagerQuarantineView();
+    }
+
+    private final class ManagerQuarantineView implements QuarantineView {
+        @Override
+        public Option<Long> quarantinedAt(String streamName, int partition) {
+            return StreamPartitionManager.this.quarantinedAt(streamName, partition);
+        }
+
+        @Override
+        public <T> Option<T> unlessQuarantined(String streamName, int partition, Supplier<T> promotion) {
+            synchronized (quarantineLock) {
+                return quarantinedAt(streamName, partition).fold(() -> some(promotion.get()), _ -> none());
+            }
+        }
     }
 
     /// Owner admission first, then the replica floor: the floor is evaluated only for an admitted write.
@@ -1988,6 +2017,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         @Contract
         @Override
         public void recordDivergence(long offset) {
+            synchronized (quarantineLock) {
+                recordLocked(offset);
+            }
+        }
+
+        private void recordLocked(long offset) {
             if (divergedAt.putIfAbsent(ref, offset) == null) {
                 quarantinedPartitionsSinceBoot.incrementAndGet();
                 log.error("Replica partition {}[{}] QUARANTINED: offset {} holds an event that differs from the one its sender "

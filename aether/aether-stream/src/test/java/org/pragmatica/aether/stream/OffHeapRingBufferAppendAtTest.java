@@ -11,6 +11,10 @@ import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -123,6 +127,62 @@ class OffHeapRingBufferAppendAtTest {
             assertThat(ring.appendOrderedAt(1, event(1), 1001L, fence, this::recordInOrder).unwrap()).isEqualTo(1L);
             assertThat(ring.headOffset()).as("nothing appended past the divergence").isEqualTo(2L);
             assertThat(inOrderRuns).isEmpty();
+        }
+    }
+
+    /// #1505 R2: the fence is READ inside the ordered section, not only recorded there. Writer B offers the next
+    /// offset (3) while writer A offers a divergent event at 1. B's fence read parks until A has recorded the
+    /// divergence, for at most 500 ms. With the read inside the section, B holds the section while parked, so A
+    /// cannot record. B's read times out, B appends 3, and only then does A record, with the head already at 3.
+    /// With the read hoisted out of the section, A records while B is parked. B then appends 3 on a stale "no
+    /// divergence" read, past a divergence already known. The invariant pinned: nothing is appended after a
+    /// divergence is recorded.
+    @Test
+    void appendOrderedAt_fenceReadAndAppend_shareOneSection_nothingAppendsAfterARecordedDivergence() throws Exception {
+        try (var ring = ringHolding(3)) {
+            var bReading = new CountDownLatch(1);
+            var recorded = new CountDownLatch(1);
+            var headAtRecord = new AtomicLong(Long.MIN_VALUE);
+            var writerB = new AtomicReference<Thread>();
+            var gatedFence = new OffHeapRingBuffer.DivergenceFence() {
+                private volatile long divergedAt = -1L;
+
+                @Override
+                public long divergedAt() {
+                    if (Thread.currentThread() == writerB.get()) {
+                        bReading.countDown();
+                        awaitQuietly(recorded, 500);
+                    }
+                    return divergedAt;
+                }
+
+                @Override
+                public void recordDivergence(long offset) {
+                    headAtRecord.set(ring.headOffset());
+                    divergedAt = offset;
+                    recorded.countDown();
+                }
+            };
+            var b = Thread.ofPlatform().unstarted(() -> ring.appendOrderedAt(3, event(3), 1003L, gatedFence, Result::success));
+            writerB.set(b);
+            b.start();
+            assertThat(bReading.await(5, TimeUnit.SECONDS)).as("writer B reached its fence read").isTrue();
+
+            var a = Thread.ofPlatform().start(() -> ring.appendOrderedAt(1, event(9), 1001L, gatedFence, Result::success));
+            a.join(5_000);
+            b.join(5_000);
+
+            assertThat(headAtRecord.get()).as("a divergence was recorded").isNotEqualTo(Long.MIN_VALUE);
+            assertThat(ring.headOffset()).as("no append after the divergence was recorded (head at record = %d)", headAtRecord.get())
+                                         .isEqualTo(headAtRecord.get());
+        }
+    }
+
+    private static void awaitQuietly(CountDownLatch latch, long millis) {
+        try {
+            latch.await(millis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

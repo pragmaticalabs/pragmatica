@@ -80,7 +80,7 @@ class CatchUpWalDurabilityTest {
                                                            List::of,
                                                            CommittedStreamOwnerSource.none(),
                                                            replica::syncReplicated,
-                                                           replica::quarantinedAt);
+                                                           replica.quarantineView());
         var before = fsyncCount();
 
         backfill.backfill(STREAM, PARTITION).await().onFailure(cause -> fail(cause.message()));
