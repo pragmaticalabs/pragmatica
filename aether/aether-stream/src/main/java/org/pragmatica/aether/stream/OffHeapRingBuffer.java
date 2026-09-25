@@ -26,6 +26,7 @@ import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -46,8 +47,8 @@ import static org.pragmatica.lang.Result.unitResult;
 /// [#countEvictionsForSpace], both store `tail + 1`, lose one eviction, and land the second write on a
 /// slot the tail still claims — a torn read the post-copy check cannot see. The single appender is
 /// `appendLock` (#1258): every header-writing path — `append`, `appendOrdered`, `appendBatch`,
-/// `seedHead` and the retention sweeps via [#guardedSweep] — runs inside `synchronized (appendLock)`,
-/// and `StreamPartitionManager.appendToPartition` reaches the ring only through `appendOrdered`.
+/// `appendOrderedAt`, `seedHead` and the retention sweeps via [#guardedSweep] — runs inside `synchronized (appendLock)`,
+/// and `StreamPartitionManager` reaches the ring only through `appendOrdered` and `appendOrderedAt`.
 public final class OffHeapRingBuffer implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(OffHeapRingBuffer.class);
     /// Empty-ring encoding reported when a native read is refused (#999): allocation seeds
@@ -399,6 +400,58 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         synchronized (appendLock) {
             return appendLocked(payload, timestamp).flatMap(inOrder);
         }
+    }
+
+    /// Offset-addressed sibling of [#appendOrdered] (#1505): lands the event at `offset` and nowhere else,
+    /// deciding against the head INSIDE the ordered section, so no other append on this ring can move the
+    /// head between the check and the append. Succeeds with `offset` exactly when, on return, the ring holds
+    /// this event at `offset`:
+    ///   - `offset == head + 1` — appended there; `inOrder` runs with the assigned offset, as in [#appendOrdered];
+    ///   - `offset <= head` — already held: succeeds ONLY when the held event's payload and timestamp equal the
+    ///     offered ones, and runs no `inOrder` (nothing was written). A different held event is
+    ///     [StreamError.ReplicaEntryConflict]; an offset already evicted is [StreamError.CursorExpired];
+    ///   - `offset > head + 1` — [StreamError.ReplicaOffsetGap], nothing appended.
+    public Result<Long> appendOrderedAt(long offset, byte[] payload, long timestamp, Fn1<Result<Long>, Long> inOrder) {
+        if (closed.get()) {
+            return StreamError.General.BUFFER_CLOSED.result();
+        }
+
+        synchronized (appendLock) {
+            return appendAtLocked(offset, payload, timestamp, headOffset() + 1, inOrder);
+        }
+    }
+
+    private Result<Long> appendAtLocked(long offset,
+                                        byte[] payload,
+                                        long timestamp,
+                                        long nextOffset,
+                                        Fn1<Result<Long>, Long> inOrder) {
+        if (offset == nextOffset) {
+            return appendLocked(payload, timestamp).flatMap(inOrder);
+        }
+
+        return offset < nextOffset
+               ? verifyHeld(offset, payload, timestamp)
+               : new StreamError.ReplicaOffsetGap(streamName, partition, offset, nextOffset).result();
+    }
+
+    /// Held offsets are immutable until evicted, so equality of the held record with the offered one is the
+    /// whole of "this replica already holds that event there".
+    private Result<Long> verifyHeld(long offset, byte[] payload, long timestamp) {
+        return readAppended(offset, 1).flatMap(events -> matchHeld(events, offset, payload, timestamp));
+    }
+
+    private Result<Long> matchHeld(List<RawEvent> events, long offset, byte[] payload, long timestamp) {
+        return Option.from(events.stream().findFirst())
+                     .filter(held -> isSameRecord(held, offset, payload, timestamp))
+                     .toResult(new StreamError.ReplicaEntryConflict(streamName, partition, offset))
+                     .map(RawEvent::offset);
+    }
+
+    private static boolean isSameRecord(RawEvent held, long offset, byte[] payload, long timestamp) {
+        return held.offset() == offset
+               && held.timestamp() == timestamp
+               && Arrays.equals(held.data(), payload);
     }
 
     /// `result` is evaluated by the caller, so `appendLock` is already released here. The publisher only

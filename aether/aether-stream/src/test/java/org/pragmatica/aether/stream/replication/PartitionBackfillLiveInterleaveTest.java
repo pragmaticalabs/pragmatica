@@ -4,12 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
@@ -107,8 +109,15 @@ class PartitionBackfillLiveInterleaveTest {
                                                                                               PARTITION,
                                                                                               0,
                                                                                               100).unwrap()));
-        assertThat(ackOffsets()).as("an ack for offset 14 counts this replica toward min-sync for marker-14")
-                                .doesNotContain(14L);
+        // An ack for offset k counts this replica toward min-sync for the owner's event k, so every acked offset
+        // must hold exactly that event here. (The original form, `doesNotContain(14L)`, forbade acking 14 at all;
+        // it was never reached on the base because the log assertion above fails first, and it cannot hold once
+        // the replica genuinely holds marker-14 at 14 — #1505 replaced it with the property it stood in for.)
+        var ownerByOffset = markersOf(ownerLog.readAppended(STREAM, PARTITION, 0, 100).unwrap());
+
+        assertThat(ackOffsets()).as("every acked offset holds the owner's event at that offset; replica log = %s",
+                                    markersOf(held))
+                                .allSatisfy(offset -> assertThat(markersOf(held)).contains(ownerByOffset.get(offset.intValue())));
     }
 
     /// Control: the same three messages with the catch-up response arriving BEFORE the live batch for 13. The
@@ -128,6 +137,88 @@ class PartitionBackfillLiveInterleaveTest {
 
         assertThat(markersOf(replica.readAppended(STREAM, PARTITION, 0, 100).unwrap()))
                 .containsExactlyElementsOf(markersOf(ownerLog.readAppended(STREAM, PARTITION, 0, 100).unwrap()));
+    }
+
+    /// #1505, property 1: the head moved past the WHOLE response while it was in flight (live 13 and 14 both
+    /// landed). Every catch-up event is verified at its own offset and none is re-appended; the run promotes at
+    /// the owner's tail.
+    @Test
+    void backfill_liveBatchesCoverWholeResponse_verifiesEveryEvent_appendsNone_promotes() {
+        var handler = receiveHandler();
+        var backfill = backfill();
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
+        var run = backfill.backfill(STREAM, PARTITION);
+        handler.onReplicateEvents(liveBatch(13, 2));
+        catchupInFlight.resolve(Result.success(ownerResponse(13, 2)));
+
+        assertThat(run.await().isSuccess()).isTrue();
+        assertThat(markersOf(replica.readAppended(STREAM, PARTITION, 0, 100).unwrap()))
+                .containsExactlyElementsOf(markersOf(ownerLog.readAppended(STREAM, PARTITION, 0, 100).unwrap()));
+        assertThat(selfDescriptor().state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        assertThat(selfDescriptor().confirmedOffset()).isEqualTo(14L);
+    }
+
+    /// #1505, property 1: an offset the replica already holds is skipped ONLY after its content is verified. A
+    /// catch-up event that differs from the held one is a refusal: the run fails with the conflict, nothing is
+    /// appended or overwritten, and self stays SYNCING.
+    @Test
+    void backfill_catchupDiffersFromHeldEvent_refusesRun_logUnchanged_staysSyncing() {
+        var handler = receiveHandler();
+        var backfill = backfill();
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
+        var run = backfill.backfill(STREAM, PARTITION);
+        handler.onReplicateEvents(liveBatch(13, 1));
+        catchupInFlight.resolve(Result.success(response(13, List.of("forged-13".getBytes(UTF_8)), List.of(1013L))));
+
+        var outcome = run.await();
+
+        outcome.onSuccess(applied -> Assertions.fail("a divergent held event must refuse the run, applied " + applied));
+        outcome.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReplicaEntryConflict.class));
+        assertThat(markersOf(replica.readAppended(STREAM, PARTITION, 0, 100).unwrap()))
+                .containsExactlyElementsOf(markersOf(ownerLog.readAppended(STREAM, PARTITION, 0, 14).unwrap()));
+        assertThat(selfDescriptor().state()).isEqualTo(ReplicationState.SYNCING);
+    }
+
+    /// #1505, property 1: a response whose first offset is PAST the local next offset (the replica lacks the
+    /// offsets in between) is refused rather than appended one or more offsets too low.
+    @Test
+    void backfill_responseStartsPastLocalHead_refusesWithGap_appendsNothing() {
+        var handler = receiveHandler();
+        var backfill = backfill();
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
+        var run = backfill.backfill(STREAM, PARTITION);
+        catchupInFlight.resolve(Result.success(ownerResponse(14, 1)));
+
+        var outcome = run.await();
+
+        outcome.onSuccess(applied -> Assertions.fail("a misaligned response must refuse the run, applied " + applied));
+        outcome.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReplicaOffsetGap.class));
+        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(REPLICA_PREFIX);
+        assertThat(selfDescriptor().state()).isEqualTo(ReplicationState.SYNCING);
+    }
+
+    /// #1505, property 2, on the real ring: a live batch wholly below the local head whose event DIFFERS from the
+    /// held one is not acked. Before #1505 the receiver re-acked it by offset alone.
+    @Test
+    void liveDuplicate_heldEventDiffers_isNotAcked() {
+        var handler = receiveHandler();
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX + 1));
+        var acksBefore = ackOffsets();
+
+        handler.onReplicateEvents(replicateEvents(owner,
+                                                  STREAM,
+                                                  PARTITION,
+                                                  13,
+                                                  List.of("forged-13".getBytes(UTF_8)),
+                                                  List.of(1013L),
+                                                  Epoch.ZERO));
+
+        assertThat(ackOffsets()).as("no ack for an offset holding a different event").isEqualTo(acksBefore);
+        assertThat(markersOf(replica.readAppended(STREAM, PARTITION, 13, 1).unwrap())).containsExactly("13=marker-13");
     }
 
     private ReplicationReceiveHandler receiveHandler() {
@@ -174,6 +265,26 @@ class PartitionBackfillLiveInterleaveTest {
                                events.getLast().offset(),
                                events.stream().map(OffHeapRingBuffer.RawEvent::data).toList(),
                                events.stream().map(OffHeapRingBuffer.RawEvent::timestamp).toList());
+    }
+
+    private ReplicationMessage.CatchupResponse ownerResponse(long fromOffset, int count) {
+        var events = ownerLog.readAppended(STREAM, PARTITION, fromOffset, count).unwrap();
+
+        return response(fromOffset,
+                        events.stream().map(OffHeapRingBuffer.RawEvent::data).toList(),
+                        events.stream().map(OffHeapRingBuffer.RawEvent::timestamp).toList());
+    }
+
+    private ReplicationMessage.CatchupResponse response(long fromOffset, List<byte[]> payloads, List<Long> timestamps) {
+        return catchupResponse(owner, STREAM, PARTITION, fromOffset, fromOffset + payloads.size() - 1, payloads, timestamps);
+    }
+
+    private ReplicaDescriptor selfDescriptor() {
+        return registry.replicasFor(STREAM, PARTITION)
+                       .stream()
+                       .filter(descriptor -> descriptor.nodeId().equals(self))
+                       .findFirst()
+                       .orElseThrow();
     }
 
     private ReplicationMessage.ReplicateEvents liveBatch(int fromOffset, int count) {

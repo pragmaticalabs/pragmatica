@@ -208,6 +208,7 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
+import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
@@ -3872,7 +3873,7 @@ public interface AetherNode extends ManageableNode {
         // the A2 ReplicaSetController populates from HRW placement.
         // A4: lands backfilled/recovered events into the local ring offset-preserving WITHOUT
         // re-replicating (the receiver is not an owner), replacing the StreamPartitionRecovery NOOP
-        // for both governor-failover recovery and the A4 backfill path below.
+        // for governor-failover recovery (the A4 backfill path uses the offset-addressed seam below, #1505).
         // #336 epoch adoption (NOT invention): stamp the recovery/backfill append with the SAME committed
         // owner epoch a live publish stamps (streamOwnerEpochSource reads the committed
         // StreamPartitionOwnershipValue.ownerEpoch — the identical source the fence high-water is seeded
@@ -3886,6 +3887,17 @@ public interface AetherNode extends ManageableNode {
                                                                                                                         ts,
                                                                                                                         streamOwnerEpochSource.currentOwnerEpoch(s,
                                                                                                                                                                  p));
+        // #1505: the catch-up apply lands each event at its OWN owner offset through the same ordered section as
+        // the live receive handler below (whose `streamPartitionManager::appendRecovered` binds the offset-
+        // addressed overload), so a live batch landing while a catch-up is in flight cannot shift either one.
+        // Stamped with the same committed owner epoch as the tail-append recovery above.
+        AlignedRecovery streamAlignedRecovery = (s, p, offset, payload, ts) -> streamPartitionManager.appendRecovered(s,
+                                                                                                                      p,
+                                                                                                                      offset,
+                                                                                                                      payload,
+                                                                                                                      ts,
+                                                                                                                      streamOwnerEpochSource.currentOwnerEpoch(s,
+                                                                                                                                                               p));
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
                                                                                     streamPartitionRecovery,
                                                                                     streamPartitionManager::syncReplicated);
@@ -4003,7 +4015,7 @@ public interface AetherNode extends ManageableNode {
                                                                              membershipFsm);
         var streamCommittedOwnerSource = streamOwnershipViews.routing();
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
-                                                                          streamPartitionRecovery,
+                                                                          streamAlignedRecovery,
                                                                           streamCatchupTransport,
                                                                           streamReplicationTransport,
                                                                           streamWatermarkProbe,

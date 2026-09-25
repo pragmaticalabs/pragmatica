@@ -1804,11 +1804,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .or(0);
     }
 
-    /// Append a backfilled event into the local partition ring WITHOUT re-triggering replication.
-    /// Used by the A4 catch-up path: a freshly-assigned replica receiving events from an up-to-date
-    /// source must land them locally but must NOT re-emit them onto the replication stream (it is the
-    /// receiver, not an owner). Offsets are preserved because the ring assigns sequential offsets and
-    /// catch-up replays the source's events in order into an empty partition.
+    /// Append a recovered event at the local ring TAIL WITHOUT re-triggering replication. The ring assigns
+    /// the next offset, so offsets are preserved only when nothing else appends to the partition between
+    /// the caller's choice of position and this append. Governor-failover recovery uses it. The replica
+    /// catch-up and live-receive paths do NOT: they land events at their owner offsets through the
+    /// offset-addressed overloads below (#1505), because a live batch can land between a catch-up
+    /// request and its response.
     public Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp) {
         return appendRecovered(streamName, partition, payload, timestamp, Epoch.ZERO);
     }
@@ -1831,6 +1832,38 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                          timestamp,
                                                                                          ownerEpoch))
                                  .onSuccess(offset -> visibleAtOnceWithoutWal(streamName, partition, offset))
+                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+    }
+
+    /// Offset-addressed replica append (#1505) stamped with the no-epoch floor ([Epoch#ZERO]), for callers that
+    /// carry no owner epoch. See the fenced overload below.
+    public Result<Long> appendRecovered(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+        return appendRecovered(streamName, partition, offset, payload, timestamp, Epoch.ZERO);
+    }
+
+    /// Offset-addressed replica append (#1505): the single offset authority shared by the replica's catch-up
+    /// apply and its live receive. The event lands at owner offset `offset` and nowhere else, decided against
+    /// the ring head inside the partition's ordered append section ([OffHeapRingBuffer#appendOrderedAt]), so a
+    /// live batch and a catch-up response racing for the same offsets cannot shift one another. Succeeds with
+    /// `offset` exactly when this replica now holds the offered event there — appended now, or already held
+    /// with identical payload and timestamp (nothing written, no WAL frame). Refusals append nothing:
+    /// [StreamError.ReplicaOffsetGap] (offsets below `offset` are missing), [StreamError.ReplicaEntryConflict]
+    /// (a DIFFERENT event is held at `offset`), [StreamError.CursorExpired] (held once, evicted, unverifiable).
+    /// The epoch fence and size check run first, exactly as for [#appendRecovered(String, int, byte[], long, Epoch)].
+    public Result<Long> appendRecovered(String streamName,
+                                        int partition,
+                                        long offset,
+                                        byte[] payload,
+                                        long timestamp,
+                                        Epoch ownerEpoch) {
+        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
+                                                                                  streamName,
+                                                                                  partition,
+                                                                                  offset,
+                                                                                  payload,
+                                                                                  timestamp,
+                                                                                  ownerEpoch))
+                                 .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
                                  .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
@@ -1879,6 +1912,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  ownerEpoch,
                                  RECEIPT_NEEDS_NO_ADMISSION,
                                  offset -> success(logReplicated(streamName, partition, offset, payload, timestamp)));
+    }
+
+    /// Offset-addressed sibling of [#appendReplicatedInSection] (#1505): the same fence, admission and size
+    /// checks, then [OffHeapRingBuffer#appendOrderedAt], which writes the WAL frame only when it appends.
+    private Result<Long> appendReplicatedAt(StreamEntry entry,
+                                            String streamName,
+                                            int partition,
+                                            long offset,
+                                            byte[] payload,
+                                            long timestamp,
+                                            Epoch ownerEpoch) {
+        return appendTarget(entry, streamName, partition, payload, ownerEpoch, RECEIPT_NEEDS_NO_ADMISSION).flatMap(buffer -> buffer.appendOrderedAt(offset,
+                                                                                                                                                    payload,
+                                                                                                                                                    timestamp,
+                                                                                                                                                    assigned -> success(logReplicated(streamName,
+                                                                                                                                                                                      partition,
+                                                                                                                                                                                      assigned,
+                                                                                                                                                                                      payload,
+                                                                                                                                                                                      timestamp))))
+                           .onSuccess(_ -> entry.updateActivity());
     }
 
     /// #1233: a replicated event this replica's frozen ring cannot store fails the append (never applied,
@@ -2033,11 +2086,22 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             Epoch ownerEpoch,
                                             Result<Unit> admission,
                                             Fn1<Result<T>, Long> inOrder) {
+        return appendTarget(entry, streamName, partition, payload, ownerEpoch, admission).flatMap(buffer -> buffer.appendOrdered(payload,
+                                                                                                                                 timestamp,
+                                                                                                                                 inOrder))
+                           .onSuccess(_ -> entry.updateActivity());
+    }
+
+    /// The ring an append may enter, after the epoch fence, `admission` and the size check, in that order.
+    private Result<OffHeapRingBuffer> appendTarget(StreamEntry entry,
+                                                   String streamName,
+                                                   int partition,
+                                                   byte[] payload,
+                                                   Epoch ownerEpoch,
+                                                   Result<Unit> admission) {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
                              .flatMap(_ -> checkEventSize(entry, payload))
-                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
-                             .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, inOrder))
-                             .onSuccess(_ -> entry.updateActivity());
+                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry));
     }
 
     /// Resolve the ring to append into, materializing it lazily on the OWNER/REPLICA path (#265 increment

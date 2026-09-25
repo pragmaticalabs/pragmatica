@@ -12,6 +12,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -79,8 +80,8 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 ///   2. issue a single {@link CatchupTransport#requestCatchup} from `confirmedOffset + 1`; the
 ///      production transport ({@link ForwardCatchupTransport}) pages internally until the source is
 ///      drained,
-///   3. apply every returned event into the local ring via {@link StreamPartitionRecovery}
-///      (offset-preserving, non-replicating),
+///   3. apply every returned event into the local ring AT ITS OWN SOURCE OFFSET via {@link AlignedRecovery}
+///      (non-replicating; an offset already held is verified, never re-appended — #1505),
 ///   4. on full success flip self to `CAUGHT_UP` at the source watermark
 ///      ({@link ReplicaRegistry#updateWatermark}).
 ///
@@ -93,7 +94,7 @@ public final class PartitionBackfill {
     private static final Logger log = LoggerFactory.getLogger(PartitionBackfill.class);
 
     private final ReplicaRegistry registry;
-    private final StreamPartitionRecovery partitionRecovery;
+    private final AlignedRecovery partitionRecovery;
     private final CatchupTransport transport;
     private final ReplicationTransport replicationTransport;
     private final ReplicaWatermarkProbe probe;
@@ -149,7 +150,7 @@ public final class PartitionBackfill {
     private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs = new ConcurrentHashMap<>();
 
     private PartitionBackfill(ReplicaRegistry registry,
-                              StreamPartitionRecovery partitionRecovery,
+                              AlignedRecovery partitionRecovery,
                               CatchupTransport transport,
                               ReplicationTransport replicationTransport,
                               ReplicaWatermarkProbe probe,
@@ -178,7 +179,7 @@ public final class PartitionBackfill {
     /// reachable peer, so the deadlock-break never fires and behavior is byte-identical to the original
     /// orchestrator). Used where the deadlock-break is not wired.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                                      StreamPartitionRecovery partitionRecovery,
+                                                      AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
                                                       NodeId self) {
         return new PartitionBackfill(registry,
@@ -204,7 +205,7 @@ public final class PartitionBackfill {
     /// back to the current HRW owner (#336), so the owner's replicas-view shows the replica CAUGHT_UP at the
     /// backfilled tail before the next live write.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                                      StreamPartitionRecovery partitionRecovery,
+                                                      AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
                                                       ReplicationTransport replicationTransport,
                                                       ReplicaWatermarkProbe probe,
@@ -229,7 +230,7 @@ public final class PartitionBackfill {
     /// Production factory (#1244): the cold-start-aware factory above plus the replica WAL `durability`
     /// barrier a completed backfill run commits through before promoting self (see [#durability]).
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                                      StreamPartitionRecovery partitionRecovery,
+                                                      AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
                                                       ReplicationTransport replicationTransport,
                                                       ReplicaWatermarkProbe probe,
@@ -257,7 +258,7 @@ public final class PartitionBackfill {
     /// Defaults the member view to {@link List#of()} so existing tests exercise the non-owner bounded-wait
     /// path unchanged (empty members ⇒ owner check is false).
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                               StreamPartitionRecovery partitionRecovery,
+                                               AlignedRecovery partitionRecovery,
                                                CatchupTransport transport,
                                                ReplicaWatermarkProbe probe,
                                                SelfWatermark selfWatermark,
@@ -279,7 +280,7 @@ public final class PartitionBackfill {
     /// with a deterministic clock. Uses a no-op replication transport (the backfill-completion ack to the
     /// owner is exercised through the production factory / a capturing transport).
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                               StreamPartitionRecovery partitionRecovery,
+                                               AlignedRecovery partitionRecovery,
                                                CatchupTransport transport,
                                                ReplicaWatermarkProbe probe,
                                                SelfWatermark selfWatermark,
@@ -303,7 +304,7 @@ public final class PartitionBackfill {
     /// ranks self owner while the committed record names ANOTHER node — self must NOT self-promote). Uses a
     /// no-op replication transport like the sibling member-view factory.
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                               StreamPartitionRecovery partitionRecovery,
+                                               AlignedRecovery partitionRecovery,
                                                CatchupTransport transport,
                                                ReplicaWatermarkProbe probe,
                                                SelfWatermark selfWatermark,
@@ -563,10 +564,10 @@ public final class PartitionBackfill {
     }
 
     /// Non-owner catch-up from the authoritative HRW owner (#333). `fromOffset` is the LOCAL ring head + 1
-    /// ({@link SelfWatermark#localWatermark} + 1) so the owner-frame offsets land CONTIGUOUSLY in the
-    /// local ring — {@link StreamPartitionRecovery#appendRecoveredEvent} assigns sequential offsets, so a
-    /// `fromOffset` below the local head would shift every subsequent offset. The promotion watermark is
-    /// the owner's true tail (`response.toOffset()`); no local descriptor watermark is held for the owner,
+    /// ({@link SelfWatermark#localWatermark} + 1): the first offset this replica lacks when the request leaves.
+    /// It is only the REQUEST's position. The live receive path can land the same offsets before the response
+    /// arrives, so the apply never trusts it: each event lands at its own offset ({@link #applyEvents}, #1505).
+    /// The promotion watermark is the owner's true tail (`response.toOffset()`); no local descriptor watermark is held for the owner,
     /// so `sourceConfirmedOffset` is `-1` (it must not inflate the watermark past what the owner returned).
     ///
     /// The owner's completeness assumption (#333) HOLDS only when the owner actually returned history. A
@@ -640,10 +641,11 @@ public final class PartitionBackfill {
     }
 
     /// `selfTail` is the LOCAL RING HEAD, never the registry self-descriptor's `confirmedOffset` (#567).
-    /// {@link StreamPartitionRecovery#appendRecoveredEvent} assigns SEQUENTIAL offsets at the tail, so a
-    /// `fromOffset` below the local head does not overwrite the overlap — it re-appends it as brand-new
-    /// offsets and duplicates the partition's history. The self-descriptor reads `-1` after a failover or
-    /// restart while the ring holds real recovered events ({@link SelfWatermark}'s own contract says so),
+    /// Before #1505 the apply appended at the ring tail, so a `fromOffset` below the local head re-appended
+    /// the overlap as brand-new offsets and duplicated the partition's history. The apply now verifies an
+    /// overlap instead, but the floor still avoids re-pulling what is already held. The self-descriptor
+    /// reads `-1` after a failover or restart while the ring holds real recovered events
+    /// ({@link SelfWatermark}'s own contract says so),
     /// which turned this into a full re-pull from offset 0: 25 held events became 50 entries / 25 distinct
     /// markers, and the replica then self-promoted owner at the doubled tail. The sibling owner-source path
     /// ({@link #backfillFromOwner}) already derives its floor this way — both pulls now share one authority.
@@ -758,8 +760,16 @@ public final class PartitionBackfill {
     /// Apply every recovered event in order via a sequential fail-fast fold. A truncated response
     /// (`payloads.size() != timestamps.size()`) is treated as a parse failure so the replica stays
     /// SYNCING instead of applying only the shorter prefix (B2). The fold is an explicit loop — never
-    /// parallelized — so it cannot silently drop events on a parallel reduce (M4). Returns the number
-    /// of events applied, short-circuiting to the first local append failure.
+    /// parallelized — so it cannot silently drop events on a parallel reduce (M4).
+    ///
+    /// #1505: event `i` is offered at ITS OWN source offset `response.fromOffset() + i`, never at the local
+    /// tail. `fromOffset` was read from the local head BEFORE the request, and a live batch can land the same
+    /// offsets while the request is in flight. The tail append then put the catch-up copy one offset too high,
+    /// and the receiver acked the next live event as a duplicate it did not hold. Now an offset the live path
+    /// already landed is verified identical and skipped, and a divergent held event or a missing prefix
+    /// refuses the whole run. The replica stays SYNCING and the redrive retries from the moved head. Returns
+    /// the number of events this run holds at their source offsets, so `fromOffset + applied - 1` is a
+    /// true highest-held offset for the {@link #promote} gate. It short-circuits to the first refusal.
     private Result<Long> applyEvents(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
         var payloads = response.payloads();
         var timestamps = response.timestamps();
@@ -777,10 +787,11 @@ public final class PartitionBackfill {
         var applied = 0L;
 
         for (var i = 0; i < payloads.size(); i++) {
-            var result = partitionRecovery.appendRecoveredEvent(streamName,
-                                                                partition,
-                                                                payloads.get(i),
-                                                                timestamps.get(i));
+            var result = partitionRecovery.appendRecovered(streamName,
+                                                           partition,
+                                                           response.fromOffset() + i,
+                                                           payloads.get(i),
+                                                           timestamps.get(i));
 
             if (result.isFailure()) {
                 // Propagate the append failure cause; the value channel is empty on a failed Result.
@@ -793,7 +804,18 @@ public final class PartitionBackfill {
         return Result.success(applied);
     }
 
+    /// A divergent held event (#1505) is logged at ERROR, as the live receive path logs it: this replica's log
+    /// differs from its source's at that offset, and no catch-up can replace a held entry.
     private Promise<Long> failApply(String streamName, int partition, Cause cause) {
+        if (cause instanceof StreamError.ReplicaEntryConflict) {
+            log.error("Backfill {}[{}] refused: {} — this replica's log has DIVERGED from its source; staying SYNCING",
+                      streamName,
+                      partition,
+                      cause.message());
+
+            return cause.promise();
+        }
+
         log.warn("Backfill {}[{}] failed applying events: {} — staying SYNCING", streamName, partition, cause.message());
 
         return cause.promise();
