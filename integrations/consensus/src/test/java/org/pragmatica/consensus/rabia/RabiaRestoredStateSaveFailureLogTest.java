@@ -16,6 +16,7 @@
 package org.pragmatica.consensus.rabia;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -76,6 +77,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RabiaRestoredStateSaveFailureLogTest {
     private static final String LOGGER_NAME = RabiaEngine.class.getName();
     private static final String FAILURE_FRAGMENT = "stopped consensus participation because durable history failed";
+    private static final String ADOPTION_FAILURE_FRAGMENT = "restored state but FAILED to persist it";
+    private static final String ADOPTION_CONSEQUENCE_FRAGMENT = "in memory ONLY";
+    private static final Phase PEER_PHASE = Phase.phase(10);
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
     private static final long ACTIVATION_TIMEOUT_MILLIS = 5_000;
@@ -158,6 +162,89 @@ class RabiaRestoredStateSaveFailureLogTest {
                   .isEqualTo(OWN_SNAPSHOT);
         assertThat(appender.capturedErrors()).as("a save that succeeded must not report a persist failure")
                   .noneMatch(message -> message.contains(FAILURE_FRAGMENT));
+    }
+
+    /// SYNC-ADOPTION arm — a node with NO own history adopts a responder's snapshot, and the re-persist
+    /// of the adopted state fails. **This pins CURRENT behaviour; it does not endorse it.** The node
+    /// records the failure as its authority failure and does not activate. That the stop is PERMANENT
+    /// (nothing on this path clears the failure, even after the disk recovers) and that each further
+    /// sync round re-adopts and re-fires the restore hooks on the inactive node are open in **#1516**
+    /// and are not endorsed here. The property pinned is the durability one: never activate on adopted
+    /// history the disk does not hold.
+    @Test
+    void syncAdoptionSaveFails_nodeDoesNotActivate_pinsCurrentBehaviour() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = coldStarted(3, stateMachine, emptyDisk(true));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> Arrays.equals(PEER_SNAPSHOT, stateMachine.lastRestored())))
+            .as("precondition: the responder's snapshot must actually have been adopted — only the save failed")
+            .isTrue();
+        assertThat(awaitActive(engine)).as("""
+                                          CURRENT behaviour, not endorsed: a failed re-persist of ADOPTED state keeps the \
+                                          node inactive (authorityFailure fence). Its permanence and the per-round hook \
+                                          replay are open in #1516.\
+                                          """)
+                  .isFalse();
+        assertThat(engine.voterReconfigurationStatus().failure())
+            .as("the save failure is recorded as the authority failure that fences activation")
+            .contains(DISK_FULL.message());
+    }
+
+    /// The #1020 diagnostic on the sync-adoption arm: the failed re-persist is logged at ERROR, naming
+    /// the stale-disk consequence and the cause.
+    @Test
+    void syncAdoptionSaveFails_logsFailedToPersistAtError() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = coldStarted(3, stateMachine, emptyDisk(true));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(() -> appender.capturedErrors()
+                                                .stream()
+                                                .anyMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT)
+                                                                     && message.contains(ADOPTION_CONSEQUENCE_FRAGMENT)
+                                                                     && message.contains(DISK_FULL.message()))))
+            .as("a failed re-persist after adoption must be logged at ERROR with its consequence and cause")
+            .isTrue();
+    }
+
+    /// CONTROL — the identical adoption with a SUCCEEDING save activates on the responder's state and
+    /// logs no persist failure, so the two tests above observe a refusal rather than a fixture that
+    /// never adopts.
+    @Test
+    void syncAdoptionSaveSucceeds_activatesWithoutFailureLog() {
+        var stateMachine = new RecordingStateMachine();
+        var engine = coldStarted(3, stateMachine, emptyDisk(false));
+
+        engine.processSyncResponse(cold(NODE_2, PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitActive(engine)).isTrue();
+        assertThat(stateMachine.lastRestored()).isEqualTo(PEER_SNAPSHOT);
+        assertThat(appender.capturedErrors()).noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
+    }
+
+    /// Persistence with NO own history — boot recovery installs and saves nothing — whose `save` fails
+    /// when `failSave` is set, so the first save attempted is the adoption re-persist.
+    private static RabiaPersistence<TestCommand> emptyDisk(boolean failSave) {
+        record emptyDisk(boolean failSave) implements RabiaPersistence<TestCommand> {
+            @Override
+            public Result<Unit> save(StateMachine<TestCommand> stateMachine,
+                                     Phase lastCommittedPhase,
+                                     Collection<Batch<TestCommand>> pendingBatches) {
+                return failSave
+                       ? DISK_FULL.result()
+                       : Result.success(Unit.unit());
+            }
+
+            @Override
+            public Option<SavedState<TestCommand>> load() {
+                return Option.none();
+            }
+        }
+
+        return new emptyDisk(failSave);
     }
 
     /// Persistence holding a durable snapshot whose every `save` FAILS: a node restarted from disk

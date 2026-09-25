@@ -1500,7 +1500,9 @@ public class RabiaEngine<C extends Command> {
         triggerPhaseIfNeeded();
     }
 
-    /// The one way a batch enters `pendingBatches` while live: merge by content-derived id.
+    /// How a SUBMITTED or broadcast batch enters `pendingBatches` while live: merge by content-derived
+    /// id. (Proposals learned from peers and restored pending batches enter through
+    /// [#learnProposedBatch], which additionally de-duplicates correlation ids.)
     /// `compute()` makes the merge atomic; the lambda routes through `Option.option(existing)`
     /// so the absent case is expressed via `fold` rather than a raw `existing == null` sentinel.
     /// Same id ⟹ same commands, so only correlationIds are combined, via the state machine.
@@ -2096,21 +2098,14 @@ public class RabiaEngine<C extends Command> {
     /// replay, notify). A live phase at or past the persisted one means the history is already in
     /// the process — a resync from ACTIVE — and installing the older snapshot would regress it.
     ///
-    /// **This method does not always activate, despite its name and the paragraph above.** The
-    /// own-restore arm routes through [#restoreState], whose `activate()` hangs off `onSuccessRun`:
-    /// a `restoreSnapshot` that FAILS therefore skips activation entirely and the engine stays
-    /// `Syncing`, re-entering this same branch on every retry tick. Before #1020 this branch
-    /// activated unconditionally, so the behaviour is new here. It is fail-closed — a node that
-    /// cannot read its own snapshot never serves the empty store this ticket is about — and the
-    /// failure is reported by [#logRestoreFailure], which is the ONLY signal on that path (#1447).
-    ///
-    /// Whether that wedge is correct, whether it should be bounded or terminal, and what the
-    /// readiness surface should say while it persists are **#1468's** decisions and deliberately not
-    /// taken here (retargeted from #1013 on 2026-09-23: #1013 narrowed to the storage metadata-snapshot
-    /// restore on the boot path and closed with PR #1418; this consensus arm is #1468's).
-    /// The current behaviour is pinned by
-    /// `RabiaOwnRestoreFailureTest#ownRestoreFails_staysInactive_untilTicket1013Decides`, which is an
-    /// ENABLED tripwire: changing this reddens it, by design.
+    /// **Since #1390 this own-restore arm is rarely reached.** Boot recovery ([#ensureRecovered])
+    /// restores the persisted checkpoint and sets the live phase BEFORE any sync round, so the
+    /// persisted phase is normally not ahead of the live one here. A node whose own history cannot be
+    /// restored or re-persisted FAILS CLOSED in that boot recovery and never starts a sync round —
+    /// #1468's decision for those arms (owner ruling, session 27), replacing the wedge-and-retry #1020
+    /// pinned here. #1468 stays open for bounded wedge vs termination and for the start promise.
+    /// Pinned by `RabiaOwnRestoreFailureTest#ownRestoreFails_failsClosed_neverActivates`. Should this
+    /// arm's [#restoreState] still fail, activation is skipped and [#logRestoreFailure] reports it.
     private void activateWithoutAdoption(Option<SavedState<C>> persisted, String reason) {
         persisted.filter(state -> state.lastCommittedPhase()
                                        .compareTo(currentPhase.get()) > 0)
@@ -2249,9 +2244,10 @@ public class RabiaEngine<C extends Command> {
     /// unreachable outright (#1447). This line is therefore the whole operator surface for the state,
     /// which is why it spells out that the node is NOT active rather than logging a bare cause.
     ///
-    /// Whether a failed restore SHOULD wedge the node, and what readiness reports while it does, is
-    /// **#1468's** decision, not this one's (retargeted from #1013 on 2026-09-23). Pinned by
-    /// `RabiaOwnRestoreFailureTest#ownRestoreFails_staysInactive_untilTicket1013Decides`.
+    /// The own-history restore failure is decided by #1468 (owner ruling, session 27) and fails closed
+    /// in boot recovery, reported by `failVotingPersistence`; this line covers a failed restore that
+    /// still reaches [#restoreState] (a responder's snapshot, or the rare own-restore arm of
+    /// [#activateWithoutAdoption]).
     private void logRestoreFailure(Cause cause) {
         log.error("Node {} FAILED to restore state and is NOT active: {}. It stays in sync/retry and serves no "
                  + "requests; every retry re-enters this same branch until the snapshot can be read.",
@@ -2264,18 +2260,21 @@ public class RabiaEngine<C extends Command> {
     /// rc4's ERROR is kept alongside (union, merge of #1390 into rc4).
     ///
     /// FER (degrade forward): the failure is absorbed here, not propagated — the restored state stays
-    /// in memory, [#recordRestoredStateSaveFailure] fences this node's voting through
-    /// `authorityFailure` (#1390) and names the stale-disk consequence at ERROR (#1020). The
-    /// `Unit` fallback only supplies the return value; the refusal itself is routed by `onFailure`.
+    /// in memory, [#recordRestoredStateSaveFailure] sets `authorityFailure` (#1390), which keeps
+    /// [#activate] from activating the node, and names the stale-disk consequence at ERROR (#1020).
+    /// The `Unit` fallback only supplies the return value; the refusal itself is routed by
+    /// `onFailure`. The fence is currently PERMANENT (nothing on this path clears it) and later sync
+    /// rounds re-adopt and re-fire the restore hooks on the inactive node — open in #1516.
     private Unit persistRestoredState() {
         return saveAuthority().onFailure(this::recordRestoredStateSaveFailure)
                             .or(Unit.unit());
     }
 
-    /// #1020 — a failed re-persist after a restore. #1390's `authorityFailure` fences voting on it;
-    /// rc4's ERROR names the consequence, because `GitBackedPersistence` carries no logger of its own
-    /// and this is the only place the failure is heard. Pinned by
-    /// `RabiaRestoredStateSaveFailureLogTest`.
+    /// #1020 — a failed re-persist after a restore. #1390's `authorityFailure` keeps the node from
+    /// activating; rc4's ERROR names the consequence, because `GitBackedPersistence` carries no logger
+    /// of its own and this is the only place the failure is heard. Pinned by
+    /// `RabiaRestoredStateSaveFailureLogTest#syncAdoptionSaveFails_nodeDoesNotActivate_pinsCurrentBehaviour`
+    /// and `#syncAdoptionSaveFails_logsFailedToPersistAtError`.
     private void recordRestoredStateSaveFailure(Cause cause) {
         authorityFailure = Option.some(cause);
         log.error("Node {} restored state but FAILED to persist it: {}. The restore is "

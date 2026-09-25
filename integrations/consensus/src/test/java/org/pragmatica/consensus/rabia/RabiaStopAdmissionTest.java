@@ -125,4 +125,39 @@ class RabiaStopAdmissionTest {
             engine.stop().timeout(timeSpan(5).seconds()).await();
         }
     }
+
+    /// Pin for rc4's half of ruling 151b0edfe, separate from the refusal pin above: a request ADMITTED
+    /// and REGISTERED before `stop()` — its batch broadcast and awaiting a decision that no peer will
+    /// vote on — is settled by `performStop`'s `correlationMap` sweep with `NodeInactive`, promptly.
+    /// Nothing else settles it: without the sweep the caller waits for `applyTimeout` (60 s here), so
+    /// the 2 s bound reddens.
+    @Test
+    void registeredApplyAwaitingDecision_settledBySweepAtStop() {
+        var network = new TestClusterNetwork();
+        var machine = new TestStateMachine();
+        var engine = new RabiaEngine<>(new TestTopologyManager(A, 3), network, machine,
+                                      ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()));
+        var pending = new TestCommand("registered-awaiting-decision");
+        try {
+            engine.clusterState(ClusterStateNotification.active());
+            engine.processSyncResponse(new SyncResponse<>(B, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(C, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            engine.settleForTesting().await().unwrap();
+            assertThat(engine.isActive()).isTrue();
+            var admitted = engine.apply(List.of(pending));
+            engine.settleForTesting().await().unwrap();
+            assertThat(network.getMessages())
+                .as("precondition: the request registered and broadcast — the refusal path cannot be what settles it")
+                .anyMatch(message -> message instanceof NewBatch<?> newBatch
+                                     && newBatch.batch().commands().contains(pending));
+            engine.stop().timeout(timeSpan(5).seconds()).await().unwrap();
+            admitted.timeout(timeSpan(2).seconds()).await()
+                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("an undecided apply succeeded after stop"))
+                    .onFailure(cause -> assertThat(cause)
+                        .as("the stop sweep must settle a registered, undecided request at once, not after applyTimeout")
+                        .isInstanceOf(ConsensusError.NodeInactive.class));
+        } finally {
+            engine.stop().timeout(timeSpan(5).seconds()).await();
+        }
+    }
 }
