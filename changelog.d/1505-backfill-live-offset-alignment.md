@@ -8,38 +8,83 @@
   toward min-sync, so the event was lost when this replica was promoted.
   [verified: `PartitionBackfillLiveInterleaveTest.backfill_liveBatchLandsDuringCatchup_nextLiveEventIsHeldAtItsOwnerOffset`,
   red on `8530a4a0e` with `14=marker-13`]
-- **Every replica event now lands at its own owner offset, through one ordered section.** The catch-up
-  apply and the live receive both call `StreamPartitionManager.appendRecovered(stream, partition, offset, …)`.
-  That method decides inside the partition's append lock (`OffHeapRingBuffer.appendOrderedAt`) whether to
-  append at the head, verify an already-held record, or refuse. The two paths therefore share one offset
-  authority rather than two checks that must agree.
-  [verified: `StreamPartitionManagerAlignedAppendTest` (two writers race the same 2,000 events, 20 repetitions,
-  and the ring and WAL each hold every event once); it reddens 20/20 when the head is read outside the lock or
-  the offset is ignored]
-- **An already-held offset is skipped only after its payload and timestamp are compared.** A different held
-  record is refused as `StreamError.ReplicaEntryConflict`. A catch-up that meets one fails, and the replica
-  stays SYNCING. A response starting past the local head is refused as `StreamError.ReplicaOffsetGap`.
-  Neither case appends anything.
-  [verified: `OffHeapRingBufferAppendAtTest`, and the three new `PartitionBackfillLiveInterleaveTest` backfill cases]
-- **A duplicate live batch is acked only when every event in it is verified held.** The old stale-duplicate
-  branch re-acked by offset alone and has been removed. A divergent held record gets no ack. It also gets no
-  catch-up request: a catch-up pulls only past the local head and cannot replace a held entry, and an empty
-  response would take the #559 at-owner-tail promotion. The refusal is logged at ERROR, which is how #1230
-  treats a batch from an unauthorized sender. A duplicate's ack now also waits for the durability barrier.
-  [verified: `ReplicationReceiveHandlerTest.duplicateBatch_heldEventDiffers_isRefused_noAck_noRepair_noAppend`,
-  `…overlappingBatch_heldPrefixDiffers_acksOnlyVerifiedPrefix_appendsNothingPastIt`,
-  `PartitionBackfillLiveInterleaveTest.liveDuplicate_heldEventDiffers_isNotAcked`; all three redden when the
-  blind re-ack or the unverified skip is restored]
-- **Three fixtures encoded the old behaviour and were corrected.**
+- **Every replica-side apply now lands each event at its own owner offset, through one ordered section.**
+  Four paths now call `StreamPartitionManager.appendRecovered(stream, partition, offset, …)`:
+  - the live receive;
+  - the catch-up apply;
+  - governor-failover segment replay (`GovernorFailoverHandler`), which appended at the tail on every
+    consensus-leader change until review F1;
+  - catch-up failover recovery (`DefaultFailoverRecovery`).
+
+  Under the partition's append lock (`OffHeapRingBuffer.appendOrderedAt`), that call appends at the head,
+  verifies an already-held record, or refuses. The tail-append seam `StreamPartitionRecovery` is deleted.
+  After this change the ring is written only by:
+  - the owner's own publish paths (`appendOrdered` / `appendBatchOrdered`);
+  - WAL replay, which checks each record's offset;
+  - `seedHead` on a fresh ring.
+
+  [verified: `GovernorFailoverHandlerTest$OffsetAlignedReplay.handleFailover_replayOverlapsHeldRing_keepsEveryEventAtItsOwnOffset`
+  (the reviewer's S3: before the fix, event 10 landed at 13), and `StreamPartitionManagerAlignedAppendTest`
+  (two writers race the same 2,000 events). The race test reddened 20/20 in every measured run with the offset
+  ignored. With the head read outside the lock, mine went 80/80 over four runs, with a `Thread.yield`
+  widening the window; the reviewer's variant went 19/20. It is a probabilistic pin.]
+- **An already-held offset is skipped only after its payload and timestamp are compared.** A response that
+  starts past the local head is refused as `StreamError.ReplicaOffsetGap`. An overlapping re-delivery whose
+  prefix the ring has already evicted still applies its new tail, because an evicted offset is passed over
+  rather than stopping the batch (review F3).
+  [verified: `OffHeapRingBufferAppendAtTest`; `ReplicationReceiveHandlerTest.overlappingBatch_evictedPrefix_appliesNewTail_andAcks`;
+  `GovernorFailoverHandlerTest$OffsetAlignedReplay.handleFailover_evictedOffsets_arePassedOver_restAreReplayed`]
+- **A divergent held entry QUARANTINES the partition on that replica (review F2, CTO ruling: quarantine, not
+  repair).** When an offered event differs from the one held at offset `N`:
+  - The partition manager records `N`, inside the same section that found it. From then on, every offer at
+    an offset `>= N` is refused as `StreamError.ReplicaQuarantined`, live or duplicate, from any path. So
+    nothing at or past `N` is appended, verified or acked.
+  - The first round only refused the one batch, and a later batch's cumulative ack covered `N`.
+  - It is logged at ERROR once and counted by `StreamPartitionManager.quarantinedPartitionsSinceBoot()`. Like
+    the neighbouring drop counters, that is a manager getter and is not exported as a metric.
+
+  [verified: `PartitionBackfillLiveInterleaveTest.quarantine_divergentHeldEntry_laterLiveBatch_isNotAckedPastIt`
+  (the reviewer's S1, red on the first round with acks `[12, 14]`); `OffHeapRingBufferAppendAtTest.appendOrderedAt_quarantined_refusesAtOrPastDivergence_verifiesBelowIt`;
+  `ReplicationReceiveHandlerTest.laterBatchPastDivergence_isRefused_notAcked`]
+- **A quarantined partition is never promoted CAUGHT_UP on that node, by any path.**
+  - `PartitionBackfill` refuses at entry, holding self SYNCING below `N`. That demotes a replica that was
+    already CAUGHT_UP, and a divergence found by the live path reaches this refusal through `onGap`.
+  - It refuses again at every terminal promotion step, because each is reached asynchronously:
+    - `promote` after a pull;
+    - `ownerSelfPromote`;
+    - the #559 at-owner-tail promotion;
+    - the cold-start contest (`decidePromotion`);
+    - the re-verify completion re-ack (`reverifyNoOp`).
+
+  [verified: `…quarantine_divergentHeldEntry_backfillMustNotPromoteCaughtUp` (the reviewer's S2, with one step
+  added, see below); `…quarantine_caughtUpReplicaMeetsDivergence_isDemotedBelowIt_sendsNoCompletionAck`;
+  `…quarantine_recordedWhileRunInFlight_blocksTheAtOwnerTailPromotion`, which pins the terminal gate alone.
+  Removing the entry gate reddens the first two; removing the terminal gate reddens only the third.]
+- **The ack reflects the batch's verified prefix, and it can lower the owner's view (review F4, kept and
+  documented).** The owner stores the last ack it receives. After a divergence at `N`, a lower ack is
+  deliberate: the old ack for `N` covered an entry now known to differ. For an old duplicate it is
+  conservative, and the next live ack restores it. [mechanism: `ReplicationReceiveHandler.applyAligned` doc]
+- **Fixtures changed and why.**
   - `overlappingBatch_skipsAppliedPrefix_appliesTailOnly` "re-delivered" `p-0` at offset 1, where `p-1` was
-    held. The blind skip could not notice; it now sends the same events.
-  - `TrackingAppender` held no content, so it could not model verification; it now does.
-  - The reproduction's `doesNotContain(14L)` forbade acking 14 at all. The base never reached that line,
-    because the log assertion fails first. It is replaced by "every acked offset holds the owner's event there".
+    held. It now sends the same events.
+  - `TrackingAppender` held no content, so it could not model verification. It now models verification,
+    eviction and quarantine.
+  - The reproduction's `doesNotContain(14L)` forbade a correct ack. It became "every acked offset holds the
+    owner's event there", and now also pins `.contains(14L)` so it cannot pass vacuously (review F6).
+  - The first round's two divergence tests asserted no `onGap`. Under quarantine, `onGap` is the demotion
+    route.
+  - The reviewer's S2 planted a divergent entry that nothing ever compares with the owner's, so no mechanism
+    can detect it. The pinned version adds the live batch that meets it.
   [mechanism: stated at each site]
 - **[unverified: no multi-node or cloud run]** Everything above is established in-JVM against real partition
-  managers, rings, WALs and the production receive-handler and backfill factories. Only the network is stubbed.
-- **[unverified: a divergent held entry has no repair path]** The divergence is refused and surfaced, not
-  repaired. A later redrive pulls from past the local head, and so can still promote a replica whose log
-  holds the conflicting entry. Governor-failover recovery (`StreamPartitionRecovery`) still appends at the
-  tail; it was not examined for the same race.
+  managers, rings, WALs and the production receive-handler, backfill and failover factories. Only the
+  network is stubbed.
+- **[unverified: quarantine has no repair and no persistence]** Clearing a quarantine needs a
+  truncate-and-refetch repair, which does not exist and is out of scope. The record lives in memory for the
+  life of the partition manager: it survives a ring release, but not a process restart, because persisting
+  it would be a new persisted-state format. After a restart, the entry is caught again only when an offer
+  meets it.
+- **[unverified: quarantine is node-local]** It stops THIS node from promoting itself, acking past `N` or
+  re-acking. It cannot remove the node from HRW owner election or from other nodes' source choice: they
+  learn nothing of it without a wire change, and none was made. A quarantined node that is elected owner
+  stays SYNCING in its own registry, but its owner publish path is not gated.
