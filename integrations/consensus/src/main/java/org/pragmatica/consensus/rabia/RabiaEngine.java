@@ -2269,7 +2269,7 @@ public class RabiaEngine<C extends Command> {
     /// `Unit` fallback only supplies the return value; the refusal itself is routed by `onFailure`.
     private Unit persistRestoredState() {
         return saveAuthority().onFailure(this::recordRestoredStateSaveFailure)
-                              .or(Unit.unit());
+                            .or(Unit.unit());
     }
 
     /// #1020 — a failed re-persist after a restore. #1390's `authorityFailure` fences voting on it;
@@ -2279,8 +2279,8 @@ public class RabiaEngine<C extends Command> {
     private void recordRestoredStateSaveFailure(Cause cause) {
         authorityFailure = Option.some(cause);
         log.error("Node {} restored state but FAILED to persist it: {}. The restore is "
-                  + "in memory ONLY — this node's disk still holds its previous checkpoint, "
-                  + "so a restart will lose the restored history and serve a stale store.",
+                 + "in memory ONLY — this node's disk still holds its previous checkpoint, "
+                 + "so a restart will lose the restored history and serve a stale store.",
                   self,
                   cause);
     }
