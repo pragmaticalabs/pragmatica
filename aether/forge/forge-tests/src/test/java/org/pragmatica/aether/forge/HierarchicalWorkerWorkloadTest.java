@@ -65,7 +65,7 @@ class HierarchicalWorkerWorkloadTest {
             id = "forge.test:worker-workload:1.0.0"
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(TestArtifacts.ECHO_SLICE);
         var applyRequest = HttpRequest.newBuilder(URI.create("http://localhost:" + leaderStatus.mgmtPort() + "/api/v1/blueprints"))
             .header("Content-Type", "application/toml").timeout(REQUEST.duration())
@@ -86,7 +86,7 @@ class HierarchicalWorkerWorkloadTest {
             var active = cluster.allNodes().stream().filter(candidate -> leader().kvStore()
                 .getTyped(new AetherKey.NodeArtifactKey(candidate.self(), artifact), AetherValue.NodeArtifactValue.class)
                 .filter(value -> value.state() == SliceState.ACTIVE).isPresent()).map(AetherNode::self).toList();
-            assertThat(active).hasSize(1).allMatch(workers::contains);
+            assertThat(active).hasSize(3).allMatch(workers::contains);
         });
         var core = cluster.status().nodes().stream().filter(status -> !workers.stream().anyMatch(worker -> worker.id().equals(status.id()))).findFirst().orElseThrow();
         var request = HttpRequest.newBuilder(URI.create("http://localhost:" + (APP + core.port() - BASE) + "/echo/worker-proof"))

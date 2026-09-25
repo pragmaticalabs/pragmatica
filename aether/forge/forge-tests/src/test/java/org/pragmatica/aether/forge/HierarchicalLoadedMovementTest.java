@@ -58,7 +58,7 @@ class HierarchicalLoadedMovementTest {
         var originals = membersInSource("east");
         var artifact = org.pragmatica.aether.artifact.Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
         deployWorkersOnlyEcho(artifact);
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> activeWorkers(artifact).size() == 1 && noActiveCore(artifact));
+        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> activeWorkers(artifact).size() == 3 && noActiveCore(artifact));
         assertEcho();
         changeDestination("west");
         var samples = new java.util.concurrent.atomic.AtomicInteger();
@@ -111,7 +111,7 @@ class HierarchicalLoadedMovementTest {
             id = "forge.test:loaded-movement:1.0.0"
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(TestArtifacts.ECHO_SLICE);
         var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://localhost:" + port + "/api/v1/blueprints"))
             .header("Content-Type", "application/toml").timeout(TimeSpan.timeSpan(10).seconds().duration())
