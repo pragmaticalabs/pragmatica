@@ -540,6 +540,106 @@ got=$(w_run "ACKED_PRE='${W_WORK}/acked'; ACKED_DURING='${W_WORK}/empty'; test_e
     || fail "W8 post-kill loss: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
 rm -rf "$W_WORK"
 
+# --- 02y: survival is scored on a SETTLED read, not one best-effort read (#1502) -----------
+# The suite's settled_payloads / stream_post_any / parse_events and both readability tests are
+# extracted verbatim. A stub `_api_call` serves partition P's k-th read from $Y_WORK/p<P>.<k>
+# (the highest k present repeats; `__DOWN__` = transport failure), and a stub `stream_replicas`
+# serves $Y_WORK/head<P> when present. Four partitions, acked markers 0..7, marker i in
+# partition i%4 — the keyless round-robin shape of the s27 run, at a tenth of its size.
+Y02="${INTEG_DIR}/suites/02y-stream-crash/test-stream-crash-durability.sh"
+Y_WORK="$(mktemp -d)"
+{
+    grep -E '^(MARKER_PREFIX|SETTLED_READ_DEADLINE_S|SETTLED_READ_INTERVAL_S|SETTLED_PAYLOADS|SETTLED_STATE|SETTLED_UNREADABLE)=' "$Y02"
+    for fn in marker_for parse_events stream_post_any json_scalar partition_head settled_payloads \
+              read_partition_raw partition_events all_payloads \
+              test_pre_kill_history_readable test_every_acked_event_survives_the_crash; do
+        awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "$Y02"
+    done
+} > "${Y_WORK}/defs.sh"
+for fn in marker_for parse_events stream_post_any partition_head settled_payloads \
+          test_pre_kill_history_readable test_every_acked_event_survives_the_crash; do
+    grep -q "^${fn}() {" "${Y_WORK}/defs.sh" || fail "Y0 ${fn} not extracted from the 02y suite (examined NOTHING)"
+done
+y_body() {  # partition marker-indices... -> a read body with contiguous offsets from 0
+    local p="$1" i off=0 sep="" ev=""; shift
+    for i in "$@"; do
+        ev="${ev}${sep}{\"offset\":${off},\"partition\":${p},\"payload\":\"CRASHDUR-$(printf '%05d' "$i")-Z\"}"
+        sep=","; off=$((off + 1))
+    done
+    printf '{"events":[%s]}' "$ev"
+}
+y_full() {  # writes round <k> with every partition complete
+    y_body 0 0 4 > "${Y_WORK}/p0.$1"; y_body 1 1 5 > "${Y_WORK}/p1.$1"
+    y_body 2 2 6 > "${Y_WORK}/p2.$1"; y_body 3 3 7 > "${Y_WORK}/p3.$1"
+}
+y_reset() { rm -f "${Y_WORK}"/p[0-9].* "${Y_WORK}"/head* "${Y_WORK}"/count*; }
+y_run() {  # <test-fn> -> "rc=<rc>"; stderr (the log) -> $Y_WORK/err
+    printf '%s\n' 0 1 2 3 > "${Y_WORK}/pre"; printf '%s\n' 4 5 6 7 > "${Y_WORK}/during"
+    ( source "${Y_WORK}/defs.sh"
+      PARTITIONS=4; STREAM_NAME=multipart-events; STREAM_APP_ENDPOINTS="http://y-stub:8070"
+      ACKED_PRE="${Y_WORK}/pre"; ACKED_DURING="${Y_WORK}/during"; SETTLED_READ_INTERVAL_S=0
+      [ -n "${Y_DEADLINE:-}" ] && SETTLED_READ_DEADLINE_S="$Y_DEADLINE"
+      refresh_stream_endpoints() { :; }; sleep() { :; }
+      log_warn() { echo "WARN $*" >&2; }; log_info() { echo "INFO $*" >&2; }; log_fail() { echo "FAIL $*" >&2; }
+      assert_eq() { if [ "$1" = "$2" ]; then echo "PASS $3" >&2; else echo "FAIL $3: expected '$2', got '$1'" >&2; fi; }
+      assert_gt() { if [ "$1" -gt "$2" ]; then echo "PASS $3" >&2; else echo "FAIL $3" >&2; fi; }
+      stream_replicas() { [ -f "${Y_WORK}/head$2" ] && cat "${Y_WORK}/head$2"; }
+      _api_call() {
+          local p k f
+          p=$(printf '%s' "$3" | sed -E 's/.*"partition":([0-9]+).*/\1/')
+          k=$(( $(cat "${Y_WORK}/count$p" 2>/dev/null || echo 0) + 1 )); echo "$k" > "${Y_WORK}/count$p"
+          f="${Y_WORK}/p${p}.${k}"
+          [ -f "$f" ] || f=$(ls "${Y_WORK}/p${p}."* | sort -t. -k2 -n | tail -1)
+          [ "$(cat "$f")" = "__DOWN__" ] && return 1
+          cat "$f"
+      }
+      "$1"; printf 'rc=%s' "$?" ) 2> "${Y_WORK}/err"
+}
+y_has() { grep -qF -- "$1" "${Y_WORK}/err"; }
+# Y1 — the s27 shape: p0 and p1 answer SUCCESSFULLY but EMPTY on the first read, full on the next.
+y_reset; y_body 0 > "${Y_WORK}/p0.1"; y_body 1 > "${Y_WORK}/p1.1"; y_full 2
+y_body 2 2 6 > "${Y_WORK}/p2.1"; y_body 3 3 7 > "${Y_WORK}/p3.1"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 2" && ! y_has "MISSING"; then
+    ok "Y1 a short-but-successful first read (s27: '40 missing') is re-read, not scored as loss"
+else fail "Y1 short first read: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y2 — genuine loss: marker 5 is absent from p1 on every read. Must FAIL, promptly, as loss.
+y_reset; y_full 1; y_body 1 1 > "${Y_WORK}/p1.1"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "FAIL Every ACKED event survived the crash (8 acked, 1 missing)" && y_has "MISSING acked marker: CRASHDUR-00005-Z" \
+   && y_has "stable across reads 1-2, 1 acked marker(s) absent"; then
+    ok "Y2 an acked event truly absent from a stable read still FAILS as loss (1 missing)"
+else fail "Y2 genuine loss: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y3 — a duplicate is scored by distinct marker (passes) but REPORTED.
+y_reset; y_full 1; y_body 2 2 2 6 > "${Y_WORK}/p2.1"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" \
+   && y_has "DUPLICATES: 1 extra event(s) across 1 acked marker(s) (e.g. CRASHDUR-00002-Zx2)"; then
+    ok "Y3 an 81-for-80 style duplicate passes by distinct marker and is reported as a WARN with its count"
+else fail "Y3 duplicate: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y4 — two consecutive SHORT reads that agree are not settled while the owner's head is ahead.
+y_reset; y_body 0 > "${Y_WORK}/p0.1"; y_body 0 > "${Y_WORK}/p0.2"; y_full 3
+for k in 1 2; do y_body 1 1 5 > "${Y_WORK}/p1.$k"; y_body 2 2 6 > "${Y_WORK}/p2.$k"; y_body 3 3 7 > "${Y_WORK}/p3.$k"; done
+printf '{"hrwOwner":"n1","servedByOwner":true,"ownerHeadOffset":2,"replicas":[]}' > "${Y_WORK}/head0"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 3"; then
+    ok "Y4 agreeing short reads below the owner's ownerHeadOffset keep reading until complete"
+else fail "Y4 watermark: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y5 — a partition no endpoint can read is UNMEASURABLE, never an empty partition scored as loss.
+y_reset; y_full 1; echo __DOWN__ > "${Y_WORK}/p3.1"
+Y_DEADLINE=0 y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "FAIL partition(s) 3 unreadable at the read deadline" && ! y_has "MISSING acked marker"; then
+    ok "Y5 an unreadable partition fails as UNMEASURABLE, with no marker reported MISSING"
+else fail "Y5 unreadable: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y6 — the pre-kill readability check uses the same settled read.
+y_reset; y_body 0 > "${Y_WORK}/p0.1"; y_full 2
+y_body 1 1 5 > "${Y_WORK}/p1.1"; y_body 2 2 6 > "${Y_WORK}/p2.1"; y_body 3 3 7 > "${Y_WORK}/p3.1"
+y_run test_pre_kill_history_readable >/dev/null
+if y_has "PASS All 4 ACKED pre-kill markers readable before the kill (got 4)"; then
+    ok "Y6 pre-kill readability re-reads a short partition instead of failing on it"
+else fail "Y6 pre-kill: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+rm -rf "$Y_WORK"
+
 echo ""
 echo "  ----"
 echo "  passed: ${PASS}"
