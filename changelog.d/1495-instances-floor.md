@@ -18,6 +18,12 @@
   onto every slice target of the blueprint, so it carries the same floor and default: omitted means 3
   (was 1), fewer than 3 answers `400` with `DeployRouteError.INSTANCES_BELOW_MINIMUM` before the
   deployment manager is reached `[verified: aether/node DeployRouteStatusTest.InstanceFloor — route level]`.
+- A blueprint the parser refuses — including `instances` below 3 and malformed TOML — now answers `400`
+  instead of `500` on `POST /api/v1/blueprints` and the artifact publish/deploy routes (the #569 class):
+  `BlueprintService` wraps the parser's cause in `BlueprintRejected` (`HttpStatusAware`, 400), which
+  keeps the typed cause as its `origin` and quotes its message, so the body names the floor
+  `[verified: aether/node BlueprintServiceTest.PublishRefusalStatusTests — real route + real service]`.
+  `POST /api/v1/blueprints/validate` is unchanged: it answers 200 with `valid: false` by contract.
 - Unchanged by design: `POST /api/scale` and the autoscaler still scale down to the blueprint's
   `minAvailable`, and A/B test variants keep their own per-variant count. The floor bounds what a
   blueprint declares, not the runtime count, which can drop to `minAvailable`.

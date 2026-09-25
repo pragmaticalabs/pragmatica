@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.api.routes.ProblemResponses;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -37,6 +38,7 @@ import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
+import org.pragmatica.aether.slice.blueprint.SliceSpecError;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -64,11 +66,15 @@ import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -82,6 +88,7 @@ import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import io.netty.handler.codec.http.HttpHeaders;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -700,6 +707,120 @@ class BlueprintServiceTest {
 
         private static <T> T unsupported(String methodName) {
             return fail("Not touched by the status route handler: " + methodName);
+        }
+    }
+
+    /// #1495 — a blueprint the parser refuses is the CALLER's error. The parser's causes live in the
+    /// HTTP-free `slice` module, so without `BlueprintRejected` they reached
+    /// `ProblemResponses.resolveStatus` status-less and answered 500, as if the cluster had broken (the
+    /// #569 class). Driven through the REAL `BLUEPRINT_PUBLISH_BODY` handler over the REAL
+    /// `BlueprintService` and then the exact funnel call `ManagementRouter.writeError` makes, so a hop
+    /// that re-wraps or drops the mapping fails here.
+    @Nested
+    class PublishRefusalStatusTests {
+        @Test
+        void publishRoute_instancesTwo_respondsBadRequestNamingTheFloor() {
+            var cause = publishCause("""
+                    id = "org.example:floor-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:floor-slice:1.0.0"
+                    instances = 2
+                    """);
+            var recorder = writeProblem(cause);
+
+            assertThat(recorder.status.get()).as("a blueprint below the instance floor is a malformed request")
+                                             .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(recorder.body()).contains("declares instances = 2")
+                                       .contains("must run at least 3 instances");
+            assertThat(cause).as("the typed parser cause stays reachable through the 400 wrapper")
+                             .isInstanceOfSatisfying(BlueprintRejected.class,
+                                                     rejected -> assertThat(rejected.origin())
+                                                             .isInstanceOf(SliceSpecError.InstancesBelowMinimum.class));
+        }
+
+        @Test
+        void publishRoute_malformedBlueprint_respondsBadRequest() {
+            var recorder = writeProblem(publishCause("this is [not toml"));
+
+            assertThat(recorder.status.get()).as("unparseable TOML is a malformed request, not a server fault")
+                                             .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(recorder.body()).contains("Blueprint rejected");
+        }
+
+        private Cause publishCause(String dsl) {
+            var holder = new AtomicReference<Cause>();
+
+            publishRoute().handler()
+                          .handle(new BodyRequestContext(dsl.getBytes(StandardCharsets.UTF_8)))
+                          .await()
+                          .onSuccess(value -> fail("Publish must be refused, got: " + value))
+                          .onFailure(holder::set);
+
+            return holder.get();
+        }
+
+        private Route<?> publishRoute() {
+            var routes = SliceRoutes.sliceRoutes(() -> new RedeployAfterPriorFailureTests.LiveManageableNode(service,
+                                                                                                             DeploymentMap.deploymentMap()))
+                                    .routes()
+                                    .filter(candidate -> candidate.name().equals(ManagementRoute.BLUEPRINT_PUBLISH_BODY.name()))
+                                    .toList();
+
+            return routes.isEmpty() ? fail("BLUEPRINT_PUBLISH_BODY route not registered") : routes.getFirst();
+        }
+
+        private static RecordingResponseWriter writeProblem(Cause cause) {
+            var recorder = new RecordingResponseWriter();
+
+            ProblemResponses.writeProblem(recorder, cause, "/api/v1/blueprints", "req-1");
+
+            return recorder;
+        }
+
+        private record BodyRequestContext(byte[] body) implements RequestContext {
+            @Override
+            public List<String> pathParams() { return List.of(); }
+            @Override
+            public <T> Result<T> fromJson(TypeToken<T> literal) { return unsupported("fromJson"); }
+            @Override
+            public Route<?> route() { return unsupported("route"); }
+            @Override
+            public HttpHeaders responseHeaders() { return unsupported("responseHeaders"); }
+            @Override
+            public String requestId() { return unsupported("requestId"); }
+            @Override
+            public HttpMethod method() { return unsupported("method"); }
+            @Override
+            public String path() { return unsupported("path"); }
+            @Override
+            public Headers headers() { return unsupported("headers"); }
+            @Override
+            public QueryParams queryParams() { return unsupported("queryParams"); }
+        }
+
+        private static final class RecordingResponseWriter implements ResponseWriter {
+            private final AtomicReference<HttpStatus> status = new AtomicReference<>();
+            private final AtomicReference<byte[]> body = new AtomicReference<>(new byte[0]);
+
+            @Override
+            public void write(HttpStatus status, byte[] body, ContentType contentType) {
+                this.status.set(status);
+                this.body.set(body);
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+
+            String body() {
+                return new String(body.get(), StandardCharsets.UTF_8);
+            }
+        }
+
+        private static <T> T unsupported(String methodName) {
+            return fail("Not touched by the publish route handler: " + methodName);
         }
     }
 
