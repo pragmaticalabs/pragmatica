@@ -7,11 +7,14 @@ package org.pragmatica.aether.config.cluster;
 import java.util.List;
 
 import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
@@ -82,6 +85,118 @@ class NodeUserDataRendererTest {
                             + "java token, before -jar, so an exhausted heap kills the node instead of leaving it "
                             + "answering SWIM pings from a dead process. See "
                             + "aether/docs/operators/deployment-recovery.md §4.5. Got:\n" + script);
+        }
+    }
+
+    private static final String CONTAINER_BASE = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+
+            [source.eu-1.core]
+            count = 5
+            """;
+
+    /// #1519 — #1390 made the node refuse to boot without an absolute `cluster.consensus_path`, and no
+    /// shipped config set one: 5 of 5 cloud nodes aborted. The cloud and SSH source-type defaults now
+    /// set it to [NodeUserDataRenderer#CONSENSUS_PATH], and the rendered user-data must keep that path on
+    /// the VM disk: created before launch, and bind-mounted at the same path into the container, so a
+    /// recreated container (the bootstrap re-launch recreates it) still finds its journal. Each test
+    /// renders from the config the production composer builds, so removing the `consensus_path` line
+    /// from `defaults/aether-cloud.toml` reddens it. `ShippedTemplateControlStorageTest` (aether/node)
+    /// resolves the same composed config through the node's own boot gate.
+    @Nested
+    class DurableControlStateIsOnTheVmDisk {
+        @Test
+        void composedCloudConfig_setsConsensusPath_insideTheNodeStateDir() {
+            var composed = composedCloud();
+
+            assertEquals(Option.some(NodeUserDataRenderer.CONSENSUS_PATH).toString(),
+                         composed.getString("cluster", "consensus_path").toString(),
+                         "defaults/aether-cloud.toml must set cluster.consensus_path (#1519)");
+            assertTrue(NodeUserDataRenderer.CONSENSUS_PATH.startsWith(NodeUserDataRenderer.NODE_STATE_DIR + "/"),
+                       "consensus_path must live inside the mounted node state dir");
+        }
+
+        @Test
+        void composedSshConfig_setsConsensusPath_insideTheNodeStateDir() {
+            var composed = Result.all(DefaultNodeConfig.globalDefault(),
+                                      DefaultNodeConfig.sourceTypeDefault(SourceType.SSH))
+                                 .map((global, typeDefault) -> NodeConfigComposer.compose(global,
+                                                                                          typeDefault,
+                                                                                          Option.none(),
+                                                                                          TomlDocument.EMPTY))
+                                 .unwrap();
+
+            assertEquals(Option.some(NodeUserDataRenderer.CONSENSUS_PATH).toString(),
+                         composed.getString("cluster", "consensus_path").toString(),
+                         "defaults/aether-ssh.toml must set cluster.consensus_path (#1519)");
+        }
+
+        @Test
+        void render_container_writesConsensusPath_createsStateDir_andBindMountsIt() {
+            var script = renderContainer();
+            var install = script.indexOf(NodeUserDataRenderer.CONTAINER_STATE_DIR_INSTALL + "\n");
+            var run = script.indexOf("docker run -d");
+            var mount = script.indexOf("    -v /var/lib/aether:/var/lib/aether \\\n");
+
+            assertTrue(script.contains("consensus_path = \"/var/lib/aether/aether-control\""),
+                       () -> "the written aether.toml must carry consensus_path. Got:\n" + script);
+            assertTrue(install >= 0 && run >= 0 && install < run,
+                       () -> "the state dir must be created (uid 1000) before docker run. Got:\n" + script);
+            assertTrue(mount > run,
+                       () -> "docker run must bind-mount the VM-disk state dir at the same path. Got:\n" + script);
+        }
+
+        @Test
+        void render_jvm_writesConsensusPath_andCreatesStateDirBeforeTheUnitStarts() {
+            var jvmConfig = ClusterBootstrapConfigParser.parse(JVM_BASE.formatted("")).unwrap();
+            var script = NodeUserDataRenderer.render(jvmConfig,
+                                                     jvmConfig.sources().get("eu-1"),
+                                                     NodeRole.CORE,
+                                                     "eu-1-core-0",
+                                                     0,
+                                                     "test-secret",
+                                                     clusterName("prod-cluster").unwrap(),
+                                                     composedCloud(),
+                                                     List.of(),
+                                                     List.of());
+            var install = script.indexOf(NodeUserDataRenderer.JVM_STATE_DIR_INSTALL + "\n");
+            var start = script.indexOf("systemctl enable --now");
+
+            assertTrue(script.contains("consensus_path = \"/var/lib/aether/aether-control\""),
+                       () -> "the written aether.toml must carry consensus_path. Got:\n" + script);
+            assertTrue(install >= 0 && start >= 0 && install < start,
+                       () -> "the state dir must be created before the unit starts. Got:\n" + script);
+        }
+
+        private static TomlDocument composedCloud() {
+            var config = ClusterBootstrapConfigParser.parse(CONTAINER_BASE).unwrap();
+
+            return ReplacementNodeConfigComposer.compose(config, config.sources().get("eu-1"), Option.some("secret"))
+                                                .unwrap();
+        }
+
+        private static String renderContainer() {
+            var config = ClusterBootstrapConfigParser.parse(CONTAINER_BASE).unwrap();
+
+            return NodeUserDataRenderer.render(config,
+                                               config.sources().get("eu-1"),
+                                               NodeRole.CORE,
+                                               "eu-1-core-0",
+                                               0,
+                                               "test-secret",
+                                               clusterName("prod-cluster").unwrap(),
+                                               composedCloud(),
+                                               List.of(),
+                                               List.of());
         }
     }
 

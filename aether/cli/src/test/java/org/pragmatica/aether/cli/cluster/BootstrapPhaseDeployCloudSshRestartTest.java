@@ -536,6 +536,10 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(cmd.contains("-l aether-cluster=" + CLUSTER_NAME), cmd);
         assertTrue(cmd.contains("-l aether-node-id=eu-1-core-0"), cmd);
         assertTrue(cmd.contains("-v /opt/aether/config/aether.toml:/app/aether.toml:ro"), cmd);
+        // #1519: the recreated container must keep the VM-disk durable control state the composed
+        // consensus_path points at, and the dir is (re)created before the run for the SSH start.
+        assertTrue(cmd.contains(" -v /var/lib/aether:/var/lib/aether "), cmd);
+        assertTrue(cmd.indexOf("install -d -m 0700 -o 1000 -g 1000 /var/lib/aether && docker run -d") > 0, cmd);
         assertTrue(cmd.contains("-e NODE_ID=\"eu-1-core-0\""), cmd);
         assertTrue(cmd.contains("-e CLUSTER_PORT=\"8090\""), cmd);
         assertTrue(cmd.contains("-e MANAGEMENT_PORT=\"8091\""), cmd);

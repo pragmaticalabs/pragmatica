@@ -47,6 +47,11 @@ This starts:
 - `aether-node-2` on ports 8081 (API), 8091 (cluster)
 - `aether-node-3` on ports 8082 (API), 8092 (cluster)
 
+Each node mounts its own named volume (`aether-node-N-data`) at `/data`, where the image's config keeps
+the node's durable control state (`cluster.consensus_path = "/data/aether-control"`). `docker compose
+down -v` deletes that state along with the volumes. See
+[Durable control state recovery](durable-control-recovery.md).
+
 ### Build images from source (developers)
 
 Only needed for the `--build` path above; the pull path needs neither Java nor Maven.
@@ -153,12 +158,16 @@ hand-built bridge network) without compose.
 
 ### Multi-Node with Docker Network
 
+Give every node its own volume at `/data`. The image's config puts the durable control state at
+`/data/aether-control`, and without a volume that state is lost when the container is removed.
+
 ```bash
 # Create network
 docker network create aether-net
 
 # Start nodes
 docker run -d --name node1 --network aether-net \
+  -v aether-node1-data:/data \
   -e NODE_ID=node-1 \
   -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
@@ -166,6 +175,7 @@ docker run -d --name node1 --network aether-net \
   -p 8080:8080 aether-node:latest
 
 docker run -d --name node2 --network aether-net \
+  -v aether-node2-data:/data \
   -e NODE_ID=node-2 \
   -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
@@ -173,6 +183,7 @@ docker run -d --name node2 --network aether-net \
   -p 8081:8080 aether-node:latest
 
 docker run -d --name node3 --network aether-net \
+  -v aether-node3-data:/data \
   -e NODE_ID=node-3 \
   -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
@@ -212,6 +223,15 @@ services:
 ```
 
 ### Persistent Storage
+
+A node refuses to boot without an absolute `cluster.consensus_path` (or an explicit artifacts storage
+path). The image's config sets `/data/aether-control`; if you mount your own `aether.toml`, set it
+yourself, on a per-node volume:
+
+```toml
+[cluster]
+consensus_path = "/data/aether-control"
+```
 
 ```yaml
 services:

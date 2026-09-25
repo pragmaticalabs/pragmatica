@@ -277,7 +277,14 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                               "--network",
                                               config.networkName(),
                                               "-v",
-                                              config.socketPath() + ":" + config.socketPath(),
+
+        // #1519 — deliberately NO `/data` volume. The image's baked config puts
+        // `cluster.consensus_path` at `/data/aether-control`, which lives in this container's own
+        // writable layer: it survives `restart(InstanceId)` (docker restart) but not removal. That is
+        // the whole lifetime this container can have — a removed NodeId never returns (terminal
+        // removal, `--restart no` above), so a named volume would outlive its only possible owner and
+        // leak one volume per replacement.
+        config.socketPath() + ":" + config.socketPath(),
                                               "--label",
                                               "aether.cluster=" + cluster,
                                               "--label",

@@ -6,6 +6,9 @@
 # Plain HTTP for management API in dev/integration environments.
 # Cloud sources flip this to true.
 tls = false
+# No consensus_path here (#1519): no docker-source node boots from this composed layer.
+# DockerComputeProvider runs the image, whose baked /app/aether.toml sets
+# consensus_path = "/data/aether-control".
 
 [cloud]
 provider = "docker"

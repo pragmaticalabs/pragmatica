@@ -28,6 +28,8 @@ services:
       dockerfile: docker/aether-node/Dockerfile
     container_name: aether-node-1
     hostname: aether-node-1
+    volumes:
+      - aether-node-1-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-1"
       CLUSTER_PORT: "8090"
@@ -55,6 +57,8 @@ services:
       dockerfile: docker/aether-node/Dockerfile
     container_name: aether-node-2
     hostname: aether-node-2
+    volumes:
+      - aether-node-2-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-2"
       CLUSTER_PORT: "8090"
@@ -85,6 +89,8 @@ services:
       dockerfile: docker/aether-node/Dockerfile
     container_name: aether-node-3
     hostname: aether-node-3
+    volumes:
+      - aether-node-3-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-3"
       CLUSTER_PORT: "8090"
@@ -128,3 +134,9 @@ services:
 networks:
   aether-network:
     driver: bridge
+
+# One named volume PER NODE for durable control state (#1519). Never share one between nodes.
+volumes:
+  aether-node-1-data:
+  aether-node-2-data:
+  aether-node-3-data:

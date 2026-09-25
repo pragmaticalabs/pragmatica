@@ -22,8 +22,9 @@ import org.pragmatica.lang.Contract;
 /// substitution — with one deliberate exception: `AETHER_CLUSTER_SECRET` is emitted as a
 /// `${AETHER_CLUSTER_SECRET:?...}` reference (see `aether/docker/docker-compose.yml` for the
 /// same convention), never a literal, so the generated file carries no secret value of its own
-/// (#684). Operators copy the file, adjust for their environment (storage volumes,
-/// healthchecks), export `AETHER_CLUSTER_SECRET` in the shell that runs `docker compose up -d`,
+/// (#684). Each node mounts its own named volume at `/data`, where the image's config keeps the
+/// durable control state (`cluster.consensus_path`, #1519). Operators copy the file, adjust for their
+/// environment (healthchecks), export `AETHER_CLUSTER_SECRET` in the shell that runs `docker compose up -d`,
 /// then run it. The label structure is the correct-by-construction part — the rest is operator
 /// preference.
 final class DockerComposeTemplate {
@@ -45,8 +46,27 @@ final class DockerComposeTemplate {
         sb.append("\nnetworks:\n");
         sb.append("  aether-").append(clusterName).append("-network:\n");
         sb.append("    driver: bridge\n");
+        appendDataVolumes(sb, clusterName, nodes);
 
         return sb.toString();
+    }
+
+    /// #1519 — one named volume PER NODE, mounted at the image's `/data`. The image's baked
+    /// `aether.toml` sets `cluster.consensus_path = "/data/aether-control"` (required since #1390), so
+    /// the volume is what lets a node's durable control state survive its container being recreated.
+    /// A volume shared between nodes would let two identities write one journal, hence one per node.
+    private static void appendDataVolumes(StringBuilder sb, ClusterName clusterName, int nodes) {
+        sb.append("\nvolumes:\n");
+        IntStream.rangeClosed(1, nodes)
+                 .forEach(i -> sb.append("  ").append(dataVolumeName(clusterName, i)).append(":\n"));
+    }
+
+    static String dataVolumeName(ClusterName clusterName, int idx) {
+        return nodeServiceName(clusterName, idx) + "-data";
+    }
+
+    private static String nodeServiceName(ClusterName clusterName, int idx) {
+        return "aether-" + clusterName + "-node-" + idx;
     }
 
     private static void appendHeader(StringBuilder sb, ClusterName clusterName, int nodes) {
@@ -93,7 +113,7 @@ final class DockerComposeTemplate {
                                    int idx,
                                    int mgmtPortBase,
                                    int appPortBase) {
-        var name = "aether-" + clusterName + "-node-" + idx;
+        var name = nodeServiceName(clusterName, idx);
         var nodeId = "node-" + idx;
 
         sb.append("  ").append(name).append(":\n");
@@ -103,6 +123,8 @@ final class DockerComposeTemplate {
         sb.append("    labels:\n");
         sb.append("      aether.cluster: \"").append(clusterName).append("\"\n");
         sb.append("      aether.node-id: \"").append(nodeId).append("\"\n");
+        sb.append("    volumes:\n");
+        sb.append("      - ").append(dataVolumeName(clusterName, idx)).append(":/data\n");
         sb.append("    environment:\n");
         sb.append("      <<: *node-env\n");
         sb.append("      NODE_ID: \"").append(nodeId).append("\"\n");

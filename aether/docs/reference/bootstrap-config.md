@@ -273,6 +273,15 @@ so, you're editing the wrong schema.
 
 ## Traps
 
+### Durable control state lives on the VM disk (#1519)
+
+A node refuses to boot without an absolute `cluster.consensus_path`. For cloud and SSH sources the
+composed `aether.toml` sets it to `/var/lib/aether/aether-control`. The user-data creates
+`/var/lib/aether` on the VM disk, and a container runtime bind-mounts it at the same path, so the
+journal survives the bootstrap re-launch, which recreates the container. To move it, override
+`node_config.cluster.consensus_path`, and keep it under `/var/lib/aether` for a container runtime:
+anything else lands in the container's own filesystem.
+
 ### Fleet cap — bounding what a cluster may provision (#298)
 
 `[cluster] max_nodes` is a ceiling on how many nodes a cluster may have provisioned. It is enforced at

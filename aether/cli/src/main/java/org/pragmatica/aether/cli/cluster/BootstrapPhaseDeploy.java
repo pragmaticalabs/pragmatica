@@ -503,6 +503,12 @@ sealed interface BootstrapPhaseDeploy {
     /// operators filter tiers by, and the `AETHER_ROLE` the identity pass emits from the same value
     /// is the SWIM role label, the only worker classifier. A literal `core` here did not merely
     /// mislabel a non-core node, it reclassified it.
+    ///
+    /// #1519 — the recreated container must bind-mount the SAME durable control-state directory the
+    /// cloud-init start mounted ([NodeUserDataRenderer#NODE_STATE_MOUNT]); without it the composed
+    /// `cluster.consensus_path` would resolve inside the fresh container and the first boot's journal
+    /// would be gone. The directory is (re)created before the run so the SSH start, which has no
+    /// cloud-init, gets it too; a failed `install` stops the `&&` chain rather than starting unmounted.
     static String buildRestartCommand(String image,
                                       ClusterName clusterName,
                                       String nodeId,
@@ -513,11 +519,13 @@ sealed interface BootstrapPhaseDeploy {
                                       String clusterSecret,
                                       Fn1<String, String> envLookup) {
         return "docker rm -f aether-node 2>/dev/null || true"
+             + " && " + NodeUserDataRenderer.CONTAINER_STATE_DIR_INSTALL
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
              + " -l aether-role=" + role.value()
              + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
+             + " -v " + NodeUserDataRenderer.NODE_STATE_MOUNT
              + " -e NODE_ID=\"" + nodeId
              + "\""
              + " -e CLUSTER_PORT=\"" + clusterPort

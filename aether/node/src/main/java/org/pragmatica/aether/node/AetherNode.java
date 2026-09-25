@@ -739,7 +739,9 @@ public interface AetherNode extends ManageableNode {
                                                 cause.message()));
     }
 
-    private static Result<Path> consensusDirectory(AetherNodeConfig config) {
+    /// Package-private only so `ShippedTemplateControlStorageTest` can resolve every shipped node config
+    /// through this exact gate (#1519); the #1390 requirement it enforces is unchanged.
+    static Result<Path> consensusDirectory(AetherNodeConfig config) {
         if (config.configProvider().flatMap(provider -> provider.getString("cluster.consensus_path")).isEmpty() && !config.storageConfig()
                                                                                                                           .containsKey("artifacts")) {
             return Causes.cause("Durable control storage requires cluster.consensus_path or an explicit artifacts storage path").result();

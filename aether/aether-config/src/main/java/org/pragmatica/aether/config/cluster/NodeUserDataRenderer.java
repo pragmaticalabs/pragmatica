@@ -49,6 +49,24 @@ public sealed interface NodeUserDataRenderer {
     String JVM_ENV_DIR = "/etc/aether";
     String JVM_ENV_FILE_PATH = "/etc/aether/node.env";
     String JVM_LAUNCHER_PATH = "/opt/aether/run-node.sh";
+    /// #1519 — the HOST directory holding the node's durable control state. Since #1390 a node refuses to
+    /// boot without an absolute `cluster.consensus_path`, and the composed config's source-type defaults
+    /// (`defaults/aether-cloud.toml`, `defaults/aether-ssh.toml`) set it to [#CONSENSUS_PATH], inside
+    /// this directory. It lives on the VM disk, so the journal survives the container being recreated
+    /// (the bootstrap re-launch recreates it) and, in JVM mode, the process being restarted.
+    String NODE_STATE_DIR = "/var/lib/aether";
+    /// The `cluster.consensus_path` the cloud and SSH source-type defaults carry; a test pins the two equal.
+    String CONSENSUS_PATH = NODE_STATE_DIR + "/aether-control";
+    /// The container bind-mounts [#NODE_STATE_DIR] at the SAME path, so one `consensus_path` means the
+    /// same directory to the containerized node and to a JVM-mode node on the host — a source whose
+    /// roles run different runtimes needs no runtime-specific config.
+    String NODE_STATE_MOUNT = NODE_STATE_DIR + ":" + NODE_STATE_DIR;
+    /// Creates [#NODE_STATE_DIR] owned by the image's `aether` user (uid/gid 1000, the owner #287 already
+    /// gives `aether.toml`), `0700` because the directory holds cluster control state. Idempotent, so the
+    /// bootstrap re-launch and the SSH start can run it again.
+    String CONTAINER_STATE_DIR_INSTALL = "install -d -m 0700 -o 1000 -g 1000 " + NODE_STATE_DIR;
+    /// JVM mode runs as `root` ([SystemdUnitTemplate#DEFAULT_USER]), so the directory stays root-owned.
+    String JVM_STATE_DIR_INSTALL = "install -d -m 0700 " + NODE_STATE_DIR;
 
     static String deriveJarTag(String version) {
         if (!Verify.Is.present(version)) {
@@ -121,12 +139,14 @@ public sealed interface NodeUserDataRenderer {
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
+            appendNodeStateDir(sb, CONTAINER_STATE_DIR_INSTALL);
             appendContainerRun(sb, clusterName, nodeId, role);
         } else {
             appendJvmInstall(sb,
                              resolveJarUrl(runtimeProfile,
                                            config.cluster().version()));
             appendComposedConfig(sb, composedConfig);
+            appendNodeStateDir(sb, JVM_STATE_DIR_INSTALL);
             appendJvmRun(sb,
                          clusterName,
                          role,
@@ -252,6 +272,12 @@ public sealed interface NodeUserDataRenderer {
         sb.append("chmod 600 /opt/aether/config/aether.toml\n\n");
     }
 
+    /// #1519 — create the durable control-state directory on the VM disk before the node starts.
+    private static void appendNodeStateDir(StringBuilder sb, String install) {
+        sb.append("# --- Durable control state on the VM disk (cluster.consensus_path, #1519) ---\n");
+        sb.append(install).append("\n\n");
+    }
+
     private static void appendContainerRun(StringBuilder sb, ClusterName clusterName, String nodeId, NodeRole role) {
         sb.append("# --- Pull and run ---\n");
         sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
@@ -271,6 +297,7 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -l aether-node-id=").append(nodeId).append(" \\\n");
         sb.append("    -l aether-role=").append(role.value()).append(" \\\n");
         sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
+        sb.append("    -v ").append(NODE_STATE_MOUNT).append(" \\\n");
         sb.append("    -e NODE_ID=\"${AETHER_NODE_ID}\" \\\n");
         sb.append("    -e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\" \\\n");
         sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");

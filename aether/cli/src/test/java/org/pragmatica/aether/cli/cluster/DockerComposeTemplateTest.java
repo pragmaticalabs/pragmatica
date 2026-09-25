@@ -4,7 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import org.junit.jupiter.api.Test;
+import org.pragmatica.config.toml.TomlParser;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,5 +58,29 @@ class DockerComposeTemplateTest {
         var rendered = DockerComposeTemplate.render(clusterName("c").unwrap(), 3, "aether-node:latest", 5150, 8070, 6000);
         assertThat(rendered).contains("restart: \"no\"")
                                                 .contains("CTM auto-heal owns failure recovery");
+    }
+
+    /// #1519 — the image's config keeps durable control state under `/data` (required since #1390), so
+    /// each node needs its OWN named volume there to survive its container being recreated; a shared
+    /// volume would put two identities on one journal.
+    @Test
+    void renderMountsADistinctNamedDataVolumePerNode() {
+        var rendered = DockerComposeTemplate.render(clusterName("eu").unwrap(), 3, "aether-node:latest", 5150, 8070, 6000);
+
+        assertThat(rendered).contains("      - aether-eu-node-1-data:/data\n")
+                            .contains("      - aether-eu-node-2-data:/data\n")
+                            .contains("      - aether-eu-node-3-data:/data\n")
+                            .contains("\nvolumes:\n  aether-eu-node-1-data:\n  aether-eu-node-2-data:\n  aether-eu-node-3-data:\n");
+        assertThat(rendered.split(":/data", -1).length - 1).isEqualTo(3);
+    }
+
+    /// The volume only persists the journal if the image's `cluster.consensus_path` is under it.
+    @Test
+    void imageConsensusPathLivesUnderTheMountedDataVolume() throws Exception {
+        var image = TomlParser.parse(Files.readString(Path.of("..", "docker", "aether-node", "aether.toml"))).unwrap();
+
+        assertThat(image.getString("cluster", "consensus_path").or(""))
+                .as("aether/docker/aether-node/aether.toml must set cluster.consensus_path (#1519)")
+                .startsWith("/data/");
     }
 }

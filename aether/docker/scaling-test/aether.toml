@@ -1,6 +1,11 @@
 # Aether Node Configuration for Docker Scaling Test
 # core_max comes from CORE_MAX env var — allows same config for core and worker nodes
 
+[cluster]
+# Durable control state — required since #1390 (#1519). Each compose service mounts its own named
+# volume at /data, so the journal survives the container being recreated.
+consensus_path = "/data/aether-control"
+
 [slice]
 repositories = ["builtin", "local"]
 

@@ -15,6 +15,12 @@
 
 [cluster]
 tls = false
+# Durable control state (consensus journal, checkpoints, producer epoch). REQUIRED: since #1390 the
+# node refuses to boot without an absolute `consensus_path` or an explicit artifacts storage path
+# (#1519). `/data` is created in the image and owned by the `aether` user. The path survives a
+# container restart; to survive the container being RECREATED, mount a volume per node at `/data`
+# (the shipped docker-compose files do). One path per node: never share a volume between nodes.
+consensus_path = "/data/aether-control"
 
 [slice]
 # "builtin" resolves artifacts from the distributed DHT (quorum reads, replicated across nodes).

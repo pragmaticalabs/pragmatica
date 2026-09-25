@@ -14,6 +14,8 @@ services:
         CONFIG_PATH: docker/scaling-test/aether.toml
     container_name: aether-worker-6
     hostname: aether-worker-6
+    volumes:
+      - aether-worker-6-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-6"
       CLUSTER_PORT: "8090"
@@ -41,6 +43,8 @@ services:
         CONFIG_PATH: docker/scaling-test/aether.toml
     container_name: aether-worker-7
     hostname: aether-worker-7
+    volumes:
+      - aether-worker-7-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-7"
       CLUSTER_PORT: "8090"
@@ -68,6 +72,8 @@ services:
         CONFIG_PATH: docker/scaling-test/aether.toml
     container_name: aether-worker-8
     hostname: aether-worker-8
+    volumes:
+      - aether-worker-8-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-8"
       CLUSTER_PORT: "8090"
@@ -95,6 +101,8 @@ services:
         CONFIG_PATH: docker/scaling-test/aether.toml
     container_name: aether-worker-9
     hostname: aether-worker-9
+    volumes:
+      - aether-worker-9-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-9"
       CLUSTER_PORT: "8090"
@@ -122,6 +130,8 @@ services:
         CONFIG_PATH: docker/scaling-test/aether.toml
     container_name: aether-worker-10
     hostname: aether-worker-10
+    volumes:
+      - aether-worker-10-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-10"
       CLUSTER_PORT: "8090"
@@ -149,6 +159,8 @@ services:
         CONFIG_PATH: docker/scaling-test/aether.toml
     container_name: aether-worker-11
     hostname: aether-worker-11
+    volumes:
+      - aether-worker-11-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-11"
       CLUSTER_PORT: "8090"
@@ -176,6 +188,8 @@ services:
         CONFIG_PATH: docker/scaling-test/aether.toml
     container_name: aether-worker-12
     hostname: aether-worker-12
+    volumes:
+      - aether-worker-12-data:/data   # per-node durable control state (cluster.consensus_path)
     environment:
       NODE_ID: "node-12"
       CLUSTER_PORT: "8090"
@@ -198,3 +212,13 @@ services:
 networks:
   scaling-network:
     driver: bridge
+
+# One named volume PER NODE for durable control state (#1519). Never share one between nodes.
+volumes:
+  aether-worker-6-data:
+  aether-worker-7-data:
+  aether-worker-8-data:
+  aether-worker-9-data:
+  aether-worker-10-data:
+  aether-worker-11-data:
+  aether-worker-12-data:

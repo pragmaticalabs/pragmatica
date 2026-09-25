@@ -5,6 +5,13 @@
 
 [cluster]
 tls = true
+# Durable control state (consensus journal, checkpoints, producer epoch). REQUIRED: since #1390
+# the node refuses to boot without it (#1519). On the host, NOT inside a container: the container
+# launch bind-mounts /var/lib/aether at the SAME path, so one value serves both the container and
+# the JVM runtime, and the journal survives the container being recreated (the bootstrap re-launch
+# recreates it). An operator override via node_config.cluster must stay under /var/lib/aether for a
+# container runtime, or it lands in the container's own filesystem. One node per host.
+consensus_path = "/var/lib/aether/aether-control"
 
 [app-http]
 # Bare metal: bind to all interfaces by default

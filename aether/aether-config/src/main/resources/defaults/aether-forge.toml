@@ -5,6 +5,8 @@
 
 [cluster]
 tls = false
+# No consensus_path here (#1519): Forge's Ember cluster assigns each in-process node its own
+# consensus_path (`EmberCluster.nodeConfiguration`).
 
 [slice]
 # Forge runs locally; resolve from the developer's local Maven repository first.

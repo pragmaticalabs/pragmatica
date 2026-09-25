@@ -169,6 +169,32 @@ class ClusterTopologyManagerRenderUserDataTest {
                 .doesNotContain("node-dead");
     }
 
+    /// #1519 — an auto-heal replacement boots through the same #1390 gate as a seed, so its user-data
+    /// must carry `cluster.consensus_path` (from `defaults/aether-cloud.toml`) and keep that path on
+    /// the VM disk: the state dir is created and bind-mounted into the container at the same path.
+    @Test
+    void provisionReplacement_cloudConfig_carriesConsensusPathOnTheVmDisk() {
+        clusterStore.seedToml(CLOUD_TOML);
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-replacement").unwrap(),
+                                              Option.some(DEAD_PEER),
+                                              Set.of(SELF, PEER_A, PEER_B),
+                                              NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var script = lifecycleManager.lastSpec().userData().or("");
+        assertThat(script)
+                .as("the replacement's aether.toml must set the durable control path #1390 requires")
+                .contains("consensus_path = \"/var/lib/aether/aether-control\"");
+        assertThat(script)
+                .as("the state dir must be created on the VM disk, owned by the container user")
+                .contains("install -d -m 0700 -o 1000 -g 1000 /var/lib/aether\n");
+        assertThat(script)
+                .as("the container must bind-mount the state dir at the same path")
+                .contains("-v /var/lib/aether:/var/lib/aether");
+    }
+
     /// #442 — a replacement can later be elected leader and provision ITS OWN replacements. For that
     /// to resolve keys from config (no API lookup), the replacement's composed `aether.toml` must
     /// carry the leader's ssh_key_ids. The CTM reads them from the leader's own resolved
