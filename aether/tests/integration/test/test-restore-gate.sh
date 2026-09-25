@@ -8,7 +8,12 @@
 #   C1-C5  capture_node_logs' cloud branch (run-tests.sh): logs per VM with rc recorded, a
 #          time window, and an explicit statement when nothing was captured.
 #   F1-F2  cloud_partition_node (lib/cluster.sh): the partition firewall carries the cluster
-#          label on create, and is relabelled when an earlier run's firewall is reused.
+#          under `aether-chaos-cluster` — NEVER `aether-cluster`, which the Hetzner provider reads
+#          as a missed ingress firewall and so refuses every CTM replacement (#1500) — on create,
+#          and is relabelled (legacy `aether-cluster` stripped) when an earlier run's is reused.
+#   K1-K5  tools/cloud-reaper.sh against a stubbed Hetzner API: a leaked chaos firewall is
+#          listed in dry-run and deleted with --destroy in every selector mode, never outside
+#          its cluster, and a protected cluster's chaos firewall is kept.
 #   P1-P5  CLOUD_RESOURCES_PROVISIONED (run-tests.sh): a cluster-B-only run sets it after B's
 #          bootstrap succeeds — not when it fails, not on --skip-deploy — and --keep-on-failure
 #          never reports "nothing to reap" over live VMs.
@@ -124,13 +129,97 @@ partition() {  # exists(0|1) -> prints the hcloud call log
     cat "${WORK}/hc-$1.log"
 }
 calls=$(partition 0)
-if printf '%s' "$calls" | grep -q 'firewall create .*--label aether-cluster=test-b.*--label aether-role=partition'; then
-    ok "F1 new partition firewall is created with the cluster label"
+if printf '%s' "$calls" | grep -q 'firewall create .*--label aether-chaos-cluster=test-b.*--label aether-role=partition' \
+   && ! printf '%s' "$calls" | grep -q 'aether-cluster='; then
+    ok "F1 new partition firewall is created with aether-chaos-cluster, and no aether-cluster label"
 else fail "F1 create call: $(printf '%s' "$calls" | head -2 | tr '\n' '|')"; fi
 calls=$(partition 1)
-if printf '%s' "$calls" | grep -q 'firewall add-label --overwrite .* aether-cluster=test-b aether-role=partition'; then
-    ok "F2 reused (pre-existing) firewall is relabelled"
-else fail "F2 no relabel on the exists path: $(printf '%s' "$calls" | tr '\n' '|')"; fi
+if printf '%s' "$calls" | grep -q 'firewall add-label --overwrite .* aether-chaos-cluster=test-b aether-role=partition' \
+   && printf '%s' "$calls" | grep -q 'firewall remove-label .* aether-cluster$' \
+   && ! printf '%s' "$calls" | grep -q 'aether-cluster='; then
+    ok "F2 reused (pre-existing) firewall is relabelled, and a legacy aether-cluster label is stripped"
+else fail "F2 exists path: $(printf '%s' "$calls" | tr '\n' '|')"; fi
+
+# --- K: cloud-reaper.sh reaps chaos firewalls ---------------------------------------------
+# A stub `curl` serves a tiny Hetzner account from a JSON file, applying label selectors the way
+# the API does (`k=v` exact, bare `k` presence), and removes a resource on DELETE so the
+# reaper's own post-destroy re-inventory sees the result. Firewalls:
+#   11  aether-partition-n1   aether-chaos-cluster=test-b   (a leaked chaos firewall)
+#   12  test-b-ingress        aether-cluster=test-b         (positive control: always reaped)
+#   13  aether-partition-n9   aether-chaos-cluster=test-a   (another cluster's: never in scope)
+#   14  aether-partition-pg   aether-chaos-cluster=test-pg  (protected cluster: never deleted)
+REAPER="$(cd "${INTEG_DIR}/../../.." && pwd)/tools/cloud-reaper.sh"
+mkdir -p "${WORK}/kbin"
+cat > "${WORK}/kbin/curl" <<'STUB'
+#!/bin/bash
+out="" method=GET url=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        -X) method="$2"; shift 2 ;;
+        -w|-H|-d) shift 2 ;;
+        -*) shift ;;
+        *) url="$1"; shift ;;
+    esac
+done
+path="${url#*/v1/}"
+echo "${method} ${path}" >> "$K_LOG"
+res="${path%%\?*}"; res="${res%%/*}"
+case "${method} ${path}" in
+    "GET "*"label_selector="*)
+        sel=$(printf '%s' "$path" | sed -E 's/.*label_selector=([^&]*).*/\1/; s/%3D/=/g')
+        k="${sel%%=*}"; v=""; has=0
+        [ "$k" != "$sel" ] && { v="${sel#*=}"; has=1; }
+        jq --arg r "$res" --arg k "$k" --arg v "$v" --arg has "$has" \
+           '{($r): [ (.[$r] // [])[] | select(if $has == "1" then .labels[$k] == $v else (.labels | has($k)) end) ]}' \
+           "$K_WORLD" > "$out" ;;
+    "GET firewalls/"*) printf '{"firewall":{"applied_to":[]}}' > "$out" ;;
+    "DELETE "*)
+        id="${path##*/}"
+        jq --arg r "$res" --argjson id "$id" '.[$r] = [ (.[$r] // [])[] | select(.id != $id) ]' "$K_WORLD" > "$K_WORLD.n" \
+            && mv "$K_WORLD.n" "$K_WORLD"
+        : > "$out"; printf 204; exit 0 ;;
+    *) printf '{}' > "$out" ;;
+esac
+printf 200
+STUB
+chmod +x "${WORK}/kbin/curl"
+reap() {  # reaper args... -> "rc=<rc> deleted=<ids,>"; the reaper's full output lands in $WORK/k.out
+    printf '%s' '{"firewalls":[
+      {"id":11,"name":"aether-partition-n1","labels":{"aether-chaos-cluster":"test-b","aether-role":"partition"}},
+      {"id":12,"name":"test-b-ingress","labels":{"aether-cluster":"test-b","aether-source":"hetzner-eu"}},
+      {"id":13,"name":"aether-partition-n9","labels":{"aether-chaos-cluster":"test-a","aether-role":"partition"}},
+      {"id":14,"name":"aether-partition-pg","labels":{"aether-chaos-cluster":"test-pg","aether-role":"partition"}}]}' \
+      > "${WORK}/k-world.json"
+    : > "${WORK}/k-calls"
+    ( export PATH="${WORK}/kbin:$PATH" K_LOG="${WORK}/k-calls" K_WORLD="${WORK}/k-world.json" HCLOUD_TOKEN=stub-not-a-token
+      /bin/bash "$REAPER" "$@" > "${WORK}/k.out" 2>&1; printf 'rc=%s' "$?" )
+    printf ' deleted=%s' "$(sed -n 's/^DELETE firewalls\/\([0-9]*\)$/\1/p' "${WORK}/k-calls" | sort | tr '\n' ',')"
+}
+listed() { grep -qE "^[[:space:]]+$1[[:space:]]" "${WORK}/k.out"; }
+if [ ! -x "$REAPER" ]; then
+    fail "K0 tools/cloud-reaper.sh not found at ${REAPER} (examined NOTHING)"
+fi
+got=$(reap --cluster test-b)
+if [ "$got" = "rc=0 deleted=" ] && listed 11 && listed 12 && ! listed 13 && ! listed 14; then
+    ok "K1 dry-run --cluster test-b lists the leaked chaos firewall and the ingress control, deletes nothing"
+else fail "K1 dry-run: ${got}; $(grep -E 'aether-partition|ingress' "${WORK}/k.out" | tr '\n' '|')"; fi
+got=$(reap --cluster test-b --strict-cluster)
+if [ "$got" = "rc=0 deleted=" ] && listed 11 && listed 12 && ! listed 13; then
+    ok "K2 dry-run --strict-cluster also lists the chaos firewall (exact aether-chaos-cluster=test-b)"
+else fail "K2 strict dry-run: ${got}"; fi
+got=$(reap --cluster test-b --strict-cluster --destroy --force)
+[ "$got" = "rc=0 deleted=11,12," ] \
+    && ok "K3 --strict-cluster --destroy deletes test-b's chaos and ingress firewalls, nothing else" \
+    || fail "K3 strict destroy: ${got}; $(tail -3 "${WORK}/k.out" | tr '\n' '|')"
+got=$(reap --cluster test-b --destroy --force)
+[ "$got" = "rc=0 deleted=11,12," ] \
+    && ok "K4 non-strict --cluster --destroy deletes the chaos firewall, never another cluster's" \
+    || fail "K4 non-strict destroy: ${got}"
+got=$(reap --destroy --force)
+[ "$got" = "rc=0 deleted=11,12,13," ] \
+    && ok "K5 catch-all --destroy reaps every chaos firewall except the protected cluster's (14 kept)" \
+    || fail "K5 catch-all destroy: ${got}; $(tail -3 "${WORK}/k.out" | tr '\n' '|')"
 
 # --- P: provisioned flag and the preserve message -----------------------------------------
 awk '/^cloud_bringup_cluster_b\(\) \{/,/^\}/' "${INTEG_DIR}/run-tests.sh" > "${WORK}/bringup_fn.sh"

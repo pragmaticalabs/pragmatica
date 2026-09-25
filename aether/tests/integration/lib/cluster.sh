@@ -2234,12 +2234,18 @@ cloud_partition_node() {
             #    the name already exists — treat "already exists" as success and
             #    resolve the existing id. Rules are set explicitly below (an empty
             #    rule set would deny-all inbound, also cutting mgmt+ssh).
-            # Labelled with the cluster so cloud-reaper.sh (which selects by `aether-cluster`)
-            # finds it: unlabelled, a partition firewall left behind by a failed or killed
-            # heal was invisible to every reaper mode (2 leaked on 2026-09-23).
+            # Labelled so cloud-reaper.sh finds it: unlabelled, a partition firewall left behind
+            # by a failed or killed heal was invisible to every reaper mode (2 leaked on
+            # 2026-09-23). The key is `aether-chaos-cluster`, NEVER `aether-cluster` (#1500): the
+            # Hetzner provider counts ANY firewall labelled `aether-cluster=<name>` as an ingress
+            # firewall its per-source selector missed (`HetznerComputeProvider.noFirewallForSource`)
+            # and refuses every CTM replacement while one exists — so a partition labelled that way
+            # blocked auto-heal for the whole partition window (s27 cluster B, 12-network S06).
+            # cloud-reaper.sh selects on `aether-chaos-cluster` as well, so leaks are still reaped.
+            local chaos_cluster="${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}"
             local out rc fw_id
             out=$(hcloud firewall create --name "$fw_name" \
-                --label "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                --label "aether-chaos-cluster=${chaos_cluster}" \
                 --label "aether-role=partition" 2>&1); rc=$?
             if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'already exists|uniqueness'; then
                 log_fail "cloud_partition_node: hcloud firewall create '${fw_name}' failed (rc=${rc}): ${out}"
@@ -2247,11 +2253,13 @@ cloud_partition_node() {
             fi
             if [ "$rc" -ne 0 ]; then
                 # Reused under its deterministic name: a firewall left by an earlier run may
-                # predate the labels, so apply them here too (idempotent with --overwrite).
+                # predate the labels, so apply them here too (idempotent with --overwrite) — and
+                # strip a legacy `aether-cluster` label, which would re-arm the provider's guard.
                 hcloud firewall add-label --overwrite "$fw_name" \
-                    "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                    "aether-chaos-cluster=${chaos_cluster}" \
                     "aether-role=partition" >/dev/null 2>&1 \
                     || log_warn "cloud_partition_node: could not label existing firewall '${fw_name}' — reapers will not see it"
+                hcloud firewall remove-label "$fw_name" aether-cluster >/dev/null 2>&1 || true
             fi
             fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null)
             if [ -z "$fw_id" ]; then
