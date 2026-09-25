@@ -706,7 +706,7 @@ EOF
     if [ "$2" = "-unset-" ]; then echo "unset CLOUD_RUNTIME" >> "$1/setup.sh"; else echo "export CLOUD_RUNTIME=$2" >> "$1/setup.sh"; fi
 }
 nodeid_vms() { # the same two VMs as _cloud_running_vm_ips lists them (name status ipv4 labels)
-    printf 'aether-cloud-x-node-a running %s aether-node-id=aether-cloud-%s-node-a,aether-cluster=%s\naether-cloud-x-node-b running %s aether-node-id=aether-cloud-%s-node-b,aether-cluster=%s\n' \
+    printf 'aether-cloud-x-node-a running %s aether-node-id=aether-%s-node-a,aether-cluster=%s\naether-cloud-x-node-b running %s aether-node-id=aether-%s-node-b,aether-cluster=%s\n' \
         "$VM_A" "$TEST_CLUSTER" "$TEST_CLUSTER" "$VM_B" "$TEST_CLUSTER" "$TEST_CLUSTER" > "$1/hcloud-nodeid-list"
 }
 

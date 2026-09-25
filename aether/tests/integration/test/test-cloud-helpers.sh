@@ -42,7 +42,7 @@ fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 # Stub api_get for the whole file so the harness never touches the network: return
 # the A1 wire shape for the known CTM-replacement node, rc 1 (no endpoint) for
 # everything else — so unknown ids fail cleanly and instantly.
-CTM_NODE="aether-cloud-test-b-node-01JCTMREPLACEMENT0000000001"
+CTM_NODE="aether-test-b-node-01JCTMREPLACEMENT0000000001"
 api_get() {
     case "$1" in
         "/api/v1/nodes/endpoint/${CTM_NODE}")
@@ -333,6 +333,33 @@ got=$(pick_ep "")
 got=$(pick_ep "http://10.0.0.1:8070")
 [ "$got" = "http://10.0.0.2:8070" ] && ok "02y pick_publish_endpoint: re-pick skips the endpoint that just failed" \
     || fail "02y pick_publish_endpoint (exclude first): got '${got}'"
+
+# --- reap_cloud_cluster: a CTM replacement is recognised by `aether-<cluster>-node-*` (#1487) ------
+# Both rows carry ONLY an aether-node-id label (no aether-cluster, no seed IP), so the node-id
+# pattern is the only rule that can admit or refuse them: this cluster's replacement is deleted,
+# another cluster's node is left alone.
+reap_probe() {
+    ( source "${INTEG_DIR}/lib/cluster.sh" >/dev/null 2>&1
+      W="$(mktemp -d)"; : > "$W/deleted"; echo 0 > "$W/lists"
+      sleep() { :; }; _run_with_timeout() { shift; "$@"; }; _cloud_seed_ips() { :; }
+      log_info() { :; }; log_warn() { :; }; log_fail() { echo "FAIL $*"; }
+      hcloud() {
+          case "$1 $2" in
+              "server list")
+                  local n; n=$(cat "$W/lists"); echo $((n + 1)) > "$W/lists"
+                  [ "$n" -eq 0 ] || return 0
+                  printf '%s\n' "301 vm-a running 198.51.100.1 aether-node-id=aether-test-b-node-01REPLACEMENT" \
+                                 "302 vm-b running 198.51.100.2 aether-node-id=aether-other-node-01STRANGER" ;;
+              "server delete") echo "$3" >> "$W/deleted" ;;
+          esac
+      }
+      reap_cloud_cluster test-b; rc=$?
+      printf 'rc=%s deleted=%s' "$rc" "$(tr '\n' ',' < "$W/deleted")"; rm -rf "$W" )
+}
+got=$(reap_probe)
+[ "$got" = "rc=0 deleted=301," ] \
+    && ok "reap_cloud_cluster: deletes this cluster's CTM replacement by node-id, leaves another cluster's node" \
+    || fail "reap_cloud_cluster (node-id pattern): got '${got}'"
 
 unset -f hcloud api_get ssh
 unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS

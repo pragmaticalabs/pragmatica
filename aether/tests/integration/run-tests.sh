@@ -1025,9 +1025,10 @@ teardown() {
             # Catch-all sweep for CTM-provisioned ORPHANS. The scoped `--cluster <name>`
             # reaps above filter on `aether-cluster=<name>` (plus same-cluster orphans),
             # but CTM-provisioned replacement VMs may carry a DIFFERENT or MISSING
-            # `aether-cluster` label value (the seed/replacement prefix mismatch:
-            # cluster reports `aether-cloud-test-b-node-<ULID>` while the VM is labeled
-            # `aether-node-id=aether-b-node-<ULID>` with no matching `aether-cluster`).
+            # `aether-cluster` label value (historically: CTM labelled replacements with the
+            # TOML's `[cluster] name` rather than the harness cluster name, fixed by #1487 —
+            # and a replacement created before its cluster name was stamped carries only
+            # `aether-node-id`, with no `aether-cluster` at all).
             # Those rows are dropped by the per-cluster orphan filter and survived
             # teardown last run (4 orphan VMs leaked). A final bare reaper run (no
             # --cluster) matches ANY `aether-cluster` OR `aether-node-id` label and
