@@ -167,9 +167,17 @@ class ReplicationReceiveHandlerTest {
     /// an already-held offset against the offered record, refuse a gap. It holds the records it landed, because
     /// a duplicate is now acked only when the held record is verified — a stub with no content could not model
     /// that, which is how the pre-#1505 fixture let an unverified re-ack pass.
+    /// It also models the ring's eviction ([StreamError.CursorExpired] below `tail`) and the #1505 F2 quarantine:
+    /// a conflict at N refuses every later offer at or past N.
     private static final class TrackingAppender implements ReplicationReceiveHandler.RecoveredAppender {
         private final List<byte[]> payloads = new ArrayList<>();
         private final List<Long> timestamps = new ArrayList<>();
+        private long tail = 0L;
+        private long divergedAt = Long.MAX_VALUE;
+
+        void evictBelow(long offset) {
+            tail = offset;
+        }
 
         @Override
         public Result<Long> appendRecovered(String streamName,
@@ -178,20 +186,36 @@ class ReplicationReceiveHandlerTest {
                                             byte[] payload,
                                             long timestamp,
                                             Epoch ownerEpoch) {
+            if (offset >= divergedAt) {
+                return new StreamError.ReplicaQuarantined(streamName, partition, offset, divergedAt).result();
+            }
+
             if (offset > payloads.size()) {
                 return new StreamError.ReplicaOffsetGap(streamName, partition, offset, payloads.size()).result();
             }
 
+            if (offset < tail) {
+                return new StreamError.CursorExpired(offset, tail).result();
+            }
+
             if (offset < payloads.size()) {
-                return Arrays.equals(payloads.get((int) offset), payload) && timestamps.get((int) offset) == timestamp
-                       ? Result.success(offset)
-                       : new StreamError.ReplicaEntryConflict(streamName, partition, offset).result();
+                return verifyHeld(streamName, partition, offset, payload, timestamp);
             }
 
             payloads.add(payload);
             timestamps.add(timestamp);
 
             return Result.success(offset);
+        }
+
+        private Result<Long> verifyHeld(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+            if (Arrays.equals(payloads.get((int) offset), payload) && timestamps.get((int) offset) == timestamp) {
+                return Result.success(offset);
+            }
+
+            divergedAt = Math.min(divergedAt, offset);
+
+            return new StreamError.ReplicaEntryConflict(streamName, partition, offset).result();
         }
 
         long nextExpected(String streamName, int partition) {
@@ -336,10 +360,11 @@ class ReplicationReceiveHandlerTest {
     }
 
     /// #1505, property 2: a re-delivery wholly below the local head whose held event DIFFERS is not a duplicate.
-    /// The replica does not hold the offered event, so it must not ack it — and must not request catch-up
-    /// either, since a catch-up pulls only past the local head and cannot replace a held entry.
+    /// The replica does not hold the offered event, so it must not ack it. It fires `onGap` once: in production
+    /// that runs the backfill orchestrator, which refuses and demotes the now-quarantined partition (#1505 F2).
+    /// The first round of this fix asserted no `onGap` here; the quarantine ruling needs it as the demotion route.
     @Test
-    void duplicateBatch_heldEventDiffers_isRefused_noAck_noRepair_noAppend() {
+    void duplicateBatch_heldEventDiffers_isRefused_noAck_routesToDemotion_noAppend() {
         var appender = new TrackingAppender();
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
         var gapFires = new AtomicInteger(0);
@@ -356,7 +381,7 @@ class ReplicationReceiveHandlerTest {
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 2L, List.of("other".getBytes()), List.of(1002L), Epoch.ZERO));
 
         assertThat(acks).as("no ack for an offset holding a different event").hasSize(1);
-        assertThat(gapFires.get()).as("catch-up cannot repair a held entry — no repair requested").isZero();
+        assertThat(gapFires.get()).as("routed to the backfill orchestrator, which demotes a quarantined partition").isEqualTo(1);
         assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
     }
 
@@ -386,8 +411,52 @@ class ReplicationReceiveHandlerTest {
                                                   Epoch.ZERO));
 
         assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(2L, 1L);
-        assertThat(gapFires.get()).isZero();
+        assertThat(gapFires.get()).isEqualTo(1);
         assertThat(appender.nextExpected(STREAM, PARTITION)).as("nothing appended past the divergent offset").isEqualTo(3L);
+    }
+
+    /// #1505 F2, S1 on the stub: once offset 2 is known divergent, a LATER batch past it — here a genuinely new
+    /// offset 3 — is refused and not acked. An ack is cumulative on the owner, so acking 3 would cover 2.
+    @Test
+    void laterBatchPastDivergence_isRefused_notAcked() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> {});
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 2L, List.of("other".getBytes()), List.of(1002L), Epoch.ZERO));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 3L, List.of("p-3".getBytes()), List.of(1003L), Epoch.ZERO));
+
+        assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(2L);
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
+    }
+
+    /// #1505 F3: an overlapping batch whose held prefix the ring has already EVICTED still applies its new tail
+    /// and acks it. Before, the first evicted offset stopped the batch with no ack and no repair.
+    @Test
+    void overlappingBatch_evictedPrefix_appliesNewTail_andAcks() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
+        appender.evictBelow(2);
+
+        // [1,3]: offset 1 evicted, offset 2 held, offset 3 new.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 1L, payloadsFrom(1, 3), timestampsFrom(1, 3), Epoch.ZERO));
+
+        assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(2L, 3L);
+        assertThat(gapFires.get()).isZero();
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(4L);
     }
 
     private static List<byte[]> payloadsFrom(int from, int count) {

@@ -411,13 +411,57 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///     offered ones, and runs no `inOrder` (nothing was written). A different held event is
     ///     [StreamError.ReplicaEntryConflict]; an offset already evicted is [StreamError.CursorExpired];
     ///   - `offset > head + 1` — [StreamError.ReplicaOffsetGap], nothing appended.
-    public Result<Long> appendOrderedAt(long offset, byte[] payload, long timestamp, Fn1<Result<Long>, Long> inOrder) {
+    ///
+    /// Quarantine (#1505 F2): `fence` is read and written INSIDE the ordered section. Once a conflict is found
+    /// at offset `N`, the fence records `N`, and every later offer at an offset `>= N` is refused as
+    /// [StreamError.ReplicaQuarantined] before the head is consulted. Nothing at or past a divergent entry can
+    /// then be appended or verified, so nothing there can be acked or promoted. Because the check and the record
+    /// share the section, no concurrent offer can slip past a divergence found an instant earlier.
+    public Result<Long> appendOrderedAt(long offset,
+                                        byte[] payload,
+                                        long timestamp,
+                                        DivergenceFence fence,
+                                        Fn1<Result<Long>, Long> inOrder) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
         synchronized (appendLock) {
-            return appendAtLocked(offset, payload, timestamp, headOffset() + 1, inOrder);
+            return fencedAppendAtLocked(offset, payload, timestamp, fence, inOrder);
+        }
+    }
+
+    /// Where a replica's log has diverged from its sender's (#1505 F2). [#appendOrderedAt] consults and updates it
+    /// inside the ordered section; the owner of the fence decides how long a divergence is remembered.
+    public interface DivergenceFence {
+        /// The lowest offset known to hold a divergent entry, or `-1` when none is known.
+        long divergedAt();
+
+        /// Record a divergent entry at `offset`; a fence keeps the LOWEST offset recorded.
+        @Contract
+        void recordDivergence(long offset);
+    }
+
+    private Result<Long> fencedAppendAtLocked(long offset,
+                                              byte[] payload,
+                                              long timestamp,
+                                              DivergenceFence fence,
+                                              Fn1<Result<Long>, Long> inOrder) {
+        var divergedAt = fence.divergedAt();
+
+        if (divergedAt >= 0 && offset >= divergedAt) {
+            return new StreamError.ReplicaQuarantined(streamName, partition, offset, divergedAt).result();
+        }
+
+        return appendAtLocked(offset, payload, timestamp, headOffset() + 1, inOrder).onFailure(cause -> recordIfDivergent(cause,
+                                                                                                                          offset,
+                                                                                                                          fence));
+    }
+
+    @Contract
+    private static void recordIfDivergent(Cause cause, long offset, DivergenceFence fence) {
+        if (cause instanceof StreamError.ReplicaEntryConflict) {
+            fence.recordDivergence(offset);
         }
     }
 

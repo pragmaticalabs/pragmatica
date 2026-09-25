@@ -58,14 +58,20 @@ import static org.pragmatica.lang.Option.none;
 /// The append does not re-invoke the replication manager, which is what stops an infinite
 /// replicate→apply→replicate loop.
 ///
-/// ## Divergent held event (#1505)
-/// An offset that holds a DIFFERENT event than the owner offers means this replica's log has diverged
-/// from the owner's there. That offset is never acked, and neither is anything after it in the batch. No
-/// catch-up is requested either, because catch-up cannot repair it: a backfill pulls only from the local head
-/// + 1 and the ring has no overwrite. An empty catch-up response would even take #559's at-owner-tail
-/// promotion and mark the diverged replica CAUGHT_UP. The refusal is logged at ERROR, the same no-ack
-/// stance {@link #refuseUnauthorizedSender} takes for a batch that is not authoritative. The owner's
-/// min-sync barrier then stops counting this replica rather than counting a copy it does not have.
+/// ## Divergent held event: quarantine (#1505 F2)
+/// An offset `N` that holds a DIFFERENT event than the owner offers means this replica's log has diverged
+/// from the owner's there. The partition manager then QUARANTINES the partition on this replica, inside the
+/// same ordered section that found the divergence: every later offer at an offset `>= N`, in this batch or any
+/// later one, live or duplicate, is refused as [StreamError.ReplicaQuarantined]. Nothing at or past `N` is
+/// therefore ever acked, and an ack is cumulative on the owner, so no ack can cover `N`. Offsets below `N`
+/// still verify and ack. The owner's min-sync barrier stops counting this replica at `N - 1` for as long as the
+/// quarantine lasts.
+///
+/// The refusal still fires `onGap`. In production that runs the backfill orchestrator, which refuses every
+/// self-promotion of a quarantined partition and demotes a CAUGHT_UP one to SYNCING ({@link PartitionBackfill}).
+/// That is how a replica that was already CAUGHT_UP stops being one. No catch-up can repair the entry: a
+/// backfill pulls only from the local head + 1, and the ring has no overwrite. The quarantine is logged at
+/// ERROR once, by the partition manager, and lasts until the manager is gone. Repair is out of scope.
 ///
 /// ## Sender validation (#1230)
 /// Before anything else, a batch whose sender cannot be the committed owner of the partition at the batch's
@@ -312,6 +318,11 @@ public final class ReplicationReceiveHandler {
     /// overlapping or wholly-duplicate batch is idempotent. The ack is the highest offset of the VERIFIED
     /// contiguous prefix of this batch, sent only after the durability barrier. A duplicate's ack therefore
     /// also waits for any catch-up write of the same offsets to be fsynced.
+    ///
+    /// The ack is this BATCH's verified prefix, not the replica's head, and the owner stores the last ack it
+    /// receives (#1505 F4). So an old duplicate, or a batch that stops at a divergence, can lower the owner's
+    /// view of this replica. After a divergence at `N` that lowering is the point: the old ack for `N` covered an
+    /// entry now known to differ. For an old duplicate it is conservative, and the next live ack restores it.
     private void applyAligned(ReplicationMessage.ReplicateEvents message,
                               String streamName,
                               int partition,
@@ -342,20 +353,20 @@ public final class ReplicationReceiveHandler {
                                                cause.message()));
     }
 
-    /// The batch stopped at `refusedAt`. A divergent held event is refused with no repair (see the class doc,
-    /// "Divergent held event"), as is an offset evicted before it could be verified: a catch-up pulls from the
-    /// local head, and neither offset is past it. Anything else — an append failure, or a gap opened by a
-    /// concurrent change of the local head — leaves a missing tail a catch-up can fill, so it triggers
-    /// backfill repair (M5).
+    /// The batch stopped at `refusedAt`, and `onGap` fires for every stop. After an append failure, or a gap opened
+    /// by a concurrent change of the local head, it pulls the missing tail (M5). After a divergence it runs the
+    /// backfill orchestrator, which refuses and demotes a quarantined partition (class doc, "quarantine"). A
+    /// quarantine refusal repeats on every batch, and the partition manager already logged the quarantine at
+    /// ERROR once, so it is logged here at DEBUG only.
     private void reportShortApply(ReplicationMessage.ReplicateEvents message, long refusedAt, Cause cause) {
-        if (isUnrepairableByCatchup(cause)) {
-            log.error("ReplicationReceiveHandler: refusing {}[{}] from offset {} (owner {}): {} — nothing acked at or "
-                     + "past it, no catch-up requested (catch-up appends only past the local head)",
+        if (isDivergence(cause)) {
+            log.debug("ReplicationReceiveHandler: refusing {}[{}] from offset {} (owner {}): {} — nothing acked at or past it",
                       message.streamName(),
                       message.partition(),
                       refusedAt,
                       message.governorId(),
                       cause.message());
+            onGap.accept(message.streamName(), message.partition());
 
             return;
         }
@@ -372,8 +383,16 @@ public final class ReplicationReceiveHandler {
         onGap.accept(message.streamName(), message.partition());
     }
 
-    private static boolean isUnrepairableByCatchup(Cause cause) {
-        return cause instanceof StreamError.ReplicaEntryConflict || cause instanceof StreamError.CursorExpired;
+    private static boolean isDivergence(Cause cause) {
+        return cause instanceof StreamError.ReplicaEntryConflict || cause instanceof StreamError.ReplicaQuarantined;
+    }
+
+    /// #1505 F3: an offset of an overlapping prefix that the ring has already EVICTED cannot be compared, but it
+    /// was landed at its own offset by this same authority when it arrived, and a divergence found then would have
+    /// quarantined the partition. So it is passed over, and the batch goes on to the offsets still held and to its
+    /// new tail. Stopping there stalled a batch whose tail was genuinely new, and nothing re-sent that tail.
+    private static boolean isEvicted(Result<Long> result) {
+        return result.fold(cause -> cause instanceof StreamError.CursorExpired, _ -> false);
     }
 
     /// How far a batch landed: `held` events of its prefix are held at their owner offsets, and `refusal` is the
@@ -398,7 +417,7 @@ public final class ReplicationReceiveHandler {
                                                   timestamps.get(i),
                                                   ownerEpoch);
 
-            if (result.isFailure()) {
+            if (result.isFailure() && !isEvicted(result)) {
                 return BatchOutcome.batchOutcome(i, refusalOf(result));
             }
         }

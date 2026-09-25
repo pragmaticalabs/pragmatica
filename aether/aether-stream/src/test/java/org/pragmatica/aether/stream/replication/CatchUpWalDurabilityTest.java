@@ -79,7 +79,8 @@ class CatchUpWalDurabilityTest {
                                                            TimeSpan.timeSpan(3600).seconds(),
                                                            List::of,
                                                            CommittedStreamOwnerSource.none(),
-                                                           replica::syncReplicated);
+                                                           replica::syncReplicated,
+                                                           replica::quarantinedAt);
         var before = fsyncCount();
 
         backfill.backfill(STREAM, PARTITION).await().onFailure(cause -> fail(cause.message()));

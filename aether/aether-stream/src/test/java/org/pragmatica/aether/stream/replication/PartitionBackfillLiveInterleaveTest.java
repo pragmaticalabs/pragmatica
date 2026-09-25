@@ -17,7 +17,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -61,6 +60,8 @@ class PartitionBackfillLiveInterleaveTest {
     private final ConcurrentLinkedQueue<ReplicationMessage.ReplicateAck> acks = new ConcurrentLinkedQueue<>();
     private final Promise<ReplicationMessage.CatchupResponse> catchupInFlight = Promise.promise();
     private final ConcurrentLinkedQueue<ReplicationMessage.CatchupRequest> catchupRequests = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<ReplicationMessage.ReplicateAck> backfillAcks = new ConcurrentLinkedQueue<>();
+    private final Promise<Long> probeAnswer = Promise.promise();
 
     @BeforeEach
     void setUp() {
@@ -118,6 +119,8 @@ class PartitionBackfillLiveInterleaveTest {
         assertThat(ackOffsets()).as("every acked offset holds the owner's event at that offset; replica log = %s",
                                     markersOf(held))
                                 .allSatisfy(offset -> assertThat(markersOf(held)).contains(ownerByOffset.get(offset.intValue())));
+        // #1505 F6: `allSatisfy` passes vacuously on an empty ack list, so pin that the live event IS acked.
+        assertThat(ackOffsets()).as("the live event for 14 is held and acked").contains(14L);
     }
 
     /// Control: the same three messages with the catch-up response arriving BEFORE the live batch for 13. The
@@ -221,6 +224,96 @@ class PartitionBackfillLiveInterleaveTest {
         assertThat(markersOf(replica.readAppended(STREAM, PARTITION, 13, 1).unwrap())).containsExactly("13=marker-13");
     }
 
+    /// #1505 F2, the reviewer's S1: a divergent held entry at 13 quarantines the partition, so a LATER live batch
+    /// past it (14) must not be acked. An ack is cumulative on the owner, so an ack of 14 would resolve the owner's
+    /// min-sync wait for its event 13, which this replica does not hold.
+    @Test
+    void quarantine_divergentHeldEntry_laterLiveBatch_isNotAckedPastIt() {
+        var handler = receiveHandler();
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
+        replica.appendRecovered(STREAM, PARTITION, 13L, "forged-13".getBytes(UTF_8), 1013L).unwrap();
+        handler.onReplicateEvents(liveBatch(13, 1));
+        handler.onReplicateEvents(liveBatch(14, 1));
+
+        assertThat(markersOf(replica.readAppended(STREAM, PARTITION, 13, 1).unwrap())).containsExactly("13=forged-13");
+        assertThat(ackOffsets()).as("no ack may cover offset 13 while it holds a divergent event; acks=%s", ackOffsets())
+                                .allSatisfy(offset -> assertThat(offset).isLessThan(13L));
+        assertThat(replica.quarantinedAt(STREAM, PARTITION).or(-1L)).isEqualTo(13L);
+        assertThat(replica.quarantinedPartitionsSinceBoot()).isEqualTo(1L);
+    }
+
+    /// #1505 F2, the reviewer's S2 with one step added. Once the replica has MET its divergent entry at 13, a
+    /// redrive must not pull from 14 and promote CAUGHT_UP. The reviewer's S2 plants the entry without any path
+    /// ever comparing it with the owner's; nothing can know about that divergence, so the added live batch at 13
+    /// is what makes the replica meet it.
+    @Test
+    void quarantine_divergentHeldEntry_backfillMustNotPromoteCaughtUp() {
+        var handler = receiveHandler();
+        var backfill = backfill();
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
+        replica.appendRecovered(STREAM, PARTITION, 13L, "forged-13".getBytes(UTF_8), 1013L).unwrap();
+        handler.onReplicateEvents(liveBatch(13, 1));
+        var run = backfill.backfill(STREAM, PARTITION);
+        catchupInFlight.resolve(Result.success(ownerResponse(14, 1)));
+
+        run.await()
+           .onSuccess(applied -> Assertions.fail("a quarantined partition must refuse the run, applied " + applied))
+           .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReplicaQuarantined.class));
+        assertThat(markersOf(replica.readAppended(STREAM, PARTITION, 13, 1).unwrap())).containsExactly("13=forged-13");
+        assertThat(selfDescriptor().state()).as("requests=%s confirmed=%s",
+                                                catchupRequests.stream().map(ReplicationMessage.CatchupRequest::fromOffset).toList(),
+                                                selfDescriptor().confirmedOffset())
+                                            .isNotEqualTo(ReplicationState.CAUGHT_UP);
+        assertThat(catchupRequests).as("nothing is pulled past a divergent entry").isEmpty();
+        assertThat(backfillAcks).isEmpty();
+    }
+
+    /// #1505 F2: a replica that was already CAUGHT_UP and then meets a divergent entry is DEMOTED to SYNCING
+    /// below the divergence, and its re-verify sends the owner no completion ack.
+    @Test
+    void quarantine_caughtUpReplicaMeetsDivergence_isDemotedBelowIt_sendsNoCompletionAck() {
+        var handler = receiveHandler();
+        var backfill = backfill();
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
+        var first = backfill.backfill(STREAM, PARTITION);
+        catchupInFlight.resolve(Result.success(ownerResponse(13, 1)));
+        assertThat(first.await().isSuccess()).isTrue();
+        assertThat(selfDescriptor().state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        backfillAcks.clear();
+
+        handler.onReplicateEvents(replicateEvents(owner, STREAM, PARTITION, 13, List.of("forged-13".getBytes(UTF_8)), List.of(1013L), Epoch.ZERO));
+        var reverify = backfill.backfill(STREAM, PARTITION);
+
+        assertThat(reverify.await().isFailure()).isTrue();
+        assertThat(selfDescriptor().state()).isEqualTo(ReplicationState.SYNCING);
+        assertThat(selfDescriptor().confirmedOffset()).isEqualTo(12L);
+        assertThat(backfillAcks).as("no completion ack from a quarantined partition").isEmpty();
+    }
+
+    /// #1505 F2: the quarantine is ALSO checked at the terminal step of an in-flight run, not only at entry. The
+    /// run requests 14; while it is in flight the live path meets a divergent entry at 13. The empty response then
+    /// takes the #559 at-owner-tail path, and the owner's probed tail (13) would promote self. It must not.
+    @Test
+    void quarantine_recordedWhileRunInFlight_blocksTheAtOwnerTailPromotion() {
+        var handler = receiveHandler();
+        var backfill = backfill();
+
+        handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX + 1));
+        var run = backfill.backfill(STREAM, PARTITION);
+        assertThat(catchupRequests).extracting(ReplicationMessage.CatchupRequest::fromOffset).containsExactly(14L);
+
+        handler.onReplicateEvents(replicateEvents(owner, STREAM, PARTITION, 13, List.of("forged-13".getBytes(UTF_8)), List.of(1013L), Epoch.ZERO));
+        catchupInFlight.resolve(Result.success(response(14, List.of(), List.of())));
+        probeAnswer.resolve(Result.success(13L));
+
+        assertThat(run.await().isFailure()).isTrue();
+        assertThat(selfDescriptor().state()).isNotEqualTo(ReplicationState.CAUGHT_UP);
+        assertThat(backfillAcks).isEmpty();
+    }
+
     private ReplicationReceiveHandler receiveHandler() {
         return replicationReceiveHandler(self,
                                          replica::appendRecovered,
@@ -235,8 +328,8 @@ class PartitionBackfillLiveInterleaveTest {
         return partitionBackfill(registry,
                                  replica::appendRecovered,
                                  this::deferredCatchup,
-                                 ReplicationTransport.NOOP,
-                                 (_, _, _) -> Causes.cause("no probe").promise(),
+                                 (_, message) -> backfillAcks.add((ReplicationMessage.ReplicateAck) message),
+                                 (_, _, _) -> probeAnswer,
                                  (stream, partition) -> replica.partitionInfo(stream, partition)
                                                                .map(StreamPartitionManager.PartitionInfo::headOffset)
                                                                .or(-1L),
@@ -244,7 +337,8 @@ class PartitionBackfillLiveInterleaveTest {
                                  TimeSpan.timeSpan(3600).seconds(),
                                  () -> MEMBERS,
                                  CommittedStreamOwnerSource.none(),
-                                 replica::syncReplicated);
+                                 replica::syncReplicated,
+                                 replica::quarantinedAt);
     }
 
     private Promise<ReplicationMessage.CatchupResponse> deferredCatchup(NodeId target,

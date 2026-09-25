@@ -292,6 +292,20 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Quarantined replica partition (#1505 F2): this replica holds a DIVERGENT entry at `divergedAt`, so
+    /// nothing at or past that offset is appended or verified here. `offset` is the refused offer. The ring
+    /// has no overwrite and no truncation, so the quarantine is not cleared in this release; it lasts as long
+    /// as this node's partition manager does.
+    record ReplicaQuarantined(String streamName, int partition, long offset, long divergedAt) implements StreamError {
+        @Override
+        public String message() {
+            return "Replica append refused for %s[%d] at offset %d: the partition is quarantined here, offset %d holds a divergent event".formatted(streamName,
+                                                                                                                                                    partition,
+                                                                                                                                                    offset,
+                                                                                                                                                    divergedAt);
+        }
+    }
+
     /// Owner-write admission refusal (#1230): an application append reached `publishLocal` on a node that is
     /// not the COMMITTED owner of `(streamName, partition)` — the committed `StreamPartitionOwnershipValue`
     /// names `committedOwner`. The epoch fence cannot catch this: a live non-owner stamps the same committed

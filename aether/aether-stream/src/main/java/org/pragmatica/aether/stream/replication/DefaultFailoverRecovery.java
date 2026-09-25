@@ -10,6 +10,7 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.aether.stream.replication.FailoverRecovery.RecoveryResult.recoveryResult;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
@@ -24,12 +25,12 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 /// barrier fails the run: the events landed in RAM but were never made durable or visible here.
 final class DefaultFailoverRecovery implements FailoverRecovery {
     private final ReplicaRegistry registry;
-    private final StreamPartitionRecovery partitionRecovery;
+    private final AlignedRecovery partitionRecovery;
     private final CatchupTransport transport;
     private final ReplicationReceiveHandler.ReplicaDurability durability;
 
     DefaultFailoverRecovery(ReplicaRegistry registry,
-                            StreamPartitionRecovery partitionRecovery,
+                            AlignedRecovery partitionRecovery,
                             CatchupTransport transport,
                             ReplicationReceiveHandler.ReplicaDurability durability) {
         this.registry = registry;
@@ -72,22 +73,35 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
 
         return transport.requestCatchup(bestReplica.nodeId(),
                                         request)
-                        .map(response -> applyRecoveredEvents(streamName, partition, response))
+                        .flatMap(response -> applyRecoveredEvents(streamName, partition, response).async())
                         .flatMap(count -> durability.sync(streamName, partition)
                                                     .map(_ -> count));
     }
 
-    private long applyRecoveredEvents(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
+    /// #1505 F1: event `i` lands at ITS OWN source offset `response.fromOffset() + i`, never at the local tail.
+    /// `fromOffset` came from a remote watermark, and the local ring may already hold some of those offsets:
+    /// they are verified, not re-appended. The first refusal stops the apply and fails the recovery of this
+    /// partition: a gap, or a divergent held entry, which quarantines the partition.
+    private Result<Long> applyRecoveredEvents(String streamName,
+                                              int partition,
+                                              ReplicationMessage.CatchupResponse response) {
         var payloads = response.payloads();
         var timestamps = response.timestamps();
         var count = Math.min(payloads.size(), timestamps.size());
 
-        IntStream.range(0, count).forEach(i -> partitionRecovery.appendRecoveredEvent(streamName,
-                                                                                      partition,
-                                                                                      payloads.get(i),
-                                                                                      timestamps.get(i)));
+        for (var i = 0; i < count; i++) {
+            var result = partitionRecovery.appendRecovered(streamName,
+                                                           partition,
+                                                           response.fromOffset() + i,
+                                                           payloads.get(i),
+                                                           timestamps.get(i));
 
-        return count;
+            if (result.isFailure()) {
+                return result;
+            }
+        }
+
+        return Result.success((long) count);
     }
 
     private static Option<ReplicaDescriptor> findBestReplica(List<ReplicaDescriptor> replicas) {
