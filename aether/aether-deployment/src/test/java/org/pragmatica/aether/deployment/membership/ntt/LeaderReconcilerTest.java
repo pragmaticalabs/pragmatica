@@ -4,6 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -261,6 +271,12 @@ class LeaderReconcilerTest {
     /// A NodeInfo carrying the explicit `role=worker` label. The transport ACTIVE/PASSIVE
     /// `NodeRole` was retired in the cluster-topology-overhaul Wave 9; the worker classification
     /// now lives solely in the `role` label (the config CORE/WORKER/SPOT vocabulary).
+    private static NodeInfo workerInfo(NodeId id) {
+        var address = NodeAddress.nodeAddress("worker-host", 6000).unwrap();
+
+        return NodeInfo.nodeInfo(id, address, Map.of(NodeInfo.LABEL_ROLE, "worker"));
+    }
+
     /// No-op KV serializer — the #1488 guard fixtures never snapshot the store.
     private static Serializer stubSerializer() {
         return new Serializer() {
@@ -275,12 +291,6 @@ class LeaderReconcilerTest {
                 return null;
             }
         };
-    }
-
-    private static NodeInfo workerInfo(NodeId id) {
-        var address = NodeAddress.nodeAddress("worker-host", 6000).unwrap();
-
-        return NodeInfo.nodeInfo(id, address, Map.of(NodeInfo.LABEL_ROLE, "worker"));
     }
 
     /// Drive the post-activation reconcile path: fire the queued debounced reconcile that
@@ -913,6 +923,69 @@ class LeaderReconcilerTest {
     /// predicate; ephemeral detection rides the minted-id ULID-suffix shape. The legacy bug:
     /// descending-NodeId order sorted seeds (`...-3`,`-4`,`-5`) ahead of ULID-named replacements
     /// (`'0' < '5'`), so a scale-down drained the stable seed owning live slices.
+    /// Run `action` with an in-memory appender on the [`LeaderReconciler`] logger and return the WARN
+    /// lines it emitted — the operator-facing surface of a deferred surplus drain.
+    private static List<String> capturingReconcilerWarns(Runnable action) {
+        var appender = WarnCapture.create();
+        var context = (LoggerContext) LogManager.getContext(false);
+        var loggerConfig = reconcilerLoggerConfig(context.getConfiguration());
+        var originalLevel = loggerConfig.getLevel();
+
+        appender.start();
+        loggerConfig.addAppender(appender, Level.WARN, null);
+        loggerConfig.setLevel(Level.WARN);
+        context.updateLoggers();
+        try {
+            action.run();
+        } finally {
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            context.updateLoggers();
+            appender.stop();
+        }
+
+        return appender.warns();
+    }
+
+    private static LoggerConfig reconcilerLoggerConfig(Configuration configuration) {
+        var name = LeaderReconciler.class.getName();
+        var existing = configuration.getLoggerConfig(name);
+
+        if (name.equals(existing.getName())) {
+            return existing;
+        }
+
+        var fresh = new LoggerConfig(name, Level.WARN, false);
+
+        configuration.addLogger(name, fresh);
+
+        return fresh;
+    }
+
+    /// In-memory log4j2 appender keeping the formatted text of WARN-and-above events.
+    private static final class WarnCapture extends AbstractAppender {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+
+        private WarnCapture() {
+            super("LeaderReconcilerWarnCapture", (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
+        }
+
+        static WarnCapture create() {
+            return new WarnCapture();
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                messages.add(event.getMessage().getFormattedMessage());
+            }
+        }
+
+        List<String> warns() {
+            return List.copyOf(messages);
+        }
+    }
+
     @Nested
     class DrainVictimSelection {
         /// Configured compose seeds — numeric-ordinal suffix, NOT a ULID → preserved by preference.
@@ -964,7 +1037,7 @@ class LeaderReconcilerTest {
         @Contract
         private void wireKvSliceSources() {
             reconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
-            reconciler.setSliceDrainGuard(SliceOwnershipQuery.drainKeepsMinAvailable(kvStore));
+            reconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
         }
 
         @Contract
@@ -1131,6 +1204,94 @@ class LeaderReconcilerTest {
                 .as("no owner may be drained below minAvailable, so the drain is deferred")
                 .isZero();
             assertThat(ctm.drainNodeCalls()).isEmpty();
+        }
+
+        /// #1488 review F1 — an ACTIVE placement on a node that is NOT a member is not capacity. A
+        /// drained node's `NodeArtifact` entries survive until its lifecycle reaches DECOMMISSIONED, so
+        /// a node that has already left still reads as hosting slice S. Counting that ghost let `ctm1`
+        /// go and left S with one real instance, below minAvailable 2.
+        @Test
+        void surplusDrain_ghostPlacementOnNonMember_doesNotCountAsRemaining() {
+            seedGhostPlacementScenario();
+
+            runActivationPass();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("S keeps only seed1 once ctm1 goes — the ghost's placement is not availability")
+                .isEmpty();
+            assertThat(listener.events().getFirst().drainCount())
+                .as("every owner is refused, so the surplus is deferred")
+                .isZero();
+        }
+
+        /// #1488 review F2 — the deferral WARN names each refused owner with the slice that held it
+        /// back, the ACTIVE instances that slice would keep on the remaining nodes, and its minAvailable.
+        @Test
+        void surplusDrain_ownerRefused_deferralWarnNamesOwnerArtifactRemainingAndMinAvailable() {
+            seedGhostPlacementScenario();
+
+            var warns = capturingReconcilerWarns(this::runActivationPass);
+
+            assertThat(warns)
+                .as("the deferral WARN carries ctm1's refusal: slice S would keep 1 ACTIVE instance, minAvailable 2")
+                .anyMatch(line -> line.contains("deferring surplus drain")
+                                  && line.contains("owner=" + ctm1.id() + ", artifact=org.example:slice-s:1.0.0, remainingActive=1, minAvailable=2"));
+        }
+
+        /// #1488 review F1, the two-pass shape — pass 1 drains one of the two ephemeral owners sharing
+        /// slice S (instances 3, minAvailable 2) and defers the rest. The victim is DEPARTING but its
+        /// `NodeArtifact` entry is still ACTIVE in pass 2. Counting it would let the second sharer go
+        /// and leave S at 1 instance, so pass 2 must refuse the second sharer.
+        @Test
+        void surplusDrain_earlierPassVictimStillInKv_doesNotCountAsRemaining() {
+            configuredCoreCount.set(2);
+            // Members = SELF + seed1 + ctm1 + ctm2 = 4; surplus 2. SELF and seed1 each solely hold a
+            // 1/1 slice, so only a slice-S sharer can ever be drained.
+            seedClusterWithPeers(seed1, ctm1, ctm2);
+            host(slice("slice-s", 3, 2), ctm1, ctm2, seed1);
+            host(slice("slice-x", 1, 1), SELF);
+            host(slice("slice-y", 1, 1), seed1);
+            wireKvSliceSources();
+
+            runActivationPass();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("pass 1 drains exactly one slice-S sharer and defers the second drain")
+                .hasSize(1);
+            var firstVictim = ctm.drainNodeCalls().getFirst();
+            var secondSharer = firstVictim.equals(ctm1)
+                               ? ctm2
+                               : ctm1;
+
+            drainThroughFsmAsProductionSinkDoes(firstVictim);
+            triggerAndFireReconcile();
+
+            assertThat(listener.events().getLast().drainCount())
+                .as("pass 2 still has a surplus of 1 but must refuse the second sharer")
+                .isZero();
+            assertThat(ctm.drainNodeCalls())
+                .as("the first victim's surviving KV placement is not capacity, so %s is kept", secondSharer)
+                .containsExactly(firstVictim);
+        }
+
+        /// Pass 1 of the ghost scenario: SELF + seed1 + ctm1, surplus 1, every member an owner. Slice S
+        /// (instances 3, minAvailable 2) is ACTIVE on ctm1, seed1 and a node that is not a member. SELF
+        /// solely holds a 1/1 slice, so the leader is never a victim.
+        @Contract
+        private void seedGhostPlacementScenario() {
+            configuredCoreCount.set(2);
+            seedClusterWithPeers(seed1, ctm1);
+            host(slice("slice-s", 3, 2), ctm1, seed1, new NodeId("ghost-non-member"));
+            host(slice("slice-x", 1, 1), SELF);
+            wireKvSliceSources();
+        }
+
+        /// What production does with every reconciler DRAIN: `AetherNode.requestDrainThroughFsm`, the
+        /// CTM drain sink, routes it into `MembershipFsm.onDrainRequested`, which moves the target to
+        /// DEPARTING. The fixture's `RecordingCtm` only records the call, so the test replays that edge.
+        @Contract
+        private void drainThroughFsmAsProductionSinkDoes(NodeId victim) {
+            membershipFsm.onDrainRequested(victim);
         }
 
         /// #1089 option B (d) — the leader is ordered LAST: with another eligible candidate present it

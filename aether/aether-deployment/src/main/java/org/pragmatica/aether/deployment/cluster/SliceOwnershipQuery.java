@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiPredicate;
+import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -24,6 +24,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 /// Active-slice-ownership query over the authoritative KV-Store. Produces the narrow
@@ -31,7 +35,7 @@ import org.pragmatica.lang.Contract;
 /// during drain-victim selection so a node currently serving / hosting active slices is drained as
 /// scale-down or over-provision surplus only after every eligible non-owner (the 7→5-scale-down-
 /// under-load incident; #1488 made ownership a demotion, not an exclusion), and — through
-/// [`#drainKeepsMinAvailable`] — never when draining it would drop a hosted slice below its
+/// [`#minAvailableDrainGuard`] — never when draining it would drop a hosted slice below its
 /// `minAvailable`.
 ///
 /// Ownership is read from the KV-Store entries the cluster-deployment FSM itself uses as its source
@@ -73,28 +77,56 @@ public sealed interface SliceOwnershipQuery {
         }
     }
 
-    /// Build the drain-availability guard backed by `kvStore` (#1488 owner ruling): `true` when
-    /// draining `candidate` — on top of the victims `alreadySelected` earlier in the same pass —
-    /// leaves every slice `candidate` hosts with at least its `minAvailable` ACTIVE instances on the
-    /// nodes that remain. `minAvailable` is the slice target's [`SliceTargetValue#effectiveMinInstances`]
-    /// (the blueprint `minAvailable`, default `ceil(instances/2)`, clamped to at least 1; a slice with
-    /// no target counts as 1). Instances are counted per exact artifact version and only in state
-    /// ACTIVE, so an instance still loading never counts toward what remains — the conservative side:
-    /// a guard that under-counts defers a drain, one that over-counts takes a slice dark. Counting the
-    /// already-selected victims as departing is what stops a multi-victim pass from taking two of a
-    /// slice's three instances. Reads the KV-Store fresh on each call, like [`#ownsActiveSlices`].
-    static BiPredicate<NodeId, Set<NodeId>> drainKeepsMinAvailable(KVStore<AetherKey, AetherValue> kvStore) {
-        return (candidate, alreadySelected) -> keepsMinAvailable(kvStore, candidate, alreadySelected);
+    /// Build the drain-availability guard backed by `kvStore` (#1488 owner ruling). Applied to
+    /// `(candidate, remainingNodes)` it answers the first slice `candidate` hosts that would fall below
+    /// its `minAvailable` ACTIVE instances if `candidate` were drained, or `none()` when every hosted
+    /// slice keeps its `minAvailable`. Only placements on `remainingNodes` count — the caller passes the
+    /// nodes that will still be serving: live members that are not already departing, minus the victims
+    /// chosen earlier in the same pass and minus `candidate` itself. A placement on any other node is
+    /// ignored, because a drained node's `NodeArtifact` entries outlive it: they are removed only once
+    /// its lifecycle reaches DECOMMISSIONED, so until then a departed or departing node's ACTIVE entry
+    /// would read as capacity it no longer provides.
+    ///
+    /// `minAvailable` is the slice target's [`SliceTargetValue#effectiveMinInstances`] (the blueprint
+    /// `minAvailable`, default `ceil(instances/2)`, clamped to at least 1; a slice with no target counts
+    /// as 1). Only ACTIVE instances count, so an instance still loading never counts toward what
+    /// remains — the conservative side: a guard that under-counts defers a drain, one that over-counts
+    /// takes a slice dark. Reads the KV-Store fresh on each call, like [`#ownsActiveSlices`].
+    ///
+    /// Two consequences of that conservative side are known and deliberate for now:
+    /// - Instances are counted per exact artifact VERSION, while `minAvailable` is keyed by the
+    ///   artifact BASE. During a rolling update the old and the new version are each compared with the
+    ///   full `minAvailable`, so an owner can be refused even when both versions together would keep
+    ///   the slice available. The owner has not ruled on counting per base.
+    /// - A slice whose `minAvailable` equals its instance count (written today by CLI/REST deploy,
+    ///   `addSliceTargetCommand`, A/B test and rollback targets) can never lose an instance, so every
+    ///   owner of it is refused and the surplus is deferred until #1497 changes those writers.
+    static BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>> minAvailableDrainGuard(KVStore<AetherKey, AetherValue> kvStore) {
+        return (candidate, remainingNodes) -> firstRefusal(kvStore, candidate, remainingNodes);
     }
 
-    private static boolean keepsMinAvailable(KVStore<AetherKey, AetherValue> kvStore,
-                                             NodeId candidate,
-                                             Set<NodeId> alreadySelected) {
-        var placements = livePlacements(kvStore);
-        var departing = departingNodes(candidate, alreadySelected);
+    /// Why the guard refused to drain `owner`: `artifact` would be left with `remainingActive` ACTIVE
+    /// instances on the remaining nodes, below its `minAvailable`. Carried into the reconciler's
+    /// deferral WARN so an operator can see which owner and slice held the surplus back.
+    record DrainRefusal(NodeId owner, Artifact artifact, long remainingActive, int minAvailable) {
+        static DrainRefusal drainRefusal(NodeId owner, Artifact artifact, long remainingActive, int minAvailable) {
+            return new DrainRefusal(owner, artifact, remainingActive, minAvailable);
+        }
+    }
 
-        return hostedArtifacts(placements, candidate).stream()
-                              .allMatch(artifact -> keepsSliceMinAvailable(kvStore, placements, artifact, departing));
+    private static Option<DrainRefusal> firstRefusal(KVStore<AetherKey, AetherValue> kvStore,
+                                                     NodeId candidate,
+                                                     Set<NodeId> remainingNodes) {
+        var placements = livePlacements(kvStore);
+        var refusals = hostedArtifacts(placements, candidate).stream()
+                                      .sorted(Comparator.comparing(Artifact::asString))
+                                      .flatMap(artifact -> refusalFor(kvStore,
+                                                                      placements,
+                                                                      candidate,
+                                                                      artifact,
+                                                                      remainingNodes).stream());
+
+        return Option.from(refusals.findFirst());
     }
 
     /// The distinct artifacts `node` holds a LIVE placement of.
@@ -106,19 +138,17 @@ public sealed interface SliceOwnershipQuery {
                          .collect(Collectors.toSet());
     }
 
-    private static boolean keepsSliceMinAvailable(KVStore<AetherKey, AetherValue> kvStore,
-                                                  Map<NodeArtifactKey, SliceState> placements,
-                                                  Artifact artifact,
-                                                  Set<NodeId> departing) {
-        return remainingActive(placements, artifact, departing) >= minAvailable(kvStore, artifact);
-    }
+    private static Option<DrainRefusal> refusalFor(KVStore<AetherKey, AetherValue> kvStore,
+                                                   Map<NodeArtifactKey, SliceState> placements,
+                                                   NodeId candidate,
+                                                   Artifact artifact,
+                                                   Set<NodeId> remainingNodes) {
+        var remaining = remainingActive(placements, artifact, remainingNodes);
+        var required = minAvailable(kvStore, artifact);
 
-    private static Set<NodeId> departingNodes(NodeId candidate, Set<NodeId> alreadySelected) {
-        var departing = new HashSet<>(alreadySelected);
-
-        departing.add(candidate);
-
-        return departing;
+        return remaining >= required
+               ? none()
+               : some(DrainRefusal.drainRefusal(candidate, artifact, remaining, required));
     }
 
     /// Every LIVE placement in the KV-Store, keyed by `(node, artifact)`, with its state.
@@ -143,22 +173,23 @@ public sealed interface SliceOwnershipQuery {
 
     private static long remainingActive(Map<NodeArtifactKey, SliceState> placements,
                                         Artifact artifact,
-                                        Set<NodeId> departing) {
+                                        Set<NodeId> remainingNodes) {
         return placements.entrySet()
                          .stream()
-                         .filter(placement -> isRemainingActiveInstance(placement, artifact, departing))
+                         .filter(placement -> isRemainingActiveInstance(placement, artifact, remainingNodes))
                          .count();
     }
 
-    /// An ACTIVE instance of `artifact` on a node that is not departing in this pass.
+    /// An ACTIVE instance of `artifact` on one of `remainingNodes` — a placement on a non-member, on a
+    /// node already departing, or on a victim of this pass is not availability.
     private static boolean isRemainingActiveInstance(Map.Entry<NodeArtifactKey, SliceState> placement,
                                                      Artifact artifact,
-                                                     Set<NodeId> departing) {
+                                                     Set<NodeId> remainingNodes) {
         var key = placement.getKey();
 
         return key.artifact()
                   .equals(artifact)
-               && !departing.contains(key.nodeId())
+               && remainingNodes.contains(key.nodeId())
                && placement.getValue() == SliceState.ACTIVE;
     }
 

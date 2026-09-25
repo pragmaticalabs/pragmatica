@@ -3340,7 +3340,7 @@ public interface AetherNode extends ManageableNode {
         // reconstructible from cluster state) and consulted through narrow JDK functional seams so the
         // membership-layer reconciler keeps no hard dependency on the deployment FSM.
         leaderReconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
-        leaderReconciler.setSliceDrainGuard(SliceOwnershipQuery.drainKeepsMinAvailable(kvStore));
+        leaderReconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
         swimHealthDetector.addObservationListener(presenceSampler::onSwimObservation);
         // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
         // signals a peer became reachable; if the leader is in surplus the reconcile
