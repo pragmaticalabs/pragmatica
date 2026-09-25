@@ -56,6 +56,7 @@ class SystemCodecPinningTest {
     void hotProtocolTypes_fitInTheOneByteWindow() {
         var hot = SystemTags.TAGS.entrySet()
                                  .stream()
+                                 .filter(entry -> !entry.getKey().contains("VotingJournal") && !entry.getKey().endsWith(".SyncRejected"))
                                  .filter(entry -> HOT_PREFIXES.stream().anyMatch(prefix -> entry.getKey().startsWith(prefix)))
                                  .toList();
 

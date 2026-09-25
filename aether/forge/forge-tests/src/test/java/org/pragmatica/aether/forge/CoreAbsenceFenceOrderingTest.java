@@ -29,83 +29,35 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
-/// #590 — the community tier's core-absence fence, and the ORDERING that keeps it safe.
+/// Total-isolation regression for a worker's local core-absence fence.
 ///
-/// ## HISTORY: this was @Disabled for one round, and the reason is worth keeping
+/// A worker cut off from every core stops serving after its configured absence window without
+/// requiring a successful consensus write. This test observes the local fence and its timing
+/// relative to the longer community-observation window. The timing margin is operational evidence,
+/// not an exclusive-ownership or no-double-active proof: asymmetric delivery, pauses and delayed
+/// effects require committed governor terms and effect fencing.
 ///
-/// The first four runs could not pass, and NOT because the mechanism was broken. `EmberCluster` set no
-/// role label on any node, and `MemberDescriptor.isCoreRole(role) = !"worker".equals(role)` classifies
-/// blank as CORE — so every in-JVM node read as a core and the fence's suppressor correctly refused to
-/// fire. Measured: `armed=true sinceLastPingMs=40922 remainingMs=0 thresholdMs=10000 fenced=false` —
-/// every precondition met, window exceeded fourfold, suppressed by design.
+/// This test uses a total per-node blackhole. It does not exercise a governor that loses its report
+/// uplink while retaining community connectivity. Report expiry makes that community unreachable;
+/// it does not establish individual worker death or authorize termination.
 ///
-/// That was a harness fidelity gap, fixed by `EmberCluster.addWorkerNode()` (default `addNode()`
-/// untouched, both pinned by `EmberAddNodeRoleLabelTest`). Kept here because the near-miss is the
-/// lesson: without the precondition assertion below, those four runs would have been reported as
-/// "#590's fence does not fire" — a confident false defect against working code.
+/// Historical measurements (2026-08-27, six runs, 8-core/16GB host, five cores and one worker):
+/// local fence elapsed times were 9673, 9696, 9676, 9704, 9692 and 9697 milliseconds against a
+/// 10000 millisecond configured window. The corresponding margins to the historical 20000
+/// millisecond community window were 10327, 10304, 10324, 10296, 10308 and 10303 milliseconds.
+/// These measurements describe that implementation and environment, not the current hierarchy's
+/// authority guarantee or scalability limit.
 ///
-/// ## What this proves, and what it explicitly does not
+/// Earlier harness runs omitted role labels and treated blank roles as core. That historical
+/// setup suppressed the worker fence and motivated explicit worker admission. Roles are now
+/// immutable: addWorkerNode supplies worker intent, and neither a core deficit nor a community
+/// assignment can promote a worker into the core electorate. Unknown roles are not core authority.
 ///
-/// **Proves (total isolation):** a worker cut off from the core fences ITSELF, locally, within the
-/// configured `core_absence` window, without completing any consensus write — and does so strictly
-/// before `community_absence`, the window after which the core independently stops counting it and
-/// re-places its work. That gap is the no-double-active guarantee, and this measures it rather than
-/// arguing it from the config inequality.
-///
-/// **Does NOT prove (partial partition):** a community that can still reach its own members but not
-/// the core. `EmberCluster.blackhole` is per-node and total — it drops all cluster traffic to and
-/// from one node — so this exercises total isolation only. The CP contract at the community tier is
-/// therefore NOT fully proven here, and this class must not be cited as if it were. The remaining
-/// validation (partial partition, real-network severance) belongs to #367 output 1.
-///
-/// ## MEASURED (2026-08-27, six runs, 8-core/16GB host, 5 cores + 1 worker in one JVM)
-///
-/// ```
-///   run          8      9     10     11     12     13
-///   fence(ms) 9673   9696   9676   9704   9692   9697     window 10000
-///   margin(ms)10327  10304  10324  10296  10308  10303     community_absence 20000
-/// ```
-///
-/// `margin` is `community_absence - fence` — how long the isolated worker was already fenced before
-/// the core would stop counting it. **The no-double-active ordering is measured here, not argued from
-/// the config inequality**: the fence lands at ~97% of its own window and with ~10.3s to spare against
-/// the core's, every run, with a spread of 31ms across six runs.
-///
-/// In-process numbers on one host; a real cluster pays network cost this substrate does not. They are
-/// a regression baseline and an order-of-magnitude check, not a production SLO.
-///
-/// ## Why the fence is observable at all — the suppressor is the precondition
-///
-/// `AetherNode` arms this detector on EVERY node but gates firing behind a fail-safe suppressor:
-///
-/// ```java
-/// coreAbsenceDetector.setFenceSuppressor(() -> {
-///     var cores = topologyObserver.coreNodes();
-///     return cores.isEmpty() || cores.contains(config.self());
-/// });
-/// ```
-///
-/// The core tier must never fence this way — the ping is leader-broadcast and a broadcast never
-/// reaches its own sender, so on a core node the signal is structurally absent and an ungated fence
-/// drained every new leader ten seconds after each election. Core liveness is `QuorumLossDetector`'s
-/// job. Consequently **only a genuine WORKER can fence**, and `snapshot.armed()` is exactly the
-/// "this node is not core, and the core view is known" signal. The test gates on it rather than
-/// assuming the added node was minted a worker.
-///
-/// ## Producing a worker
-///
-/// There is no worker-join primitive: role is leader-decided by core count. `assignNodeRole` promotes
-/// a joiner to CORE while `currentCoreCount < effectiveCoreMax` (the committed
-/// `ClusterConfig.coreCount`, auto-seeded from the topology baseline) and mints a WORKER once the cap
-/// is reached. So the cluster forms at its cap, then one `addNode()` exceeds it.
-///
-/// The joiner is added via `addWorkerNode()`, which advertises `role=worker` — the production shape,
-/// set there from `AETHER_ROLE`. Without it the node classifies as a core and the fence is suppressed.
-///
-/// Five cores, not three: `CommunityFormationProbeTest` records that a single worker-add flaps SWIM
-/// and a 3-node quorum cannot survive two suspected members, losing the leader mid-join. Six nodes
-/// total, which is under the ~8-node density where that probe was disabled — and `withRaisedSwimTimeouts()`
-/// (a seam that did not exist when it was disabled) is applied for the same density reason.
+/// Core nodes use quorum-loss detection. Worker core-absence detection consumes observations from
+/// the bounded core uplink policy; ping/pong is request-response and is not restricted to a leader
+/// broadcast. Community liveness on core nodes comes from fresh term-fenced governor reports.
+/// Five cores and raised SWIM timeouts retain this test's historical load conditions; they are not
+/// a claim that three-core worker admission is unsupported.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -118,15 +70,15 @@ class CoreAbsenceFenceOrderingTest {
     private static final int BASE_APP_HTTP_PORT = 21200;
 
     /// Shipped defaults from `TimeoutsConfig.ClusterTimeouts`: multiples of the 1s `pingInterval` —
-    /// 10s to fence locally, 20s before the core re-places. `ConfigValidator` REFUSES a config where
-    /// `core_absence >= community_absence`, and that inequality is the invariant this class measures.
+    /// 10s to fence locally, 20s community-observation timeout. The configured inequality provides
+    /// an operational margin; committed authority and effect fencing provide ownership safety.
     ///
     /// **These survive `withRaisedSwimTimeouts()` — verified, not assumed.** That seam swaps the whole
     /// `TimeoutsConfig`, so it could silently move the windows this class measures against. It does
     /// not: `EmberCluster.raisedSwimTimeoutsConfig()` passes `defaults.cluster()` through untouched and
     /// raises only the SWIM suspect timeout (60s), the Hello timeout and the membership split. Note the
     /// consequence — SWIM will not notice the isolated worker for 60s, which is FINE here because the
-    /// core half of #590 keys on pong silence (`ClusterSyncCollector.sinceLastPongNanos`), not on SWIM.
+    /// current core-side community health expires independently of SWIM peer suspicion.
     private static final Duration CORE_ABSENCE = Duration.ofSeconds(10);
     private static final Duration COMMUNITY_ABSENCE = Duration.ofSeconds(20);
 
@@ -161,19 +113,12 @@ class CoreAbsenceFenceOrderingTest {
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.status().nodes().size() == INITIAL_CORES);
         log.info("FENCE-PROBE: {}-core cluster formed, leader={}", INITIAL_CORES, cluster.currentLeader().or("none"));
 
-        // WAIT FOR THE COMMITTED CAP BEFORE ADDING. Role is leader-decided: `assignNodeRole` promotes a
-        // joiner to CORE while `currentCoreCount < effectiveCoreMax`, and `effectiveCoreMax` reads the
-        // COMMITTED `ClusterConfig.coreCount`, which `BootstrapModule` auto-seeds shortly after
-        // election. Adding before that commit races the seed and the joiner is minted a CORE.
-        //
-        // Learned by running it: the first version added ~1s after formation, got a sixth CORE, and the
-        // fence then correctly refused to fire because a core may never fence this way. Without the
-        // precondition below that would have been reported as "#590's fence is broken" — a false defect
-        // against a working mechanism, with a confident 40-second proof behind it.
+        // Wait for bootstrap configuration materialization before testing the worker path.
+        // This is a fixture readiness condition; configured worker identity cannot become core.
         await().atMost(FORM_TIMEOUT)
                .pollInterval(POLL)
                .until(() -> committedCoreCount().or(0) == INITIAL_CORES);
-        log.info("FENCE-PROBE: committed ClusterConfig.coreCount={} — the cap is live, the next join exceeds it",
+        log.info("FENCE-PROBE: committed ClusterConfig.coreCount={} — bootstrap configuration is committed",
                  committedCoreCount().or(0));
 
         worker = LifecycleAwait.nodeSettled("worker node join in addWorkerBeyondTheCoreCap()",

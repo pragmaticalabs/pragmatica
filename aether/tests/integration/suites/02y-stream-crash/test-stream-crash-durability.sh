@@ -192,13 +192,154 @@ read_partition_raw() {
         '"events"' || printf ''
 }
 
+# Emit "offset payload" per event of a read body on stdin, in response order.
+parse_events() {
+    grep -oE '\{[^{}]*"offset"[^{}]*\}' \
+        | sed -E 's/.*"offset"[[:space:]]*:[[:space:]]*([0-9]+).*"payload"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1 \2/'
+}
+
 # Emit "offset payload" per event of a partition, in response order.
 partition_events() {
     local partition="$1" body
     body=$(read_partition_raw "$partition")
-    printf '%s' "$body" \
-        | grep -oE '\{[^{}]*"offset"[^{}]*\}' \
-        | sed -E 's/.*"offset"[[:space:]]*:[[:space:]]*([0-9]+).*"payload"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1 \2/'
+    printf '%s' "$body" | parse_events
+}
+
+# ---------------------------------------------------------------------------
+# Settled read (#1502). The read route is the app `StreamAccess` at `ReadPreference.NEAREST`,
+# which is best-effort with no read-your-writes promise (#136): a node answering from a local ring
+# that is empty or behind returns a SUCCESSFUL, SHORT list. One such read cannot bear a durability
+# verdict. s27 cluster B (2026-09-25) scored "80 acked, 40 missing" from one read taken in the
+# post-kill leaderless window; the next step's read of the same partitions, 1-3s later, found 81.
+#
+# So a verdict is taken only on a SETTLED read, re-reading every partition until one of:
+#   COMPLETE — every partition answered and every acked marker is present;
+#   STABLE, HEAD-BACKED — every partition answered, two consecutive rounds agree on each
+#              partition's event count and last offset, the OWNER's head was obtained for EVERY
+#              partition, and no partition is short of it;
+#   STABLE, HEADLESS — the owner's head was missing for at least one partition, so agreement is
+#              not enough: the same signature must have held for SETTLED_HEADLESS_WINDOW_S.
+# A settled read that still lacks an acked marker is genuine loss, and is scored as loss.
+#
+# Why the headless rule exists (review of #1506): the head comes from the management replicas
+# view (`ownerHeadOffset`, the owner's next-expected offset, trusted only with
+# `servedByOwner=true`), and resolving the stream's coordinate goes through the STREAMING
+# task-group owner, i.e. the leader. In the leaderless window s27 was hit in, the head is therefore
+# likely unavailable — and one stale NEAREST node answers every round the same way, because
+# `stream_post_any` asks endpoints in a fixed order. Two agreeing reads 2s apart then reproduced
+# the s27 false loss exactly. The alternative, reporting UNMEASURABLE whenever no head was ever
+# obtained, was rejected: when the replicas view is structurally unavailable a real loss would
+# never be reported as loss. Waiting out a window keeps real loss detectable (it is scored once
+# the window has passed, well inside the deadline) at the cost of SETTLED_HEADLESS_WINDOW_S on
+# the loss path only.
+#
+# A partition read that FAILS (no endpoint answered) is unreadable, never an empty partition:
+# `read_partition_raw` turns that into '' and the pre-#1502 check then counted it as loss.
+# ---------------------------------------------------------------------------
+SETTLED_READ_DEADLINE_S="${SETTLED_READ_DEADLINE_S:-90}"
+SETTLED_READ_INTERVAL_S="${SETTLED_READ_INTERVAL_S:-2}"
+# A guess, not a measurement: longer than the ~2s s27 leaderless window and the ~21s re-election
+# cycle seen in 02w's churn the same day, and short enough to leave most of the deadline.
+SETTLED_HEADLESS_WINDOW_S="${SETTLED_HEADLESS_WINDOW_S:-30}"
+SETTLED_PAYLOADS=""
+SETTLED_STATE=""
+SETTLED_UNREADABLE=""
+SETTLED_COORD=""
+PARTITION_HEAD=""
+
+# partition_head <p>: sets PARTITION_HEAD to the owner's next-expected offset, or '' when the
+# answering node is not the owner or the view is unavailable. Called WITHOUT a subshell so the
+# coordinate, resolved through the leader-bound catalog, is looked up once and then cached in
+# SETTLED_COORD instead of once per partition per round.
+partition_head() {
+    local body head
+    PARTITION_HEAD=""
+    if [ -z "$SETTLED_COORD" ]; then
+        SETTLED_COORD=$(stream_coordinate "$STREAM_NAME" 2>/dev/null) || SETTLED_COORD=""
+        [ -n "$SETTLED_COORD" ] || return 0
+    fi
+    body=$(api_get "/api/v1/streams/${SETTLED_COORD}/replicas/$1" 2>/dev/null) || return 0
+    [ "$(json_scalar "$body" servedByOwner)" = "true" ] || return 0
+    head=$(json_scalar "$body" ownerHeadOffset)
+    case "$head" in ''|*[!0-9]*) return 0 ;; esac
+    PARTITION_HEAD="$head"
+}
+
+# settled_payloads <acked-index-file...>: read every partition until COMPLETE or STABLE (above),
+# within SETTLED_READ_DEADLINE_S. Sets SETTLED_PAYLOADS (one payload per distinct
+# (partition, offset), so a payload appended twice appears twice but a response repeating one
+# offset does not), SETTLED_STATE (how the read ended, with per-partition count:lastOffset and the
+# heads it had) and SETTLED_UNREADABLE (partitions whose LAST read failed). The payloads are those
+# of the FINAL round only: carrying anything over from an earlier round would let a marker seen
+# once in a short read hide its absence from the settled one. Returns 0 when settled, 1 at the
+# deadline.
+settled_payloads() {
+    local deadline=$((SECONDS + SETTLED_READ_DEADLINE_S)) round=0 p body events n last
+    local payloads sig prev_sig="" sig_since=0 unreadable short heads headless missing idx
+    local acked
+    acked=$(cat "$@" 2>/dev/null)
+    while :; do
+        round=$((round + 1))
+        payloads=""; sig=""; unreadable=""; short=""; heads=""; headless=0
+        for ((p = 0; p < PARTITIONS; p++)); do
+            if ! body=$(stream_post_any "/api/stream-mp/read" \
+                    "{\"partition\":${p},\"fromOffset\":0,\"maxEvents\":100000}" '"events"'); then
+                unreadable="${unreadable}${p} "
+                sig="${sig}p${p}=unreadable "
+                continue
+            fi
+            events=$(printf '%s' "$body" | parse_events | awk '!seen[$1]++')
+            n=$(printf '%s' "$events" | grep -c . || true)
+            last=$(printf '%s' "$events" | awk 'END {print (NR ? $1 : -1)}')
+            sig="${sig}p${p}=${n}:${last} "
+            [ -n "$events" ] && payloads="${payloads}$(printf '%s' "$events" | awk '{print $2}')"$'\n'
+        done
+        if [ "$sig" != "$prev_sig" ]; then
+            sig_since=$SECONDS
+        fi
+        SETTLED_PAYLOADS="$payloads"
+        SETTLED_UNREADABLE="$unreadable"
+        missing=0
+        while IFS= read -r idx; do
+            [ -n "$idx" ] || continue
+            printf '%s' "$payloads" | grep -qx "$(marker_for "$idx")" || missing=$((missing + 1))
+        done <<< "$acked"
+        if [ -z "$unreadable" ] && [ "$missing" -eq 0 ]; then
+            SETTLED_STATE="complete on read ${round} [${sig% }]"
+            return 0
+        fi
+        if [ -z "$unreadable" ]; then
+            for ((p = 0; p < PARTITIONS; p++)); do
+                partition_head "$p"
+                last=$(printf '%s' "$sig" | tr ' ' '\n' | sed -n "s/^p${p}=[0-9]*:\(-\{0,1\}[0-9]*\)$/\1/p")
+                if [ -z "$PARTITION_HEAD" ]; then
+                    headless=1
+                    heads="${heads}p${p}=none "
+                    continue
+                fi
+                heads="${heads}p${p}=${PARTITION_HEAD} "
+                if [ -n "$last" ] && [ $((last + 1)) -lt "$PARTITION_HEAD" ]; then
+                    short="${short}p${p}(last ${last} < owner head ${PARTITION_HEAD}) "
+                fi
+            done
+            if [ -z "$short" ] && [ "$sig" = "$prev_sig" ]; then
+                if [ "$headless" -eq 0 ]; then
+                    SETTLED_STATE="stable across reads $((round - 1))-${round} with every owner head, ${missing} acked marker(s) absent [${sig% }] heads [${heads% }]"
+                    return 0
+                fi
+                if [ $((SECONDS - sig_since)) -ge "$SETTLED_HEADLESS_WINDOW_S" ]; then
+                    SETTLED_STATE="stable for $((SECONDS - sig_since))s (>= ${SETTLED_HEADLESS_WINDOW_S}s headless window: an owner head was unavailable) by read ${round}, ${missing} acked marker(s) absent [${sig% }] heads [${heads% }]"
+                    return 0
+                fi
+            fi
+        fi
+        prev_sig="$sig"
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            SETTLED_STATE="NOT settled after ${round} read(s) in ${SETTLED_READ_DEADLINE_S}s: unreadable=[${unreadable% }] short=[${short% }] [${sig% }] heads [${heads% }]"
+            return 1
+        fi
+        sleep "$SETTLED_READ_INTERVAL_S"
+    done
 }
 
 # All payloads currently readable across every partition.
@@ -327,7 +468,9 @@ test_events_spread_across_partitions() {
 test_pre_kill_history_readable() {
     local present=0 idx
     local payloads
-    payloads=$(all_payloads)
+    settled_payloads "$ACKED_PRE" || true
+    log_info "pre-kill read: ${SETTLED_STATE}"
+    payloads="$SETTLED_PAYLOADS"
     while IFS= read -r idx; do
         [ -n "$idx" ] || continue
         printf '%s' "$payloads" | grep -qx "$(marker_for "$idx")" && present=$((present + 1))
@@ -424,17 +567,44 @@ test_failover_completed() {
 # readable afterwards. A missing ACKED event is a durability violation: the caller was
 # told the write was durable.
 test_every_acked_event_survives_the_crash() {
-    local payloads missing=0 total=0 idx
-    payloads=$(all_payloads)
-
+    local payloads missing=0 total=0 idx n dup_markers=0 dup_events=0 dup_examples=""
+    # Scored on a SETTLED read, never on one best-effort NEAREST read (#1502, see settled_payloads).
+    settled_payloads "$ACKED_PRE" "$ACKED_DURING" || true
+    log_info "post-crash read: ${SETTLED_STATE}"
+    payloads="$SETTLED_PAYLOADS"
+    # An unreadable partition is UNMEASURABLE, never empty. The readable partitions are still
+    # scored, but a marker absent from them cannot be called LOST — a keyless publish is not
+    # attributed to a partition, so it may live in the unreadable one — so they are reported as
+    # NOT FOUND with their count, and the verdict fails as unmeasurable.
     while IFS= read -r idx; do
         [ -n "$idx" ] || continue
         total=$((total + 1))
-        if ! printf '%s' "$payloads" | grep -qx "$(marker_for "$idx")"; then
+        n=$(printf '%s' "$payloads" | grep -cx "$(marker_for "$idx")" || true)
+        if [ "${n:-0}" -eq 0 ]; then
             missing=$((missing + 1))
-            [ "$missing" -le 5 ] && log_warn "MISSING acked marker: $(marker_for "$idx")"
+            if [ -n "$SETTLED_UNREADABLE" ]; then
+                [ "$missing" -le 5 ] && log_warn "NOT FOUND in the readable partitions: $(marker_for "$idx") (may live in unreadable partition(s) ${SETTLED_UNREADABLE% })"
+            else
+                [ "$missing" -le 5 ] && log_warn "MISSING acked marker: $(marker_for "$idx")"
+            fi
+        elif [ "$n" -gt 1 ]; then
+            dup_markers=$((dup_markers + 1))
+            dup_events=$((dup_events + n - 1))
+            [ "$dup_markers" -le 5 ] && dup_examples="${dup_examples}$(marker_for "$idx")x${n} "
         fi
     done < <(cat "$ACKED_PRE" "$ACKED_DURING")
+
+    # Scoring is by distinct marker, so a double-append would pass silently. Say it out loud: an
+    # acked publish whose response was lost and retried can legitimately append twice (s27: 81
+    # events for 80 acked markers), and whether that is acceptable is a contract question, not
+    # something this check may hide.
+    if [ "$dup_events" -gt 0 ]; then
+        log_warn "DUPLICATES: ${dup_events} extra event(s) at distinct (partition, offset) across ${dup_markers} acked marker(s) (e.g. ${dup_examples% }) — at-least-once delivery observed"
+    fi
+    if [ -n "$SETTLED_UNREADABLE" ]; then
+        log_fail "partition(s) ${SETTLED_UNREADABLE% } unreadable at the read deadline — survival verdict UNMEASURABLE (${missing}/${total} acked marker(s) not found in the readable partitions; not counted as loss)"
+        return 1
+    fi
 
     # NON-VACUITY GATE. Measured 2026-08-12: on a run where the blueprint failed to activate,
     # nothing was published, and this assertion reported "Every ACKED event survived the crash

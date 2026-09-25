@@ -413,7 +413,7 @@ sealed interface BootstrapPhaseProvision {
                                                                       SourceProfile source,
                                                                       ClusterName clusterName) {
         var providerName = resolveProviderName(source);
-        var sshKeyIds = ctx.sshKeyIdsFor(providerName);
+        var sshKeyIds = ctx.sshKeyIdsFor(sourceName.value());
         // Ids from BootstrapPhaseFirewall, applied AT create so the node is never up-and-unfirewalled
         // (§6.2 — a Hetzner server with no firewall association accepts all inbound traffic).
         var firewallIds = ctx.firewallIdsFor(sourceName);

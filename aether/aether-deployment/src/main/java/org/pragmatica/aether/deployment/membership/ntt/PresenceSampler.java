@@ -467,6 +467,12 @@ public final class PresenceSampler {
         return result;
     }
 
+    /// The local node this sampler runs on. On the leader this is the leader's own id — the
+    /// reconciler orders it LAST among drain victims (#1089 option B, #1488).
+    public NodeId self() {
+        return self;
+    }
+
     /// Count of currently-tracked cluster members (includes self). SENSOR READING ONLY (Wave 7):
     /// the last production consumer (the pre-FSM `propagateMemberCount` boot fallback) is gone —
     /// the quorum-loss count reads `MembershipFsm.strictCoreMemberCount()`. Retained for the NTT

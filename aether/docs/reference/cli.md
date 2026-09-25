@@ -1268,7 +1268,8 @@ aether nodes drain <nodeId>
 # grace-terminate backstop reaps the container)
 aether nodes shutdown <nodeId>
 
-# Promote a node to a new role (CORE or WORKER) via consensus
+# Check an already matching immutable role (CORE, WORKER or SPOT).
+# A different role is refused; provision a new node with the required role.
 aether nodes promote <nodeId> --role WORKER
 aether nodes promote <nodeId> --role CORE
 ```
@@ -1287,7 +1288,7 @@ aether nodes lifecycle node-2
 # Initiate shutdown
 aether nodes shutdown node-3
 
-# Promote node-4 to a WORKER role at runtime (CORE → WORKER); reverse with --role CORE
+# Acknowledges node-4 only if it already has the immutable WORKER role
 aether nodes promote node-4 --role WORKER
 ```
 
@@ -2573,11 +2574,12 @@ aether cluster destroy --cluster=my-cluster --yes
 Apply cluster configuration changes with desired-state reconciliation.
 
 ```bash
-aether cluster apply <config-file> [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
+aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `--cluster <name>` | Target the named cluster instead of the active-context one, and rewrite the file's `[cluster].name` to `<name>` before applying — the same rewrite as `aether cluster bootstrap --cluster`, so a cluster bootstrapped under an override accepts its own TOML (`cluster.name` is immutable) |
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
 | `--resume` | Resume a halted apply from first unfinished wave |

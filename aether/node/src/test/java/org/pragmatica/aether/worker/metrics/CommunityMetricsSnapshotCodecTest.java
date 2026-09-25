@@ -31,11 +31,19 @@ class CommunityMetricsSnapshotCodecTest {
     private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
 
     @Test
+    void sourceBatch_preservesProducerIdentityAndSequenceThroughNodeCodecs() {
+        var source = new CommunityMetricsSnapshot("community", new NodeId("worker"), 1, List.of(), 12345, 8, 19);
+        var batch = new SourceMetricsBatch(new NodeId("core"), List.of(source));
+        SourceMetricsBatch decoded = CODEC.decode(CODEC.encode(batch));
+        assertThat(decoded).isEqualTo(batch);
+    }
+
+    @Test
     void communityMetricsSnapshot_roundTripsThroughNodeCodecs() {
         var artifact = Artifact.artifact("org.test:slice:1.0.0").unwrap();
         var methods = List.of(perMethodMetrics("handle", 3L, 12.5, 0.01, 400L));
         var slices = List.of(perSliceMetrics(artifact, 5L, 20.0, 0.02, 1000L, methods));
-        var original = communityMetricsSnapshot("community-1", new NodeId("gov-1"), 4, slices, 1_753_000_000_000L);
+        var original = communityMetricsSnapshot("community-1", new NodeId("gov-1"), 4, slices, 1_753_000_000_000L, 1, 1);
 
         var decoded = (CommunityMetricsSnapshot) CODEC.decode(CODEC.encode(original));
 
@@ -44,7 +52,7 @@ class CommunityMetricsSnapshotCodecTest {
 
     @Test
     void communityMetricsSnapshot_emptySlices_roundTrips() {
-        var original = communityMetricsSnapshot("community-2", new NodeId("gov-2"), 1, List.of(), 1_753_000_000_001L);
+        var original = communityMetricsSnapshot("community-2", new NodeId("gov-2"), 1, List.of(), 1_753_000_000_001L, 1, 2);
 
         var decoded = (CommunityMetricsSnapshot) CODEC.decode(CODEC.encode(original));
 

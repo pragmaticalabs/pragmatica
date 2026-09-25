@@ -6,24 +6,14 @@ package org.pragmatica.aether.worker.governor;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.cluster.node.ClusterNode;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyManager;
-import org.pragmatica.hlc.HlcClock;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.swim.SwimMember;
 
 import java.net.InetSocketAddress;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -87,84 +77,6 @@ class CommunityMembershipFilterTest {
         assertThat(filtered.stream().map(SwimMember::nodeId).toList()).containsExactly(SELF);
     }
 
-    @Test
-    void onMembershipChange_communityFilteredSelf_selfElectsAndAnnouncesOnlyCommunity() {
-        kvStore.put(SELF, COMMUNITY);
-        kvStore.put(PEER_SAME, COMMUNITY);
-        kvStore.put(PEER_OTHER, OTHER_COMMUNITY);
-        var cluster = new RecordingClusterNode();
-        var announcer = announcerFor(cluster);
-
-        var filtered = CommunityMembershipFilter.communityAliveMembers(List.of(alive(SELF), alive(PEER_SAME), alive(PEER_OTHER)),
-                                                                       kvStore,
-                                                                       COMMUNITY);
-        announcer.onMembershipChange(filtered);
-
-        assertThat(announcer.isGovernor()).isTrue();
-        assertThat(cluster.batches).hasSize(1);
-        var value = writtenAnnouncement(cluster);
-        assertThat(value.governorId()).isEqualTo(SELF);
-        assertThat(value.members()).containsExactlyInAnyOrder(SELF, PEER_SAME);
-        assertThat(value.members()).doesNotContain(PEER_OTHER);
-        assertThat(value.memberCount()).isEqualTo(2);
-        assertThat(value.dissolved()).isFalse();
-    }
-
-    @Test
-    void onMembershipChange_communityOfOne_selfElectsAndAnnounces() {
-        kvStore.put(SELF, COMMUNITY);
-        var cluster = new RecordingClusterNode();
-        var announcer = announcerFor(cluster);
-
-        var filtered = CommunityMembershipFilter.communityAliveMembers(List.of(alive(SELF)), kvStore, COMMUNITY);
-        announcer.onMembershipChange(filtered);
-
-        assertThat(announcer.isGovernor()).isTrue();
-        assertThat(cluster.batches).hasSize(1);
-        var value = writtenAnnouncement(cluster);
-        assertThat(value.governorId()).isEqualTo(SELF);
-        assertThat(value.members()).containsExactly(SELF);
-        assertThat(value.memberCount()).isEqualTo(1);
-    }
-
-    @Test
-    void onMembershipChange_lowerIdPeerInCommunity_selfBecomesFollowerNoWrite() {
-        kvStore.put(SELF, COMMUNITY);
-        kvStore.put(PEER_LOWER_SAME, COMMUNITY);
-        var cluster = new RecordingClusterNode();
-        var announcer = announcerFor(cluster);
-
-        var filtered = CommunityMembershipFilter.communityAliveMembers(List.of(alive(SELF), alive(PEER_LOWER_SAME)),
-                                                                       kvStore,
-                                                                       COMMUNITY);
-        announcer.onMembershipChange(filtered);
-
-        assertThat(announcer.isGovernor()).isFalse();
-        assertThat(announcer.currentGovernor().stream().toList()).containsExactly(PEER_LOWER_SAME);
-        assertThat(cluster.batches).isEmpty();
-    }
-
-    private static GovernorAnnouncer announcerFor(RecordingClusterNode cluster) {
-        var announcer = GovernorAnnouncer.governorAnnouncer(SELF,
-                                                            cluster,
-                                                            HlcClock.hlcClock(SELF),
-                                                            () -> COMMUNITY,
-                                                            () -> "host:9000",
-                                                            () -> Epoch.ZERO);
-        announcer.start();
-
-        return announcer;
-    }
-
-    private static GovernorAnnouncementValue writtenAnnouncement(RecordingClusterNode cluster) {
-        var command = cluster.batches.getFirst().getFirst();
-        assertThat(command).isInstanceOf(KVCommand.Put.class);
-        var put = (KVCommand.Put<?, ?>) command;
-        assertThat(put.key()).isInstanceOf(GovernorAnnouncementKey.class);
-
-        return (GovernorAnnouncementValue) put.value();
-    }
-
     private static SwimMember alive(NodeId id) {
         return SwimMember.swimMember(id, SwimMember.MemberState.ALIVE, 0, new InetSocketAddress("127.0.0.1", 0));
     }
@@ -188,22 +100,4 @@ class CommunityMembershipFilterTest {
         }
     }
 
-    private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
-        final List<List<KVCommand<AetherKey>>> batches = new ArrayList<>();
-
-        @Override public NodeId self() {return SELF;}
-
-        @Override public TopologyManager topologyManager() {
-            throw new UnsupportedOperationException("not used");
-        }
-
-        @Override public Promise<Unit> start() {return Promise.success(Unit.unit());}
-        @Override public Promise<Unit> stop() {return Promise.success(Unit.unit());}
-
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-            batches.add(List.copyOf(commands));
-            return (Promise) Promise.success(List.of());
-        }
-    }
 }

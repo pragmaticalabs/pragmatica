@@ -589,7 +589,7 @@ class RabiaEngineTest {
 
         @Test
         void ignores_decisions_when_inactive() {
-            var decision = new Decision<>(NODE_2, new Phase(1), StateValue.V1, Batch.<TestCommand>emptyBatch());
+            var decision = new Decision<>(NODE_2, new Phase(1), StateValue.V0, Batch.<TestCommand>emptyBatch());
 
             engine.processDecision(decision);
             // No exception should be thrown
@@ -600,7 +600,7 @@ class RabiaEngineTest {
     class ProtocolInvariants {
 
         @Test
-        void locked_value_carries_to_next_phase() throws InterruptedException {
+        void completed_slot_starts_next_slot_with_fresh_proposal() throws InterruptedException {
             activateEngine();
             network.clearMessages();
 
@@ -624,17 +624,14 @@ class RabiaEngineTest {
                 .anyMatch(m -> m instanceof Decision<?> d && d.phase().equals(Phase.ZERO));
             assertThat(phase0Decision).as("Phase 0 should have V1 decision").isTrue();
 
-            // After V1 decision, the locked value (V1) is set for next phase
-            // Per Rabia spec: moveToNextPhase() sets lockedValue to Option.some(decidedValue)
-            // This is verified by the engine advancing to next phase
+            // The next slot starts a fresh weak-MVC instance.
             network.clearMessages();
 
             // Submit new commands which will trigger startPhase for phase 1
             engine.handleSubmit(new RabiaEngineIO.SubmitCommands<>(List.of(new TestCommand("cmd2"))));
             Thread.sleep(150);
 
-            // If there were pending batches and locked value was V1, the engine should
-            // broadcast a VoteRound1 with V1 immediately when starting phase 1
+            // A new slot must collect proposal evidence before voting.
             var phase1Messages = network.getMessages().stream()
                 .filter(m -> m instanceof Propose<?> || m instanceof VoteRound1)
                 .toList();
@@ -646,6 +643,8 @@ class RabiaEngineTest {
             assertThat(hasPhase1Proposal)
                 .as("Engine should have started phase 1 with proposal after V1 decision")
                 .isTrue();
+            assertThat(phase1Messages).noneMatch(message -> message instanceof VoteRound1);
+
         }
 
         @Test
@@ -935,7 +934,7 @@ class RabiaEngineTest {
         }
 
         @Test
-        void fast_path_skips_round2_when_super_majority_agrees() throws InterruptedException {
+        void first_round_agreement_still_requires_round2() throws InterruptedException {
             activateEngine();
             network.clearMessages();
 
@@ -952,16 +951,16 @@ class RabiaEngineTest {
             engine.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
             Thread.sleep(100);
 
-            // Verify decision was broadcast WITHOUT any round 2 votes being sent
+            // First-round agreement alone must not publish a Decision
             var hasDecision = network.getMessages().stream()
                 .anyMatch(m -> m instanceof Decision);
-            assertThat(hasDecision).as("Fast path should produce a decision").isTrue();
+            assertThat(hasDecision).as("Round 1 evidence cannot commit a slot").isFalse();
 
-            // Verify no VoteRound2 was broadcast (fast path skipped round 2)
+            // The normal protocol broadcasts a second-round vote
             var round2VoteCount = network.getMessages().stream()
                 .filter(m -> m instanceof VoteRound2)
                 .count();
-            assertThat(round2VoteCount).as("Fast path should skip round 2 voting").isZero();
+            assertThat(round2VoteCount).as("Agreement must be confirmed in round 2").isPositive();
         }
     }
 
@@ -1033,6 +1032,12 @@ class RabiaEngineTest {
     // ==================== Stub Implementations ====================
 
     static class TestTopologyManager implements TopologyManager {
+        @Override
+        public boolean isConsensusMember(NodeId id) {
+            return id.equals(self.id()) || java.util.stream.IntStream.rangeClosed(1, clusterSize)
+                     .anyMatch(index -> id.equals(nodeId("node-" + index).unwrap()));
+        }
+
         private final NodeInfo self;
         private final int clusterSize;
 
@@ -1088,7 +1093,8 @@ class RabiaEngineTest {
 
         @Override
         public List<NodeId> topology() {
-            return List.of();
+            return java.util.stream.IntStream.rangeClosed(1, clusterSize)
+                .mapToObj(index -> nodeId("node-" + index).unwrap()).toList();
         }
     }
 
@@ -1118,7 +1124,7 @@ class RabiaEngineTest {
 
         @Override
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            messages.add(message);
+            if (messages.stream().noneMatch(existing -> existing == message)) { messages.add(message); }
             return Unit.unit();
         }
 

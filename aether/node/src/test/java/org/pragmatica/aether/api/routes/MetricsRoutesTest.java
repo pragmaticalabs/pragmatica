@@ -234,11 +234,22 @@ class MetricsRoutesTest {
         }
     }
 
+    @Test
+    void nodeMetricsReadsPublishedKeysAndConvertsHeapBytesToMebibytes() {
+        collector.nodeMetrics = java.util.Map.of(LOCAL_NODE,
+            java.util.Map.of(ClusterSyncCollector.CPU_USAGE, 0.45,
+                             ClusterSyncCollector.HEAP_USED, 256.0 * 1024 * 1024,
+                             ClusterSyncCollector.HEAP_MAX, 512.0 * 1024 * 1024));
+        assertThat(routesWithDevMode(false).buildNodeMetricsResponse()).containsExactly(
+            new org.pragmatica.aether.api.ManagementApiResponses.NodeMetric(LOCAL_NODE.id(), 0.45, 256, 512));
+    }
+
     // --- helpers ---
 
     private record InjectCall(NodeId nodeId, MetricsSnapshot snapshot) {}
 
     private static final class RecordingCollector {
+        java.util.Map<NodeId, java.util.Map<String, Double>> nodeMetrics = java.util.Map.of();
         final List<InjectCall> injectedSnapshots = new CopyOnWriteArrayList<>();
 
         ClusterSyncCollector asClusterSyncCollector() {
@@ -246,6 +257,7 @@ class MetricsRoutesTest {
                 ClusterSyncCollector.class.getClassLoader(),
                 new Class[]{ClusterSyncCollector.class},
                 (_, method, args) -> {
+                    if ("allMetrics".equals(method.getName())) return nodeMetrics;
                     if ("injectHistoricalSnapshot".equals(method.getName()) && args != null && args.length == 2) {
                         injectedSnapshots.add(new InjectCall((NodeId) args[0], (MetricsSnapshot) args[1]));
                         return null;

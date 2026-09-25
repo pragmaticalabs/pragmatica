@@ -212,7 +212,8 @@ class DeferredStartRedriveWiringBootTest {
                                 .tls(Option.none())
                                 .quicTls(TlsConfig.selfSignedMutual())
                                 .certificateProvider(Option.none())
-                                .configProvider(Option.none())
+                                .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
+                                    org.pragmatica.config.ConfigurationProvider.builder().build())))
                                 .environment(Option.none())
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))

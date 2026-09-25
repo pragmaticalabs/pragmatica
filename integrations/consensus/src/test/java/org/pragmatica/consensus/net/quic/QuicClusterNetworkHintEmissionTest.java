@@ -337,6 +337,9 @@ class QuicClusterNetworkHintEmissionTest {
 
     private TopologyObserver stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
         return new TopologyObserver() {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {
                 if (id.equals(self.id())) {return Option.some(self);}

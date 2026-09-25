@@ -76,6 +76,7 @@ class DashboardMetricsPublisherEvaluationPathTest {
     private static ManageableNode nodeReporting(String metric, double value) {
         var collector = Mockito.mock(ClusterSyncCollector.class);
         var node = Mockito.mock(ManageableNode.class);
+        Mockito.when(node.hasCompleteClusterView()).thenReturn(true);
 
         Mockito.when(collector.allMetrics()).thenReturn(Map.of(NODE, Map.of(metric, value)));
         Mockito.when(node.metricsCollector()).thenReturn(collector);

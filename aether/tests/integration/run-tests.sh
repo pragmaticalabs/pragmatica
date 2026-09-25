@@ -1007,7 +1007,8 @@ teardown() {
             ;;
         cloud)
             # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).
-            # Use cloud-reaper.sh which filters by `aether-cluster` label — works regardless of
+            # Use cloud-reaper.sh which filters by `aether-cluster` label (and by `aether-chaos-cluster`,
+            # the partition-chaos firewalls' key, #1500) — works regardless of
             # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
             # A's guard uses the PRE-GATE snapshot (A_SUITES_SELECTED): the Step-8
             # gate removes 00 from A_SUITES after running it, so on a `--suites 00`
@@ -1025,9 +1026,10 @@ teardown() {
             # Catch-all sweep for CTM-provisioned ORPHANS. The scoped `--cluster <name>`
             # reaps above filter on `aether-cluster=<name>` (plus same-cluster orphans),
             # but CTM-provisioned replacement VMs may carry a DIFFERENT or MISSING
-            # `aether-cluster` label value (the seed/replacement prefix mismatch:
-            # cluster reports `aether-cloud-test-b-node-<ULID>` while the VM is labeled
-            # `aether-node-id=aether-b-node-<ULID>` with no matching `aether-cluster`).
+            # `aether-cluster` label value (historically: CTM labelled replacements with the
+            # TOML's `[cluster] name` rather than the harness cluster name, fixed by #1487 —
+            # and a replacement created before its cluster name was stamped carries only
+            # `aether-node-id`, with no `aether-cluster` at all).
             # Those rows are dropped by the per-cluster orphan filter and survived
             # teardown last run (4 orphan VMs leaked). A final bare reaper run (no
             # --cluster) matches ANY `aether-cluster` OR `aether-node-id` label and
@@ -1228,6 +1230,10 @@ on_exit() {
         log_error "Run aborted before completion (no final result) — exiting 1, not 0"
         rc=1
     fi
+    # This run's scratch state (endpoint memory), keyed by AETHER_RUN_ID so only ours. Removed on
+    # EVERY exit path: it is useless to any later run, so preserving clusters is no reason to keep it.
+    rm -f "${TMPDIR:-/tmp}/aether-live-endpoint-"*"-${AETHER_RUN_ID:-norun}" \
+          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" 2>/dev/null
     if [ "$SKIP_TEARDOWN" = false ]; then
         if [ -n "$KEEP_ON_FAILURE_FLAG" ] && [ "$rc" -ne 0 ]; then
             preserve_on_failure "$rc"

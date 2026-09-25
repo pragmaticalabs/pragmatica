@@ -49,6 +49,14 @@ class AwsComputeProviderTest {
         provider = AwsComputeProvider.awsComputeProvider(testClient, CONFIG).unwrap();
     }
 
+    @Test
+    void observedZone_usesNativePlacement() {
+        var instance = new Instance("i-1", "t3.medium", "ami-1", "10.0.0.1", "1.2.3.4",
+                                    new Instance.InstanceState("running", 16), null,
+                                    new Instance.Placement("eu-west-1b"));
+        assertThat(AwsComputeProvider.toInstanceInfo(instance).observedZone().unwrap()).isEqualTo("eu-west-1b");
+    }
+
     @Nested
     class ProvisionTests {
 
@@ -517,28 +525,28 @@ class AwsComputeProviderTest {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.1", "1.2.3.4",
                             new Instance.InstanceState("running", 16),
-                            null);
+                            null, null);
     }
 
     static Instance pendingInstance(String instanceId) {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.2", null,
                             new Instance.InstanceState("pending", 0),
-                            null);
+                            null, null);
     }
 
     static Instance terminatedInstance(String instanceId) {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.3", null,
                             new Instance.InstanceState("terminated", 48),
-                            null);
+                            null, null);
     }
 
     static Instance instanceWithAddresses(String publicIp, String privateIp) {
         return new Instance("i-test", "t3.medium", "ami-12345",
                             privateIp, publicIp,
                             new Instance.InstanceState("running", 16),
-                            null);
+                            null, null);
     }
 
     static Instance instanceWithTags(String instanceId, Map<String, String> tags) {
@@ -549,6 +557,6 @@ class AwsComputeProviderTest {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.1", "1.2.3.4",
                             new Instance.InstanceState("running", 16),
-                            new Instance.TagSet(tagItems));
+                            new Instance.TagSet(tagItems), null);
     }
 }

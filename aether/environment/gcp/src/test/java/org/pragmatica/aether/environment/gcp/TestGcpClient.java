@@ -2,8 +2,11 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.environment.gcp;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
 
 import org.pragmatica.cloud.gcp.GcpClient;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest;
@@ -14,17 +17,16 @@ import org.pragmatica.cloud.gcp.api.SetLabelsRequest;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Queue;
 
 /// Test stub for GcpClient that returns canned responses and captures arguments.
 final class TestGcpClient implements GcpClient {
     private static final Operation OK_OPERATION = new Operation("op-1", "DONE", "", "");
 
-    Promise<Instance> insertInstanceResponse = Promise.success(GcpComputeProviderTest.runningInstance("default"));
+    Promise<Operation> insertInstanceResponse = Promise.success(OK_OPERATION);
     Promise<Unit> deleteInstanceResponse = Promise.success(Unit.unit());
+
     Promise<Instance> getInstanceResponse = Promise.success(GcpComputeProviderTest.runningInstance("default"));
+
     Promise<List<Instance>> listInstancesResponse = Promise.success(List.of());
     Promise<Operation> resetInstanceResponse = Promise.success(OK_OPERATION);
     Promise<Operation> setLabelsResponse = Promise.success(OK_OPERATION);
@@ -33,7 +35,6 @@ final class TestGcpClient implements GcpClient {
     Promise<List<NetworkEndpoint>> listEndpointsResponse = Promise.success(List.of());
     Promise<String> accessSecretResponse = Promise.success("test-secret");
     Queue<Promise<String>> secretResponses;
-
     String lastDeletedInstanceName;
     String lastGetInstanceName;
     String lastResetInstanceName;
@@ -49,20 +50,23 @@ final class TestGcpClient implements GcpClient {
     String lastListEndpointsNegName;
 
     @Override
-    public Promise<Instance> insertInstance(InsertInstanceRequest request) {
+    public Promise<Operation> insertInstance(InsertInstanceRequest request) {
         lastInsertRequest = request;
+
         return insertInstanceResponse;
     }
 
     @Override
     public Promise<Unit> deleteInstance(String instanceName) {
         lastDeletedInstanceName = instanceName;
+
         return deleteInstanceResponse;
     }
 
     @Override
     public Promise<Instance> getInstance(String instanceName) {
         lastGetInstanceName = instanceName;
+
         return getInstanceResponse;
     }
 
@@ -74,12 +78,14 @@ final class TestGcpClient implements GcpClient {
     @Override
     public Promise<List<Instance>> listInstances(String labelFilter) {
         lastLabelFilter = labelFilter;
+
         return listInstancesResponse;
     }
 
     @Override
     public Promise<Operation> resetInstance(String instanceName) {
         lastResetInstanceName = instanceName;
+
         return resetInstanceResponse;
     }
 
@@ -87,6 +93,7 @@ final class TestGcpClient implements GcpClient {
     public Promise<Operation> setLabels(String instanceName, SetLabelsRequest request) {
         lastSetLabelsInstanceName = instanceName;
         lastSetLabels = request.labels();
+
         return setLabelsResponse;
     }
 
@@ -94,6 +101,7 @@ final class TestGcpClient implements GcpClient {
     public Promise<Operation> attachNetworkEndpoint(String negName, NetworkEndpoint endpoint) {
         lastAttachNegName = negName;
         lastAttachEndpoint = endpoint;
+
         return attachEndpointResponse;
     }
 
@@ -101,12 +109,14 @@ final class TestGcpClient implements GcpClient {
     public Promise<Operation> detachNetworkEndpoint(String negName, NetworkEndpoint endpoint) {
         lastDetachNegName = negName;
         lastDetachEndpoint = endpoint;
+
         return detachEndpointResponse;
     }
 
     @Override
     public Promise<List<NetworkEndpoint>> listNetworkEndpoints(String negName) {
         lastListEndpointsNegName = negName;
+
         return listEndpointsResponse;
     }
 
@@ -116,6 +126,7 @@ final class TestGcpClient implements GcpClient {
         if (secretResponses != null && !secretResponses.isEmpty()) {
             return secretResponses.poll();
         }
+
         return accessSecretResponse;
     }
 }

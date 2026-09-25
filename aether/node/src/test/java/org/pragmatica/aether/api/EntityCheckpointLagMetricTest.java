@@ -65,9 +65,13 @@ class EntityCheckpointLagMetricTest {
         assertThat(events.breaches()).describedAs("a lag past the default CRITICAL threshold must raise").hasSize(1);
 
         sink.report(100);
-        publisher.publishMetrics();
-
-        assertThat(events.clears()).describedAs("a lag far below WARNING must clear the alert").hasSize(1);
+        // The collector publishes one origin-preserving observation per sampling interval.
+        org.awaitility.Awaitility.await()
+            .atMost(org.pragmatica.lang.io.TimeSpan.timeSpan(3).seconds().duration())
+            .untilAsserted(() -> {
+                publisher.publishMetrics();
+                assertThat(events.clears()).describedAs("a lag far below WARNING must clear the alert").hasSize(1);
+            });
     }
 
     private static ClusterSyncCollector collector() {
@@ -76,6 +80,7 @@ class EntityCheckpointLagMetricTest {
 
     private static ManageableNode nodeWith(ClusterSyncCollector collector) {
         var node = Mockito.mock(ManageableNode.class);
+        Mockito.when(node.hasCompleteClusterView()).thenReturn(true);
 
         Mockito.when(node.metricsCollector()).thenReturn(collector);
 

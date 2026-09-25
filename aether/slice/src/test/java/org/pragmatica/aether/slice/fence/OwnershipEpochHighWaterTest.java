@@ -249,7 +249,14 @@ class OwnershipEpochHighWaterTest {
             store = emptyStore();
         }
 
+        @SuppressWarnings({"unchecked", "rawtypes"})
         private void apply(AetherKey key, AetherValue value) {
+            if (value instanceof GovernorAnnouncementValue) {
+                var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(NODE, 1);
+                store.process(store.createBatch((List) List.of(new Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, leader))));
+                store.process(store.createBatch(List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), leader, java.util.List.of(), java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Mutation<>(key, store.get(key), org.pragmatica.lang.Option.some(value)))))));
+                return;
+            }
             store.process(store.createBatch(List.of(new Put<>(key, value))));
         }
 

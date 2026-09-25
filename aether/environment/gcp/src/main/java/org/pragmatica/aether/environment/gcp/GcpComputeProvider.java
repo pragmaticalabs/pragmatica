@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -78,22 +79,32 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
             return SPOT_UNSUPPORTED.promise();
         }
 
-        var zone = zoneOverride(request.zone());
+        var zone = Option.some(request.zone().isBlank()
+                               ? config.gcpConfig().zone()
+                               : request.zone());
         var userData = request.userData().or("");
         var labels = labelsFor(request.context());
+        var insert = buildInsertRequest(request.instanceSize(), request.image(), zone, userData, labels);
 
-        return client.insertInstance(buildInsertRequest(request.instanceSize(),
-                                                        request.image(),
-                                                        zone,
-                                                        userData,
-                                                        labels))
-                     .map(GcpComputeProvider::toInstanceInfo)
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.cloudDefault()))
+        return client.insertInstance(insert)
+                     .flatMap(_ -> confirmRunning(pendingInstance(insert),
+                                                  ReadinessPolicy.cloudDefault()))
                      .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                      .mapError(cause -> toProvisionError(request.instanceSize(),
                                                          zone.or(""),
                                                          cause));
+    }
+
+    private InstanceInfo pendingInstance(InsertInstanceRequest request) {
+        var zone = request.zoneOverride().or(config.gcpConfig().zone());
+
+        return new InstanceInfo(new InstanceId(zone + "/" + request.name()),
+                                InstanceStatus.PROVISIONING,
+                                List.of(),
+                                InstanceType.ON_DEMAND,
+                                request.labels(),
+                                Option.option(request.labels().get(NODE_ID_LABEL)),
+                                Option.none());
     }
 
     /// GCP's [InsertInstanceRequest] exposes no `provisioningModel=SPOT` field on this client, so a
@@ -129,14 +140,14 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
 
     @Override
     public Promise<List<InstanceInfo>> listInstances() {
-        return client.listInstances()
+        return client.listAllInstances("")
                      .map(GcpComputeProvider::toInstanceInfoList)
                      .mapError(GcpComputeProvider::toListInstancesError);
     }
 
     @Override
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return client.listInstances(toLabelFilter(tagFilter))
+        return client.listAllInstances(toLabelFilter(tagFilter))
                      .map(GcpComputeProvider::toInstanceInfoList)
                      .mapError(GcpComputeProvider::toListInstancesError);
     }
@@ -179,13 +190,16 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                                                      Option<String> zoneOverride,
                                                      String userData,
                                                      Map<String, String> labels) {
-        var name = generateInstanceName();
-        var disk = buildBootDisk(image);
+        var name = generateInstanceName(labels);
+        var disk = buildBootDisk(image,
+                                 zoneOverride.or(config.gcpConfig().zone()));
         var networkInterface = buildNetworkInterface();
         var metadata = buildMetadata(userData);
 
         return new InsertInstanceRequest(name,
-                                         machineType,
+                                         zonalResource(zoneOverride.or(config.gcpConfig().zone()),
+                                                       "machineTypes",
+                                                       machineType),
                                          List.of(disk),
                                          List.of(networkInterface),
                                          labels,
@@ -220,8 +234,14 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                   .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")));
     }
 
-    private Disk buildBootDisk(String image) {
-        return new Disk(true, true, new InitializeParams(image, 20, "pd-standard"));
+    private Disk buildBootDisk(String image, String zone) {
+        return new Disk(true, true, new InitializeParams(image, 20, zonalResource(zone, "diskTypes", "pd-standard")));
+    }
+
+    private static String zonalResource(String zone, String collection, String name) {
+        return name.contains("/")
+               ? name
+               : "zones/" + zone + "/" + collection + "/" + name;
     }
 
     private NetworkInterfaceConfig buildNetworkInterface() {
@@ -234,21 +254,31 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return new Metadata(List.of(new MetadataItem("startup-script", userData)));
     }
 
-    private static String generateInstanceName() {
-        return "aether-" + UUID.randomUUID()
-                               .toString()
-                               .substring(0, 8);
+    private static String generateInstanceName(Map<String, String> labels) {
+        var identity = labels.getOrDefault("aether-cluster", "")
+                     + "/" + labels.getOrDefault("aether-source", "")
+                     + "/" + labels.get(NODE_ID_LABEL);
+
+        return "aether-" + UUID.nameUUIDFromBytes(identity.getBytes(StandardCharsets.UTF_8));
     }
 
     static InstanceInfo toInstanceInfo(Instance instance) {
         var labels = safeLabels(instance);
 
-        return new InstanceInfo(new InstanceId(instance.name()),
+        return new InstanceInfo(new InstanceId(instanceReference(instance)),
                                 mapStatus(instance.status()),
                                 collectAddresses(instance),
                                 InstanceType.ON_DEMAND,
                                 labels,
-                                Option.option(labels.get(NODE_ID_LABEL)));
+                                Option.option(labels.get(NODE_ID_LABEL)),
+                                Option.option(instance.zone()).map(zone -> zone.substring(zone.lastIndexOf('/') + 1)));
+    }
+
+    private static String instanceReference(Instance instance) {
+        return Option.option(instance.zone())
+                     .filter(zone -> !zone.isBlank())
+                     .map(zone -> zone.substring(zone.lastIndexOf('/') + 1) + "/" + instance.name())
+                     .or(instance.name());
     }
 
     private static Map<String, String> safeLabels(Instance instance) {

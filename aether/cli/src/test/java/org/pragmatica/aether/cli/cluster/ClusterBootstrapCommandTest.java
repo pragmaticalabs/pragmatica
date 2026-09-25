@@ -70,7 +70,7 @@ class ClusterBootstrapCommandTest {
                                       Map.of("forge", forgeSource(3)),
                                       Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
                                       infrastructureConfig(NetworkingType.MANUAL),
-                                      defaultOperationsConfig());
+                                      defaultOperationsConfig(), java.util.Map.of());
     }
 
     @Nested

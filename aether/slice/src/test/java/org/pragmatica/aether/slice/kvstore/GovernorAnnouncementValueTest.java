@@ -149,9 +149,10 @@ class GovernorAnnouncementValueTest {
                                                                                "10.0.0.1:7201");
 
             var next = original.withMembers(List.of(NodeId.nodeId("w-1").unwrap(), NodeId.nodeId("w-2").unwrap()),
-                                            "10.0.0.1:7202");
+                                            "10.0.0.1:7202", Epoch.epoch(8, 0));
 
             assertThat(next.memberCount()).isEqualTo(2);
+            assertThat(next.observedCoreEpoch()).isEqualTo(Epoch.epoch(8, 0));
             assertThat(next.communityTerm()).isEqualTo(original.communityTerm());
         }
     }

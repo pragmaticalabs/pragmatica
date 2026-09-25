@@ -139,7 +139,7 @@ class BootstrapPhaseDeploySshSourceTest {
                                                                    sources,
                                                                    runtimes,
                                                                    InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                                   ops);
+                                                                   ops, java.util.Map.of());
         var addresses = nodes.stream()
                              .map(n -> NodeAddress.nodeAddress(n.nodeId(),
                                                                n.publicIp(),

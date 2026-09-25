@@ -5,6 +5,8 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.source.MapConfigSource;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -75,6 +77,14 @@ public sealed interface HermeticStorage {
     /// keep the artifacts instance covered exactly as the synthesized one would have been.
     static Map<String, StorageConfig> nodeStorageIn(Path tempDir, boolean encrypted) {
         return Map.of("artifacts", storageConfigAt(uncreatableRootIn(tempDir), encrypted));
+    }
+
+    /// Keep mandatory durable control state writable while data-tier fault injection remains active.
+    static ConfigurationProvider withControlStorageIn(Path tempDir, ConfigurationProvider provider) {
+        var control = MapConfigSource.mapConfigSource("test-control-storage",
+            Map.of("cluster.consensus_path", tempDir.resolve("control").toString()), Integer.MAX_VALUE).unwrap();
+
+        return ConfigurationProvider.builder().withSource(provider).withSource(control).build();
     }
 
     record unused() implements HermeticStorage {}

@@ -40,6 +40,7 @@ public record ScalingDecisionRecord(Artifact artifact,
     public enum Guard {
         NONE,
         WINDOW_NOT_FULL,
+        METRICS_INCOMPLETE,
         SLICE_IN_PROGRESS,
         COOLDOWN,
         MIN_INSTANCES,

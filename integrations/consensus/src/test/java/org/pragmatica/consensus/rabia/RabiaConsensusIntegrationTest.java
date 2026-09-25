@@ -19,6 +19,7 @@ package org.pragmatica.consensus.rabia;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
@@ -110,7 +111,7 @@ class RabiaConsensusIntegrationTest {
             assertThat(votes).allMatch(v -> v.stateValue() == StateValue.V1);
         }
 
-        @Test
+        @RepeatedTest(20)
         void conflicting_proposals_lead_to_v0_votes() throws InterruptedException {
             cluster.activateAll();
 
@@ -118,18 +119,26 @@ class RabiaConsensusIntegrationTest {
             var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd2")));
             var batch3 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd3")));
 
-            // All nodes propose different batches
-            cluster.simulateProposal(NODE_1, batch1);
-            cluster.simulateProposal(NODE_2, batch2);
-            cluster.simulateProposal(NODE_3, batch3);
+            // Fix each real local proposal before delivering any peer proposal. Receiving a
+            // peer proposal first is allowed to teach a node that batch and produce agreement.
+            cluster.engines.get(NODE_1).handleNewBatch(new NewBatch<>(NODE_1, batch1));
+            cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_2, batch2));
+            cluster.engines.get(NODE_3).handleNewBatch(new NewBatch<>(NODE_3, batch3));
+            cluster.networks.values().forEach(network ->
+                assertThat(network.firstProposal.await(timeSpan(3).seconds()).isSuccess())
+                    .as("local proposal emitted by %s", network.self).isTrue());
+            var proposed = cluster.getMessagesByType(Propose.class);
+            assertThat(proposed.stream().map(Propose::sender).distinct()).hasSize(3);
+            assertThat(proposed.stream().map(value -> value.value().id()).distinct()).hasSize(3);
             cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
-
-            cluster.deliverAllPendingMessages();
-            Thread.sleep(50);
+            cluster.networks.values().forEach(network ->
+                assertThat(network.firstVote.await(timeSpan(3).seconds()).isSuccess())
+                    .as("initial vote emitted by %s", network.self).isTrue());
 
             // With no majority agreement, votes should be V0
-            var votes = cluster.getMessagesByType(VoteRound1.class);
+            var votes = cluster.getMessagesByType(VoteRound1.class).stream()
+                .filter(vote -> vote.phase().equals(Phase.ZERO) && vote.round() == 0).toList();
+            assertThat(votes.stream().map(VoteRound1::sender).distinct()).hasSize(3);
             assertThat(votes).allMatch(v -> v.stateValue() == StateValue.V0);
         }
 
@@ -216,10 +225,9 @@ class RabiaConsensusIntegrationTest {
 
             var outcome = phaseData.processRound2Completion(NODE_1, 2, 2);
 
-            assertThat(outcome).isInstanceOf(Round2Outcome.Decided.class);
-            var decision = ((Round2Outcome.Decided<TestCommand>) outcome).decision();
-            // Phase 1 is odd, so coin flip should be V1
-            assertThat(decision.stateValue()).isEqualTo(StateValue.V1);
+            assertThat(outcome).isInstanceOf(Round2Outcome.CarryForward.class);
+            assertThat(outcome.lockedValue()).isEqualTo(StateValue.V1);
+            assertThat(phaseData.isDecided()).isFalse();
         }
 
         @Test
@@ -596,6 +604,8 @@ class RabiaConsensusIntegrationTest {
     static class SimulatedNetwork implements ClusterNetwork {
         private final NodeId self;
         private final ClusterSimulator cluster;
+        private final Promise<Unit> firstProposal = Promise.promise();
+        private final Promise<Unit> firstVote = Promise.promise();
         private final List<ProtocolMessage> allMessages = new CopyOnWriteArrayList<>();
         private final List<ProtocolMessage> pendingMessages = new CopyOnWriteArrayList<>();
 
@@ -606,16 +616,23 @@ class RabiaConsensusIntegrationTest {
 
         @Override
         public <M extends ProtocolMessage> Unit broadcast(M message) {
+            return recordMessage(message);
+        }
+
+        private Unit recordMessage(ProtocolMessage message) {
             allMessages.add(message);
             pendingMessages.add(message);
+            switch (message) {
+                case Propose<?> ignored -> firstProposal.succeed(Unit.unit());
+                case VoteRound1 ignored -> firstVote.succeed(Unit.unit());
+                default -> {}
+            }
             return Unit.unit();
         }
 
         @Override
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            allMessages.add(message);
-            pendingMessages.add(message);
-            return Unit.unit();
+            return recordMessage(message);
         }
 
         @Override
@@ -740,7 +757,8 @@ class RabiaConsensusIntegrationTest {
 
         @Override
         public List<NodeId> topology() {
-            return List.of();
+            return java.util.stream.IntStream.rangeClosed(1, clusterSize)
+                       .mapToObj(index -> nodeId("node-" + index).unwrap()).toList();
         }
     }
 

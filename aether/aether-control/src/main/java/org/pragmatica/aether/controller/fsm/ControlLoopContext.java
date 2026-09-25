@@ -14,7 +14,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 
+import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ClusterController.ArtifactLoad;
@@ -41,6 +43,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
 
@@ -65,6 +68,7 @@ public final class ControlLoopContext {
     private final ControlLoopState.Dormant dormant;
     private final ControlLoopState.Stopped stopped;
     private final AtomicReference<ControllerConfig> configRef;
+    private final AtomicReference<Predicate<NodeId>> eligibleProducer = new AtomicReference<>(_ -> false);
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
     /// The last `SliceTargetValue` observed for each registered slice, keyed by the slice's
     /// artifact at that value's version. This holds the whole durable record and not a projection of
@@ -191,8 +195,14 @@ public final class ControlLoopContext {
     @Contract
     public void onNodeDeparted(NodeId departed, List<NodeId> newTopology) {
         topology.set(newTopology);
+        removeNodeMetrics(departed);
+    }
+
+    public org.pragmatica.lang.Unit removeNodeMetrics(NodeId departed) {
         perNodeSliceMetrics.values().forEach(byNode -> byNode.remove(departed));
         communitySnapshotStore.remove(departed.id());
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     public Map<Artifact, ClusterController.Blueprint> blueprintsSnapshot() {
@@ -324,14 +334,60 @@ public final class ControlLoopContext {
                                    .noneMatch(ts -> (now - ts) < cooldownMs);
     }
 
+    public Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
+        eligibleProducer.set(isEligible);
+
+        return Unit.unit();
+    }
+
     @Contract
     public void storeCommunitySnapshot(CommunityMetricsSnapshot snapshot) {
-        communitySnapshotStore.put(snapshot.governorId().id(),
-                                   snapshot);
-        ingestSliceMetrics(snapshot);
-        log.debug("Stored community metrics snapshot from {} ({} slices)",
-                  snapshot.governorId().id(),
-                  snapshot.sliceMetrics().size());
+        if (snapshot.memberCount() != 1 || !isFreshSource(snapshot)) {
+            return;
+        }
+
+        communitySnapshotStore.compute(snapshot.governorId().id(),
+                                       (_, previous) -> acceptSourceSnapshot(snapshot, Option.option(previous)));
+    }
+
+    private CommunityMetricsSnapshot acceptSourceSnapshot(CommunityMetricsSnapshot incoming,
+                                                          Option<CommunityMetricsSnapshot> previous) {
+        return previous.filter(prior -> !isNewerSource(incoming, prior))
+                       .or(() -> recordSourceSnapshot(incoming));
+    }
+
+    private boolean isNewerSource(CommunityMetricsSnapshot incoming, CommunityMetricsSnapshot previous) {
+        return incoming.incarnation() > previous.incarnation() || incoming.incarnation() == previous.incarnation() && incoming.sequence() > previous.sequence();
+    }
+
+    private CommunityMetricsSnapshot recordSourceSnapshot(CommunityMetricsSnapshot incoming) {
+        perNodeSliceMetrics.values().forEach(byNode -> byNode.remove(incoming.governorId()));
+        ingestSliceMetrics(incoming);
+
+        return incoming;
+    }
+
+    private boolean isFreshSource(CommunityMetricsSnapshot snapshot) {
+        return eligibleProducer.get()
+                               .test(snapshot.governorId()) && MetricObservation.isTimestampFresh(snapshot.timestampMs(),
+                                                                                                  nowMs());
+    }
+
+    boolean hasMetricCoverage(Artifact artifact) {
+        return sliceStates.entrySet()
+                          .stream()
+                          .filter(entry -> entry.getKey()
+                                                .artifact()
+                                                .equals(artifact) && entry.getValue() == SliceState.ACTIVE)
+                          .allMatch(entry -> hasFreshSource(entry.getKey().nodeId()));
+    }
+
+    private boolean hasFreshSource(NodeId producer) {
+        return producer.equals(self)
+               ? invocationMetricsCollector.isPresent()
+               : Option.option(communitySnapshotStore.get(producer.id()))
+                       .filter(this::isFreshSource)
+                       .isPresent();
     }
 
     private void ingestSliceMetrics(CommunityMetricsSnapshot snapshot) {
@@ -349,7 +405,11 @@ public final class ControlLoopContext {
     }
 
     public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
-        return Map.copyOf(communitySnapshotStore);
+        return communitySnapshotStore.entrySet()
+                                     .stream()
+                                     .filter(entry -> isFreshSource(entry.getValue()))
+                                     .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                                                            Map.Entry::getValue));
     }
 
     public AtomicLong quorumSequence() {
@@ -420,14 +480,29 @@ public final class ControlLoopContext {
     private ArtifactLoad computeArtifactLoad(Artifact artifact) {
         var sample = sampleArtifactMetrics(artifact);
         var loadFactor = artifactLoadFactors.computeIfAbsent(artifact, _ -> newLoadFactor());
+        var covered = hasMetricCoverage(artifact);
 
-        sample.forEach(loadFactor::recordSample);
+        if (covered) {
+            sample.forEach(loadFactor::recordSample);
+        }
+
         var result = loadFactor.computeWithCurrentValues(sample);
 
         recordBaseline(artifact, result.compositeScore(), result.canScale(), loadFactor.isErrorRateHigh());
+        if (!covered) {
+            var instances = artifactInstances(artifact);
+
+            recordDecision(artifact,
+                           Outcome.HELD,
+                           Guard.METRICS_INCOMPLETE,
+                           result.compositeScore(),
+                           instances,
+                           instances,
+                           instances);
+        }
 
         return ArtifactLoad.artifactLoad(result.compositeScore(),
-                                         result.canScale(),
+                                         result.canScale() && covered,
                                          loadFactor.isErrorRateHigh(),
                                          result.components());
     }
@@ -454,7 +529,11 @@ public final class ControlLoopContext {
     private List<PerSliceMetrics> collectSliceSources(Artifact artifact) {
         var sources = new ArrayList<>(ownSliceMetrics(artifact));
 
-        Option.option(perNodeSliceMetrics.get(artifact)).onPresent(remote -> sources.addAll(remote.values()));
+        Option.option(perNodeSliceMetrics.get(artifact)).onPresent(remote -> remote.entrySet()
+                                                                                   .stream()
+                                                                                   .filter(entry -> hasFreshSource(entry.getKey()))
+                                                                                   .map(Map.Entry::getValue)
+                                                                                   .forEach(sources::add));
 
         return sources;
     }

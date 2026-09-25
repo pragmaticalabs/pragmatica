@@ -2,32 +2,44 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.metrics;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.Map;
+
 import org.pragmatica.aether.metrics.consensus.RabiaMetrics;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
 
-import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
-class DerivedMetricsCalculatorTest {
 
+class DerivedMetricsCalculatorTest {
     private DerivedMetricsCalculator calculator;
 
-    private ComprehensiveSnapshot snapshot(long timestamp, double cpu, long heapUsed, long heapMax,
-                                           long totalInvocations, long failedInvocations,
+    private ComprehensiveSnapshot snapshot(long timestamp,
+                                           double cpu,
+                                           long heapUsed,
+                                           long heapMax,
+                                           long totalInvocations,
+                                           long failedInvocations,
                                            double avgLatencyMs) {
-        return new ComprehensiveSnapshot(timestamp, cpu, heapUsed, heapMax,
-            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, RabiaMetrics.EMPTY,
-            totalInvocations, totalInvocations - failedInvocations, failedInvocations,
-            avgLatencyMs, Map.of());
+        return new ComprehensiveSnapshot(timestamp,
+                                         cpu,
+                                         heapUsed,
+                                         heapMax,
+                                         GCMetrics.EMPTY,
+                                         EventLoopMetrics.EMPTY,
+                                         RabiaMetrics.EMPTY,
+                                         totalInvocations,
+                                         totalInvocations - failedInvocations,
+                                         failedInvocations,
+                                         avgLatencyMs,
+                                         Map.of());
     }
 
     @Nested
@@ -53,7 +65,6 @@ class DerivedMetricsCalculatorTest {
         @Test
         void addSample_singleSample_updatesCurrent() {
             calculator.addSample(snapshot(1000L, 0.5, 500, 1000, 100, 5, 10.0));
-
             var current = calculator.current();
 
             assertThat(current).isNotEqualTo(DerivedMetrics.EMPTY);
@@ -64,13 +75,11 @@ class DerivedMetricsCalculatorTest {
         void addSample_multipleSamples_updatesRates() {
             calculator.addSample(snapshot(1000L, 0.3, 500, 1000, 50, 2, 5.0));
             calculator.addSample(snapshot(2000L, 0.5, 600, 1000, 80, 4, 8.0));
-
             var current = calculator.current();
-
             // requestRate = totalInvocations / windowSeconds
             // windowSeconds = max(1.0, (2000-1000)/1000.0) = 1.0
-            // totalInvocations = 50 + 80 = 130
-            assertThat(current.requestRate()).isCloseTo(130.0, within(0.1));
+            // Counter delta = 80 - 50 = 30
+            assertThat(current.requestRate()).isCloseTo(30.0, within(0.1));
         }
     }
 
@@ -85,17 +94,21 @@ class DerivedMetricsCalculatorTest {
         void percentiles_calculatedFromSamples() {
             // Add samples with varying latencies
             for (int i = 0; i < 10; i++) {
-                calculator.addSample(snapshot(1000L + i * 1000L, 0.5, 500, 1000,
-                    100, 5, (i + 1) * 10.0));
+                calculator.addSample(snapshot(1000L + i * 1000L,
+                                              0.5,
+                                              500,
+                                              1000,
+                                              (i + 1) * 100,
+                                              (i + 1) * 5,
+                                              (i + 1) * 10.0));
             }
 
             var current = calculator.current();
-
             // With 10 samples latencies: 10, 20, 30, ..., 100
             // p50 should be around 50, p95 near 100, p99 near 100
-            assertThat(current.latencyP50()).isGreaterThan(0.0);
-            assertThat(current.latencyP95()).isGreaterThanOrEqualTo(current.latencyP50());
-            assertThat(current.latencyP99()).isGreaterThanOrEqualTo(current.latencyP95());
+            assertThat(current.intervalMeanLatencyP50()).isGreaterThan(0.0);
+            assertThat(current.intervalMeanLatencyP95()).isGreaterThanOrEqualTo(current.intervalMeanLatencyP50());
+            assertThat(current.intervalMeanLatencyP99()).isGreaterThanOrEqualTo(current.intervalMeanLatencyP95());
         }
     }
 
@@ -123,15 +136,14 @@ class DerivedMetricsCalculatorTest {
         void trends_with10OrMoreSamples_areCalculated() {
             // First 5: low CPU, low latency
             for (int i = 0; i < 5; i++) {
-                calculator.addSample(snapshot(1000L + i * 1000L, 0.2, 500, 1000, 100, 0, 5.0));
+                calculator.addSample(snapshot(1000L + i * 1000L, 0.2, 500, 1000, (i + 1) * 100, 0, 5.0));
             }
             // Second 5: high CPU, high latency
             for (int i = 5; i < 10; i++) {
-                calculator.addSample(snapshot(1000L + i * 1000L, 0.8, 500, 1000, 100, 10, 20.0));
+                calculator.addSample(snapshot(1000L + i * 1000L, 0.8, 500, 1000, (i + 1) * 100, (i - 4) * 10, 20.0));
             }
 
             var current = calculator.current();
-
             // CPU trending up: second half avg (0.8) - first half avg (0.2) = 0.6
             assertThat(current.cpuTrend()).isGreaterThan(0.0);
             // Latency trending up: second half avg (20) - first half avg (5) = 15
@@ -144,13 +156,10 @@ class DerivedMetricsCalculatorTest {
         @Test
         void windowEviction_exceedsWindowSize_evictsOldSamples() {
             var smallCalculator = DerivedMetricsCalculator.derivedMetricsCalculator(5);
-
             // Add 7 samples to exceed window of 5
             for (int i = 0; i < 7; i++) {
-                smallCalculator.addSample(snapshot(1000L + i * 1000L, 0.5, 500, 1000,
-                    100, 5, 10.0));
+                smallCalculator.addSample(snapshot(1000L + i * 1000L, 0.5, 500, 1000, 100, 5, 10.0));
             }
-
             // Derived metrics should only be based on the last 5 samples
             var current = smallCalculator.current();
 

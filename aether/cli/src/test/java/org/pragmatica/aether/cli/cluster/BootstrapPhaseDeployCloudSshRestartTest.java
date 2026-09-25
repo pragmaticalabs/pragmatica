@@ -168,7 +168,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                              Map.of("eu-1", source, "dc-1", legacyGateSshSource()),
                                                              runtimes,
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                             ops);
+                                                             ops, java.util.Map.of());
     }
 
     private static BootstrapContext contextWithRuntimeImage(SourceProfile source, String image) {

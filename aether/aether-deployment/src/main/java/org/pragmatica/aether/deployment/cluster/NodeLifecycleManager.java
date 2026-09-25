@@ -6,16 +6,19 @@ package org.pragmatica.aether.deployment.cluster;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
@@ -28,6 +31,11 @@ public interface NodeLifecycleManager {
     Promise<Unit> terminateNode(NodeId nodeId);
     Promise<Unit> restartNode(NodeId nodeId);
     boolean isCloudManaged();
+
+    /// Retry accounting for durable no-create evidence after its placement operation consumed it.
+    default Promise<Unit> reconcileRefusals() {
+        return Promise.unitPromise();
+    }
 
     /// RFC-0017 stage 5 — the worker reconciler's ACTUAL-inventory read: instances matching the
     /// upper-layer tag filter (providers translate key conventions at their boundary, see
@@ -45,8 +53,47 @@ public interface NodeLifecycleManager {
         return EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise();
     }
 
+    default Promise<List<InstanceInfo>> listInstances(Map<String, String> filter,
+                                                      SourceName source,
+                                                      String expectedBinding) {
+        return EnvironmentError.operationNotSupported("Bound source fleet inventory unavailable").promise();
+    }
+
+    default Promise<InstanceInfo> provisionNode(ProvisionSpec spec, String expectedBinding) {
+        return EnvironmentError.operationNotSupported("Bound source provision unavailable").promise();
+    }
+
+    default Promise<Unit> terminateNode(NodeId node, SourceName source, String expectedBinding) {
+        return EnvironmentError.operationNotSupported("Bound source termination unavailable").promise();
+    }
+
+    default Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source, String expectedBinding) {
+        return EnvironmentError.operationNotSupported("Bound source inventory unavailable").promise();
+    }
+
+    default Result<String> sourceBinding(SourceName source) {
+        return EnvironmentError.operationNotSupported("Source identity binding unavailable").result();
+    }
+
     @Contract
     default void resetProvisionerState(Option<ClusterName> clusterName) {}
+
+    /// Source-aware construction. Node identity resolves only through authoritative placement,
+    /// while provisioning keeps the exact operation context supplied by the reconciler.
+    static NodeLifecycleManager nodeLifecycleManager(SourceComputeRegistry registry,
+                                                     Function<NodeId, Result<SourceName>> sourceForNode,
+                                                     Option<ClusterName> clusterName,
+                                                     Option<Integer> maxNodes) {
+        return new SourceNodeLifecycleManager(registry, sourceForNode, clusterName, maxNodes);
+    }
+
+    default Promise<Unit> terminateNode(NodeId nodeId, SourceName source) {
+        return terminateNode(nodeId);
+    }
+
+    default Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId, SourceName source) {
+        return instancesForNode(nodeId);
+    }
 
     /// Cap-less construction — no fleet bound is enforced. Retained for callers that provision
     /// against a non-cloud provider (Docker/forge), where an unbounded fleet is not a cost hazard.
@@ -270,5 +317,164 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
         log.warn("{} of {} skipped: {}", operation, nodeId.id(), reason);
 
         return EnvironmentError.operationNotSupported(operation + ": " + reason).promise();
+    }
+}
+
+/// Explicit source routing never probes other providers to locate an instance. A missing binding is
+/// a typed failure, not permission to act through the local node's account.
+record SourceNodeLifecycleManager(SourceComputeRegistry registry,
+                                  Function<NodeId, Result<SourceName>> sourceForNode,
+                                  Option<ClusterName> clusterName,
+                                  Option<Integer> maxNodes) implements NodeLifecycleManager {
+    @Override
+    public Result<String> sourceBinding(SourceName source) {
+        return registry.binding(source);
+    }
+
+    @Override
+    public Promise<InstanceInfo> provisionNode(ProvisionSpec spec, String expectedBinding) {
+        return forSource(spec.context().sourceName(),
+                         expectedBinding).async()
+                        .flatMap(manager -> manager.provisionNode(spec));
+    }
+
+    @Override
+    public Promise<Unit> terminateNode(NodeId node, SourceName source, String expectedBinding) {
+        return forSource(source, expectedBinding).async()
+                        .flatMap(manager -> manager.terminateNode(node));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source, String expectedBinding) {
+        return forSource(source, expectedBinding).async()
+                        .flatMap(manager -> manager.instancesForNode(node));
+    }
+
+    private Result<NodeLifecycleManager> forSource(SourceName source, String expectedBinding) {
+        return registry.resolve(source, expectedBinding)
+                       .map(provider -> NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
+                                                                                  clusterName,
+                                                                                  maxNodes));
+    }
+
+    private Result<NodeLifecycleManager> forSource(SourceName source) {
+        return registry.resolve(source)
+                       .map(provider -> NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
+                                                                                  clusterName,
+                                                                                  maxNodes));
+    }
+
+    private Result<NodeLifecycleManager> forNode(NodeId nodeId) {
+        return sourceForNode.apply(nodeId)
+                            .flatMap(this::forSource);
+    }
+
+    @Override
+    public Promise<ActionResult> executeAction(NodeAction action) {
+        return switch (action) {
+            case NodeAction.StartNode start -> provisionNode(start.spec()).map(ActionResult.NodeStarted::new);
+            case NodeAction.StopNode stop -> terminateNode(stop.nodeId()).map(_ -> new ActionResult.NodeStopped(stop.nodeId()));
+            case NodeAction.RestartNode restart -> restartNode(restart.nodeId()).map(_ -> new ActionResult.NodeRestarted(restart.nodeId()));
+            case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices").promise();
+        };
+    }
+
+    @Override
+    public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
+        return forSource(spec.context().sourceName()).async()
+                        .flatMap(manager -> manager.provisionNode(spec));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+        return Option.option(tagFilter.get("aether.source"))
+                     .orElse(() -> Option.option(tagFilter.get("aether-source")))
+                     .fold(() -> listFleet(tagFilter),
+                           source -> SourceName.sourceName(source)
+                                               .async()
+                                               .flatMap(name -> listSource(name, tagFilter)));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter,
+                                                     SourceName source,
+                                                     String expectedBinding) {
+        return forSource(source, expectedBinding).async()
+                        .flatMap(manager -> manager.listInstances(scopedFilter(source, filter)));
+    }
+
+    private Promise<List<InstanceInfo>> listSource(SourceName source, Map<String, String> tagFilter) {
+        return forSource(source).async()
+                        .flatMap(manager -> manager.listInstances(scopedFilter(source, tagFilter)));
+    }
+
+    private Map<String, String> scopedFilter(SourceName source, Map<String, String> tagFilter) {
+        var scoped = new java.util.HashMap<>(tagFilter);
+        var key = tagFilter.keySet().stream().anyMatch(name -> name.startsWith("aether-"))
+                  ? "aether-source"
+                  : "aether.source";
+
+        scoped.put(key, source.value());
+
+        return Map.copyOf(scoped);
+    }
+
+    private Promise<List<InstanceInfo>> listFleet(Map<String, String> tagFilter) {
+        if (!tagFilter.containsKey("aether.cluster") && !tagFilter.containsKey("aether-cluster")) {
+            return EnvironmentError.operationNotSupported("Fleet inventory requires explicit cluster scope").promise();
+        }
+
+        return registry.sources(tagFilter)
+                       .async()
+                       .flatMap(sources -> collectFleet(sources, tagFilter));
+    }
+
+    private Promise<List<InstanceInfo>> collectFleet(List<SourceName> sources, Map<String, String> tagFilter) {
+        return Promise.allOf(sources.stream().map(source -> listSource(source, tagFilter)).toList())
+                      .flatMap(results -> Result.allOf(results).async())
+                      .map(listings -> listings.stream()
+                                               .flatMap(List::stream)
+                                               .toList());
+    }
+
+    @Override
+    @org.pragmatica.lang.Contract
+    public void resetProvisionerState(Option<ClusterName> clusterName) {
+        registry.resetProvisionerState(clusterName);
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
+        return forNode(nodeId).async()
+                      .flatMap(manager -> manager.instancesForNode(nodeId));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId, SourceName source) {
+        return forSource(source).async()
+                        .flatMap(manager -> manager.instancesForNode(nodeId));
+    }
+
+    @Override
+    public Promise<Unit> terminateNode(NodeId nodeId) {
+        return forNode(nodeId).async()
+                      .flatMap(manager -> manager.terminateNode(nodeId));
+    }
+
+    @Override
+    public Promise<Unit> terminateNode(NodeId nodeId, SourceName source) {
+        return forSource(source).async()
+                        .flatMap(manager -> manager.terminateNode(nodeId));
+    }
+
+    @Override
+    public Promise<Unit> restartNode(NodeId nodeId) {
+        return forNode(nodeId).async()
+                      .flatMap(manager -> manager.restartNode(nodeId));
+    }
+
+    @Override
+    public boolean isCloudManaged() {
+        return registry.isAvailable();
     }
 }

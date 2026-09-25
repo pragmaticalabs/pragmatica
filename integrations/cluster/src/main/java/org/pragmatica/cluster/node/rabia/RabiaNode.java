@@ -12,6 +12,9 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import org.pragmatica.consensus.rabia.VoterConfiguration;
+import org.pragmatica.consensus.rabia.ClusterConfig;
+import org.pragmatica.consensus.rabia.ReconfigurationError;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
@@ -49,6 +52,11 @@ import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRejected;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationTransfer;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationInstalled;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
@@ -142,6 +150,54 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// implementations without a Rabia engine.
     @Contract
     default void onStateRestored(Runnable listener) {}
+
+    default Result<Unit> configurePassiveClient() {
+        return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
+    }
+
+    default org.pragmatica.lang.Unit authorizePassiveClient() {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    default boolean isPassiveClientReady() {
+        return false;
+    }
+
+    default Result<Unit> installPassiveCoreDirectory(List<NodeId> members) {
+        return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
+    }
+
+    default java.util.Set<NodeId> verifiedVoterHistoryIds() {
+        return java.util.Set.of();
+    }
+
+    default Result<Unit> initializeVoters(VoterConfiguration configuration) {
+        return ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.result();
+    }
+
+    default Option<VoterConfiguration> retirementSafeVoters() {
+        return Option.none();
+    }
+
+    default Option<VoterConfiguration> genesisVoters() {
+        return Option.none();
+    }
+
+    default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+        return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
+    }
+
+    default Option<VoterConfiguration> voterConfiguration() {
+        return Option.none();
+    }
+
+    default org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    default Promise<Unit> reconfigure(ClusterConfig configuration) {
+        return ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.promise();
+    }
 
     /// Get the route entries for RabiaNode's internal components.
     /// These should be combined with other entries when building the final router.
@@ -432,6 +488,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                           persistence,
                                           RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
                                           consensusBridge);
+
+        network.setProposalRelayMembership(id -> consensus.voterConfiguration()
+                                                          .map(voters -> voters.contains(id))
+                                                          .or(false));
         // Wire the dedicated quorum-presence channel: TopologyObserver delivers the quorum
         // established/lost ClusterStateNotification edge to RabiaEngine ONLY, via this private
         // single-subscriber router (NOT the shared bus). Built here because `consensus` only
@@ -473,6 +533,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             leaderManager = LeaderManager.leaderManager(config.topology().self(),
                                                         delegateRouter);
         }
+
+        consensus.onVoterConfiguration(leaderManager::installVoterConfiguration);
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class).route(route(SetClusterSize.class,
                                                                                                  topologyManager::handleSetClusterSize));
@@ -546,7 +608,17 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                      route(Decision.class, consensus::processDecision),
                                                                      route(SyncResponse.class,
                                                                            (SyncResponse r) -> consensus.processSyncResponse(r)));
-        var asyncRoutes = SealedBuilder.from(Asynchronous.class).route(route(SyncRequest.class,
+        var asyncRoutes = SealedBuilder.from(Asynchronous.class).route(route(SyncRejected.class,
+                                                                             consensus::handleSyncRejected),
+                                                                       route(RoundRequest.class,
+                                                                             consensus::handleRoundRequest),
+                                                                       route(ReconfigurationRequest.class,
+                                                                             consensus::reconfigurationRequest),
+                                                                       route(ConfigurationTransfer.class,
+                                                                             consensus::configurationTransfer),
+                                                                       route(ConfigurationInstalled.class,
+                                                                             consensus::configurationInstalled),
+                                                                       route(SyncRequest.class,
                                                                              consensus::handleSyncRequest),
                                                                        route(NewBatch.class,
                                                                              (NewBatch b) -> consensus.handleNewBatch(b)));
@@ -639,6 +711,70 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Contract
             public void onStateRestored(Runnable listener) {
                 consensus().onStateRestored(listener);
+            }
+
+            @Override
+            public Result<Unit> configurePassiveClient() {
+                return consensus().configurePassiveClient();
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit authorizePassiveClient() {
+                consensus().authorizePassiveClient();
+
+                return org.pragmatica.lang.Unit.unit();
+            }
+
+            @Override
+            public boolean isPassiveClientReady() {
+                return consensus().isPassiveClientReady();
+            }
+
+            @Override
+            public Result<Unit> installPassiveCoreDirectory(List<NodeId> members) {
+                return consensus().installPassiveCoreDirectory(members, leaderManager()::installPassiveCoreDirectory);
+            }
+
+            @Override
+            public java.util.Set<NodeId> verifiedVoterHistoryIds() {
+                return consensus().verifiedVoterHistoryIds();
+            }
+
+            @Override
+            public Result<Unit> initializeVoters(VoterConfiguration configuration) {
+                return consensus().initializeVoters(configuration);
+            }
+
+            @Override
+            public Option<VoterConfiguration> retirementSafeVoters() {
+                return consensus().retirementSafeVoters();
+            }
+
+            @Override
+            public Option<VoterConfiguration> genesisVoters() {
+                return consensus().genesisVoters();
+            }
+
+            @Override
+            public org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+                return consensus().voterReconfigurationStatus();
+            }
+
+            @Override
+            public Option<VoterConfiguration> voterConfiguration() {
+                return consensus().voterConfiguration();
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
+                consensus().onVoterConfiguration(listener);
+
+                return org.pragmatica.lang.Unit.unit();
+            }
+
+            @Override
+            public Promise<Unit> reconfigure(ClusterConfig configuration) {
+                return consensus().reconfigure(configuration);
             }
 
             @Override

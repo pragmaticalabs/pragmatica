@@ -1209,10 +1209,11 @@ explicitly on any route where the distinction matters.
 
 Get cluster-wide metrics including per-node load and deployment metrics.
 
-**Scope: cluster-wide, despite the route's `LOCAL` routing declaration** — `LOCAL` governs
-routing (no forwarding), not response scope. Any node answers with a `load` entry for **every**
-node it knows, so fetch this ONCE and select nodes by id; polling it per node returns the same
-cluster-wide map N times (the #591 instrument mis-read exactly this and had to hard-fail on it).
+**Scope: cluster-wide; routing: `AnyCoreNode`.** Core nodes answer from their replicated metrics
+view, and workers forward this request to a core. A worker receiving an already-forwarded request
+refuses the incomplete scope. Fetch this once and select nodes by id; polling every node does not
+provide independent node-local measurements. Entries remain subject to metrics freshness and
+coverage, so cluster-wide scope does not guarantee a fresh sample from every member.
 
 **Response:**
 ```json
@@ -1252,6 +1253,10 @@ The response has two halves with different time semantics, deliberately:
   counts; `leaderId` is absent until a leader is known.
 
 **Response:**
+The `intervalMeanLatencyP*` fields summarize the distribution of interval means, not
+individual request latencies. `errorRate` is the failed/completed invocation ratio;
+`requestRate` and `gcRate` are events per second derived from cumulative-counter differences.
+
 ```json
 {
   "minuteTimestamp": 1704067200000,
@@ -1261,9 +1266,9 @@ The response has two halves with different time semantics, deliberately:
   "avgLatencyMs": 12.3,
   "totalInvocations": 15000,
   "totalGcPauseMs": 50,
-  "latencyP50": 8.0,
-  "latencyP95": 25.0,
-  "latencyP99": 80.0,
+  "intervalMeanLatencyP50": 8.0,
+  "intervalMeanLatencyP95": 25.0,
+  "intervalMeanLatencyP99": 80.0,
   "errorRate": 0.005,
   "eventCount": 120,
   "sampleCount": 60,
@@ -1293,9 +1298,9 @@ Get derived (computed) metrics including trends, saturation, and health score.
   "requestRate": 250.0,
   "errorRate": 0.005,
   "gcRate": 0.8,
-  "latencyP50": 8.0,
-  "latencyP95": 25.0,
-  "latencyP99": 80.0,
+  "intervalMeanLatencyP50": 8.0,
+  "intervalMeanLatencyP95": 25.0,
+  "intervalMeanLatencyP99": 80.0,
   "eventLoopSaturation": 0.1,
   "heapSaturation": 0.6,
   "cpuTrend": 0.02,
@@ -1736,9 +1741,9 @@ Export TTM training data (last 120 minute-aggregated samples).
     "latencyMs": 12.3,
     "invocations": 15000,
     "gcPauseMs": 50,
-    "latencyP50": 8.0,
-    "latencyP95": 25.0,
-    "latencyP99": 80.0,
+    "intervalMeanLatencyP50": 8.0,
+    "intervalMeanLatencyP95": 25.0,
+    "intervalMeanLatencyP99": 80.0,
     "errorRate": 0.005,
     "eventCount": 120
   }
@@ -4391,31 +4396,14 @@ Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command chann
 
 ### POST /api/v1/nodes/promote/{id}
 
-Promote a node to a new role (CORE or WORKER) by writing a fresh `ActivationDirective` for the node through consensus. The downstream `ClusterDeploymentManager` consumes the resulting `ActivationDirectivePutReceived` event and drives the role-aware node machinery (`ForwardingClusterNode` / `SwitchableClusterNode`) to align runtime behavior to the new role.
+This compatibility endpoint acknowledges an existing immutable role. It never changes an
+activation directive or writes consensus state. Accepted `targetRole` values are `CORE`, `WORKER`
+and `SPOT` (case-insensitive). A different role returns HTTP 409 `IMMUTABLE_ROLE`; an unknown
+node returns 404. Invalid input returns 400. Route target is `LEADER` and authorization is ADMIN.
 
-Route target is `LEADER` — the management plane forwards the request to the consensus writer automatically when the caller hits a follower. Requests with an unsupported `targetRole`, a missing body, or an unparseable `{id}` segment fail with a 400-style validation error.
-
-**Authorization:** ADMIN (role transitions are a topology operation).
-
-**Request:**
-```json
-{
-  "targetRole": "WORKER"
-}
-```
-
-Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promoting a node to the role it already carries is a no-op and reports `success=true` with `previousRole == newRole` without emitting a consensus write.
-
-**Response:**
-```json
-{
-  "success": true,
-  "nodeId": "node-2",
-  "previousRole": "CORE",
-  "newRole": "WORKER",
-  "message": "Promoted node from CORE to WORKER"
-}
-```
+For a worker requested as `WORKER`, the response has `success=true`, `previousRole="WORKER"`
+and `newRole="WORKER"`. To change a fleet's role mix, provision a new node with the required role
+and drain the old node through its existing lifecycle.
 
 ## Scheduled Tasks
 
@@ -6089,3 +6077,17 @@ Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 R
 ### Multipart File Upload
 
 The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
+
+### Voter handoff diagnostics
+
+The node status response includes `voterReconfiguration`: installed epoch and voters, target voters,
+optional barrier slot, stage, persisted checkpoint/installation certificate witness counts, and a
+failure description. Stages distinguish unavailable, stable, requested, checkpoint collection,
+installation pending and complete. Counts describe certified evidence, not transient network acknowledgements.
+A state-transfer admission failure remains visible while the stage is stalled; it is not reported
+as a successful reconfiguration. Workers report their local engine state, not a cluster-wide guarantee.
+
+Dashboard WebSocket connections to a worker receive `INCOMPLETE_CLUSTER_VIEW` with
+`completeClusterView=false` and close immediately after upgrade. Connect the dashboard to a core.
+Worker HTTP reads of `/api/v1/metrics`, `/api/v1/metrics/history` and `/api/v1/nodes/metrics`
+are forwarded to a core; local diagnostics retain their explicitly local scope.

@@ -275,6 +275,10 @@ class RabiaSyncAdoptionLiveResponderTest {
     /// Persistence that records nothing: `load()` is always empty, so only the LIVE phase can floor.
     private static RabiaPersistence<TestCommand> neverPersists() {
         record never() implements RabiaPersistence<TestCommand> {
+            @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> append(RabiaProtocolMessage message) {
+                return org.pragmatica.lang.Result.success(org.pragmatica.lang.Unit.unit());
+            }
+
             @Override
             public Result<Unit> save(StateMachine<TestCommand> stateMachine,
                                      Phase lastCommittedPhase,

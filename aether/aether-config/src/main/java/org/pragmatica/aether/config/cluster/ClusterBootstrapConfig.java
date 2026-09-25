@@ -23,8 +23,10 @@ public record ClusterBootstrapConfig(@ConfigKeyLive("#693: parsed but never read
                                      Map<String, SourceProfile> sources,
                                      Map<String, RuntimeProfile> runtimes,
                                      InfrastructureConfig infrastructure,
-                                     OperationsConfig operations) {
+                                     OperationsConfig operations,
+                                     Map<String, CommunityPlacement> communities) {
     public ClusterBootstrapConfig {
+        communities = Map.copyOf(communities);
         sources = Map.copyOf(sources);
         runtimes = Map.copyOf(runtimes);
     }
@@ -35,14 +37,16 @@ public record ClusterBootstrapConfig(@ConfigKeyLive("#693: parsed but never read
                                                                 Map<String, SourceProfile> sources,
                                                                 Map<String, RuntimeProfile> runtimes,
                                                                 InfrastructureConfig infrastructure,
-                                                                OperationsConfig operations) {
+                                                                OperationsConfig operations,
+                                                                Map<String, CommunityPlacement> communities) {
         return new ClusterBootstrapConfig(configVersion,
                                           cluster,
                                           coreTopology,
                                           sources,
                                           runtimes,
                                           infrastructure,
-                                          operations);
+                                          operations,
+                                          communities);
     }
 
     public Result<ClusterBootstrapConfig> withClusterName(String newName) {
@@ -53,7 +57,8 @@ public record ClusterBootstrapConfig(@ConfigKeyLive("#693: parsed but never read
                                                                  sources,
                                                                  runtimes,
                                                                  infrastructure,
-                                                                 operations));
+                                                                 operations,
+                                                                 communities));
     }
 
     public int derivedCoreCount() {

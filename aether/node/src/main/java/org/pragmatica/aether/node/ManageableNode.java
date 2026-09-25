@@ -66,6 +66,25 @@ import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 
 public interface ManageableNode {
     NodeId self();
+
+    default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+        return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
+    }
+
+    /// Workers retain a scoped committed projection and must forward cluster-wide reads.
+    default boolean hasCompleteClusterView() {
+        return coreNodeIds().contains(self());
+    }
+
+    /// Current core routing candidates, excluding worker entries in bootstrap seeds.
+    default Set<NodeId> coreNodeIds() {
+        return topologyConfig().coreNodes()
+                             .stream()
+                             .filter(info -> "core".equalsIgnoreCase(info.labels().getOrDefault("role", "core")))
+                             .map(org.pragmatica.consensus.net.NodeInfo::id)
+                             .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
     KVStore<AetherKey, AetherValue> kvStore();
     SliceStore sliceStore();
     ClusterSyncCollector metricsCollector();

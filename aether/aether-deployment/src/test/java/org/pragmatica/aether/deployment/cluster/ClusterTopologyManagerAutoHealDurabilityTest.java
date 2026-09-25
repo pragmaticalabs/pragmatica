@@ -72,6 +72,8 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
     void setUp() {
         var router = MessageRouter.mutable();
         kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
         commandApplier = commands -> Promise.success(kvStore.<Object>process(kvStore.createBatch(commands)));
 
         ctmA = newCtm();
@@ -96,7 +98,7 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
         var observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
 
-        return ClusterTopologyManager.clusterTopologyManager(observer,
+        var manager = ClusterTopologyManager.clusterTopologyManager(observer,
                                                              new NoOpLifecycleManager(),
                                                              autoHeal,
                                                              DeploymentMap.deploymentMap(),
@@ -109,6 +111,10 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
                                                              Option::none,
                                                              autoHealStateReader,
                                                              MembershipLiveness.UNWIRED);
+        manager.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
+            () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)), kvStore::get, commandApplier));
+        manager.activate();
+        return manager;
     }
 
     /// Condition 1 — a fresh/empty KV (no operator has ever touched the flag; also the state of
@@ -175,14 +181,10 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
 
         var staleCtm = newCtm(() -> Option.some(AutoHealStateValue.autoHealStateValue(true, "stale-local-view")));
 
-        var priorState = staleCtm.setAutoHealEnabled(true, "operator: redundant per its stale view").await().unwrap();
+        var outcome = staleCtm.setAutoHealEnabled(true, "operator: redundant per its stale view").await();
+        assertThat(outcome.isFailure()).isTrue();
+        assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap().enabled()).isFalse();
 
-        assertThat(priorState).as("prior value as THIS NODE saw it — stale, not the durable truth").isTrue();
-        assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class)
-                          .map(AutoHealStateValue::enabled)
-                          .or(true))
-                .as("the Put was issued anyway — a stale equality match must never skip the write")
-                .isTrue();
     }
 
     private static MessageRouter.MutableRouter quietRouter() {

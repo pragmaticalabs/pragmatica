@@ -66,7 +66,7 @@ class ApplyOrchestratorTest {
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
             infrastructureConfig(NetworkingType.MANUAL),
             defaultOperationsConfig()
-        );
+        , java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig forgeConfig(int coreCount) {
@@ -81,7 +81,7 @@ class ApplyOrchestratorTest {
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
             infrastructureConfig(NetworkingType.MANUAL),
             defaultOperationsConfig()
-        );
+        , java.util.Map.of());
     }
 
     @Nested

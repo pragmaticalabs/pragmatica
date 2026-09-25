@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 /// Covers `POST /api/nodes/promote/{id}` (P-NEW-E, 2026-05-21).
 /// Validates request-body parsing, target-role normalisation, no-op detection,
-/// and consensus-write delivery for the new node-role promotion endpoint.
+/// and immutable-role refusal without consensus writes.
 class NodeLifecycleRoutesPromoteTest {
 
     private static final NodeId TARGET = new NodeId("node-2");
@@ -38,6 +38,7 @@ class NodeLifecycleRoutesPromoteTest {
     private KVStore<AetherKey, AetherValue> kvStore;
     private List<KVCommand<AetherKey>> capturedCommands;
     private NodeLifecycleRoutes routes;
+    private final org.pragmatica.aether.deployment.membership.fsm.MembershipFsm fsm = org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.membershipFsm();
 
     @BeforeEach
     void setUp() {
@@ -63,9 +64,10 @@ class NodeLifecycleRoutesPromoteTest {
             new Class[]{ManageableNode.class},
             (_, method, args) -> switch (method.getName()) {
                 case "kvStore" -> kvStore;
+                case "membershipFsm" -> fsm;
                 case "apply" -> captureAndAck((List<KVCommand<AetherKey>>) args[0]);
                 case "route" -> null;
-                default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
+                default -> fail("Not implemented in test proxy: " + method.getName());
             }
         );
     }
@@ -118,54 +120,43 @@ class NodeLifecycleRoutesPromoteTest {
     }
 
     @Nested
-    class HappyPath {
-
+    class ImmutableRoles {
         @Test
-        void promote_coreToWorker_writesActivationDirective() {
-            var response = routes.promoteNode(TARGET.id(), new PromoteNodeRequest("WORKER"))
-                                  .onFailure(cause -> fail("Promote must succeed: " + cause.message()))
-                                  .await()
-                                  .or((PromoteNodeResponse) null);
-
-            assertThat(response).isNotNull();
-            assertThat(response.success()).isTrue();
-            assertThat(response.nodeId()).isEqualTo(TARGET.id());
-            assertThat(response.previousRole()).isEqualTo(ActivationDirectiveValue.CORE);
-            assertThat(response.newRole()).isEqualTo(ActivationDirectiveValue.WORKER);
-            assertThat(capturedCommands).hasSize(1);
-
-            var put = (KVCommand.Put<?, ?>) capturedCommands.getFirst();
-
-            assertThat(put.key()).isInstanceOf(ActivationDirectiveKey.class);
-            assertThat(((ActivationDirectiveKey) put.key()).nodeId()).isEqualTo(TARGET);
-            assertThat(put.value()).isEqualTo(new ActivationDirectiveValue(ActivationDirectiveValue.WORKER));
+        void workerToCoreAndCoreToWorkerAreRefusedWithoutWrites() {
+            for (var role : List.of("CORE", "WORKER", "SPOT")) {
+                kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(TARGET), new ActivationDirectiveValue(role)))));
+                var target = role.equals("CORE") ? "WORKER" : "CORE";
+                var result = routes.promoteNode(TARGET.id(), new PromoteNodeRequest(target)).await();
+                assertThat(result.isFailure()).isTrue();
+                result.onFailure(cause -> assertThat(cause.message()).contains("immutable"));
+                assertThat(capturedCommands).isEmpty();
+                assertThat(kvStore.get(ActivationDirectiveKey.activationDirectiveKey(TARGET)).unwrap()).isEqualTo(new ActivationDirectiveValue(role));
+            }
         }
 
         @Test
-        void promote_workerToCore_writesActivationDirective() {
-            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(TARGET),
-                                                 ActivationDirectiveValue.worker()))));
-
-            var response = routes.promoteNode(TARGET.id(), new PromoteNodeRequest("CORE"))
-                                  .onFailure(cause -> fail("Promote must succeed: " + cause.message()))
-                                  .await()
-                                  .or((PromoteNodeResponse) null);
-
-            assertThat(response).isNotNull();
-            assertThat(response.previousRole()).isEqualTo(ActivationDirectiveValue.WORKER);
-            assertThat(response.newRole()).isEqualTo(ActivationDirectiveValue.CORE);
-            assertThat(capturedCommands).hasSize(1);
+        void unknownNodeDoesNotDefaultToCore() {
+            var result = routes.promoteNode("unknown-node", new PromoteNodeRequest("CORE")).await();
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("no known"));
+            assertThat(capturedCommands).isEmpty();
         }
 
         @Test
-        void promote_caseInsensitiveTargetRole_normalisesToUpper() {
-            var response = routes.promoteNode(TARGET.id(), new PromoteNodeRequest("worker"))
-                                  .onFailure(cause -> fail("Promote must succeed: " + cause.message()))
-                                  .await()
-                                  .or((PromoteNodeResponse) null);
+        void immutableDescriptorOverridesConflictingDirective() {
+            fsm.onMemberDescriptor(org.pragmatica.consensus.net.NodeInfo.nodeInfo(TARGET,
+                org.pragmatica.net.tcp.NodeAddress.nodeAddress("host", 6000).unwrap(),
+                java.util.Map.of(org.pragmatica.consensus.net.NodeInfo.LABEL_ROLE, "worker")));
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(TARGET), new ActivationDirectiveValue("CORE")))));
+            assertThat(routes.promoteNode(TARGET.id(), new PromoteNodeRequest("CORE")).await().isFailure()).isTrue();
+            assertThat(capturedCommands).isEmpty();
+        }
 
-            assertThat(response).isNotNull();
-            assertThat(response.newRole()).isEqualTo(ActivationDirectiveValue.WORKER);
+        @Test
+        void knownSpotRoleAllowsOnlySameRoleAcknowledgement() {
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(TARGET), new ActivationDirectiveValue("SPOT")))));
+            assertThat(routes.promoteNode(TARGET.id(), new PromoteNodeRequest("spot")).await().isSuccess()).isTrue();
+            assertThat(capturedCommands).isEmpty();
         }
     }
 

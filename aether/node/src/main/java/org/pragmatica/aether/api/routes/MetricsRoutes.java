@@ -30,6 +30,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.SlowInvocationsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StrategyResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.SubsystemTimeoutCount;
 import org.pragmatica.aether.api.ManagementApiResponses.TimeoutMetricsResponse;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncCollector.MetricsSnapshot;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.MetricsError;
@@ -224,9 +225,9 @@ public final class MetricsRoutes implements RouteSource {
                                                 agg.avgLatencyMs(),
                                                 agg.totalInvocations(),
                                                 agg.totalGcPauseMs(),
-                                                agg.latencyP50(),
-                                                agg.latencyP95(),
-                                                agg.latencyP99(),
+                                                agg.intervalMeanLatencyP50(),
+                                                agg.intervalMeanLatencyP95(),
+                                                agg.intervalMeanLatencyP99(),
                                                 agg.errorRate(),
                                                 agg.eventCount(),
                                                 agg.sampleCount(),
@@ -256,9 +257,9 @@ public final class MetricsRoutes implements RouteSource {
         return new DerivedMetricsResponse(derived.requestRate(),
                                           derived.errorRate(),
                                           derived.gcRate(),
-                                          derived.latencyP50(),
-                                          derived.latencyP95(),
-                                          derived.latencyP99(),
+                                          derived.intervalMeanLatencyP50(),
+                                          derived.intervalMeanLatencyP95(),
+                                          derived.intervalMeanLatencyP99(),
                                           derived.eventLoopSaturation(),
                                           derived.heapSaturation(),
                                           derived.cpuTrend(),
@@ -269,7 +270,7 @@ public final class MetricsRoutes implements RouteSource {
                                           derived.hasCapacity());
     }
 
-    private List<NodeMetric> buildNodeMetricsResponse() {
+    List<NodeMetric> buildNodeMetricsResponse() {
         var node = nodeSupplier.get();
         var allMetrics = node.metricsCollector().allMetrics();
         var result = new ArrayList<NodeMetric>();
@@ -279,9 +280,9 @@ public final class MetricsRoutes implements RouteSource {
             var metrics = entry.getValue();
 
             result.add(new NodeMetric(nodeId.id(),
-                                      metrics.getOrDefault("cpuUsage", 0.0),
-                                      metrics.getOrDefault("heapUsedMb", 0.0).longValue(),
-                                      metrics.getOrDefault("heapMaxMb", 0.0).longValue()));
+                                      metrics.getOrDefault(ClusterSyncCollector.CPU_USAGE, 0.0),
+                                      metrics.getOrDefault(ClusterSyncCollector.HEAP_USED, 0.0).longValue() / (1024 * 1024),
+                                      metrics.getOrDefault(ClusterSyncCollector.HEAP_MAX, 0.0).longValue() / (1024 * 1024)));
         }
 
         return result;
@@ -397,7 +398,12 @@ public final class MetricsRoutes implements RouteSource {
             }
         }
 
-        return Map.of("timeRange", range, "nodes", nodes);
+        return Map.of("timeRange",
+                      range,
+                      "resolutionMs",
+                      node.metricsCollector().historyResolution().millis(),
+                      "nodes",
+                      nodes);
     }
 
     private static long parseTimeRange(String range) {

@@ -59,7 +59,7 @@ class FailoverRecoveryTest {
                                                List.of(EVENT_1, EVENT_2), List.of(TS_1, TS_2)));
     }
 
-    private Result<Long> handleRecoveredEvent(String streamName, int partition, byte[] payload, long timestamp) {
+    private Result<Long> handleRecoveredEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {
         recoveredEvents.add(new RecoveredEvent(streamName, partition, payload.clone(), timestamp));
         return Result.success(eventCounter.incrementAndGet());
     }

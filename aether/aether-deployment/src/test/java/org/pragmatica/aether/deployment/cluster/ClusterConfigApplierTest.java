@@ -60,22 +60,22 @@ class ClusterConfigApplierTest {
     @Nested
     class CoreScale {
         @Test
-        void apply_coreScaleUp_appliesDesiredSize() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 5, 7))).await();
+        void validate_coreScaleUp_hasNoPartialEffects() {
+            var result = applier.validate(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 5, 7))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
                     .as("the source and role must survive the applier — the scalar surface discarded them")
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 7));
+                    .isEmpty();
         }
 
         @Test
-        void apply_coreScaleDown_appliesDesiredSize() {
-            var result = applier.apply(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.CORE, 7, 5))).await();
+        void validate_coreScaleDown_hasNoPartialEffects() {
+            var result = applier.validate(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.CORE, 7, 5))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 5));
+                    .isEmpty();
         }
     }
 
@@ -83,30 +83,30 @@ class ClusterConfigApplierTest {
     class NonCoreScaleRoutes {
         @Test
         void apply_workerScaleUp_writesTheWorkerDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3))).await();
+            var result = applier.validate(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
                     .as("a WORKER scale writes the WORKER pair — the typed topology makes this safe")
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 3));
+                    .isEmpty();
         }
 
         @Test
         void apply_workerScaleDown_writesTheWorkerDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.WORKER, 3, 1))).await();
+            var result = applier.validate(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.WORKER, 3, 1))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 1));
+                    .isEmpty();
         }
 
         @Test
         void apply_spotScaleUp_writesTheSpotDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.SPOT, 0, 2))).await();
+            var result = applier.validate(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.SPOT, 0, 2))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.SPOT, 2));
+                    .isEmpty();
         }
 
         /// A mixed diff applies BOTH actions in order — each role's count lands on its own
@@ -116,12 +116,11 @@ class ClusterConfigApplierTest {
             var actions = List.<DiffAction> of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 5, 6),
                                                new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3));
 
-            var result = applier.apply(actions).await();
+            var result = applier.validate(actions).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 6),
-                                     new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 3));
+                    .isEmpty();
         }
     }
 
@@ -150,7 +149,7 @@ class ClusterConfigApplierTest {
         @ParameterizedTest
         @MethodSource("theSevenGenericallyUnsupportedKinds")
         void apply_eachGenericallyUnsupportedKind_failsWithUnsupportedApplyAction_noTopologyWrite(DiffAction action) {
-            var result = applier.apply(List.of(action)).await();
+            var result = applier.validate(List.of(action)).await();
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(ClusterConfigError.UnsupportedApplyAction.class,
@@ -169,7 +168,7 @@ class ClusterConfigApplierTest {
         /// rejected plan must have zero side effects, same as the mixed-plan test below).
         @Test
         void apply_immutableFieldChange_failsWithConflictStatus() {
-            var result = applier.apply(List.of(new DiffAction.ImmutableFieldChange("cluster.name"))).await();
+            var result = applier.validate(List.of(new DiffAction.ImmutableFieldChange("cluster.name"))).await();
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(ClusterConfigError.ImmutableFieldChange.class,
@@ -191,7 +190,7 @@ class ClusterConfigApplierTest {
                                                new DiffAction.RemoveRole(sourceNameOrDefault("default"), NodeRole.WORKER, 2),
                                                new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3));
 
-            var result = applier.apply(actions).await();
+            var result = applier.validate(actions).await();
 
             assertThat(result.isFailure()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
@@ -208,7 +207,7 @@ class ClusterConfigApplierTest {
     class NoTopologyManagerFallback {
         @Test
         void apply_withNoTopologyManager_failsWithServiceUnavailable() {
-            var result = ClusterConfigApplier.NoTopologyManager.INSTANCE.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"),
+            var result = ClusterConfigApplier.NoTopologyManager.INSTANCE.validate(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"),
                                                                                                               NodeRole.CORE,
                                                                                                               5,
                                                                                                               7)))
@@ -223,6 +222,12 @@ class ClusterConfigApplierTest {
     /// Recording `ClusterTopologyManager` stub — only `setDesiredCount` matters for the applier;
     /// the rest is inert surface (same shape as `LeaderReconcilerTest.RecordingCtm`).
     private static final class RecordingTopologyManager implements ClusterTopologyManager {
+        @Override public boolean usesExplicitCommunities() { return false; }
+        @Override public void installCommunityPlacement(org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler reconciler) {}
+        @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation) {
+            return org.pragmatica.lang.Promise.unitPromise();
+        }
+
         record ScaleCall(SourceName sourceName, NodeRole role, int count) {}
 
         private final List<ScaleCall> setDesiredCountCalls = new CopyOnWriteArrayList<>();

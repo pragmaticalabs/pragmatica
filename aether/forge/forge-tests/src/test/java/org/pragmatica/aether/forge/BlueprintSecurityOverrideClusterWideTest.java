@@ -233,7 +233,11 @@ class BlueprintSecurityOverrideClusterWideTest {
         awaitSliceDeployed();
         awaitAllAppHttpPortsReady();
         assertDerivedPortsMatchHarness();
-        var control = probeAllNodes(GOVERNED_PATH);
+        // Aggregate deployment status and a listening app port do not imply this route's
+        // asynchronous publication has reached every node. Establish the exact positive control.
+        var control = awaitEveryNodeAnswers(GOVERNED_PATH,
+                                           SERVED,
+                                           "positive-control echo route published on every node before any override");
 
         assertThat(control.stream().map(Probe::nodeId).toList()).describedAs("each probed app-HTTP port must answer from a DIFFERENT node: %s",
                                                                              control)

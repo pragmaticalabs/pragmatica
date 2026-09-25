@@ -2234,12 +2234,18 @@ cloud_partition_node() {
             #    the name already exists — treat "already exists" as success and
             #    resolve the existing id. Rules are set explicitly below (an empty
             #    rule set would deny-all inbound, also cutting mgmt+ssh).
-            # Labelled with the cluster so cloud-reaper.sh (which selects by `aether-cluster`)
-            # finds it: unlabelled, a partition firewall left behind by a failed or killed
-            # heal was invisible to every reaper mode (2 leaked on 2026-09-23).
+            # Labelled so cloud-reaper.sh finds it: unlabelled, a partition firewall left behind
+            # by a failed or killed heal was invisible to every reaper mode (2 leaked on
+            # 2026-09-23). The key is `aether-chaos-cluster`, NEVER `aether-cluster` (#1500): the
+            # Hetzner provider counts ANY firewall labelled `aether-cluster=<name>` as an ingress
+            # firewall its per-source selector missed (`HetznerComputeProvider.noFirewallForSource`)
+            # and refuses every CTM replacement while one exists — so a partition labelled that way
+            # blocked auto-heal for the whole partition window (s27 cluster B, 12-network S06).
+            # cloud-reaper.sh selects on `aether-chaos-cluster` as well, so leaks are still reaped.
+            local chaos_cluster="${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}"
             local out rc fw_id
             out=$(hcloud firewall create --name "$fw_name" \
-                --label "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                --label "aether-chaos-cluster=${chaos_cluster}" \
                 --label "aether-role=partition" 2>&1); rc=$?
             if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'already exists|uniqueness'; then
                 log_fail "cloud_partition_node: hcloud firewall create '${fw_name}' failed (rc=${rc}): ${out}"
@@ -2247,11 +2253,22 @@ cloud_partition_node() {
             fi
             if [ "$rc" -ne 0 ]; then
                 # Reused under its deterministic name: a firewall left by an earlier run may
-                # predate the labels, so apply them here too (idempotent with --overwrite).
+                # predate the labels, so apply them here too (idempotent with --overwrite) — and
+                # strip a legacy `aether-cluster` label, which would re-arm the provider's guard.
                 hcloud firewall add-label --overwrite "$fw_name" \
-                    "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                    "aether-chaos-cluster=${chaos_cluster}" \
                     "aether-role=partition" >/dev/null 2>&1 \
                     || log_warn "cloud_partition_node: could not label existing firewall '${fw_name}' — reapers will not see it"
+                # remove-label errors when the label is already absent, so its status cannot tell
+                # "nothing to do" from a real API failure. Check the post-condition instead: a reused
+                # firewall that KEEPS aether-cluster silently re-creates the #1500 red.
+                hcloud firewall remove-label "$fw_name" aether-cluster >/dev/null 2>&1 || true
+                local fw_json
+                if ! fw_json=$(hcloud firewall describe "$fw_name" -o json 2>/dev/null); then
+                    log_warn "cloud_partition_node: could not read back '${fw_name}' to confirm its legacy aether-cluster label is gone — if it remains, CTM replacements are refused while the partition is up (#1500)"
+                elif printf '%s' "$fw_json" | grep -qE '"aether-cluster"[[:space:]]*:'; then
+                    log_warn "cloud_partition_node: '${fw_name}' STILL carries aether-cluster after remove-label — CTM replacements will be refused while the partition is up (#1500); remove it by hand: hcloud firewall remove-label ${fw_name} aether-cluster"
+                fi
             fi
             fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null)
             if [ -z "$fw_id" ]; then
@@ -2542,7 +2559,10 @@ _cloud_running_vm_ips() {
     # Interim fix: query by label KEY presence (`-l aether-node-id`, matches
     # regardless of whether `aether-cluster` is ever stamped) and post-filter
     # each row against two independent, cluster-unambiguous membership tests:
-    #   - CTM auto-heal replacements are named `aether-cloud-<cluster>-node-*`
+    #   - CTM auto-heal replacements are named `aether-<cluster>-node-*` — the cluster's
+    #     persisted name, which is the harness name since #1487 (before it, the TOML
+    #     `[cluster] name`, `cloud-test-b`, so the old pattern `aether-cloud-<cluster>-`
+    #     only matched because that TOML name happened to be `cloud-` + the harness name)
     #     (the cluster name is embedded in the `aether-node-id` VALUE itself,
     #     so this match can never fold in a sibling cluster's replacement).
     #   - Original bootstrap seeds are named `<CLOUD_SOURCE_NAME>-core-N`,
@@ -2597,7 +2617,7 @@ _cloud_running_vm_ips() {
         node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
         [ -z "$node_id" ] && continue
         case "$node_id" in
-            "aether-cloud-${cluster_name}-node-"*)
+            "aether-${cluster_name}-node-"*)
                 printf '%s\n' "$ip"
                 ;;
             *)
@@ -2661,7 +2681,7 @@ _cloud_seed_ips() {
 # every 03-scaling scale-up failed with 403 resource_limit_exceeded).
 # Per-row membership tests (any one admits the row):
 #   1. `aether-node-id` label VALUE matches the CTM replacement pattern
-#      `aether-cloud-<cluster>-node-*` (cluster name embedded — unambiguous).
+#      `aether-<cluster>-node-*` (cluster name embedded — unambiguous; #1487).
 #   2. exact `aether-cluster=<cluster>` label match (stamped reliably
 #      post-#442 v2b; exact match can never fold in the PG VM — its value is
 #      `test-pg`, never a test cluster's name — nor a sibling cluster).
@@ -2713,7 +2733,7 @@ reap_cloud_cluster() {
             node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
             member=false
             case "$node_id" in
-                "aether-cloud-${cluster_name}-node-"*) member=true ;;
+                "aether-${cluster_name}-node-"*) member=true ;;
             esac
             # Exact-boundary label match; cluster names are [a-z0-9-] so the
             # interpolation is ERE-safe.

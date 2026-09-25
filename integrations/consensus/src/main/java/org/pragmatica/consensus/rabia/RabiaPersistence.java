@@ -35,8 +35,60 @@ import org.pragmatica.serialization.Codec;
 
 /// Persistence interface for Rabia consensus state.
 public interface RabiaPersistence<C extends Command> {
+    /// Persist an immutable proposal, ballot, or Decision before it becomes externally visible.
+    default Result<Unit> append(RabiaProtocolMessage message) {
+        return VotingJournalError.UNSUPPORTED.result();
+    }
+
+    default Result<List<RabiaProtocolMessage>> loadJournal() {
+        return Result.success(List.of());
+    }
+
+    default boolean checkpointRequired() {
+        return false;
+    }
+
+    default Result<Unit> close() {
+        return Result.success(Unit.unit());
+    }
+
+    default Result<Unit> saveSnapshot(SavedState<C> state) {
+        return VotingJournalError.UNSUPPORTED.result();
+    }
+
+    default Option<org.pragmatica.lang.Cause> lastBackupFailure() {
+        return Option.none();
+    }
+
+    static <C extends Command> RabiaPersistence<C> withBackup(RabiaPersistence<C> durable, RabiaPersistence<C> backup) {
+        return new BackupRabiaPersistence<>(durable, backup);
+    }
+
+    static <C extends Command> Result<RabiaPersistence<C>> durable(Path directory,
+                                                                   org.pragmatica.serialization.Serializer serializer,
+                                                                   org.pragmatica.serialization.Deserializer deserializer) {
+        return DurableRabiaPersistence.open(directory, serializer, deserializer);
+    }
+
     /// Save the current state.
     Result<Unit> save(StateMachine<C> stateMachine, Phase lastCommittedPhase, Collection<Batch<C>> pendingBatches);
+
+    /// Atomically saves application state with voting authority. Unsupported adapters fail
+    /// closed once authority changes; retaining only application bytes would reopen old epochs.
+    default Result<Unit> save(StateMachine<C> stateMachine,
+                              Phase nextSlot,
+                              Collection<Batch<C>> pending,
+                              VoterAuthority<C> authority) {
+        return authority.configuration()
+                        .epoch() == 0 && authority.handoff()
+                                                  .isEmpty()
+               ? save(stateMachine, nextSlot, pending)
+               : ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.result();
+    }
+
+    default Result<Option<SavedState<C>>> loadVerified() {
+        return Result.success(load());
+    }
 
     /// Load the persisted state.
     Option<SavedState<C>> load();
@@ -60,7 +112,41 @@ public interface RabiaPersistence<C extends Command> {
 
     /// Create an in-memory persistence implementation (for testing or single-session use).
     static <C extends Command> RabiaPersistence<C> inMemory() {
-        record inMemory <C extends Command>(AtomicReference<Option<SavedState<C>>> state) implements RabiaPersistence<C> {
+        record inMemory <C extends Command>(AtomicReference<Option<SavedState<C>>> state,
+                                            java.util.List<RabiaProtocolMessage> journal) implements RabiaPersistence<C> {
+            @Override
+            public synchronized Result<Unit> append(RabiaProtocolMessage message) {
+                var existing = VotingJournal.existing(journal, message);
+
+                if (existing.filter(value -> !VotingJournal.sameValue(value, message)).isPresent()) {
+                    return VotingJournalError.CONFLICT.result();
+                }
+
+                if (existing.isEmpty()) {
+                    journal.add(message);
+                }
+
+                return Result.success(Unit.unit());
+            }
+
+            @Override
+            public synchronized Result<List<RabiaProtocolMessage>> loadJournal() {
+                return Result.success(List.copyOf(journal));
+            }
+
+            @Override
+            public synchronized boolean checkpointRequired() {
+                return journal.size() >= 4096;
+            }
+
+            private synchronized void install(SavedState<C> saved) {
+                var retained = VotingJournal.retain(journal, saved.lastCommittedPhase(), saved.authority());
+
+                journal.clear();
+                journal.addAll(retained);
+                state.set(Option.some(saved));
+            }
+
             @Override
             public Result<Unit> save(StateMachine<C> stateMachine,
                                      Phase lastCommittedPhase,
@@ -69,9 +155,23 @@ public interface RabiaPersistence<C extends Command> {
                                    .map(snapshot -> SavedState.savedState(snapshot,
                                                                           lastCommittedPhase,
                                                                           List.copyOf(pendingBatches)))
-                                   .onSuccess(saved -> state.set(Option.some(saved)))
+                                   .onSuccess(this::install)
                                    .onFailure(_ -> state.set(Option.none()))
                                    .map(_ -> Unit.unit());
+            }
+
+            @Override
+            public Result<Unit> save(StateMachine<C> machine,
+                                     Phase nextSlot,
+                                     Collection<Batch<C>> pending,
+                                     VoterAuthority<C> authority) {
+                return machine.makeSnapshot()
+                              .map(snapshot -> new SavedState<>(snapshot,
+                                                                nextSlot,
+                                                                List.copyOf(pending),
+                                                                Option.some(authority)))
+                              .onSuccess(this::install)
+                              .mapToUnit();
             }
 
             @Override
@@ -80,12 +180,24 @@ public interface RabiaPersistence<C extends Command> {
             }
         }
 
-        return new inMemory <>(new AtomicReference<>(Option.none()));
+        return new inMemory <>(new AtomicReference<>(Option.none()), new java.util.ArrayList<>());
     }
 
     /// Saved consensus state.
     @Codec
-    record SavedState<C extends Command>(byte[] snapshot, Phase lastCommittedPhase, List<Batch<C>> pendingBatches) {
+    record SavedState<C extends Command>(byte[] snapshot,
+                                         Phase lastCommittedPhase,
+                                         List<Batch<C>> pendingBatches,
+                                         Option<VoterAuthority<C>> authority) {
+        public SavedState {
+            snapshot = snapshot.clone();
+            pendingBatches = List.copyOf(pendingBatches);
+        }
+
+        public SavedState(byte[] snapshot, Phase lastCommittedPhase, List<Batch<C>> pendingBatches) {
+            this(snapshot, lastCommittedPhase, pendingBatches, Option.none());
+        }
+
         public SavedState(byte[] snapshot, Phase lastCommittedPhase, Collection<Batch<C>> pendingBatches) {
             this(snapshot, lastCommittedPhase, List.copyOf(pendingBatches));
         }
@@ -102,18 +214,19 @@ public interface RabiaPersistence<C extends Command> {
 
         @Override
         public boolean equals(Object o) {
-            if (! (o instanceof SavedState<?>(byte[] snapshot1, Phase committedPhase, List<?> batches))) {
+            if (! (o instanceof SavedState<?> other)) {
                 return false;
             }
 
-            return Objects.deepEquals(snapshot(), snapshot1)
-                   && Objects.equals(lastCommittedPhase(), committedPhase)
-                   && Objects.equals(pendingBatches(), batches);
+            return Arrays.equals(snapshot, other.snapshot())
+                   && lastCommittedPhase.equals(other.lastCommittedPhase())
+                   && pendingBatches.equals(other.pendingBatches())
+                   && authority.equals(other.authority());
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(Arrays.hashCode(snapshot()), lastCommittedPhase(), pendingBatches());
+            return Objects.hash(Arrays.hashCode(snapshot()), lastCommittedPhase(), pendingBatches(), authority());
         }
     }
 }

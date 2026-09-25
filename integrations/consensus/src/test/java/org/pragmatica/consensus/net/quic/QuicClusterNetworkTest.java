@@ -366,6 +366,49 @@ class QuicClusterNetworkTest {
         }
 
         @Test
+        void directedInitiatorDialsLowerIdDesiredPeerWithoutGrace() {
+            var self = new NodeId("zzz-worker");
+            var peer = new NodeId("aaa-core");
+            var network = createAndStartNetwork(self, List.of(), MessageRouter.mutable());
+            var state = network.seedPeerForTests(peer, initPeer(peer));
+            network.setConnectionInitiator((local, remote) -> local.equals(self) && remote.equals(peer));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peer)));
+
+            network.reconcileMissingPeersTick();
+
+            awaitTrue(() -> state.phase() == PeerState.Phase.CONNECTING || state.phase() == PeerState.Phase.EVICTED,
+                      "Directed initiator must dial before the default sixty-second grace");
+        }
+
+        @Test
+        void directedAcceptorDoesNotRaceHigherIdDesiredPeer() {
+            var self = new NodeId("aaa-core");
+            var peer = new NodeId("zzz-worker");
+            var network = createAndStartNetwork(self, List.of(), MessageRouter.mutable());
+            var state = network.seedPeerForTests(peer, initPeer(peer));
+            network.setConnectionInitiator((local, remote) -> local.equals(peer));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peer)));
+
+            network.reconcileMissingPeersTick();
+
+            assertThat(state.phase()).isEqualTo(PeerState.Phase.INIT);
+        }
+
+        @Test
+        void directedInitiatorAlsoAppliesToTopologyReconciler() {
+            var self = new NodeId("zzz-worker");
+            var peer = new NodeId("aaa-core");
+            var network = createAndStartNetwork(self, List.of(topologyNodeInfo(peer)), MessageRouter.mutable());
+            var state = network.seedPeerForTests(peer, initPeer(peer));
+            network.setConnectionInitiator((local, remote) -> local.equals(self) && remote.equals(peer));
+
+            network.reconcileMissingPeersTick();
+
+            awaitTrue(() -> state.phase() == PeerState.Phase.CONNECTING || state.phase() == PeerState.Phase.EVICTED,
+                      "Topology reconciliation must use the same designated initiator as direct connect");
+        }
+
+        @Test
         void reconcileTick_unwiredDefault_usesLegacyTopologyPath() {
             var self = new NodeId("aaa-self");
             var peerId = new NodeId("zzz-legacy");
@@ -537,12 +580,12 @@ class QuicClusterNetworkTest {
 
             var count = 50;
             for (int i = 0; i < count; i++) {
-                network.send(self, stubProtocolMessage(new NodeId("seq-" + i)));
+                network.send(self, new StubProtocolMessage(self, i));
             }
 
             awaitTrue(() -> received.size() == count, "all sequential self-sends are delivered");
-            var order = received.stream().map(m -> m.sender().id()).toList();
-            var expected = java.util.stream.IntStream.range(0, count).mapToObj(i -> "seq-" + i).toList();
+            var order = received.stream().map(StubProtocolMessage::sequence).toList();
+            var expected = java.util.stream.IntStream.range(0, count).boxed().toList();
             assertThat(order)
                 .as("self-loopback preserves per-sender FIFO order (single pinned event loop)")
                 .containsExactlyElementsOf(expected);
@@ -685,7 +728,8 @@ class QuicClusterNetworkTest {
         }
     }
 
-    private record StubProtocolMessage(NodeId sender) implements org.pragmatica.consensus.ProtocolMessage {
+    private record StubProtocolMessage(NodeId sender, int sequence) implements org.pragmatica.consensus.ProtocolMessage {
+        StubProtocolMessage(NodeId sender) { this(sender, 0); }
         @Override
         public StreamType streamType() {
             return StreamType.CONSENSUS;
@@ -694,6 +738,9 @@ class QuicClusterNetworkTest {
 
     private TopologyObserver stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
         return new TopologyObserver() {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
             @Override
             public NodeInfo self() {
                 return self;

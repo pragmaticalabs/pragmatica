@@ -109,6 +109,45 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     @Override
+    public Result<Unit> save(StateMachine<C> machine,
+                             Phase nextSlot,
+                             Collection<Batch<C>> pending,
+                             VoterAuthority<C> authority) {
+        return machine.makeSnapshot()
+                      .flatMap(snapshotToToml::apply)
+                      .map(toml -> VoterAuthoritySnapshotCodec.encode(authority) + addPhaseHeader(toml, nextSlot))
+                      .flatMap(this::writeTomlFile)
+                      .flatMap(_ -> ensureGitInitialized())
+                      .flatMap(_ -> gitAdd())
+                      .flatMap(_ -> gitCommit(nextSlot))
+                      .flatMap(_ -> pushIfRemoteConfigured());
+    }
+
+    @Override
+    public Result<Unit> saveSnapshot(SavedState<C> state) {
+        return snapshotToToml.apply(state.snapshot())
+                             .map(toml -> state.authority()
+                                               .map(VoterAuthoritySnapshotCodec::encode)
+                                               .or("") + addPhaseHeader(toml,
+                                                                        state.lastCommittedPhase()))
+                             .flatMap(this::writeTomlFile)
+                             .flatMap(_ -> ensureGitInitialized())
+                             .flatMap(_ -> gitAdd())
+                             .flatMap(_ -> gitCommit(state.lastCommittedPhase()))
+                             .flatMap(_ -> pushIfRemoteConfigured());
+    }
+
+    @Override
+    public Result<Option<SavedState<C>>> loadVerified() {
+        var file = backupDir.resolve(STATE_FILE);
+
+        return exists(file)
+               ? readString(file).flatMap(this::parseTomlContent)
+                           .map(Option::some)
+               : Result.success(Option.none());
+    }
+
+    @Override
     public Option<SavedState<C>> load() {
         var stateFile = backupDir.resolve(STATE_FILE);
 
@@ -127,9 +166,10 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         var phase = extractPhase(tomlText);
 
         return tomlToSnapshot.apply(tomlText)
-                             .map(snapshot -> savedState(snapshot,
-                                                         phase,
-                                                         List.of()));
+                             .flatMap(snapshot -> VoterAuthoritySnapshotCodec.<C> decode(tomlText).map(authority -> new SavedState<>(snapshot,
+                                                                                                                                     phase,
+                                                                                                                                     List.of(),
+                                                                                                                                     authority)));
     }
 
     private Phase extractPhase(String tomlText) {

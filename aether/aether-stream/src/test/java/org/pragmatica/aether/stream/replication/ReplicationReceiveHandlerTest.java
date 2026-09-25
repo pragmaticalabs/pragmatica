@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -14,6 +15,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -41,7 +43,7 @@ class ReplicationReceiveHandlerTest {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
         var gapFires = new AtomicInteger(0);
         // Appender that always succeeds.
-        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _) -> Result.success(0L);
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> Result.success(0L);
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
@@ -63,7 +65,7 @@ class ReplicationReceiveHandlerTest {
         // Appender fails on the 3rd append (index 2): only [10, 11] land contiguously, [12] is the gap.
         var calls = new AtomicInteger(0);
         ReplicationReceiveHandler.RecoveredAppender appender =
-                (_, _, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
+                (_, _, _, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
@@ -88,7 +90,7 @@ class ReplicationReceiveHandlerTest {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
         var gapFires = new AtomicInteger(0);
         // Appender fails immediately: nothing lands.
-        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _) -> TestError.APPEND_FAILED.result();
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> TestError.APPEND_FAILED.result();
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
@@ -113,7 +115,7 @@ class ReplicationReceiveHandlerTest {
     void ack_waitsForTheDurabilityBarrier_thenCarriesTheHighestAppliedOffset() {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
         var barrier = Promise.<Unit> promise();
-        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _) -> Result.success(0L);
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> Result.success(0L);
         var handler = ReplicationReceiveHandler.replicationReceiveHandler(SELF,
                                                                           appender,
                                                                           (_, _) -> 10L,
@@ -138,7 +140,7 @@ class ReplicationReceiveHandlerTest {
     @Test
     void ack_isWithheld_whenTheDurabilityBarrierFails() {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
-        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _) -> Result.success(0L);
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> Result.success(0L);
         var handler = ReplicationReceiveHandler.replicationReceiveHandler(SELF,
                                                                           appender,
                                                                           (_, _) -> 10L,
@@ -161,18 +163,63 @@ class ReplicationReceiveHandlerTest {
         }
     }
 
+    /// A local ring honouring the offset-addressed appender contract (#1505): append at the next offset, verify
+    /// an already-held offset against the offered record, refuse a gap. It holds the records it landed, because
+    /// a duplicate is now acked only when the held record is verified — a stub with no content could not model
+    /// that, which is how the pre-#1505 fixture let an unverified re-ack pass.
+    /// It also models the ring's eviction ([StreamError.CursorExpired] below `tail`) and the #1505 F2 quarantine:
+    /// a conflict at N refuses every later offer at or past N.
     private static final class TrackingAppender implements ReplicationReceiveHandler.RecoveredAppender {
-        private long head = -1L; // empty ring: next-expected offset is 0
+        private final List<byte[]> payloads = new ArrayList<>();
+        private final List<Long> timestamps = new ArrayList<>();
+        private long tail = 0L;
+        private long divergedAt = Long.MAX_VALUE;
+
+        void evictBelow(long offset) {
+            tail = offset;
+        }
 
         @Override
-        public Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp, Epoch ownerEpoch) {
-            head++;
+        public Result<Long> appendRecovered(String streamName,
+                                            int partition,
+                                            long offset,
+                                            byte[] payload,
+                                            long timestamp,
+                                            Epoch ownerEpoch) {
+            if (offset >= divergedAt) {
+                return new StreamError.ReplicaQuarantined(streamName, partition, offset, divergedAt).result();
+            }
 
-            return Result.success(head);
+            if (offset > payloads.size()) {
+                return new StreamError.ReplicaOffsetGap(streamName, partition, offset, payloads.size()).result();
+            }
+
+            if (offset < tail) {
+                return new StreamError.CursorExpired(offset, tail).result();
+            }
+
+            if (offset < payloads.size()) {
+                return verifyHeld(streamName, partition, offset, payload, timestamp);
+            }
+
+            payloads.add(payload);
+            timestamps.add(timestamp);
+
+            return Result.success(offset);
+        }
+
+        private Result<Long> verifyHeld(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+            if (Arrays.equals(payloads.get((int) offset), payload) && timestamps.get((int) offset) == timestamp) {
+                return Result.success(offset);
+            }
+
+            divergedAt = Math.min(divergedAt, offset);
+
+            return new StreamError.ReplicaEntryConflict(streamName, partition, offset).result();
         }
 
         long nextExpected(String streamName, int partition) {
-            return head + 1;
+            return payloads.size();
         }
     }
 
@@ -278,8 +325,10 @@ class ReplicationReceiveHandlerTest {
         // Apply [0,2] → local next-expected 3.
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
 
-        // Overlapping re-delivery [1,4]: prefix [1,2] already present (skip 2), tail [3,4] applies.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 1L, payloads(4), timestamps(4), Epoch.ZERO));
+        // Overlapping re-delivery [1,4]: prefix [1,2] already present (skip 2), tail [3,4] applies. A re-delivery
+        // carries the SAME events at [1,2]; the pre-#1505 fixture sent `payloads(4)` here, i.e. p-0 at offset 1,
+        // which the old blind skip could not notice and the verifying apply now correctly refuses.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 1L, payloadsFrom(1, 4), timestampsFrom(1, 4), Epoch.ZERO));
 
         assertThat(gapFires.get()).isZero();
         assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(5L); // applied 3 then 2 more
@@ -294,7 +343,7 @@ class ReplicationReceiveHandlerTest {
         // Local next-expected fixed at 10; appender fails on the 3rd new append.
         var calls = new AtomicInteger(0);
         ReplicationReceiveHandler.RecoveredAppender appender =
-                (_, _, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
+                (_, _, _, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
         ReplicationReceiveHandler.LocalHead localHead = (_, _) -> 10L;
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
@@ -308,6 +357,122 @@ class ReplicationReceiveHandlerTest {
         assertThat(acks).hasSize(1);
         assertThat(acks.getFirst().confirmedOffset()).isEqualTo(11L);
         assertThat(gapFires.get()).isEqualTo(1);
+    }
+
+    /// #1505, property 2: a re-delivery wholly below the local head whose held event DIFFERS is not a duplicate.
+    /// The replica does not hold the offered event, so it must not ack it. It fires `onGap` once: in production
+    /// that runs the backfill orchestrator, which refuses and demotes the now-quarantined partition (#1505 F2).
+    /// The first round of this fix asserted no `onGap` here; the quarantine ruling needs it as the demotion route.
+    @Test
+    void duplicateBatch_heldEventDiffers_isRefused_noAck_routesToDemotion_noAppend() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
+        assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(2L);
+
+        // Offset 2 holds p-2; the owner now offers a DIFFERENT event there.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 2L, List.of("other".getBytes()), List.of(1002L), Epoch.ZERO));
+
+        assertThat(acks).as("no ack for an offset holding a different event").hasSize(1);
+        assertThat(gapFires.get()).as("routed to the backfill orchestrator, which demotes a quarantined partition").isEqualTo(1);
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
+    }
+
+    /// #1505, property 2: the held prefix of an overlapping batch is verified BEFORE the tail is appended. A
+    /// differing held event stops the batch there: the verified events before it may be acked, nothing at or
+    /// past it is acked, and the tail beyond is not appended.
+    @Test
+    void overlappingBatch_heldPrefixDiffers_acksOnlyVerifiedPrefix_appendsNothingPastIt() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
+
+        // [1,4]: offset 1 matches (p-1), offset 2 does NOT (p-0 offered, p-2 held), [3,4] would be new.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR,
+                                                  STREAM,
+                                                  PARTITION,
+                                                  1L,
+                                                  List.of("p-1".getBytes(), "p-0".getBytes(), "p-3".getBytes(), "p-4".getBytes()),
+                                                  List.of(1001L, 1002L, 1003L, 1004L),
+                                                  Epoch.ZERO));
+
+        assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(2L, 1L);
+        assertThat(gapFires.get()).isEqualTo(1);
+        assertThat(appender.nextExpected(STREAM, PARTITION)).as("nothing appended past the divergent offset").isEqualTo(3L);
+    }
+
+    /// #1505 F2, S1 on the stub: once offset 2 is known divergent, a LATER batch past it — here a genuinely new
+    /// offset 3 — is refused and not acked. An ack is cumulative on the owner, so acking 3 would cover 2.
+    @Test
+    void laterBatchPastDivergence_isRefused_notAcked() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> {});
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 2L, List.of("other".getBytes()), List.of(1002L), Epoch.ZERO));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 3L, List.of("p-3".getBytes()), List.of(1003L), Epoch.ZERO));
+
+        assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(2L);
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
+    }
+
+    /// #1505 F3: an overlapping batch whose held prefix the ring has already EVICTED still applies its new tail
+    /// and acks it. Before, the first evicted offset stopped the batch with no ack and no repair.
+    @Test
+    void overlappingBatch_evictedPrefix_appliesNewTail_andAcks() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
+        appender.evictBelow(2);
+
+        // [1,3]: offset 1 evicted, offset 2 held, offset 3 new.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 1L, payloadsFrom(1, 3), timestampsFrom(1, 3), Epoch.ZERO));
+
+        assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(2L, 3L);
+        assertThat(gapFires.get()).isZero();
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(4L);
+    }
+
+    private static List<byte[]> payloadsFrom(int from, int count) {
+        var list = new ArrayList<byte[]>(count);
+        for (var i = from; i < from + count; i++) {
+            list.add(("p-" + i).getBytes());
+        }
+        return list;
+    }
+
+    private static List<Long> timestampsFrom(int from, int count) {
+        var list = new ArrayList<Long>(count);
+        for (var i = from; i < from + count; i++) {
+            list.add(1000L + i);
+        }
+        return list;
     }
 
     private static List<byte[]> payloads(int count) {

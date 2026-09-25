@@ -32,7 +32,11 @@ public record Instance(@JacksonXmlProperty(localName = "instanceId") String inst
                        @JacksonXmlProperty(localName = "privateIpAddress") String privateIpAddress,
                        @JacksonXmlProperty(localName = "publicIpAddress") String publicIpAddress,
                        @JacksonXmlProperty(localName = "instanceState") InstanceState instanceState,
-                       @JacksonXmlProperty(localName = "tagSet") TagSet tagSet) {
+                       @JacksonXmlProperty(localName = "tagSet") TagSet tagSet,
+                       @JacksonXmlProperty(localName = "placement") Placement placement) {
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Placement(@JacksonXmlProperty(localName = "availabilityZone") String availabilityZone) {}
+
     /// EC2 instance state.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record InstanceState(@JacksonXmlProperty(localName = "name") String name,

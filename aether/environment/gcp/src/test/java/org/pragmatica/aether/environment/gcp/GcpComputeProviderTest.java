@@ -2,12 +2,11 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.environment.gcp;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -22,21 +21,26 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.List;
-import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.cloud.gcp.GcpConfig.gcpConfig;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 class GcpComputeProviderTest {
-
-    private static final GcpEnvironmentConfig CONFIG = GcpEnvironmentConfig.gcpEnvironmentConfig(
-        gcpConfig("test-project", "us-central1-a", "test@test.iam.gserviceaccount.com", "fake-key"),
-        "e2-medium", "projects/debian-cloud/global/images/debian-12",
-        "global/networks/default", "regions/us-central1/subnetworks/default",
-        "#!/bin/bash\necho hello").unwrap();
+    private static final GcpEnvironmentConfig CONFIG = GcpEnvironmentConfig.gcpEnvironmentConfig(gcpConfig("test-project",
+                                                                                                           "us-central1-a",
+                                                                                                           "test@test.iam.gserviceaccount.com",
+                                                                                                           "fake-key"),
+                                                                                                 "e2-medium",
+                                                                                                 "projects/debian-cloud/global/images/debian-12",
+                                                                                                 "global/networks/default",
+                                                                                                 "regions/us-central1/subnetworks/default",
+                                                                                                 "#!/bin/bash\necho hello").unwrap();
 
     private TestGcpClient testClient;
     private GcpComputeProvider provider;
@@ -47,13 +51,35 @@ class GcpComputeProviderTest {
         provider = GcpComputeProvider.gcpComputeProvider(testClient, CONFIG).unwrap();
     }
 
+    @Test
+    void stableOperationUsesSameInstanceNameAndPollsTheRequestedZone() {
+        var context = ProvisionContext.forBootstrap(clusterName("cluster").unwrap(),
+                                                    "worker",
+                                                    sourceNameOrDefault("west"),
+                                                    "worker-42");
+        var request = new ProvisionRequest(InstanceType.ON_DEMAND,
+                                           "n2-standard-8",
+                                           "image",
+                                           "europe-west1-b",
+                                           Option.none(),
+                                           MarketOptions.ON_DEMAND,
+                                           context);
+
+        provider.createFrom(request).await();
+        var firstName = testClient.lastInsertRequest.name();
+
+        assertThat(testClient.lastGetInstanceName).isEqualTo("europe-west1-b/" + firstName);
+        assertThat(testClient.lastInsertRequest.machineType()).isEqualTo("zones/europe-west1-b/machineTypes/n2-standard-8");
+        provider.createFrom(request).await();
+        assertThat(testClient.lastInsertRequest.name()).isEqualTo(firstName);
+        assertThat(firstName).matches("[a-z]([-a-z0-9]*[a-z0-9])?");
+    }
+
     @Nested
     class ProvisionTests {
-
         @Test
         void provision_success_returnsInstanceInfo() {
-            testClient.insertInstanceResponse = Promise.success(runningInstance("aether-test"));
-
+            testClient.getInstanceResponse = Promise.success(runningInstance("aether-test"));
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
@@ -68,27 +94,28 @@ class GcpComputeProviderTest {
         /// are threaded onto the failure rather than matched incidentally.
         @Test
         void createFrom_failure_messageNamesRequestedInstanceTypeAndZone() {
-            testClient.insertInstanceResponse =
-                new GcpError.ApiError(400, "INVALID_ARGUMENT", "Invalid machine type").promise();
+            testClient.insertInstanceResponse = new GcpError.ApiError(400, "INVALID_ARGUMENT", "Invalid machine type").promise();
             var request = new ProvisionRequest(InstanceType.ON_DEMAND,
                                                "zz-sentinel-size-99",
                                                "projects/x/global/images/aether-img",
                                                "zz-sentinel-zone-99",
                                                Option.empty(),
                                                MarketOptions.ON_DEMAND,
-                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0"));
+                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(),
+                                                                             "core",
+                                                                             sourceNameOrDefault("s"),
+                                                                             "n0"));
 
             provider.createFrom(request)
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(cause -> assertThat(cause.message()).contains("zz-sentinel-size-99")
-                                                                   .contains("zz-sentinel-zone-99"));
+                                                  .contains("zz-sentinel-zone-99"));
         }
 
         @Test
         void provision_failure_mapsToEnvironmentError() {
             testClient.insertInstanceResponse = new GcpError.ApiError(500, "INTERNAL", "Internal error").promise();
-
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
@@ -98,14 +125,16 @@ class GcpComputeProviderTest {
 
     @Nested
     class CreateFromTests {
-
         @Test
         void createFrom_carriesResolvedInstanceSizeAndImage_toInsertRequest() {
             // The resolved ProvisionRequest is total: createFrom consumes instanceSize (machine type)
             // and image (boot-disk source image) verbatim — both were previously dropped for the
             // config defaults. This is the #442/#459 fix: GCP now honors the resolved fields.
-            testClient.insertInstanceResponse = Promise.success(runningInstance("aether-test"));
-            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0");
+            testClient.getInstanceResponse = Promise.success(runningInstance("aether-test"));
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(),
+                                                        "core",
+                                                        sourceNameOrDefault("s"),
+                                                        "n0");
             var request = new ProvisionRequest(InstanceType.ON_DEMAND,
                                                "n2-standard-8",
                                                "projects/x/global/images/aether-img",
@@ -114,21 +143,21 @@ class GcpComputeProviderTest {
                                                MarketOptions.ON_DEMAND,
                                                context);
 
-            provider.createFrom(request)
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull());
-
+            provider.createFrom(request).await().onFailure(cause -> assertThat(cause).isNull());
             var sent = testClient.lastInsertRequest;
+
             assertThat(sent.machineType()).contains("n2-standard-8");
-            assertThat(sent.disks().get(0).initializeParams().sourceImage())
-                .isEqualTo("projects/x/global/images/aether-img");
+            assertThat(sent.disks().get(0).initializeParams().sourceImage()).isEqualTo("projects/x/global/images/aether-img");
         }
 
         @Test
         void createFrom_spotRequest_rejectedLoud() {
             // GCP's InsertInstanceRequest has no provisioningModel/SPOT field, so a SPOT request must
             // fail loud rather than silently downgrade to on-demand — no insertInstance call issued.
-            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "spot", sourceNameOrDefault("s"), "n0");
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(),
+                                                        "spot",
+                                                        sourceNameOrDefault("s"),
+                                                        "n0");
             var request = new ProvisionRequest(InstanceType.SPOT,
                                                "n2-standard-8",
                                                "img",
@@ -141,32 +170,25 @@ class GcpComputeProviderTest {
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(GcpComputeProviderTest::assertProvisionFailedError);
-
-            assertThat(testClient.lastInsertRequest)
-                    .as("spot request must fail before insertInstance")
-                    .isNull();
+            assertThat(testClient.lastInsertRequest).as("spot request must fail before insertInstance").isNull();
         }
     }
 
     @Nested
     class TerminateTests {
-
         @Test
         void terminate_success_returnsUnit() {
             testClient.deleteInstanceResponse = Promise.success(Unit.unit());
-
-            provider.terminate(new InstanceId("aether-test"))
+            provider.terminate(new InstanceId("us-central1-a/aether-test"))
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastDeletedInstanceName).isEqualTo("aether-test");
+            assertThat(testClient.lastDeletedInstanceName).isEqualTo("us-central1-a/aether-test");
         }
 
         @Test
         void terminate_failure_mapsToEnvironmentError() {
             testClient.deleteInstanceResponse = new GcpError.ApiError(404, "NOT_FOUND", "Not found").promise();
-
             provider.terminate(new InstanceId("missing"))
                     .await()
                     .onSuccess(unit -> assertThat(unit).isNull())
@@ -176,13 +198,10 @@ class GcpComputeProviderTest {
 
     @Nested
     class ListInstancesTests {
-
         @Test
         void listInstances_success_returnsMappedList() {
-            testClient.listInstancesResponse = Promise.success(List.of(
-                runningInstance("server-1"),
-                stagingInstance("server-2")));
-
+            testClient.listInstancesResponse = Promise.success(List.of(runningInstance("server-1"),
+                                                                       stagingInstance("server-2")));
             provider.listInstances()
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
@@ -192,7 +211,6 @@ class GcpComputeProviderTest {
         @Test
         void listInstances_empty_returnsEmptyList() {
             testClient.listInstancesResponse = Promise.success(List.of());
-
             provider.listInstances()
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
@@ -202,7 +220,6 @@ class GcpComputeProviderTest {
         @Test
         void listInstances_failure_mapsToEnvironmentError() {
             testClient.listInstancesResponse = new GcpError.ApiError(500, "INTERNAL", "Fail").promise();
-
             provider.listInstances()
                     .await()
                     .onSuccess(list -> assertThat(list).isNull())
@@ -211,68 +228,59 @@ class GcpComputeProviderTest {
 
         @Test
         void listInstances_withTagFilter_usesLabelFilter() {
-            testClient.listInstancesResponse = Promise.success(List.of(
-                instanceWithLabels("server-1", Map.of("env", "prod"))));
-
+            testClient.listInstancesResponse = Promise.success(List.of(instanceWithLabels("server-1",
+                                                                                          Map.of("env", "prod"))));
             provider.listInstances(Map.of("env", "prod"))
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(instances -> assertThat(instances).hasSize(1));
-
             assertThat(testClient.lastLabelFilter).isEqualTo("labels.env=prod");
         }
     }
 
     @Nested
     class RestartTests {
-
         @Test
         void restart_success_callsReset() {
-            provider.restart(new InstanceId("aether-test"))
+            provider.restart(new InstanceId("us-central1-a/aether-test"))
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastResetInstanceName).isEqualTo("aether-test");
+            assertThat(testClient.lastResetInstanceName).isEqualTo("us-central1-a/aether-test");
         }
     }
 
     @Nested
     class ApplyTagsTests {
-
         @Test
         void applyTags_success_setsLabels() {
             var tags = Map.of("env", "prod", "team", "aether");
 
-            provider.applyTags(new InstanceId("aether-test"), tags)
+            provider.applyTags(new InstanceId("us-central1-a/aether-test"),
+                               tags)
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastSetLabelsInstanceName).isEqualTo("aether-test");
+            assertThat(testClient.lastSetLabelsInstanceName).isEqualTo("us-central1-a/aether-test");
             assertThat(testClient.lastSetLabels).isEqualTo(tags);
         }
     }
 
     @Nested
     class InstanceStatusTests {
-
         @Test
         void instanceStatus_success_returnsInstanceInfo() {
             testClient.getInstanceResponse = Promise.success(runningInstance("my-server"));
-
             provider.instanceStatus(new InstanceId("my-server"))
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(GcpComputeProviderTest::assertRunningInstance);
-
             assertThat(testClient.lastGetInstanceName).isEqualTo("my-server");
         }
 
         @Test
         void instanceStatus_failure_mapsToEnvironmentError() {
             testClient.getInstanceResponse = new GcpError.ApiError(404, "NOT_FOUND", "Not found").promise();
-
             provider.instanceStatus(new InstanceId("missing"))
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
@@ -282,7 +290,6 @@ class GcpComputeProviderTest {
 
     @Nested
     class StatusMappingTests {
-
         @Test
         void mapStatus_provisioning_returnsProvisioning() {
             assertThat(GcpComputeProvider.mapStatus("PROVISIONING")).isEqualTo(InstanceStatus.PROVISIONING);
@@ -334,13 +341,13 @@ class GcpComputeProviderTest {
                                          Map.entry("A_STATUS_GCP_ADDS_LATER", InstanceStatus.UNKNOWN));
 
             assertThat(expected).hasSize(13);
-            expected.forEach((status, mapped) -> assertThat(GcpComputeProvider.mapStatus(status)).as(status).isEqualTo(mapped));
+            expected.forEach((status, mapped) -> assertThat(GcpComputeProvider.mapStatus(status)).as(status)
+                                                           .isEqualTo(mapped));
         }
     }
 
     @Nested
     class AddressCollectionTests {
-
         @Test
         void collectAddresses_withNetworkInterfaces_returnsIps() {
             var instance = instanceWithNetworkIps("10.0.0.1", "10.0.0.2");
@@ -360,11 +367,9 @@ class GcpComputeProviderTest {
 
     @Nested
     class LabelFilterTests {
-
         @Test
         void toLabelFilter_singleEntry_formatsCorrectly() {
-            assertThat(GcpComputeProvider.toLabelFilter(Map.of("key1", "val1")))
-                .isEqualTo("labels.key1=val1");
+            assertThat(GcpComputeProvider.toLabelFilter(Map.of("key1", "val1"))).isEqualTo("labels.key1=val1");
         }
 
         @Test
@@ -377,14 +382,12 @@ class GcpComputeProviderTest {
         /// existing replacement reads as deleted to the auto-heal in-flight tracker.
         @Test
         void toLabelFilter_nodeIdTag_translatesToStampedLabelKey() {
-            assertThat(GcpComputeProvider.toLabelFilter(Map.of("aether.node-id", "node-7")))
-                .isEqualTo("labels.aether-node-id=node-7");
+            assertThat(GcpComputeProvider.toLabelFilter(Map.of("aether.node-id", "node-7"))).isEqualTo("labels.aether-node-id=node-7");
         }
     }
 
     @Nested
     class EnvironmentIntegrationTests {
-
         @Test
         void compute_returnsProvider() {
             var integration = GcpEnvironmentIntegration.gcpEnvironmentIntegration(testClient, CONFIG).unwrap();
@@ -416,9 +419,8 @@ class GcpComputeProviderTest {
     }
 
     // --- Assertion helpers ---
-
     private static void assertProvisionedInstanceInfo(InstanceInfo info) {
-        assertThat(info.id().value()).isEqualTo("aether-test");
+        assertThat(info.id().value()).isEqualTo("us-central1-a/aether-test");
         assertThat(info.status()).isEqualTo(InstanceStatus.RUNNING);
         assertThat(info.addresses()).contains("10.0.0.1");
         assertThat(info.type()).isEqualTo(InstanceType.ON_DEMAND);
@@ -442,36 +444,46 @@ class GcpComputeProviderTest {
 
     private static void assertTwoInstanceList(java.util.List<InstanceInfo> instances) {
         assertThat(instances).hasSize(2);
-        assertThat(instances.get(0).id().value()).isEqualTo("server-1");
+        assertThat(instances.get(0).id().value()).isEqualTo("us-central1-a/server-1");
         assertThat(instances.get(0).status()).isEqualTo(InstanceStatus.RUNNING);
-        assertThat(instances.get(1).id().value()).isEqualTo("server-2");
+        assertThat(instances.get(1).id().value()).isEqualTo("us-central1-a/server-2");
         assertThat(instances.get(1).status()).isEqualTo(InstanceStatus.PROVISIONING);
     }
 
     // --- Instance factory helpers ---
-
     static org.pragmatica.cloud.gcp.api.Instance runningInstance(String name) {
-        return new org.pragmatica.cloud.gcp.api.Instance(name, "RUNNING", "us-central1-a",
-            List.of(new org.pragmatica.cloud.gcp.api.Instance.NetworkInterface("10.0.0.1", "default")),
-            Map.of());
+        return new org.pragmatica.cloud.gcp.api.Instance(name,
+                                                         "RUNNING",
+                                                         "us-central1-a",
+                                                         List.of(new org.pragmatica.cloud.gcp.api.Instance.NetworkInterface("10.0.0.1",
+                                                                                                                            "default")),
+                                                         Map.of());
     }
 
     private static org.pragmatica.cloud.gcp.api.Instance stagingInstance(String name) {
-        return new org.pragmatica.cloud.gcp.api.Instance(name, "STAGING", "us-central1-a",
-            List.of(new org.pragmatica.cloud.gcp.api.Instance.NetworkInterface("10.0.0.2", "default")),
-            Map.of());
+        return new org.pragmatica.cloud.gcp.api.Instance(name,
+                                                         "STAGING",
+                                                         "us-central1-a",
+                                                         List.of(new org.pragmatica.cloud.gcp.api.Instance.NetworkInterface("10.0.0.2",
+                                                                                                                            "default")),
+                                                         Map.of());
     }
 
     private static org.pragmatica.cloud.gcp.api.Instance instanceWithLabels(String name, Map<String, String> labels) {
-        return new org.pragmatica.cloud.gcp.api.Instance(name, "RUNNING", "us-central1-a",
-            List.of(new org.pragmatica.cloud.gcp.api.Instance.NetworkInterface("10.0.0.1", "default")),
-            labels);
+        return new org.pragmatica.cloud.gcp.api.Instance(name,
+                                                         "RUNNING",
+                                                         "us-central1-a",
+                                                         List.of(new org.pragmatica.cloud.gcp.api.Instance.NetworkInterface("10.0.0.1",
+                                                                                                                            "default")),
+                                                         labels);
     }
 
     private static org.pragmatica.cloud.gcp.api.Instance instanceWithNetworkIps(String... ips) {
         var interfaces = java.util.Arrays.stream(ips)
-            .map(ip -> new org.pragmatica.cloud.gcp.api.Instance.NetworkInterface(ip, "default"))
-            .toList();
+                                         .map(ip -> new org.pragmatica.cloud.gcp.api.Instance.NetworkInterface(ip,
+                                                                                                               "default"))
+                                         .toList();
+
         return new org.pragmatica.cloud.gcp.api.Instance("test", "RUNNING", "us-central1-a", interfaces, Map.of());
     }
 

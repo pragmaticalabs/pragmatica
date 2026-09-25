@@ -92,6 +92,9 @@ public interface HttpForwarder {
     @MessageReceiver
     void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved);
 
+    /// Role-neutral cleanup; does not mutate the core topology.
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
+
     @MessageReceiver
     void onNodeDecommissioned(MembershipDecision.NodeDecommissioned nodeDecommissioned);
 
@@ -853,18 +856,18 @@ public interface HttpForwarder {
 
             @Override
             public void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved) {
-                handleNodeDeparture(nodeRemoved.nodeId());
+                onNodeDeparture(nodeRemoved.nodeId());
             }
 
             @Override
             public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned nodeDecommissioned) {
-                handleNodeDeparture(nodeDecommissioned.nodeId());
+                onNodeDeparture(nodeDecommissioned.nodeId());
             }
 
             // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
             @Override
             public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
-                handleNodeDeparture(selfShutdown.nodeId());
+                onNodeDeparture(selfShutdown.nodeId());
             }
 
             private List<NodeId> filterConnectedNodes(Set<NodeId> nodes) {
@@ -1181,10 +1184,12 @@ public interface HttpForwarder {
                 pending.promise().fail(Causes.cause("Remote processing failed: " + errorMessage));
             }
 
-            private void handleNodeDeparture(NodeId departedNode) {
+            public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
                 Option.option(pendingForwardsByNode.remove(departedNode))
                       .filter(ids -> !ids.isEmpty())
                       .onPresent(correlationIds -> retryPendingForwards(departedNode, correlationIds));
+
+                return org.pragmatica.lang.Unit.unit();
             }
 
             private void retryPendingForwards(NodeId departedNode, Set<String> correlationIds) {

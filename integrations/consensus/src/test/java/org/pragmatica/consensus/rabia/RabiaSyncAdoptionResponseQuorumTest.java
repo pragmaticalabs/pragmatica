@@ -360,7 +360,7 @@ class RabiaSyncAdoptionResponseQuorumTest {
         /// response arrives carrying a far higher phase. LIVE is now a majority of the collected set,
         /// so the COLD response must NOT be the source.
         @Test
-        void aClusterShrinkingMidRound_letsTheLiveMajorityFilterSelect() {
+        void desiredCapacityShrinkingMidRound_doesNotChangeElectorate() {
             var stateMachine = new RecordingStateMachine();
             var topology = new ShrinkingTopology(NODE_1, 5);
             var engine = coldStarted(topology, stateMachine, RabiaPersistence.inMemory());
@@ -373,8 +373,8 @@ class RabiaSyncAdoptionResponseQuorumTest {
 
             assertThat(awaitActive(engine)).isTrue();
             assertThat(stateMachine.lastRestored())
-                .as("two LIVE of three collected is a live majority — the COLD response is filtered out")
-                .isEqualTo(LIVE_AHEAD_SNAPSHOT);
+                .as("desired capacity changes cannot discard evidence from the fixed five-voter electorate")
+                .isEqualTo(COLD_SNAPSHOT);
         }
 
         /// The control, and the whole point of the pair: WITHOUT the shrink the identical three
@@ -400,6 +400,10 @@ class RabiaSyncAdoptionResponseQuorumTest {
     /// Persistence reporting a fixed durable snapshot: a node that restarted from disk.
     private static RabiaPersistence<TestCommand> durableAt(Phase phase) {
         record durable(Phase phase) implements RabiaPersistence<TestCommand> {
+            @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> append(RabiaProtocolMessage message) {
+                return org.pragmatica.lang.Result.success(org.pragmatica.lang.Unit.unit());
+            }
+
             @Override
             public Result<Unit> save(StateMachine<TestCommand> stateMachine,
                                      Phase lastCommittedPhase,

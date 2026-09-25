@@ -106,6 +106,7 @@ public final class QuicPeerConnection {
     static final int PENDING_LANE_WRITES_MAX = 64;
 
     private final NodeId peerId;
+    private final Option<NodeId> initiator;
     private final QuicChannel connection;
     private final QuicStreamChannel[] longLivedStreams;
     private final int consensusWatermarkLowBytes;
@@ -122,10 +123,12 @@ public final class QuicPeerConnection {
     private final Map<StreamType, Deque<byte[]>> inFlightLaneOpens = new EnumMap<>(StreamType.class);
 
     private QuicPeerConnection(NodeId peerId,
+                               Option<NodeId> initiator,
                                QuicChannel connection,
                                int consensusWatermarkLowBytes,
                                int consensusWatermarkHighBytes) {
         this.peerId = peerId;
+        this.initiator = initiator;
         this.connection = connection;
         this.longLivedStreams = new QuicStreamChannel[StreamType.values().length];
         this.consensusWatermarkLowBytes = consensusWatermarkLowBytes;
@@ -136,6 +139,7 @@ public final class QuicPeerConnection {
     /// stream write-buffer watermarks ([QuicTransportTuning] defaults).
     public static QuicPeerConnection quicPeerConnection(NodeId peerId, QuicChannel connection) {
         return new QuicPeerConnection(peerId,
+                                      Option.none(),
                                       connection,
                                       QuicTransportTuning.DEFAULT_WATERMARK_LOW_BYTES,
                                       QuicTransportTuning.DEFAULT_WATERMARK_HIGH_BYTES);
@@ -147,7 +151,24 @@ public final class QuicPeerConnection {
                                                         QuicChannel connection,
                                                         int consensusWatermarkLowBytes,
                                                         int consensusWatermarkHighBytes) {
-        return new QuicPeerConnection(peerId, connection, consensusWatermarkLowBytes, consensusWatermarkHighBytes);
+        return new QuicPeerConnection(peerId,
+                                      Option.none(),
+                                      connection,
+                                      consensusWatermarkLowBytes,
+                                      consensusWatermarkHighBytes);
+    }
+
+    /// The verified Hello endpoint identifies the dialer at both ends of the same connection.
+    public static QuicPeerConnection quicPeerConnection(NodeId peerId, NodeId initiator, QuicChannel connection) {
+        return new QuicPeerConnection(peerId,
+                                      Option.some(initiator),
+                                      connection,
+                                      QuicTransportTuning.DEFAULT_WATERMARK_LOW_BYTES,
+                                      QuicTransportTuning.DEFAULT_WATERMARK_HIGH_BYTES);
+    }
+
+    public Option<NodeId> initiator() {
+        return initiator;
     }
 
     public NodeId peerId() {

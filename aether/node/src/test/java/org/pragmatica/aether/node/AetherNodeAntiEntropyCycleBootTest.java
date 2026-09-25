@@ -87,6 +87,8 @@ class AetherNodeAntiEntropyCycleBootTest {
         loggerConfig.setLevel(originalLevel);
         ctx.updateLoggers();
         appender.stop();
+        org.pragmatica.config.ConfigService.clear();
+        org.pragmatica.aether.resource.ResourceProvider.clear();
     }
 
     @Test
@@ -128,7 +130,8 @@ class AetherNodeAntiEntropyCycleBootTest {
                                .self(self).coreNodes(List.of(selfInfo)).managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
                                .sliceConfig(SliceConfig.sliceConfig()).artifactRepo(DHTConfig.DEFAULT).coreMax(1)
                                .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none()).quicTls(TlsConfig.selfSignedMutual())
-                               .certificateProvider(Option.none()).configProvider(Option.none()).environment(Option.none())
+                               .certificateProvider(Option.none()).configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
+                                    org.pragmatica.config.ConfigurationProvider.builder().build()))).environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                .build()

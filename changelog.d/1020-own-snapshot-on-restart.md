@@ -70,8 +70,9 @@
   tripwire, not a `@Disabled` placeholder: it asserts the CURRENT behaviour and its failure message
   names #1013 as the ticket that may legitimately flip it, so the change cannot be made silently.
   [verified: `RabiaOwnRestoreFailureTest#ownRestoreFails_logsAtErrorNamingTheConsequence` — 1 red of
-  813 when the bare-cause log is restored; `#ownRestoreFails_staysInactive_untilTicket1013Decides` —
-  1 red of 813 when a failed restore is made to activate anyway, which is the change #1013 might make;
+  813 when the bare-cause log is restored; the wedge tripwire it paired with was superseded when
+  #1468 was decided for this arm (owner ruling, session 27: fail closed, merge of #1390) and is now
+  `#ownRestoreFails_failsClosed_neverActivates`;
   `#ownRestoreSucceeds_activates` is the control that makes the tripwire's negative assertion mean
   "genuinely did not activate" rather than "fixture never got there"]
 - What this does NOT earn, stated so a sweep returns it beside the claim: the shipped

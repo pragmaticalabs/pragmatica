@@ -26,8 +26,10 @@ public record InstanceInfo(InstanceId id,
                            List<String> addresses,
                            InstanceType type,
                            Map<String, String> tags,
-                           Option<String> nodeId) {
+                           Option<String> nodeId,
+                           Option<String> observedZone) {
     public InstanceInfo {
+        observedZone = Option.option(observedZone).or(Option.none()).filter(zone -> !zone.isBlank());
         if (nodeId == null) {
             nodeId = Option.none();
         }
@@ -36,7 +38,12 @@ public record InstanceInfo(InstanceId id,
     /// Return a copy with the status replaced. Used by [ComputeProvider#confirmRunning]
     /// to re-stamp a provision result to RUNNING once infra readiness is confirmed.
     public InstanceInfo withStatus(InstanceStatus newStatus) {
-        return new InstanceInfo(id, newStatus, addresses, type, tags, nodeId);
+        return new InstanceInfo(id, newStatus, addresses, type, tags, nodeId, observedZone);
+    }
+
+    /// Provider-observed location, never copied from provisioning intent or user labels.
+    public InstanceInfo withObservedZone(Option<String> zone) {
+        return new InstanceInfo(id, status, addresses, type, tags, nodeId, zone);
     }
 
     public InstanceInfo(InstanceId id,
@@ -44,7 +51,7 @@ public record InstanceInfo(InstanceId id,
                         List<String> addresses,
                         InstanceType type,
                         Map<String, String> tags) {
-        this(id, status, addresses, type, tags, Option.none());
+        this(id, status, addresses, type, tags, Option.none(), Option.none());
     }
 
     public static Result<InstanceInfo> instanceInfo(InstanceId id,
@@ -61,7 +68,13 @@ public record InstanceInfo(InstanceId id,
                                                     InstanceType type,
                                                     Map<String, String> tags,
                                                     Option<String> nodeId) {
-        return success(new InstanceInfo(id, status, List.copyOf(addresses), type, Map.copyOf(tags), nodeId));
+        return success(new InstanceInfo(id,
+                                        status,
+                                        List.copyOf(addresses),
+                                        type,
+                                        Map.copyOf(tags),
+                                        nodeId,
+                                        org.pragmatica.lang.Option.none()));
     }
 
     public static Result<InstanceInfo> instanceInfo(InstanceId id,

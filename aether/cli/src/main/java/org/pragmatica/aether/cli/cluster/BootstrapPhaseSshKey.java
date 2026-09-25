@@ -89,10 +89,14 @@ public sealed interface BootstrapPhaseSshKey {
                                                              SourceProfile source,
                                                              Fn1<Result<HetznerClient>, SourceProfile> hetznerClientFactory) {
         return hetznerClientFactory.apply(source)
-                                   .flatMap(client -> uploadAllKeys(ctx, client));
+                                   .flatMap(client -> uploadAllKeys(ctx,
+                                                                    client,
+                                                                    source.name().value()));
     }
 
-    private static Result<BootstrapContext> uploadAllKeys(BootstrapContext ctx, HetznerClient client) {
+    private static Result<BootstrapContext> uploadAllKeys(BootstrapContext ctx,
+                                                          HetznerClient client,
+                                                          String sourceName) {
         var ids = new ArrayList<Long>();
         var nextCtx = ctx;
 
@@ -110,7 +114,7 @@ public sealed interface BootstrapPhaseSshKey {
             nextCtx = uploaded.contextAfter();
         }
 
-        return success(nextCtx.withSshKeyIds("hetzner", List.copyOf(ids)));
+        return success(nextCtx.withSshKeyIds(sourceName, List.copyOf(ids)));
     }
 
     @SuppressWarnings("JBCT-EX-01")

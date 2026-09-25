@@ -38,8 +38,10 @@ Producer incarnation is a durable per-node process counter, allocated before met
 the counter, validates the retained value, increments it, forces a temporary file, atomically renames
 it and forces the directory before use. Persistence failure or exhaustion refuses startup. Retain
 this directory across restarts; loss requires a fresh node identity. UTC clock rollback cannot lower
-the counter. It is independent of SWIM's membership incarnation: metric replay ordering uses this
-process counter and sequence; governor membership evidence carries the direct pong's SWIM incarnation.
+the counter. Metric replay ordering and governor membership evidence use this durable process
+counter; metrics also carry a per-process sequence. Direct pongs carry this same process epoch
+for health evidence. SWIM retains its separate boot/refutation incarnation only inside SWIM;
+wall-clock regression there cannot regress the process epoch accepted by the health index.
 This is a #1390 requirement, not a property of rc4's wall-clock-derived startup incarnation.
 
 Both raw and typed ingestion require the producer to be known and eligible in authoritative

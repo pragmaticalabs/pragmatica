@@ -111,7 +111,7 @@ class SshKeyResolverTest {
                                                               Map.of("cloud-1", cloudSource),
                                                               Map.of(),
                                                               infra,
-                                                              OperationsConfig.defaultOperationsConfig());
+                                                              OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig configWithoutCloudSource() {
@@ -141,7 +141,7 @@ class SshKeyResolverTest {
                                                               Map.of("forge-1", forgeSource),
                                                               Map.of(),
                                                               InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                              OperationsConfig.defaultOperationsConfig());
+                                                              OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static Fn1<String, String> envWith(String key, String value) {

@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.metrics.MinuteAggregate;
 import org.pragmatica.aether.api.ManagementApiResponses.ControllerConfigUpdatedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ControllerStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.EvaluationTriggeredResponse;
@@ -45,9 +46,9 @@ public final class ControllerRoutes implements RouteSource {
                              double latencyMs,
                              long invocations,
                              long gcPauseMs,
-                             double latencyP50,
-                             double latencyP95,
-                             double latencyP99,
+                             double intervalMeanLatencyP50,
+                             double intervalMeanLatencyP95,
+                             double intervalMeanLatencyP99,
                              double errorRate,
                              int eventCount) {}
 
@@ -200,7 +201,7 @@ public final class ControllerRoutes implements RouteSource {
                            .toList();
     }
 
-    private static TrainingDataPoint toTrainingDataPoint(org.pragmatica.aether.metrics.MinuteAggregate agg) {
+    private static TrainingDataPoint toTrainingDataPoint(MinuteAggregate agg) {
         return new TrainingDataPoint(agg.minuteTimestamp(),
                                      agg.avgCpuUsage(),
                                      agg.avgHeapUsage(),
@@ -208,9 +209,9 @@ public final class ControllerRoutes implements RouteSource {
                                      agg.avgLatencyMs(),
                                      agg.totalInvocations(),
                                      agg.totalGcPauseMs(),
-                                     agg.latencyP50(),
-                                     agg.latencyP95(),
-                                     agg.latencyP99(),
+                                     agg.intervalMeanLatencyP50(),
+                                     agg.intervalMeanLatencyP95(),
+                                     agg.intervalMeanLatencyP99(),
                                      agg.errorRate(),
                                      agg.eventCount());
     }

@@ -265,6 +265,47 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Offset-addressed replica append refusal (#1505): an event was offered at owner offset `offset`, but the
+    /// next offset this replica's ring can assign is `nextExpected` — the replica is missing
+    /// `[nextExpected, offset-1]`. Appending anyway would land the event one or more offsets too low, so
+    /// nothing is appended; the caller repairs by catch-up from its local head.
+    record ReplicaOffsetGap(String streamName, int partition, long offset, long nextExpected) implements StreamError {
+        @Override
+        public String message() {
+            return "Replica append refused for %s[%d]: event offered at offset %d but the next local offset is %d".formatted(streamName,
+                                                                                                                             partition,
+                                                                                                                             offset,
+                                                                                                                             nextExpected);
+        }
+    }
+
+    /// Offset-addressed replica append refusal (#1505): this replica already holds an event at `offset`, and it
+    /// is NOT the event offered for that offset (payload or timestamp differ). The replica's log has diverged
+    /// from its sender's at `offset`. Nothing is appended or overwritten, and the caller must not count the
+    /// replica as holding the offered event — the ring is append-only, so no catch-up can replace the entry.
+    record ReplicaEntryConflict(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Replica append refused for %s[%d]: offset %d already holds a DIFFERENT event than the one offered".formatted(streamName,
+                                                                                                                                 partition,
+                                                                                                                                 offset);
+        }
+    }
+
+    /// Quarantined replica partition (#1505 F2): this replica holds a DIVERGENT entry at `divergedAt`, so
+    /// nothing at or past that offset is appended or verified here. `offset` is the refused offer. The ring
+    /// has no overwrite and no truncation, so the quarantine is not cleared in this release; it lasts as long
+    /// as this node's partition manager does.
+    record ReplicaQuarantined(String streamName, int partition, long offset, long divergedAt) implements StreamError {
+        @Override
+        public String message() {
+            return "Replica append refused for %s[%d] at offset %d: the partition is quarantined here, offset %d holds a divergent event".formatted(streamName,
+                                                                                                                                                    partition,
+                                                                                                                                                    offset,
+                                                                                                                                                    divergedAt);
+        }
+    }
+
     /// Owner-write admission refusal (#1230): an application append reached `publishLocal` on a node that is
     /// not the COMMITTED owner of `(streamName, partition)` — the committed `StreamPartitionOwnershipValue`
     /// names `committedOwner`. The epoch fence cannot catch this: a live non-owner stamps the same committed

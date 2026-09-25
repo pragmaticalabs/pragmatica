@@ -45,7 +45,7 @@ class ClusterBootstrapConfigValidatorTest {
 
         return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig validCloudConfig() {
@@ -60,7 +60,7 @@ class ClusterBootstrapConfigValidatorTest {
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("hetzner-eu", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig cloudConfigWithFirewall(CloudProviderName provider) {
@@ -75,7 +75,7 @@ class ClusterBootstrapConfigValidatorTest {
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig cloudConfigWithManagement(String securityMode, String cidr) {
@@ -92,7 +92,7 @@ class ClusterBootstrapConfigValidatorTest {
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig cloudConfigWithPublicManagement(String securityMode) {
@@ -115,7 +115,7 @@ class ClusterBootstrapConfigValidatorTest {
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     @Nested
@@ -203,7 +203,7 @@ class ClusterBootstrapConfigValidatorTest {
             return clusterBootstrapConfig("1.0.0", clusterIdentity("test", version).unwrap(),
                                           defaultCoreTopology(), validForgeConfig().sources(),
                                           Map.of(), infrastructureConfig(NetworkingType.MANUAL),
-                                          defaultOperationsConfig());
+                                          defaultOperationsConfig(), java.util.Map.of());
         }
 
         @Test
@@ -215,7 +215,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-04").contains("odd"));
@@ -230,7 +230,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-04").contains(">= 3"));
@@ -245,7 +245,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-07"));
@@ -265,7 +265,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("eu", eu, "eu-1", eu1), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-08")
@@ -284,7 +284,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("eu", eu, "us", us), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config).onFailure(cause -> assertThat(cause.message()).doesNotContain("CL-08"));
         }
 
@@ -295,7 +295,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        defaultOperationsConfig().timeouts(), ports);
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops);
+                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-11").contains("conflicts"));
@@ -308,7 +308,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        defaultOperationsConfig().timeouts(), ports);
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops);
+                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-11").contains("out of range"));
@@ -323,7 +323,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        defaultOperationsConfig().timeouts(), defaultOperationsConfig().ports());
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops);
+                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-25").contains("auto-heal disable"));
@@ -339,7 +339,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 topology, validForgeConfig().sources(), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("REQ-3.3.7"));
@@ -360,7 +360,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-15"));
@@ -377,7 +377,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-15"));
@@ -461,7 +461,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        Map.of(NodeRole.CORE, coreRole), rules);
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
 
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -502,7 +502,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("cloud-src", source),
                                                 Map.of("prod", runtime),
-                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
 
             assertThat(warnings(config)).noneSatisfy(warning -> assertThat(warning).contains("port 22"))
                                         .noneSatisfy(warning -> assertThat(warning).contains("port 8080"));
@@ -550,7 +550,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
 
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected PF-26 for a ceiling no runtime path reads"))
@@ -571,7 +571,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("hetzner-eu", source),
                                                 Map.of("prod", runtime),
-                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
 
             validate(config)
                 .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-26"));
@@ -586,7 +586,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-17"));
@@ -602,7 +602,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-10"));
@@ -621,7 +621,7 @@ class ClusterBootstrapConfigValidatorTest {
                                                 defaultCoreTopology(), Map.of("cloud-src", source),
                                                 Map.of("prod", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-11"));
@@ -637,7 +637,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-18").contains("invalid port"));
@@ -653,7 +653,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-18").contains("invalid protocol"));
@@ -670,7 +670,7 @@ class ClusterBootstrapConfigValidatorTest {
                                                 defaultCoreTopology(), Map.of("local", source),
                                                 Map.of("jvm-rt", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-19"));
@@ -712,7 +712,7 @@ class ClusterBootstrapConfigValidatorTest {
                                           defaultCoreTopology(), Map.of("ssh-src", source),
                                           Map.of(runtime.name(), runtime),
                                           infrastructureConfig(NetworkingType.MANUAL),
-                                          defaultOperationsConfig());
+                                          defaultOperationsConfig(), java.util.Map.of());
         }
 
         /// #1090 review SF-3: PF-09 catches a host listed twice INSIDE one SSH source; a host listed
@@ -743,7 +743,7 @@ class ClusterBootstrapConfigValidatorTest {
                                                  "lab", sshSource("lab", NodeRole.WORKER, labHosts)),
                                           Map.of("ctr", runtime),
                                           infrastructureConfig(NetworkingType.MANUAL),
-                                          defaultOperationsConfig());
+                                          defaultOperationsConfig(), java.util.Map.of());
         }
 
         private static SourceProfile sshSource(String name, NodeRole role, List<String> hosts) {
@@ -764,7 +764,7 @@ class ClusterBootstrapConfigValidatorTest {
                                                 defaultCoreTopology(), Map.of("local", source),
                                                 Map.of("jvm-rt", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-20"));
@@ -804,7 +804,7 @@ class ClusterBootstrapConfigValidatorTest {
 
             return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
                                           defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
         }
 
         private static ClusterBootstrapConfig configWithCoreMax(int max) {
@@ -815,7 +815,7 @@ class ClusterBootstrapConfigValidatorTest {
 
             return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
                                           coreTopology(some(5), some(max), 1), Map.of("local", source), Map.of(),
-                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
         }
 
         private static String messageOf(ClusterBootstrapConfig config) {

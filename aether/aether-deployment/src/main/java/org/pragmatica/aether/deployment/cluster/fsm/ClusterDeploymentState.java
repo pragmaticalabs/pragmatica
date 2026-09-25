@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -58,7 +59,6 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
@@ -70,11 +70,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
@@ -106,6 +104,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.concurrent.CancellableTask;
@@ -413,11 +412,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         /// The non-core join channel (#728). A worker never appears in `MembershipDecision`, so
-        /// without this arm `assignNodeRole` was unreachable for the only nodes that actually need
+        /// without this arm worker assignment was unreachable for the only nodes that actually need
         /// a community: labelled workers reached FSM Member and were never assigned a role, never
         /// minted a community, and never activated.
         ///
-        /// Routed straight to [`#assignNodeRole`] rather than through [`#handleNodeAdded`]: the
+        /// Routed straight to [`#assignWorkerRole`] rather than through [`#handleNodeAdded`]: the
         /// seed-node guard there is a CORE concern (seeds are SWIM-derived to present by the
         /// membership-v2 view and need no directive), and `reconcile()` is driven by the core
         /// delta, which a worker join deliberately does not perturb.
@@ -428,7 +427,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void processWorkerJoin(WorkerJoinDecision decision) {
             log.info("Received worker join: {} (role={})", decision.nodeId(), decision.role());
-            assignNodeRole(decision.nodeId());
+            assignWorkerRole(decision.nodeId());
         }
 
         /// The non-core leave channel (#731), symmetric to [`#handleWorkerJoin`]. Routed straight
@@ -473,7 +472,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // Seed nodes are SWIM-derived to present by the membership-v2 view; only
             // non-seed nodes need an explicit role assignment via ActivationDirective.
             if (!ctx.seedNodes().contains(addedNode)) {
-                assignNodeRole(addedNode);
+                submitActivationDirective(addedNode, ActivationDirectiveValue.core());
             }
 
             reconcile();
@@ -828,6 +827,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             var localAliveMembers = ctx.localAliveMembersSupplier().get();
             var deadWorkers = workerNodes.stream()
+                                         .filter(node -> !hasCommittedCommunityAssignment(node))
                                          .filter(node -> !observedMembers.contains(node) && !localAliveMembers.contains(node))
                                          .toList();
 
@@ -841,6 +841,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             deadWorkers.forEach(node -> handleNodeRemoval(node).onFailure(cause -> log.error("Failed to sweep dead restored worker {}: {}",
                                                                                              node,
                                                                                              cause.message())));
+        }
+
+        /// A missing governor report/roster entry is not a terminal membership decision. Assigned
+        /// workers are removed through explicit membership or completed retirement, never this sweep.
+        private boolean hasCommittedCommunityAssignment(NodeId node) {
+            return ctx.kvStore()
+                      .getTyped(new ActivationDirectiveKey(node),
+                                ActivationDirectiveValue.class)
+                      .filter(value -> !value.communityId()
+                                             .isBlank() && (ActivationDirectiveValue.WORKER.equals(value.role()) || "SPOT".equals(value.role())))
+                      .isPresent();
         }
 
         /// The union of every non-dissolved community's SWIM-observed membership — the same KVStore
@@ -1044,35 +1055,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
         }
 
-        /// The joining node MUST be excluded from its own denominator. `activeNodes()` derives
-        /// from `MembershipFsm.coreCountedMembers()`, which already includes the joiner by the
-        /// time the NodeJoined decision reaches this method (the FSM stamps it Member first;
-        /// Wave-4's edge-driven emission makes that ordering deterministic). A self-inclusive
-        /// count made every count-restoring replacement see "core count at max" (e.g. a 5-target
-        /// cluster healed back to exactly 5 → count 5 ≥ max 5) and demoted it to WORKER —
-        /// observer-mode engine, NodeReportedState stuck SYNCING, voter set decaying until
-        /// consensus died. The joiner is classified by the cluster's state WITHOUT it.
-        ///
-        /// Defense-in-depth alternative (deliberately NOT implemented here): honor CTM's
-        /// provision-time intended role instead of re-deriving the role from membership counts —
-        /// candidate for a later wave.
-        private void assignNodeRole(NodeId addedNode) {
-            var currentCoreCount = (int) activeNodes().stream().filter(node -> !node.equals(addedNode)).count();
-
-            if (shouldPromoteToCore(currentCoreCount)) {
-                log.info("Promoting node {} to core consensus participant (core count: {}/{})",
-                         addedNode,
-                         currentCoreCount,
-                         ctx.coreMax() == 0
-                         ? "unlimited"
-                         : ctx.coreMax());
-                submitActivationDirective(addedNode, ActivationDirectiveValue.core());
-            } else {
-                log.info("Assigning node {} as worker (core count at max: {})", addedNode, ctx.coreMax());
-                assignWorkerRole(addedNode);
-            }
-        }
-
         /// Community-aware WORKER role assignment (worker-membership-spec §4.1 / §3.3): resolve the
         /// joining node's source (defaulting to `"default"` when absent/blank, D2), derive the
         /// deterministic single community id `<source>-w-0` (A10-stable), and atomically commit —
@@ -1081,17 +1063,193 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// [`ActivationDirectiveKey`] Put. The directive carries an empty governor hint because a
         /// FORMING community has no governor yet (§4.1 step 5).
         private void assignWorkerRole(NodeId addedNode) {
-            var source = resolveSource(addedNode);
-            var communityId = source + WORKER_COMMUNITY_SUFFIX;
-            var commands = new ArrayList<KVCommand<AetherKey>>();
+            configuredCommunities().onSuccess(configuration -> assignWorkerCommunity(addedNode, configuration))
+                                 .onFailure(cause -> log.warn("Cannot assign worker {}: {}",
+                                                              addedNode,
+                                                              cause.message()));
+        }
 
-            if (!communityExists(communityId)) {
-                log.info("Minting FORMING community '{}' for source '{}' (worker {})", communityId, source, addedNode);
-                commands.add(mintCommunityCommand(communityId, source));
+        private record PlacementConfiguration(Option<AetherValue.ClusterConfigValue> observed,
+                                              Map<String, org.pragmatica.aether.config.cluster.CommunityPlacement> policies) {}
+
+        private Result<PlacementConfiguration> configuredCommunities() {
+            var observed = ctx.kvStore()
+                              .getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class);
+
+            return observed.filter(value -> !value.tomlContent()
+                                                  .isBlank())
+                           .fold(() -> Result.success(new PlacementConfiguration(observed,
+                                                                                 Map.of())),
+                                 value -> org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(value.tomlContent())
+                                                                                                           .map(config -> new PlacementConfiguration(observed,
+                                                                                                                                                     config.communities())));
+        }
+
+        private void assignWorkerCommunity(NodeId node, PlacementConfiguration configuration) {
+            var policies = configuration.policies();
+
+            if (ctx.kvStore()
+                   .getTyped(ActivationDirectiveKey.activationDirectiveKey(node),
+                             ActivationDirectiveValue.class)
+                   .filter(value -> value.role()
+                                         .equals(ActivationDirectiveValue.WORKER) && !value.communityId()
+                                                                                           .isBlank())
+                   .isPresent()) {
+                return;
             }
 
-            commands.add(workerDirectiveCommand(addedNode, communityId));
-            submitActivationCommands(addedNode, commands);
+            var source = resolveSource(node);
+
+            if (policies.isEmpty()) {
+                commitWorkerCommunity(node,
+                                      source + WORKER_COMMUNITY_SUFFIX,
+                                      source,
+                                      ctx.communitySizing().targetSize(),
+                                      configuration.observed());
+
+                return;
+            }
+
+            var zone = ctx.kvStore()
+                          .getTyped(new AetherKey.NodePlacementKey(node),
+                                    AetherValue.NodePlacementValue.class)
+                          .filter(placement -> placement.sourceName()
+                                                        .equals(source))
+                          .flatMap(AetherValue.NodePlacementValue::observedZone);
+
+            reservedWorkerCommunity(node, source, zone, policies).orElse(() -> configuredWorkerCommunity(node,
+                                                                                                         source,
+                                                                                                         zone,
+                                                                                                         policies))
+                                   .onPresent(policy -> commitWorkerCommunity(node,
+                                                                              policy.id(),
+                                                                              "",
+                                                                              policy.targetSize(),
+                                                                              configuration.observed()));
+        }
+
+        private Option<org.pragmatica.aether.config.cluster.CommunityPlacement> reservedWorkerCommunity(NodeId node,
+                                                                                                        String source,
+                                                                                                        Option<String> zone,
+                                                                                                        Map<String, org.pragmatica.aether.config.cluster.CommunityPlacement> policies) {
+            return Option.from(policies.values()
+                                       .stream()
+                                       .filter(policy -> policy.targetSize() > 0)
+                                       .filter(policy -> ctx.kvStore()
+                                                            .getTyped(new AetherKey.CommunityPlacementOperationKey(policy.id()),
+                                                                      AetherValue.CommunityPlacementOperationValue.class)
+                                                            .filter(operation -> operation.active()
+                                                                                 && operation.targetNode()
+                                                                                             .equals(node)
+                                                                                 && operation.targetSource()
+                                                                                             .equals(source)
+                                                                                 && operation.targetZone()
+                                                                                             .fold(() -> true,
+                                                                                                   expected -> zone.filter(expected::equals)
+                                                                                                                   .isPresent()))
+                                                            .isPresent())
+                                       .findFirst());
+        }
+
+        private Option<org.pragmatica.aether.config.cluster.CommunityPlacement> configuredWorkerCommunity(NodeId node,
+                                                                                                          String source,
+                                                                                                          Option<String> zone,
+                                                                                                          Map<String, org.pragmatica.aether.config.cluster.CommunityPlacement> policies) {
+            var current = ctx.kvStore()
+                             .getTyped(ActivationDirectiveKey.activationDirectiveKey(node),
+                                       ActivationDirectiveValue.class)
+                             .map(ActivationDirectiveValue::communityId);
+            var counts = assignedCounts();
+            var eligible = policies.values()
+                                   .stream()
+                                   .filter(policy -> policy.targetSize() > 0)
+                                   .filter(policy -> policy.locations()
+                                                           .stream()
+                                                           .anyMatch(location -> location.source()
+                                                                                         .equals(source) && location.zone()
+                                                                                                                    .fold(() -> true,
+                                                                                                                          expected -> zone.filter(expected::equals)
+                                                                                                                                          .isPresent())))
+                                   .sorted(java.util.Comparator.comparing(org.pragmatica.aether.config.cluster.CommunityPlacement::id))
+                                   .toList();
+            var incumbent = eligible.stream()
+                                    .filter(policy -> current.filter(policy.id()::equals)
+                                                             .isPresent())
+                                    .findFirst();
+
+            return Option.from(incumbent).orElse(() -> Option.from(eligible.stream()
+                                                                           .min(java.util.Comparator.<org.pragmatica.aether.config.cluster.CommunityPlacement> comparingDouble(policy -> (double) counts.getOrDefault(policy.id(),
+                                                                                                                                                                                                                      0L) / policy.targetSize())
+                                                                                                    .thenComparing(policy -> policy.id()))));
+        }
+
+        private Map<String, Long> assignedCounts() {
+            var counts = new HashMap<String, Long>();
+
+            ctx.kvStore()
+               .forEach(ActivationDirectiveKey.class,
+                        ActivationDirectiveValue.class,
+                        (_, directive) -> counts.merge(directive.communityId(),
+                                                       1L,
+                                                       Long::sum));
+
+            return counts;
+        }
+
+        private void commitWorkerCommunity(NodeId node,
+                                           String communityId,
+                                           String source,
+                                           int targetSize,
+                                           Option<AetherValue.ClusterConfigValue> configuration) {
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(node);
+
+            if (ctx.kvStore().get(directiveKey).isPresent()) {
+                return;
+            }
+
+            ctx.kvStore()
+               .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                         org.pragmatica.cluster.state.kvstore.LeaderValue.class)
+               .filter(leader -> leader.leader()
+                                       .equals(ctx.self()) && !deactivated.get())
+               .onPresent(leader -> {
+                              var communityKey = CommunityKey.communityKey(communityId);
+                              var community = ctx.kvStore()
+                                                 .getTyped(communityKey, CommunityValue.class);
+
+                              if (community.filter(value -> value.state() == CommunityState.DISSOLVING || value.state() == CommunityState.DISSOLVED)
+                                           .isPresent()) {
+                              return;
+                          }
+
+                              var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+
+                              if (community.isEmpty()) {
+                              mutations.add(new KVCommand.Mutation<>(communityKey,
+                                                                     Option.none(),
+                                                                     Option.some(CommunityValue.communityValue(source,
+                                                                                                               ActivationDirectiveValue.WORKER,
+                                                                                                               targetSize))));
+                          }
+
+                              mutations.add(new KVCommand.Mutation<>(directiveKey,
+                                                                     Option.none(),
+                                                                     Option.some(ActivationDirectiveValue.worker(communityId,
+                                                                                                                 ""))));
+                              var guards = List.<KVCommand.ReadWitness<AetherKey>> of(new KVCommand.ReadWitness<>(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                                                  configuration.map(value -> (Object) value)),
+                                                                                      new KVCommand.ReadWitness<>(communityKey,
+                                                                                                                  community.map(value -> (Object) value)));
+                              var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(directiveKey,
+                                                                                                    java.util.UUID.randomUUID()
+                                                                                                                  .toString(),
+                                                                                                    leader,
+                                                                                                    guards,
+                                                                                                    mutations);
+
+                              submitActivationCommands(node,
+                                                       List.of(command));
+                          });
         }
 
         /// The joining node's membership source label, normalized to the `"default"` fallback when
@@ -1102,53 +1260,45 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .or(DEFAULT_SOURCE);
         }
 
-        private boolean communityExists(String communityId) {
-            return ctx.kvStore()
-                      .get(CommunityKey.communityKey(communityId))
-                      .filter(CommunityValue.class::isInstance)
-                      .isPresent();
-        }
-
-        private KVCommand<AetherKey> mintCommunityCommand(String communityId, String source) {
-            return new KVCommand.Put<>(CommunityKey.communityKey(communityId),
-                                       CommunityValue.communityValue(source,
-                                                                     ActivationDirectiveValue.WORKER,
-                                                                     ctx.communitySizing().targetSize()));
-        }
-
-        private KVCommand<AetherKey> workerDirectiveCommand(NodeId targetNode, String communityId) {
-            return new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(targetNode),
-                                       ActivationDirectiveValue.worker(communityId, ""));
+        private org.pragmatica.aether.deployment.cluster.HierarchyStateWriter hierarchyWriter() {
+            return org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> ctx.kvStore()
+                                                                                                               .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                                                                                                                         org.pragmatica.cluster.state.kvstore.LeaderValue.class)
+                                                                                                               .filter(value -> value.leader()
+                                                                                                                                     .equals(ctx.self()) && !deactivated.get()),
+                                                                                                      ctx.kvStore()::get,
+                                                                                                      commands -> ctx.cluster()
+                                                                                                                     .apply(commands));
         }
 
         private void submitActivationDirective(NodeId targetNode, ActivationDirectiveValue directive) {
-            var command = new KVCommand.Put<AetherKey, AetherValue>(ActivationDirectiveKey.activationDirectiveKey(targetNode),
-                                                                    directive);
+            var key = ActivationDirectiveKey.activationDirectiveKey(targetNode);
+            var before = ctx.kvStore().get(key);
 
-            submitActivationCommands(targetNode, List.of(command));
+            if (before.filter(value -> value instanceof ActivationDirectiveValue assigned && !assigned.role()
+                                                                                                      .equals(directive.role()))
+                      .isPresent()) {
+                return;
+            }
+
+            hierarchyWriter().put(key, before, directive)
+                           .onFailure(cause -> log.warn("Activation refused for {}: {}",
+                                                        targetNode,
+                                                        cause.message()));
         }
 
         private void submitActivationCommands(NodeId targetNode, List<KVCommand<AetherKey>> commands) {
             ctx.cluster()
-               .apply(commands)
+               .<Object> apply(commands)
+               .onSuccess(results -> results.stream()
+                                            .filter(KVCommand.TransactionResult.class::isInstance)
+                                            .map(KVCommand.TransactionResult.class::cast)
+                                            .filter(result -> !result.accepted())
+                                            .forEach(_ -> log.debug("Assignment changed before commit for {}; fresh admission will retry",
+                                                                    targetNode)))
                .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
                                              targetNode,
                                              cause.message()));
-        }
-
-        private boolean shouldPromoteToCore(int currentCoreCount) {
-            var effectiveMax = effectiveCoreMax();
-
-            return effectiveMax == 0 || currentCoreCount < effectiveMax;
-        }
-
-        private int effectiveCoreMax() {
-            return ctx.kvStore()
-                      .get(ClusterConfigKey.CURRENT)
-                      .flatMap(v -> v instanceof ClusterConfigValue cfg
-                                    ? Option.some(cfg.coreCount())
-                                    : Option.<Integer> none())
-                      .or(ctx.coreMax());
         }
 
         /// The CORE membership the CDM allocates/counts over (cluster-topology-overhaul spec,
@@ -1194,9 +1344,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         List<NodeId> allocatableNodes() {
             var readyNodes = ctx.readyNodesSupplier().get();
+            var draining = drainingNodes();
 
             return activeNodes().stream()
                               .filter(readyNodes::contains)
+                              .filter(node -> !draining.contains(node))
                               .toList();
         }
 
@@ -1305,20 +1457,21 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void deployReplacementForDrain(SliceNodeKey originalKey) {
-            var artifact = originalKey.artifact();
-            var drainingNode = originalKey.nodeId();
-            var targetNodes = allocatableNodes().stream()
-                                              .filter(n -> !n.equals(drainingNode))
-                                              .collect(Collectors.toSet());
-            var allocated = issueAllocationsForNodes(artifact, 1, targetNodes);
-
-            if (allocated == 0) {
-                log.warn("Drain eviction: no allocatable node for replacement of {} (will retry)", artifact);
-                SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(5).seconds());
+            if (deactivated.get() || !drainingNodes().contains(originalKey.nodeId())) {
+                abandonDrainEviction(originalKey.nodeId());
 
                 return;
             }
 
+            var artifact = originalKey.artifact();
+            var drainingNode = originalKey.nodeId();
+            var targetNodes = Set.copyOf(drainReplacementNodes(artifact));
+            var placed = getCurrentInstances(artifact).stream()
+                                            .filter(key -> targetNodes.contains(key.nodeId()))
+                                            .count();
+            var missing = Math.max(0, desiredReplicaCount(artifact) - (int) placed);
+
+            issueAllocationsForNodes(artifact, missing, targetNodes);
             SharedScheduler.schedule(() -> checkReplacementAndUnload(originalKey), timeSpan(3).seconds());
         }
 
@@ -1331,15 +1484,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             var artifact = originalKey.artifact();
             var drainingNode = originalKey.nodeId();
-            var hasActiveReplacement = sliceStates.entrySet()
-                                                  .stream()
-                                                  .filter(e -> e.getKey()
-                                                                .artifact()
-                                                                .equals(artifact))
-                                                  .filter(e -> !e.getKey()
-                                                                 .nodeId()
-                                                                 .equals(drainingNode))
-                                                  .anyMatch(e -> e.getValue() == SliceState.ACTIVE);
+            var hasActiveReplacement = hasDrainReplacement(artifact);
 
             if (hasActiveReplacement) {
                 log.info("Drain eviction: replacement ACTIVE for {}, unloading from {}", artifact, drainingNode);
@@ -1347,12 +1492,51 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(2).seconds());
             } else {
                 log.debug("Drain eviction: replacement not yet ACTIVE for {}, rechecking", artifact);
-                SharedScheduler.schedule(() -> checkReplacementAndUnload(originalKey), timeSpan(3).seconds());
+                SharedScheduler.schedule(() -> deployReplacementForDrain(originalKey), timeSpan(3).seconds());
             }
         }
 
         /// Terminal step of the drain eviction chain: draining completion is observed through the
         /// FSM transition and its log line, and writes no KV command.
+        List<NodeId> drainReplacementNodes(Artifact artifact) {
+            return allocationEngine().nodesForPlacement(currentPlacement(artifact))
+                                   .onFailure(cause -> log.error("Cannot resolve drain placement for {}: {}",
+                                                                 artifact,
+                                                                 cause.message()))
+                                   .or(List.of());
+        }
+
+        boolean hasDrainReplacement(Artifact artifact) {
+            var eligible = Set.copyOf(drainReplacementNodes(artifact));
+
+            return sliceStates.entrySet()
+                              .stream()
+                              .filter(entry -> entry.getKey()
+                                                    .artifact()
+                                                    .equals(artifact))
+                              .filter(entry -> eligible.contains(entry.getKey().nodeId()))
+                              .filter(entry -> entry.getValue() == SliceState.ACTIVE)
+                              .count() >= desiredReplicaCount(artifact);
+        }
+
+        private int desiredReplicaCount(Artifact artifact) {
+            return ctx.kvStore()
+                      .getTyped(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                SliceTargetValue.class)
+                      .map(SliceTargetValue::targetInstances)
+                      .or(() -> Option.option(blueprints.get(artifact))
+                                      .map(Blueprint::instances)
+                                      .or(1));
+        }
+
+        private String currentPlacement(Artifact artifact) {
+            return ctx.kvStore()
+                      .getTyped(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                SliceTargetValue.class)
+                      .map(SliceTargetValue::effectivePlacement)
+                      .or("CORE_ONLY");
+        }
+
         private void completeDrain(NodeId drainingNode) {
             drainEvictionsInProgress.remove(drainingNode);
             log.info("Drain complete for node {}", drainingNode);
@@ -2464,7 +2648,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                 .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
                                 .forEach(consensusCommands::add);
             sliceKeysToRemove.stream().<KVCommand<AetherKey>> map(KVCommand.Remove::new).forEach(consensusCommands::add);
-            consensusCommands.add(new KVCommand.Remove<>(ActivationDirectiveKey.activationDirectiveKey(removedNode)));
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(removedNode);
+            var previousDirective = ctx.kvStore().get(directiveKey);
+
             consensusCommands.addAll(nodeRouteCommands);
             workerNodes.remove(removedNode);
             log.info("Removed {} slice states, {} node-artifact entries, {} node-routes updates, and the "
@@ -2476,7 +2662,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             return ctx.cluster()
                       .apply(consensusCommands)
-                      .mapToUnit()
+                      .flatMap(_ -> hierarchyWriter().commit(List.of(new KVCommand.Mutation<>(directiveKey,
+                                                                                              previousDirective,
+                                                                                              Option.none())),
+                                                             List.of()))
                       .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
                                                     removedNode,
                                                     cause.message()));
@@ -2589,27 +2778,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void issueDeallocationCommands(Artifact artifact) {
             getCurrentInstances(artifact).forEach(this::issueUnloadCommand);
-            removeWorkerDirective(artifact);
         }
 
         private void issueAllocationCommandsWithPlacement(Artifact artifact, int desiredInstances, String placement) {
             allocationEngine().issueAllocationCommandsWithPlacement(artifact, desiredInstances, placement);
-        }
-
-        private void removeWorkerDirective(Artifact artifact) {
-            var commands = new ArrayList<KVCommand<AetherKey>>();
-
-            commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact)));
-            for (var communityId : communityPlanner().activeCommunityIds()) {
-                commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact,
-                                                                                                    communityId)));
-            }
-
-            ctx.cluster()
-               .apply(commands)
-               .onFailure(cause -> log.debug("No worker directive to remove for {}: {}",
-                                             artifact,
-                                             cause.message()));
         }
 
         @Contract
@@ -2676,7 +2848,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                         (key, value) -> collectCommunityTransition(batch, key, value));
             if (!batch.isEmpty()) {
                 ctx.cluster()
-                   .apply(batch)
+                   .<Object> apply(batch)
+                   .onSuccess(results -> results.stream()
+                                                .filter(KVCommand.TransactionResult.class::isInstance)
+                                                .map(KVCommand.TransactionResult.class::cast)
+                                                .filter(result -> !result.accepted())
+                                                .forEach(_ -> log.debug("Community state transition conflicted; next reconciliation will re-evaluate")))
                    .onFailure(cause -> log.error("Failed to apply {} community state transition(s): {}",
                                                  batch.size(),
                                                  cause.message()));
@@ -2697,51 +2874,45 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                          next,
                          liveMembers,
                          floor);
-                batch.add(new KVCommand.Put<>(key, value.withState(next)));
+                ctx.kvStore()
+                   .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                             org.pragmatica.cluster.state.kvstore.LeaderValue.class)
+                   .filter(leader -> leader.leader()
+                                           .equals(ctx.self()) && !deactivated.get())
+                   .onPresent(leader -> batch.add(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                                          java.util.UUID.randomUUID()
+                                                                                                                        .toString(),
+                                                                                                          leader,
+                                                                                                          List.of(new KVCommand.ReadWitness<>(GovernorAnnouncementKey.forCommunity(key.communityId()),
+                                                                                                                                              ctx.kvStore()
+                                                                                                                                                 .get(GovernorAnnouncementKey.forCommunity(key.communityId()))
+                                                                                                                                                 .map(observed -> (Object) observed))),
+                                                                                                          List.of(new KVCommand.Mutation<>(key,
+                                                                                                                                           Option.some(value),
+                                                                                                                                           Option.some(value.withState(next)))))));
             }
         }
 
-        /// Observed live membership of a community (worker-membership-spec §3.3), corrected for
-        /// core-observed absence (#590).
-        ///
-        /// The announcement's `memberCount` is the community's own SELF-REPORT, and under a
-        /// core/community partition the governor cannot rewrite it — so it freezes at its last healthy
-        /// value instead of expiring, and the community stayed `ACTIVE` forever while unreachable. The
-        /// reported count is therefore reduced by the members the leader has positively observed to be
-        /// absent (pong silence beyond `timeouts.cluster.community_absence`).
-        ///
-        /// Deliberately a SUBTRACTION from `memberCount` rather than a recount of `members()`: the two
-        /// are independent fields and `governorAnnouncementValue(governorId, memberCount)` leaves
-        /// `members` empty with a non-zero count, so recounting would read 0 live members for a
-        /// perfectly healthy community. With nothing absent this returns exactly what it returned
-        /// before.
-        ///
-        /// No announcement (no governor yet) still reads as `0`, which keeps a FORMING community below
-        /// the floor and demotes an ACTIVE one to DEGRADED.
+        /// Authority rosters describe assignment, not liveness. Count only explicitly fresh
+        /// positive evidence for members still assigned to this community.
         private int communityLiveMembers(String communityId) {
             return ctx.kvStore()
-                      .get(GovernorAnnouncementKey.forCommunity(communityId))
-                      .filter(GovernorAnnouncementValue.class::isInstance)
-                      .map(GovernorAnnouncementValue.class::cast)
-                      .map(this::observedLiveMembers)
+                      .getTyped(GovernorAnnouncementKey.forCommunity(communityId),
+                                GovernorAnnouncementValue.class)
+                      .filter(value -> !value.dissolved())
+                      .map(value -> (int) value.members()
+                                               .stream()
+                                               .distinct()
+                                               .filter(node -> ctx.kvStore()
+                                                                  .getTyped(ActivationDirectiveKey.activationDirectiveKey(node),
+                                                                            ActivationDirectiveValue.class)
+                                                                  .filter(directive -> directive.communityId()
+                                                                                                .equals(communityId))
+                                                                  .isPresent())
+                                               .filter(node -> !ctx.communityLiveness()
+                                                                   .isAbsent(node))
+                                               .count())
                       .or(0);
-        }
-
-        /// `memberCount` minus the positively-absent members. When the announcement carries no member
-        /// list there is only one identity to check — the governor's own — which still detects the
-        /// case this exists for: a whole community that has gone silent.
-        private int observedLiveMembers(GovernorAnnouncementValue announcement) {
-            var liveness = ctx.communityLiveness();
-
-            if (announcement.members().isEmpty()) {
-                return liveness.isAbsent(announcement.governorId())
-                       ? 0
-                       : announcement.memberCount();
-            }
-
-            var absent = (int) announcement.members().stream().filter(liveness::isAbsent).count();
-
-            return Math.max(0, announcement.memberCount() - absent);
         }
 
         /// Pure per-community state edge (worker-membership-spec §3.3). FORMING/DEGRADED promote to
@@ -2780,20 +2951,25 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             var desiredInstances = blueprint.instances();
             var currentInstances = getCurrentInstances(artifact);
+            var placement = currentPlacement(artifact);
 
-            if (currentInstances.size() == desiredInstances) {
+            if (allocationEngine().reconcilePlacement(artifact, desiredInstances, placement)) {
+                consecutiveImbalancedTicks.remove(artifact);
+                if (currentInstances.size() != desiredInstances) {
+                    emitScalingEvent(artifact, currentInstances.size(), desiredInstances);
+                }
+
+                return true;
+            }
+            // The existing rebalance algorithm levels core load only. It must not override an
+            // explicitly selected worker/all audience, including a currently unavailable one.
+            if ("CORE_ONLY".equals(placement) && currentInstances.size() == desiredInstances) {
                 return rebalanceIfNeeded(artifact, currentInstances, rebalanceBudget);
             }
 
             consecutiveImbalancedTicks.remove(artifact);
-            log.info("Reconciliation: {} has {} instances, desired {} - adjusting",
-                     artifact,
-                     currentInstances.size(),
-                     desiredInstances);
-            emitScalingEvent(artifact, currentInstances.size(), desiredInstances);
-            issueAllocationCommands(artifact, desiredInstances);
 
-            return true;
+            return false;
         }
 
         private static final int REBALANCE_HYSTERESIS_TICKS = 2;

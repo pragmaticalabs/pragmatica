@@ -121,6 +121,22 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             _ -> {},
                                                             Option::none,
                                                             MembershipLiveness.UNWIRED);
+        var placements = new java.util.HashMap<AetherKey, AetherValue>();
+        ctm.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
+            () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
+            key -> Option.option(placements.get(key)), commands -> {
+                var results = new java.util.ArrayList<Object>();
+                for (var command : commands) {
+                    var transaction = (KVCommand.LeaderTransaction<AetherKey, AetherValue>) command;
+                    var accepted = transaction.mutations().stream().allMatch(mutation ->
+                        Option.option(placements.get(mutation.key())).equals(mutation.expected()));
+                    if (accepted) {
+                        transaction.mutations().forEach(mutation -> mutation.replacement().onPresent(value -> placements.put(mutation.key(), value)));
+                    }
+                    results.add(new KVCommand.TransactionResult(transaction.transactionId(), accepted));
+                }
+                return Promise.success(results);
+            }));
     }
 
     private static Promise<List<Object>> applyNoop(List<KVCommand<AetherKey>> commands) {
@@ -232,10 +248,24 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(lifecycleManager.provisionedNodeIds()).hasSize(2);
     }
 
+    private List<String> captureRetirementRequests() {
+        var requested = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        ctm.installCommunityPlacement(new CommunityPlacementReconciler() {
+            public Promise<org.pragmatica.lang.Unit> reconcile() { return Promise.unitPromise(); }
+            public Promise<org.pragmatica.lang.Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) {
+                requested.add(node.id());
+                return Promise.unitPromise();
+            }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+        });
+        return requested;
+    }
+
     /// Newest first: reconciler-minted `-r<clock36>` ids sort after bootstrap `-<index>` ids, so a
     /// scale-down reaps cluster-provisioned workers before bootstrap-provisioned ones.
     @Test
-    void reconcile_workerSurplus_terminatesNewestFirst() {
+    void reconcile_workerSurplus_requestsDurableRetirementNewestFirst() {
+        var requested = captureRetirementRequests();
         seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
         lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"),
                                      workerInstance("primary", "primary-worker-1"),
@@ -244,8 +274,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
 
         ctm.reconcileWorkerTopology();
 
-        assertThat(lifecycleManager.terminatedNodeIds())
-                .containsExactly("primary-worker-rzzz-0", "primary-worker-1");
+        assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        assertThat(requested).startsWith("primary-worker-rzzz-0", "primary-worker-1");
         assertThat(lifecycleManager.provisionedNodeIds()).isEmpty();
     }
 
@@ -254,7 +284,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
     /// `actual` was always empty, so `terminateSurplusWorkers` had no victims to choose from and a
     /// scale-down could only ever add VMs.
     @Test
-    void reconcile_scaleDownAfterOwnMints_terminatesItsOwnNewestWorkers() {
+    void reconcile_scaleDownAfterOwnMints_neverBypassesDurableRetirement() {
+        var requested = captureRetirementRequests();
         seedTopology(entry("primary", "core", 3), entry("primary", "worker", 3));
         ctm.activate();
         var newestTwo = lifecycleManager.provisionedNodeIds()
@@ -267,7 +298,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
         ctm.reconcileWorkerTopology();
 
         assertThat(lifecycleManager.provisionedNodeIds()).hasSize(3);
-        assertThat(lifecycleManager.terminatedNodeIds()).containsExactlyElementsOf(newestTwo);
+        assertThat(requested).containsExactlyElementsOf(newestTwo);
+        assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
     }
 
     @Test
@@ -338,7 +370,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                 List.of("127.0.0.1"),
                                 InstanceType.ON_DEMAND,
                                 Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role),
-                                Option.some(nodeId));
+                                Option.some(nodeId), org.pragmatica.lang.Option.none());
     }
 
     private static final class StubSnapshotSource implements GenerationSnapshotSource {

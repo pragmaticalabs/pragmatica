@@ -166,6 +166,15 @@ class LoadBalancerManagerTest {
         }
 
         @Test
+        void workerDeparture_afterTopologyPruning_removesPreviouslyTrackedAddress() {
+            fireNodeRoutesPut("GET", "/api/test/", node1);
+            provider.clear();
+            topologyManager.nodes.remove(node1);
+            manager.onNodeDeparture(node1);
+            assertThat(provider.nodeRemovals).containsExactly("10.0.0.1");
+        }
+
+        @Test
         void activeState_onNodeRoutesRemove_callsProviderWithUpdatedNodeSet() {
             // Add routes for two nodes
             fireNodeRoutesPut("DELETE", "/api/items/", node1);

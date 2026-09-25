@@ -4,9 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
@@ -30,10 +33,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.Server;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -52,15 +54,15 @@ class SpokesmanPingLoopTest {
         network = new RecordingNetwork();
         rabiaTerm = new AtomicLong(7L);
         loop = SpokesmanPingLoop.spokesmanPingLoop(SELF,
-                                                    network,
-                                                    TimeSpan.timeSpan(1).seconds(),
-                                                    rabiaTerm::get,
-                                                    Map::of,
-                                                    communityId -> switch (communityId){
-                                                        case "pool-a" -> Option.some(GOV_A);
-                                                        case "pool-b" -> Option.some(GOV_B);
-                                                        default -> Option.none();
-                                                    });
+                                                   network,
+                                                   TimeSpan.timeSpan(1).seconds(),
+                                                   rabiaTerm::get,
+                                                   Map::of,
+                                                   communityId -> switch (communityId) {
+            case "pool-a" -> Option.some(GOV_A);
+            case "pool-b" -> Option.some(GOV_B);
+            default -> Option.none();
+        });
         loop.start();
     }
 
@@ -68,11 +70,14 @@ class SpokesmanPingLoopTest {
     class ActivationLifecycle {
         @Test
         void onSpokesmanPut_activeStatusWithCommunities_activatesLoop() {
-            var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.epoch(7L, 0L), HlcTimestamp.ZERO, 1L)
-                                       .withStatus(SpokesmanStatus.ACTIVE);
+            var value = SpokesmanValue.spokesmanValue(List.of("pool-a"),
+                                                      Epoch.epoch(7L, 0L),
+                                                      HlcTimestamp.ZERO,
+                                                      1L)
+                                      .withStatus(SpokesmanStatus.ACTIVE);
 
-            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value), Option.none()));
-
+            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value),
+                                               Option.none()));
             assertThat(loop.isActive()).isTrue();
         }
 
@@ -80,49 +85,57 @@ class SpokesmanPingLoopTest {
         void onSpokesmanPut_assignedStatusActivatesAndRecordsTransition() {
             var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.ZERO, HlcTimestamp.ZERO, 1L);
 
-            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value), Option.none()));
-
+            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value),
+                                               Option.none()));
             assertThat(loop.isActive()).isTrue();
         }
 
         @Test
         void onSpokesmanPut_activeButEmptyCommunities_doesNotActivate() {
-            var value = SpokesmanValue.spokesmanValue(List.of(), Epoch.ZERO, HlcTimestamp.ZERO, 1L)
-                                       .withStatus(SpokesmanStatus.ACTIVE);
+            var value = SpokesmanValue.spokesmanValue(List.of(),
+                                                      Epoch.ZERO,
+                                                      HlcTimestamp.ZERO,
+                                                      1L)
+                                      .withStatus(SpokesmanStatus.ACTIVE);
 
-            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value), Option.none()));
-
+            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value),
+                                               Option.none()));
             assertThat(loop.isActive()).isFalse();
         }
 
         @Test
         void onSpokesmanPut_forOtherCoreNode_isIgnored() {
             var other = NodeId.nodeId("core-2").unwrap();
-            var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.ZERO, HlcTimestamp.ZERO, 1L)
-                                       .withStatus(SpokesmanStatus.ACTIVE);
+            var value = SpokesmanValue.spokesmanValue(List.of("pool-a"),
+                                                      Epoch.ZERO,
+                                                      HlcTimestamp.ZERO,
+                                                      1L)
+                                      .withStatus(SpokesmanStatus.ACTIVE);
 
-            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(other), value), Option.none()));
-
+            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(other), value),
+                                               Option.none()));
             assertThat(loop.isActive()).isFalse();
         }
 
         @Test
         void onSpokesmanPut_transitionFromActiveToFailed_deactivates() {
             activateWith(List.of("pool-a"));
+            var failed = SpokesmanValue.spokesmanValue(List.of("pool-a"),
+                                                       Epoch.ZERO,
+                                                       HlcTimestamp.ZERO,
+                                                       1L)
+                                       .withFailure("boom");
 
-            var failed = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.ZERO, HlcTimestamp.ZERO, 1L)
-                                        .withFailure("boom");
-            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), failed), Option.none()));
-
+            loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), failed),
+                                               Option.none()));
             assertThat(loop.isActive()).isFalse();
         }
 
         @Test
         void onSpokesmanRemove_whenActive_deactivates() {
             activateWith(List.of("pool-a"));
-
-            loop.onSpokesmanRemove(new ValueRemove<>(new KVCommand.Remove<>(SpokesmanKey.spokesmanKey(SELF)), Option.none()));
-
+            loop.onSpokesmanRemove(new ValueRemove<>(new KVCommand.Remove<>(SpokesmanKey.spokesmanKey(SELF)),
+                                                     Option.none()));
             assertThat(loop.isActive()).isFalse();
         }
     }
@@ -132,11 +145,24 @@ class SpokesmanPingLoopTest {
         @Test
         void onClusterSyncPong_fromKnownGovernor_producesCommunityReport() {
             activateWith(List.of("pool-a"));
+            var pong = new ClusterSyncPong(GOV_A,
+                                           new MetricObservation(0L,
+                                                                 System.nanoTime(),
+                                                                 System.currentTimeMillis(),
+                                                                 Map.of()),
+                                   0L,
+                                           7L,
+                                           7L,
+                                           3L,
+                                           "READY",
+                                           List.of(),
+                                           List.of(),
+                                           List.of(),
+                                           org.pragmatica.lang.Option.none());
 
-            var pong = new ClusterSyncPong(GOV_A, Map.of(), 7L, 7L, 3L, "READY", List.of(), List.of(), List.of());
             loop.onClusterSyncPong(pong);
-
             var reports = loop.currentReports();
+
             assertThat(reports).hasSize(1);
             assertThat(reports.getFirst().communityId()).isEqualTo("pool-a");
             assertThat(reports.getFirst().governorNodeId()).isEqualTo(GOV_A);
@@ -149,49 +175,117 @@ class SpokesmanPingLoopTest {
             activateWith(List.of("pool-a"));
             var stranger = NodeId.nodeId("stranger").unwrap();
 
-            loop.onClusterSyncPong(new ClusterSyncPong(stranger, Map.of(), 7L, 7L, 3L, "READY", List.of(), List.of(), List.of()));
-
+            loop.onClusterSyncPong(new ClusterSyncPong(stranger,
+                                                       new MetricObservation(0L,
+                                                                             System.nanoTime(),
+                                                                             System.currentTimeMillis(),
+                                                                             Map.of()),
+                                   0L,
+                                                       7L,
+                                                       7L,
+                                                       3L,
+                                                       "READY",
+                                                       List.of(),
+                                                       List.of(),
+                                                       List.of(),
+                                                       org.pragmatica.lang.Option.none()));
             assertThat(loop.currentReports()).isEmpty();
         }
 
         @Test
         void onClusterSyncPong_twoGovernors_producesTwoReports() {
             activateWith(List.of("pool-a", "pool-b"));
-
-            loop.onClusterSyncPong(new ClusterSyncPong(GOV_A, Map.of(), 7L, 7L, 3L, "READY", List.of(), List.of(), List.of()));
-            loop.onClusterSyncPong(new ClusterSyncPong(GOV_B, Map.of(), 7L, 7L, 5L, "READY", List.of(), List.of(), List.of()));
-
-            assertThat(loop.currentReports())
-                  .extracting("communityId")
-                  .containsExactlyInAnyOrder("pool-a", "pool-b");
+            loop.onClusterSyncPong(new ClusterSyncPong(GOV_A,
+                                                       new MetricObservation(0L,
+                                                                             System.nanoTime(),
+                                                                             System.currentTimeMillis(),
+                                                                             Map.of()),
+                                   0L,
+                                                       7L,
+                                                       7L,
+                                                       3L,
+                                                       "READY",
+                                                       List.of(),
+                                                       List.of(),
+                                                       List.of(),
+                                                       org.pragmatica.lang.Option.none()));
+            loop.onClusterSyncPong(new ClusterSyncPong(GOV_B,
+                                                       new MetricObservation(0L,
+                                                                             System.nanoTime(),
+                                                                             System.currentTimeMillis(),
+                                                                             Map.of()),
+                                   0L,
+                                                       7L,
+                                                       7L,
+                                                       5L,
+                                                       "READY",
+                                                       List.of(),
+                                                       List.of(),
+                                                       List.of(),
+                                                       org.pragmatica.lang.Option.none()));
+            assertThat(loop.currentReports()).extracting("communityId").containsExactlyInAnyOrder("pool-a", "pool-b");
         }
     }
 
     private void activateWith(List<String> communities) {
-        var value = SpokesmanValue.spokesmanValue(communities, Epoch.epoch(7L, 0L), HlcTimestamp.ZERO, 1L)
-                                    .withStatus(SpokesmanStatus.ACTIVE);
+        var value = SpokesmanValue.spokesmanValue(communities,
+                                                  Epoch.epoch(7L, 0L),
+                                                  HlcTimestamp.ZERO,
+                                                  1L)
+                                  .withStatus(SpokesmanStatus.ACTIVE);
+
         loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value), Option.none()));
     }
 
     private static final class RecordingNetwork implements ClusterNetwork {
-        @Override public <M extends ProtocolMessage> Unit broadcast(M message) {
+        @Override
+        public <M extends ProtocolMessage> Unit broadcast(M message) {
             return Unit.unit();
         }
 
-        @Override public void connect(ConnectNode connectNode) {}
-        @Override public void disconnect(DisconnectNode disconnectNode) {}
-        @Override public void listNodes(ListConnectedNodes listConnectedNodes) {}
-        @Override public void handleSend(Send send) {}
-        @Override public void handleBroadcast(Broadcast broadcast) {}
+        @Override
+        public void connect(ConnectNode connectNode) {}
 
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        @Override
+        public void disconnect(DisconnectNode disconnectNode) {}
+
+        @Override
+        public void listNodes(ListConnectedNodes listConnectedNodes) {}
+
+        @Override
+        public void handleSend(Send send) {}
+
+        @Override
+        public void handleBroadcast(Broadcast broadcast) {}
+
+        @Override
+        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
             return Unit.unit();
         }
 
-        @Override public Promise<Unit> start() {return Promise.success(Unit.unit());}
-        @Override public Promise<Unit> stop() {return Promise.success(Unit.unit());}
-        @Override public int connectedNodeCount() {return 0;}
-        @Override public Set<NodeId> connectedPeers() {return Set.of();}
-        @Override public Option<Server> server() {return Option.none();}
+        @Override
+        public Promise<Unit> start() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public int connectedNodeCount() {
+            return 0;
+        }
+
+        @Override
+        public Set<NodeId> connectedPeers() {
+            return Set.of();
+        }
+
+        @Override
+        public Option<Server> server() {
+            return Option.none();
+        }
     }
 }

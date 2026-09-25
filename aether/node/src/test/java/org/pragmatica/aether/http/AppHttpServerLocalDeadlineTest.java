@@ -102,12 +102,46 @@ class AppHttpServerLocalDeadlineTest {
         }
     }
 
-    private record DeadlineObservingRouter(AtomicReference<Deadline> observed) implements SliceRouter {
+    @Test
+    void localExecutionRetainsDrainAccountingUntilUnderlyingResult() throws Exception {
+        var tracker = org.pragmatica.aether.deployment.drain.InFlightRequestTracker.inFlightRequestTracker();
+        var execution = Promise.<HttpResponseData>promise();
+        var router = new DeadlineObservingRouter(new AtomicReference<>(), execution);
+        var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
+            ForwardingTimeouts.forwardingTimeouts(), SELF_NODE, registry,
+            Option.some(new StubRoutePublisher("GET", "/local/", SELF_NODE, router)),
+            Option.none(), Option.none(), Option.none(), Option.none(), Option.none(), Option.none(), Option.none(),
+            Option.<org.pragmatica.aether.update.DeploymentManager>none());
+        server.setInvocationAdmission(tracker);
+        server.start().await();
+        try {
+            var request = java.net.http.HttpRequest.newBuilder(URI.create("http://localhost:" + TEST_PORT + "/local/held")).GET().build();
+            var response = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+            org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(tracker.count()).isEqualTo(1));
+            tracker.setAcceptingNewWork(false);
+            var refused = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            assertThat(refused.statusCode()).isGreaterThanOrEqualTo(400);
+            assertThat(refused.body()).contains("draining");
+            assertThat(tracker.count()).isEqualTo(1);
+            assertThat(response.isDone()).isFalse();
+            execution.succeed(HttpResponseData.httpResponseData(200, "released"));
+            assertThat(response.get(5, java.util.concurrent.TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+            org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(tracker.count()).isZero());
+        } finally {
+            execution.succeed(HttpResponseData.httpResponseData(200, "cleanup"));
+            server.stop().await();
+        }
+    }
+
+    private record DeadlineObservingRouter(AtomicReference<Deadline> observed, Promise<HttpResponseData> response) implements SliceRouter {
+        DeadlineObservingRouter(AtomicReference<Deadline> observed) {
+            this(observed, Promise.success(HttpResponseData.httpResponseData(200, "observed")));
+        }
         @Override
         public Promise<HttpResponseData> handle(HttpRequestContext request) {
             observed.set(Deadline.current());
 
-            return Promise.success(HttpResponseData.httpResponseData(200, "{\"result\":\"observed\"}"));
+            return response;
         }
 
         @Override

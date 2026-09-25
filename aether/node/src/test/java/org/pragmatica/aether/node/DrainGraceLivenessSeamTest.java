@@ -105,14 +105,15 @@ class DrainGraceLivenessSeamTest {
     @Test
     void drainGraceLiveness_advertisedRole_readsTheFsmDescriptor() {
         var fsm = bootSeededFsm();
+        var worker = NodeId.nodeId("distinct-worker").unwrap();
 
-        fsm.onMemberDescriptor(NodeInfo.nodeInfo(PEER_B, nodeAddress("10.0.0.2", 6000).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")));
-        fsm.onMemberDescriptor(NodeInfo.nodeInfo(PEER_B, nodeAddress("10.0.0.2", 6000).unwrap()));
+        fsm.onMemberDescriptor(NodeInfo.nodeInfo(worker, nodeAddress("10.0.0.2", 6000).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")));
+        fsm.onMemberDescriptor(NodeInfo.nodeInfo(worker, nodeAddress("10.0.0.2", 6000).unwrap()));
 
         var liveness = AetherNode.drainGraceLiveness(() -> fsm, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
 
         assertThat(liveness.advertisedRole()
-                           .apply(PEER_B)).isEqualTo(Option.some("worker"));
+                           .apply(worker)).isEqualTo(Option.some("worker"));
         assertThat(liveness.advertisedRole()
                            .apply(BOOTING)).as("an untracked id has no advertised role — not a blank")
                                            .isEqualTo(Option.none());

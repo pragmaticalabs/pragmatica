@@ -109,7 +109,7 @@ class BootstrapPhaseProvisionUserDataTest {
                                                              Map.of("eu-1", source),
                                                              Map.of(),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                             OperationsConfig.defaultOperationsConfig());
+                                                             OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static BootstrapContext baseContext(ClusterBootstrapConfig config) {
