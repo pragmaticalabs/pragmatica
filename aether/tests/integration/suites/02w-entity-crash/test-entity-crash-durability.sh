@@ -158,8 +158,33 @@ create_range_recording_acks() {
     done
 }
 
+# Refusals that mean "retry", never "no" (#1501). Each is a `Cause.Transient` in the product and
+# clears on its own: `FoldInProgress` is a partition holder still replaying its entity log before it
+# may serve reads (EntityLogError.java). An EXPLICIT allow-list, so an unknown failure type is never
+# retried into silence. Space-separated; extend only with a failureType the product marks transient.
+ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress}"
+# Per-key bound on retrying a transient refusal. s27 cluster B (2026-09-25): three keys refused
+# FoldInProgress in the pre-kill readback and read back exactly ~20s later.
+TRANSIENT_READ_DEADLINE_S="${TRANSIENT_READ_DEADLINE_S:-60}"
+TRANSIENT_READ_BACKOFF_S="${TRANSIENT_READ_BACKOFF_S:-2}"
+
+# transient_failure_type <body>: echo the body's failureType and succeed when it is on the
+# allow-list; fail (echoing nothing) otherwise.
+transient_failure_type() {
+    local ft t
+    ft=$(printf '%s' "$1" | sed -nE 's/.*"failureType"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)
+    [ -n "$ft" ] || return 1
+    for t in $ENTITY_TRANSIENT_FAILURE_TYPES; do
+        if [ "$t" = "$ft" ]; then
+            printf '%s' "$ft"
+            return 0
+        fi
+    done
+    return 1
+}
+
 read_amount() {
-    local key="$1" body
+    local key="$1" body ft deadline
 
     # A node outside the key's replica set answers `PartitionNotHeld` — a STABLE refusal meaning
     # "ask another node", NOT "absent". Summing negatives across nodes would read a live entity as
@@ -172,22 +197,40 @@ read_amount() {
     #   rc 0 — found: the amount is on stdout.
     #   rc 3 — ABSENT: a node HOLDING the key's arc answered `"outcome":"absent"` (positive
     #          evidence — non-holders answer PartitionNotHeld, never "absent").
-    #   rc 4 — UNREACHABLE: no node gave any positive answer (timeouts, dead ports, refusals).
-    #          This is "the verdict cannot be measured", NEVER evidence of loss.
+    #   rc 4 — NO POSITIVE ANSWER: no node answered at all (timeouts, dead ports), or a live node
+    #          answered with something that is neither found nor absent nor transient.
+    #   rc 5 — REFUSED-TRANSIENT: a live node kept answering an allow-listed transient refusal
+    #          (e.g. FoldInProgress) until TRANSIENT_READ_DEADLINE_S ran out.
+    #   rc 4 and 5 mean "the verdict cannot be measured", NEVER evidence of loss.
+    #
+    # A transient refusal is RETRIED, not classified (#1501): the first live answer used to be
+    # final, so a partition still replaying its log landed in rc 4 as "no node answered" — false,
+    # a node had answered "retry".
     #
     # Every log helper writes to STDOUT and this function's stdout IS the parsed amount, so
     # diagnostics must be redirected or they silently corrupt the compared value.
-    if body=$(entity_post_any "/api/entity/get" "{\"orderId\":\"${key}\"}" \
-                              '"outcome"[[:space:]]*:[[:space:]]*"(found|absent)"'); then
-        if printf '%s' "$body" | grep -qE '"outcome"[[:space:]]*:[[:space:]]*"found"'; then
-            printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
-            return 0
+    deadline=$((SECONDS + TRANSIENT_READ_DEADLINE_S))
+    while :; do
+        if body=$(entity_post_any "/api/entity/get" "{\"orderId\":\"${key}\"}" \
+                                  '"outcome"[[:space:]]*:[[:space:]]*"(found|absent)"'); then
+            if printf '%s' "$body" | grep -qE '"outcome"[[:space:]]*:[[:space:]]*"found"'; then
+                printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
+                return 0
+            fi
+            return 3
         fi
-        return 3
-    fi
+        ft=$(transient_failure_type "$body") || break
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            log_warn "read ${key}: a node answered transient ${ft} until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: $(printf '%s' "$body" | head -c 200)" >&2
+            return 5
+        fi
+        sleep "$TRANSIENT_READ_BACKOFF_S"
+    done
 
     if [ -n "$body" ]; then
-        log_warn "read ${key}: no positive answer from any node; last body: $(printf '%s' "$body" | head -c 200)" >&2
+        log_warn "read ${key}: a node answered, but not found/absent (not a transient type); last body: $(printf '%s' "$body" | head -c 200)" >&2
+    else
+        log_warn "read ${key}: no node answered (every endpoint failed at transport or non-2xx)" >&2
     fi
     return 4
 }
@@ -316,15 +359,19 @@ test_pre_kill_state_readable() {
                 log_error "pre-kill readback: ${key} ACKED but a holding node answered ABSENT"
                 bad=$((bad + 1))
                 ;;
+            5)
+                log_warn "pre-kill readback: ${key} still refused as transient at the retry deadline — not counted as loss"
+                unreachable=$((unreachable + 1))
+                ;;
             *)
-                log_warn "pre-kill readback: ${key} unreachable (no node answered) — not counted as loss"
+                log_warn "pre-kill readback: ${key} gave no positive answer (see the read WARN above) — not counted as loss"
                 unreachable=$((unreachable + 1))
                 ;;
         esac
     done < "$ACKED_PRE"
 
     if [ "$unreachable" -ne 0 ]; then
-        log_fail "${unreachable} pre-kill entities UNREACHABLE — verdict unmeasurable, fix the cluster/harness first"
+        log_fail "${unreachable} pre-kill entities UNREACHABLE (no positive answer, or still transient at the deadline) — verdict unmeasurable, fix the cluster/harness first"
         return 1
     fi
     if [ "$bad" -ne 0 ]; then
@@ -444,9 +491,13 @@ test_every_acked_entity_survives_the_crash() {
                     missing=$((missing + 1))
                     log_error "LOST after SIGKILL: ${key} (acked; a holding node answers ABSENT)"
                     ;;
+                5)
+                    unreachable=$((unreachable + 1))
+                    log_warn "UNREACHABLE after SIGKILL: ${key} (still refused as transient at the retry deadline — NOT counted as loss)"
+                    ;;
                 *)
                     unreachable=$((unreachable + 1))
-                    log_warn "UNREACHABLE after SIGKILL: ${key} (no node answered — NOT counted as loss)"
+                    log_warn "UNREACHABLE after SIGKILL: ${key} (no positive answer, see the read WARN above — NOT counted as loss)"
                     ;;
             esac
         done < "$f"

@@ -461,6 +461,85 @@ got=$(reap_probe)
 unset -f hcloud api_get ssh
 unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS
 
+# --- 02w: a transient entity refusal is retried, not classified (#1501) --------------------
+# The suite's own read_amount / entity_post_any / transient_failure_type are extracted verbatim and
+# driven by a stub `_api_call` that pops one body per call from a queue file (`__DOWN__` = transport
+# failure). The FoldInProgress body is the one captured in the s27 cluster-B run log (line 1428),
+# byte for byte — including its truncation at 200 bytes by the suite's own `head -c 200`.
+W02="${INTEG_DIR}/suites/02w-entity-crash/test-entity-crash-durability.sh"
+FOLD_BODY="$(cat "${SCRIPT_DIR}/fixtures/s27-02w-foldinprogress-body.txt")"
+W_WORK="$(mktemp -d)"
+w_defs() {
+    grep -E '^(KEY_PREFIX|ENTITY_TRANSIENT_FAILURE_TYPES|TRANSIENT_READ_DEADLINE_S|TRANSIENT_READ_BACKOFF_S)=' "$W02"
+    local fn
+    for fn in key_for amount_for entity_post_any transient_failure_type read_amount \
+              test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
+        awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "$W02"
+    done
+}
+w_defs > "${W_WORK}/defs.sh"
+for fn in entity_post_any transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
+    grep -q "^${fn}() {" "${W_WORK}/defs.sh" || fail "W0 ${fn} not extracted from the 02w suite (examined NOTHING)"
+done
+w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; stderr -> $W_WORK/err
+    local snippet="$1"; shift
+    printf '%s\n' "$@" > "${W_WORK}/queue"; : > "${W_WORK}/calls"
+    ( source "${W_WORK}/defs.sh"
+      ENTITY_APP_ENDPOINTS="http://w-stub:8070"; KILL_CONFIRMED=1
+      TRANSIENT_READ_BACKOFF_S=0
+      [ -n "${W_DEADLINE:-}" ] && TRANSIENT_READ_DEADLINE_S="$W_DEADLINE"
+      refresh_app_endpoints() { :; }
+      log_warn() { echo "WARN $*" >&2; }; log_error() { echo "ERROR $*" >&2; }
+      log_fail() { echo "FAIL $*" >&2; }; log_pass() { echo "PASS $*" >&2; }; log_info() { echo "INFO $*" >&2; }
+      _api_call() {
+          local b; printf "%s\n" "$3" >> "${W_WORK}/calls"
+          b=$(head -1 "${W_WORK}/queue"); tail -n +2 "${W_WORK}/queue" > "${W_WORK}/queue.n"; mv "${W_WORK}/queue.n" "${W_WORK}/queue"
+          [ "$b" = "__DOWN__" ] || [ -z "$b" ] && return 1
+          printf '%s' "$b"
+      }
+      out=$(eval "$snippet"); rc=$?
+      printf 'rc=%s out=%s calls=%s' "$rc" "$out" "$(grep -c . "${W_WORK}/calls")" ) 2> "${W_WORK}/err"
+}
+FOUND3='{"outcome":"found","orderId":"ENTDUR-00003-Z","amount":24}'
+got=$(w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" "$FOLD_BODY" "$FOUND3")
+[ "$got" = "rc=0 out=24 calls=3" ] \
+    && ok "W1 captured FoldInProgress body is retried until the key reads back (rc 0, amount 24)" \
+    || fail "W1 FoldInProgress retry: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+got=$(W_DEADLINE=0 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY")
+if [ "$got" = "rc=5 out= calls=1" ] && grep -q 'transient FoldInProgress until the 0s retry deadline' "${W_WORK}/err" \
+   && grep -q 'still replaying its log' "${W_WORK}/err" && ! grep -q 'no node answered' "${W_WORK}/err"; then
+    ok "W2 FoldInProgress past the deadline is rc 5, reported with the true last body, never 'no node answered'"
+else fail "W2 transient at deadline: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"; fi
+got=$(w_run 'read_amount ENTDUR-00003-Z' '{"outcome":"failed","failureType":"EntityCorrupt","failure":"x"}' "$FOUND3")
+[ "$got" = "rc=4 out= calls=1" ] && grep -q 'not a transient type' "${W_WORK}/err" \
+    && ok "W3 a failureType off the allow-list is NOT retried (rc 4 after one call)" \
+    || fail "W3 non-transient: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+got=$(w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" '{"outcome":"absent","orderId":"ENTDUR-00003-Z"}')
+[ "$got" = "rc=3 out= calls=2" ] \
+    && ok "W4 genuine loss stays detectable: FoldInProgress then ABSENT is rc 3" \
+    || fail "W4 absent after transient: got '${got}'"
+got=$(w_run 'read_amount ENTDUR-00003-Z' __DOWN__ __DOWN__)
+[ "$got" = "rc=4 out= calls=2" ] && grep -q 'no node answered' "${W_WORK}/err" \
+    && ok "W5 transport failure on every endpoint is still rc 4 'no node answered'" \
+    || fail "W5 no answer: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+printf '3\n' > "${W_WORK}/acked"
+got=$(w_run "ACKED_PRE='${W_WORK}/acked'; test_pre_kill_state_readable" "$FOLD_BODY" "$FOUND3")
+[ "$got" = "rc=0 out= calls=2" ] && grep -q '^PASS every pre-kill ACKED entity reads back' "${W_WORK}/err" \
+    && [ "$(grep -c "\"orderId\":\"ENTDUR-00003-Z\"" "${W_WORK}/calls")" = 2 ] \
+    && ok "W6 pre-kill readback passes through a FoldInProgress refusal (the s27 red)" \
+    || fail "W6 pre-kill readback: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+: > "${W_WORK}/empty"
+got=$(w_run "ACKED_PRE='${W_WORK}/acked'; ACKED_DURING='${W_WORK}/empty'; test_every_acked_entity_survives_the_crash" "$FOLD_BODY" "$FOUND3")
+[ "$got" = "rc=0 out= calls=2" ] && grep -q '^PASS all 1 ACKED entities survived' "${W_WORK}/err" \
+    && [ "$(grep -c "\"orderId\":\"ENTDUR-00003-Z\"" "${W_WORK}/calls")" = 2 ] \
+    && ok "W7 post-kill readback passes through a FoldInProgress refusal" \
+    || fail "W7 post-kill readback: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+got=$(w_run "ACKED_PRE='${W_WORK}/acked'; ACKED_DURING='${W_WORK}/empty'; test_every_acked_entity_survives_the_crash" "$FOLD_BODY" '{"outcome":"absent"}')
+[ "$got" = "rc=1 out= calls=2" ] && grep -q '^FAIL 1/1 lost' "${W_WORK}/err" \
+    && ok "W8 post-kill: an ACKED key that is truly ABSENT after the refusal still FAILS as loss" \
+    || fail "W8 post-kill loss: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+rm -rf "$W_WORK"
+
 echo ""
 echo "  ----"
 echo "  passed: ${PASS}"
