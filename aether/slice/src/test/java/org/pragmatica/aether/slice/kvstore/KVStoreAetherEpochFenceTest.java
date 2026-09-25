@@ -141,6 +141,22 @@ class KVStoreAetherEpochFenceTest {
                 .isEqualTo(dissolved);
         }
 
+        /// `GovernorAnnouncementValue` is [org.pragmatica.cluster.state.kvstore.OwnerFenced]: at an EQUAL
+        /// epoch only the committed governor may re-write (`KVStore.incomingEpochIsStale` →
+        /// `differentOwner`). The reannounce and dissolve tests above re-write as the SAME governor, so
+        /// this is the one that reaches the different-owner arm through the real value type and the
+        /// real leader-transaction write channel.
+        @Test
+        void sameEpochDifferentGovernor_rejected() {
+            var incumbent = governor(GOV_A, Epoch.epoch(3, 0));
+            apply(GOV_KEY, incumbent);
+            apply(GOV_KEY, governor(GOV_B, Epoch.epoch(3, 0)));
+
+            assertThat(stored(GOV_KEY))
+                .as("an equal-epoch announcement from a DIFFERENT governor must not take over the community")
+                .isEqualTo(incumbent);
+        }
+
         @Test
         void staleGovernorOlderEpoch_rejected() {
             apply(GOV_KEY, governor(GOV_B, Epoch.epoch(5, 0)));
