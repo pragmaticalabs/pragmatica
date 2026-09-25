@@ -2542,7 +2542,10 @@ _cloud_running_vm_ips() {
     # Interim fix: query by label KEY presence (`-l aether-node-id`, matches
     # regardless of whether `aether-cluster` is ever stamped) and post-filter
     # each row against two independent, cluster-unambiguous membership tests:
-    #   - CTM auto-heal replacements are named `aether-cloud-<cluster>-node-*`
+    #   - CTM auto-heal replacements are named `aether-<cluster>-node-*` — the cluster's
+    #     persisted name, which is the harness name since #1487 (before it, the TOML
+    #     `[cluster] name`, `cloud-test-b`, so the old pattern `aether-cloud-<cluster>-`
+    #     only matched because that TOML name happened to be `cloud-` + the harness name)
     #     (the cluster name is embedded in the `aether-node-id` VALUE itself,
     #     so this match can never fold in a sibling cluster's replacement).
     #   - Original bootstrap seeds are named `<CLOUD_SOURCE_NAME>-core-N`,
@@ -2597,7 +2600,7 @@ _cloud_running_vm_ips() {
         node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
         [ -z "$node_id" ] && continue
         case "$node_id" in
-            "aether-cloud-${cluster_name}-node-"*)
+            "aether-${cluster_name}-node-"*)
                 printf '%s\n' "$ip"
                 ;;
             *)
@@ -2661,7 +2664,7 @@ _cloud_seed_ips() {
 # every 03-scaling scale-up failed with 403 resource_limit_exceeded).
 # Per-row membership tests (any one admits the row):
 #   1. `aether-node-id` label VALUE matches the CTM replacement pattern
-#      `aether-cloud-<cluster>-node-*` (cluster name embedded — unambiguous).
+#      `aether-<cluster>-node-*` (cluster name embedded — unambiguous; #1487).
 #   2. exact `aether-cluster=<cluster>` label match (stamped reliably
 #      post-#442 v2b; exact match can never fold in the PG VM — its value is
 #      `test-pg`, never a test cluster's name — nor a sibling cluster).
@@ -2713,7 +2716,7 @@ reap_cloud_cluster() {
             node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
             member=false
             case "$node_id" in
-                "aether-cloud-${cluster_name}-node-"*) member=true ;;
+                "aether-${cluster_name}-node-"*) member=true ;;
             esac
             # Exact-boundary label match; cluster names are [a-z0-9-] so the
             # interpolation is ERE-safe.
