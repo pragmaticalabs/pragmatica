@@ -1433,7 +1433,7 @@ class LeaderReconcilerTest {
             configuredCoreCount.set(1);
             // Members = SELF + young seed1 = 2; surplus 1. seed1 is inside the drain-safety grace.
             health.markHealthy(seed1);
-            membershipFsm.onSwimHealthy(seed1, fsmIncarnation.getAndIncrement());
+            observeCoreHealthy(seed1);
             sampler.sample();
 
             runActivationPass();
@@ -1452,9 +1452,9 @@ class LeaderReconcilerTest {
             // SELF + ctm1 (both ephemeral) + seed1, none aged past the grace; every member owns
             // slices. Surplus = 3 - 2 = 1. Without the grace on the owner tier SELF or ctm1 would go.
             health.markHealthy(seed1);
-            membershipFsm.onSwimHealthy(seed1, fsmIncarnation.getAndIncrement());
+            observeCoreHealthy(seed1);
             health.markHealthy(ctm1);
-            membershipFsm.onSwimHealthy(ctm1, fsmIncarnation.getAndIncrement());
+            observeCoreHealthy(ctm1);
             sampler.sample();
             reconciler.setOwnsActiveSlices(id -> true);
 

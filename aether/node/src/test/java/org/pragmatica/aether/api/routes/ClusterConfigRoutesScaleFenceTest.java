@@ -23,6 +23,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.JsonCodecAdapter;
@@ -211,6 +215,7 @@ class ClusterConfigRoutesScaleFenceTest {
     private static Object dispatch(TestKVStore store, Method method, Object[] args) {
         return switch (method.getName()) {
             case "kvStore" -> store;
+            case "isLeader" -> true;
             case "apply" -> applyBatch(store, args);
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         };
@@ -218,20 +223,36 @@ class ClusterConfigRoutesScaleFenceTest {
 
     @SuppressWarnings("unchecked")
     private static Promise<List<Object>> applyBatch(TestKVStore store, Object[] args) {
-        ((List<KVCommand<AetherKey>>) args[0]).forEach(command -> routeCommand(store, command));
-
-        return Promise.success(List.of());
+        return Promise.success(((List<KVCommand<AetherKey>>) args[0]).stream()
+                                                                      .map(command -> routeCommand(store, command))
+                                                                      .toList());
     }
 
-    private static void routeCommand(TestKVStore store, KVCommand<AetherKey> command) {
-        if (command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof AetherValue value) {
-            store.applyPut(put.key(), value);
+    /// #1390 commits a config update as ONE leader transaction carrying one compare-and-set mutation
+    /// (`ClusterConfigRoutes.storeFencedConfig`), where rc4 issued a bare `Put`. Applying that mutation
+    /// keeps an accepted write OBSERVABLE, which is what makes the RED case red — the same port #1390
+    /// made to [ClusterConfigRoutesScaleNoConfigTest].
+    private static Object routeCommand(TestKVStore store, KVCommand<AetherKey> command) {
+        return command instanceof KVCommand.LeaderTransaction<AetherKey, ?> transaction
+               ? applyTransaction(store, transaction)
+               : new KVCommand.TransactionResult("unexpected", false);
+    }
+
+    private static KVCommand.TransactionResult applyTransaction(TestKVStore store,
+                                                                KVCommand.LeaderTransaction<AetherKey, ?> transaction) {
+        var mutation = transaction.mutations().getFirst();
+        var accepted = store.get(mutation.key()).equals(mutation.expected());
+
+        if (accepted) {
+            mutation.replacement().onPresent(value -> store.applyPut(mutation.key(), (AetherValue) value));
         }
+
+        return new KVCommand.TransactionResult(transaction.transactionId(), accepted);
     }
 
-    /// Unconditional write, as in [ClusterConfigRoutesScaleNoConfigTest]: the RFC-0018 successor fence
-    /// is pinned in [ClusterConfigRoutesApplyTest]; this harness only needs a store that round-trips a
-    /// `Put` so an accepted write is OBSERVABLE — which is what makes the RED case red.
+    /// A plain map store, as in [ClusterConfigRoutesScaleNoConfigTest]: the RFC-0018 successor fence
+    /// is pinned in [ClusterConfigRoutesApplyTest]; this harness only needs a store that round-trips the
+    /// transaction's write so an accepted write is OBSERVABLE — which is what makes the RED case red.
     private static final class TestKVStore extends KVStore<AetherKey, AetherValue> {
         private final Map<AetherKey, AetherValue> storage = new HashMap<>();
 
@@ -245,6 +266,14 @@ class ClusterConfigRoutesScaleFenceTest {
 
         void applyPut(AetherKey key, AetherValue value) {
             storage.put(key, value);
+        }
+
+        /// The route reads the committed leader before it builds its transaction (#1390).
+        @Override
+        public <VV> Option<VV> getTyped(StructuredKey key, Class<VV> type) {
+            return key == LeaderKey.INSTANCE
+                   ? Option.some(type.cast(new LeaderValue(new NodeId("core"), 1)))
+                   : Option.option(storage.get(key)).filter(type::isInstance).map(type::cast);
         }
 
         @Override
