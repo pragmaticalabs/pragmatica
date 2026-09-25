@@ -1007,7 +1007,8 @@ teardown() {
             ;;
         cloud)
             # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).
-            # Use cloud-reaper.sh which filters by `aether-cluster` label — works regardless of
+            # Use cloud-reaper.sh which filters by `aether-cluster` label (and by `aether-chaos-cluster`,
+            # the partition-chaos firewalls' key, #1500) — works regardless of
             # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
             # A's guard uses the PRE-GATE snapshot (A_SUITES_SELECTED): the Step-8
             # gate removes 00 from A_SUITES after running it, so on a `--suites 00`
