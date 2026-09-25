@@ -79,7 +79,14 @@ class KVStoreAetherEpochFenceTest {
         store = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
     }
 
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private void apply(AetherKey key, AetherValue value) {
+        if (value instanceof GovernorAnnouncementValue) {
+            var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(GOV_A, 1);
+            store.process(store.createBatch((List) List.of(new Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, leader))));
+            store.process(store.createBatch(List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), leader, java.util.List.of(), java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Mutation<>(key, store.get(key), org.pragmatica.lang.Option.some(value)))))));
+            return;
+        }
         store.process(store.createBatch(List.of(new Put<>(key, value))));
     }
 
@@ -112,7 +119,7 @@ class KVStoreAetherEpochFenceTest {
             apply(GOV_KEY, first);
 
             // withMembers keeps communityEpoch unchanged — a legitimate periodic reannouncement.
-            var reannounced = first.withMembers(List.of(GOV_A, GOV_B), "10.0.0.9:7201");
+            var reannounced = first.withMembers(List.of(GOV_A, GOV_B), "10.0.0.9:7201", Epoch.ZERO);
             apply(GOV_KEY, reannounced);
 
             assertThat(stored(GOV_KEY))
@@ -132,6 +139,22 @@ class KVStoreAetherEpochFenceTest {
             assertThat(stored(GOV_KEY))
                 .as("dissolution at the same epoch must NOT be fenced")
                 .isEqualTo(dissolved);
+        }
+
+        /// `GovernorAnnouncementValue` is [org.pragmatica.cluster.state.kvstore.OwnerFenced]: at an EQUAL
+        /// epoch only the committed governor may re-write (`KVStore.incomingEpochIsStale` →
+        /// `differentOwner`). The reannounce and dissolve tests above re-write as the SAME governor, so
+        /// this is the one that reaches the different-owner arm through the real value type and the
+        /// real leader-transaction write channel.
+        @Test
+        void sameEpochDifferentGovernor_rejected() {
+            var incumbent = governor(GOV_A, Epoch.epoch(3, 0));
+            apply(GOV_KEY, incumbent);
+            apply(GOV_KEY, governor(GOV_B, Epoch.epoch(3, 0)));
+
+            assertThat(stored(GOV_KEY))
+                .as("an equal-epoch announcement from a DIFFERENT governor must not take over the community")
+                .isEqualTo(incumbent);
         }
 
         @Test

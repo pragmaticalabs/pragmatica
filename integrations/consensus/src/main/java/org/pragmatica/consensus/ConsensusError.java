@@ -41,6 +41,17 @@ public sealed interface ConsensusError extends Cause {
         }
     }
 
+    /// A newer committed snapshot covers slots whose individual results are unavailable.
+    /// The request may already have committed; callers must reconcile its outcome before retrying.
+    record SnapshotOutcomeUnknown(NodeId nodeId, long nextSlot) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Node " + nodeId.id()
+                 + " adopted snapshot at slot " + nextSlot
+                 + "; pending request outcome is unknown, reconcile before retrying";
+        }
+    }
+
     record SnapshotFailed(String reason) implements ConsensusError {
         @Override
         public String message() {

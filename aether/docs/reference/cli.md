@@ -1268,7 +1268,8 @@ aether nodes drain <nodeId>
 # grace-terminate backstop reaps the container)
 aether nodes shutdown <nodeId>
 
-# Promote a node to a new role (CORE or WORKER) via consensus
+# Check an already matching immutable role (CORE, WORKER or SPOT).
+# A different role is refused; provision a new node with the required role.
 aether nodes promote <nodeId> --role WORKER
 aether nodes promote <nodeId> --role CORE
 ```
@@ -1287,7 +1288,7 @@ aether nodes lifecycle node-2
 # Initiate shutdown
 aether nodes shutdown node-3
 
-# Promote node-4 to a WORKER role at runtime (CORE → WORKER); reverse with --role CORE
+# Acknowledges node-4 only if it already has the immutable WORKER role
 aether nodes promote node-4 --role WORKER
 ```
 

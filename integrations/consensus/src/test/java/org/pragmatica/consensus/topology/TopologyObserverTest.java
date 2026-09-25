@@ -82,6 +82,23 @@ class TopologyObserverTest {
     /// `config.coreNodes()` is NOT seeded into the dial set — it only feeds SWIM's seed/
     /// ANNOUNCE path (outside this observer) and the configured-core IDENTITY (`coreNodeIds`,
     /// quorum denominator), which remain config-derived.
+    @Test
+    void consensusEligibilityUsesExplicitAuthorityRatherThanDiscoveredPeers() {
+        var observer = TopologyObserver.topologyObserver(baseConfig(), quietRouter()).unwrap();
+        var worker = nodeId("worker").unwrap();
+        assertThat(observer.isConsensusMember(PEER_A)).isTrue();
+        assertThat(observer.isConsensusMember(worker)).isFalse();
+        observer.setConsensusMembership(Set.of(SELF, PEER_B)::contains);
+        assertThat(observer.isConsensusMember(PEER_A)).isFalse();
+        assertThat(observer.isConsensusMember(PEER_B)).isTrue();
+        assertThat(observer.isConsensusMember(worker)).isFalse();
+        observer.setStateTransferMembership(PEER_A::equals);
+        assertThat(observer.isStateTransferPeer(PEER_A)).isTrue();
+        assertThat(observer.isStateTransferPeer(PEER_B)).isTrue();
+        assertThat(observer.isStateTransferPeer(worker)).isFalse();
+        assertThat(observer.isConsensusMember(PEER_A)).isFalse();
+    }
+
     @Nested
     class SwimOnlyDialSet {
         @Test

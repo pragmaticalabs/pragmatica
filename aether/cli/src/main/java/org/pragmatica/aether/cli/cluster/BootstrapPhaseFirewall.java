@@ -169,7 +169,7 @@ public sealed interface BootstrapPhaseFirewall {
         warnIfAutoCreated(source, appHttpPort);
 
         return computeResolver.resolve(source,
-                                       ctx.sshKeyIdsFor(HETZNER_PROVIDER),
+                                       ctx.sshKeyIdsFor(source.name().value()),
                                        "",
                                        ctx.config().cluster().name())
                               .flatMap(compute -> openAll(ctx, source, compute, rules));

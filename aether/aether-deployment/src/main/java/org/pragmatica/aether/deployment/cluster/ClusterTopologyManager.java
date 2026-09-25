@@ -68,7 +68,7 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// retained for the id until the node is decommissioned, so every rejoin under that id is
     /// re-compared: a still-mislabelled restart re-reports, a correctly relabelled one clears the
     /// entry. A departed node's entry stays listed until decommission or leader change. The
-    /// classification itself is unchanged (blank counts as core); this is the record that says so.
+    /// classification is explicit; absent or unrecognized role labels are reported as UNKNOWN.
     default List<RoleMismatch> roleMismatches() {
         return List.of();
     }
@@ -160,6 +160,25 @@ public interface ClusterTopologyManager extends TopologyManager {
     ///
     /// Drain is delivered as a heartbeat command (spec §7.5.4) and is heartbeat-reported /
     /// leader-cached — there is no KV drain record and no node-state KV write on this path.
+    boolean usesExplicitCommunities();
+    void installCommunityPlacement(CommunityPlacementReconciler reconciler);
+
+    default org.pragmatica.lang.Unit setHierarchyStateWriter(HierarchyStateWriter writer) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Verified genesis voter IDs, independent of current discovery peers or desired capacity.
+    default org.pragmatica.lang.Unit setGenesisVoters(java.util.function.Supplier<java.util.List<NodeId>> supplier) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Core retirement requires a durable successor installation certificate.
+    default org.pragmatica.lang.Unit setRetirementAllowed(java.util.function.Predicate<NodeId> predicate) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
+
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
     /// #1049 — what the compute provider reports about the instance behind the auto-heal replacement
     /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,

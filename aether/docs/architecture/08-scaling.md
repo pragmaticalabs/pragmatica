@@ -135,9 +135,9 @@ sequenceDiagram
 | 3 | LATENCY_MS | Average latency |
 | 4 | INVOCATIONS | Request count |
 | 5 | GC_PAUSE_MS | GC pause duration |
-| 6 | LATENCY_P50 | 50th percentile latency |
-| 7 | LATENCY_P95 | 95th percentile latency |
-| 8 | LATENCY_P99 | 99th percentile latency |
+| 6 | INTERVAL_MEAN_LATENCY_P50 | 50th percentile of interval mean latencies |
+| 7 | INTERVAL_MEAN_LATENCY_P95 | 95th percentile of interval mean latencies |
+| 8 | INTERVAL_MEAN_LATENCY_P99 | 99th percentile of interval mean latencies |
 | 9 | ERROR_RATE | Failure rate |
 | 10 | EVENT_COUNT | Event count |
 

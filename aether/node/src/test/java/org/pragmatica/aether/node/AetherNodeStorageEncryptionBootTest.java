@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// `@AfterEach` shutdown is needed. A SUCCESSFUL boot is out of scope: it would bind real ports and
 /// start real threads, which no test in this module does.
 class AetherNodeStorageEncryptionBootTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path storageRoot;
 
     /// Contents are irrelevant to tests 1 and 2 -- both fail before any key reference is read. Test 3
     /// supplies its own config because there the reference shape is the thing under test.
@@ -45,7 +46,7 @@ class AetherNodeStorageEncryptionBootTest {
     /// `coreNodes` list is legal here. Every other stage takes the same static-factory default the
     /// in-process host (`EmberCluster`) uses. Nothing in this config is reachable on the path under
     /// test -- the keyring check runs before any of it is consumed.
-    private static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
+    private AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
                                                    Option<StorageEncryptionConfig> storageEncryption) {
         return AetherNodeConfig.builder()
                                 .self(NodeId.nodeId("storage-encryption-boot-test").unwrap())
@@ -58,8 +59,9 @@ class AetherNodeStorageEncryptionBootTest {
                                 .tls(Option.none())
                                 .quicTls(TlsConfig.selfSignedServer())
                                 .certificateProvider(Option.none())
-                                .configProvider(Option.none())
-                                .environment(environment)
+                                .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
+                org.pragmatica.config.ConfigurationProvider.builder().build())))
+                                .environment(environment).managementHttpProtocol(org.pragmatica.aether.config.HttpProtocol.H1).storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build()
                                 .withStorageEncryption(storageEncryption);
     }

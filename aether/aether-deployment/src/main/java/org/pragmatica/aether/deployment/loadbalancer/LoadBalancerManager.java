@@ -53,6 +53,8 @@ public interface LoadBalancerManager {
     @MessageReceiver
     void onMembershipDecision(MembershipDecision decision);
 
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
+
     @MessageReceiver
     void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
 
@@ -64,6 +66,10 @@ public interface LoadBalancerManager {
 
     sealed interface LoadBalancerManagerState {
         default void onMembershipDecision(MembershipDecision decision) {}
+
+        default org.pragmatica.lang.Unit onNodeDeparture(NodeId node) {
+            return org.pragmatica.lang.Unit.unit();
+        }
 
         default void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {}
 
@@ -78,6 +84,7 @@ public interface LoadBalancerManager {
                       KVStore<AetherKey, AetherValue> kvStore,
                       int appHttpPort,
                       Set<String> trackedNodeIps,
+                      Map<NodeId, String> nodeAddresses,
                       Map<String, Set<NodeId>> routeNodes,
                       AtomicBoolean activated,
                       ConcurrentLinkedDeque<PendingRouteEvent> pendingEvents,
@@ -87,15 +94,15 @@ public interface LoadBalancerManager {
             @Override
             public void onMembershipDecision(MembershipDecision decision) {
                 switch (decision) {
-                    case NodeRemoved(NodeId removedNode, _, _, _) -> handleNodeDeparture(removedNode);
-                    case NodeDecommissioned(NodeId decommissioned, _, _, _) -> handleNodeDeparture(decommissioned);
+                    case NodeRemoved(NodeId removedNode, _, _, _) -> onNodeDeparture(removedNode);
+                    case NodeDecommissioned(NodeId decommissioned, _, _, _) -> onNodeDeparture(decommissioned);
                     default -> {}
                 }
             }
 
             @Override
             public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
-                handleNodeDeparture(selfShutdown.nodeId());
+                onNodeDeparture(selfShutdown.nodeId());
             }
 
             @Override
@@ -281,11 +288,15 @@ public interface LoadBalancerManager {
                                                          cause.message()));
             }
 
-            private void handleNodeDeparture(NodeId departedNode) {
-                topologyManager.get(departedNode)
-                               .map(NodeInfo::address)
-                               .map(addr -> addr.host())
-                               .onPresent(this::removeNodeIp);
+            public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
+                routeNodes.values().forEach(nodes -> nodes.remove(departedNode));
+                org.pragmatica.lang.Option.option(nodeAddresses.remove(departedNode))
+                                          .orElse(() -> topologyManager.get(departedNode)
+                                                                       .map(NodeInfo::address)
+                                                                       .map(address -> address.host()))
+                                          .onPresent(this::removeNodeIp);
+
+                return org.pragmatica.lang.Unit.unit();
             }
 
             private void removeNodeIp(String ip) {
@@ -303,6 +314,7 @@ public interface LoadBalancerManager {
                               .flatMap(nodeId -> topologyManager.get(nodeId)
                                                                 .map(NodeInfo::address)
                                                                 .map(addr -> addr.host())
+                                                                .onPresent(ip -> nodeAddresses.put(nodeId, ip))
                                                                 .stream())
                               .collect(Collectors.toSet());
             }
@@ -351,6 +363,7 @@ public interface LoadBalancerManager {
                                                                       appHttpPort,
                                                                       ConcurrentHashMap.newKeySet(),
                                                                       new ConcurrentHashMap<>(),
+                                                                      new ConcurrentHashMap<>(),
                                                                       new AtomicBoolean(false),
                                                                       new ConcurrentLinkedDeque<>(),
                                                                       new ReentrantLock());
@@ -377,6 +390,13 @@ public interface LoadBalancerManager {
             @Override
             public void onMembershipDecision(MembershipDecision decision) {
                 state.get().onMembershipDecision(decision);
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit onNodeDeparture(NodeId node) {
+                state.get().onNodeDeparture(node);
+
+                return org.pragmatica.lang.Unit.unit();
             }
 
             @Override

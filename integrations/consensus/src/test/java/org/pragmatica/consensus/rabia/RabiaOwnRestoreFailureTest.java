@@ -59,42 +59,30 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #1020 — what happens when a node CANNOT read its own persisted snapshot.
+/// #1020 → #1468 — what happens when a node CANNOT read its own persisted snapshot.
 ///
-/// Before #1020 `activateWithoutAdoption` always activated. It now routes the own-restore arm through
-/// `restoreState`, whose `activate()` hangs off `onSuccessRun` — so a `restoreSnapshot` that FAILS
-/// skips activation and the engine stays `Syncing`, re-entering the same branch on every retry tick.
-/// That is a behaviour change introduced by this ticket, and nothing covered it.
+/// **Decided (owner ruling, session 27): fail closed.** A node whose own durable history cannot be
+/// restored never activates. #1390's boot recovery (`RabiaEngine.ensureRecovered`) restores the
+/// persisted checkpoint BEFORE any sync round; when that restore fails it records the cause as the
+/// authority failure (reported through `voterReconfigurationStatus()`), stops consensus participation,
+/// logs one ERROR, and never starts a sync round — so no peer response can activate it.
 ///
-/// **This class pins the CURRENT behaviour; it does not endorse it.** Whether a failed restore should
-/// wedge the node, whether the wedge should be bounded or terminal, and what the readiness surface
-/// should report while it persists are **#1468's** decisions ("Decide the contract for a failed
-/// consensus own-restore: the node wedges in JOINING forever and start() never resolves"). #1020
-/// deliberately takes none of them — it makes the existing behaviour legible and loud, and leaves an
-/// ENABLED tripwire so the decision cannot be taken by accident.
+/// This REPLACES the behaviour #1020 (rc4) pinned here: stay `Syncing` and re-enter the own-restore
+/// branch on every retry tick. #1020 pinned that wedge-and-retry deliberately WITHOUT endorsing it, and
+/// it was never endorsed; the owner's session-27 ruling took #1468's decision for this arm in favour of
+/// #1390's fail-closed contract. **#1468 stays OPEN** for what remains: whether the stop is bounded
+/// (wedge) or terminal (exit), and what the start promise and readiness surface report meanwhile.
 ///
-/// **Retargeted from #1013 to #1468 (2026-09-23).** #1013 narrowed to the STORAGE metadata-snapshot
-/// restore on the boot path and closes with PR #1418; this CONSENSUS own-restore arm is disjoint from
-/// it (different files, different symbols — #1418 does not redden this class) and moved to #1468,
-/// which carries the readiness trace. Left as-is, an enabled tripwire would have gone on directing
-/// readers to a closed ticket nobody will reopen.
+/// The tripwire stays ENABLED: it now pins the fail-closed contract, and it discriminates it from
+/// rc4's wedge — both leave the node inactive, so inactivity alone cannot tell them apart; the
+/// never-started sync round and the reported authority failure can.
 ///
-/// The method name still reads `untilTicket1013Decides`: it records which ticket RAISED the tripwire,
-/// not which one owns the decision. The decision is #1468's.
-///
-/// The tripwire is enabled rather than `@Disabled` on purpose: a disabled test guarantees nothing and
-/// sits forgotten, while an enabled one reddens at exactly the moment someone changes the behaviour
-/// and hands them the ruling in the failure message.
-///
-/// **The negative assertion is meaningful only because of the control.** "The node is not ACTIVE after
-/// N ms" is satisfied just as well by a fixture that never got anywhere — a dead subject and a
-/// suppressed behaviour read identically. `#ownRestoreSucceeds_activates` runs the identical fixture
-/// with a SUCCEEDING `restoreSnapshot` and activates well inside the same budget, which is what makes
-/// the zero in the tripwire a genuine absence rather than an unreadable one.
+/// **The negative assertions are meaningful only because of the control.** `#ownRestoreSucceeds_activates`
+/// runs the identical fixture with a SUCCEEDING `restoreSnapshot` and activates well inside the same
+/// budget, so the tripwire's zeros are a genuine absence rather than a dead subject.
 class RabiaOwnRestoreFailureTest {
     private static final String LOGGER_NAME = RabiaEngine.class.getName();
-    private static final String FAILURE_FRAGMENT = "FAILED to restore state and is NOT active";
-    private static final String CONSEQUENCE_FRAGMENT = "serves no requests";
+    private static final String FAILURE_FRAGMENT = "stopped consensus participation because durable history failed";
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
     private static final long ACTIVATION_BUDGET_MILLIS = 2_000;
@@ -136,47 +124,40 @@ class RabiaOwnRestoreFailureTest {
         appender.stop();
     }
 
-    /// TRIPWIRE — pins that a node whose own snapshot cannot be restored does NOT activate.
-    ///
-    /// If you are here from **#1468**, this failure is the decision record, not a bug: #1020 measured
-    /// this behaviour, declined to change it, and left this test so the change would be deliberate.
+    /// TRIPWIRE — pins #1468's decision for the restore-failure arm (owner ruling, session 27): fail
+    /// closed. The node never activates, never starts a sync round, and reports the cause.
     @Test
-    void ownRestoreFails_staysInactive_untilTicket1013Decides() {
-        var engine = coldStarted(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
+    void ownRestoreFails_failsClosed_neverActivates() {
+        var started = started(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
 
-        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
-
-        assertThat(becameActive(engine)).as("""
-                                           TRIPWIRE (#1020 → #1468): a node whose own persisted snapshot fails to \
-                                           restore currently does NOT activate — it stays Syncing and re-enters this \
-                                           branch on every retry tick. #1020 pinned that deliberately WITHOUT \
-                                           endorsing it: the choice between activating anyway, wedging with a bounded \
-                                           or terminal diagnostic, and what readiness reports meanwhile belongs to \
-                                           #1468 ("Decide the contract for a failed consensus own-restore: the node \
-                                           wedges in JOINING forever and start() never resolves"). If you are here \
-                                           from #1468, this test IS the decision record — change it deliberately and \
-                                           say in the commit message which of those you chose and why. This pointer \
-                                           was #1013 until 2026-09-23; #1013 narrowed to the storage boot path and \
-                                           closed with PR #1418. If you are here from anything else, you have \
-                                           probably changed activation on the own-restore path by accident.\
-                                           """)
+        started.engine().processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+        assertThat(becameActive(started.engine())).as("""
+                                                     TRIPWIRE (#1468, decided by owner ruling, session 27): a node whose own \
+                                                     persisted snapshot fails to restore FAILS CLOSED and never activates. This \
+                                                     replaced the wedge-and-retry rc4 pinned here under #1020, which was never \
+                                                     endorsed. #1468 stays open only for bounded-wedge vs termination and for the \
+                                                     start promise; if you are changing activation on this path, you are taking \
+                                                     that decision — record it.\
+                                                     """)
                   .isFalse();
+        assertThat(started.network().getMessages())
+            .as("fail-closed never enters synchronization: rc4's wedge started a sync round and retried it forever")
+            .noneMatch(SyncRequest.class::isInstance);
+        assertThat(started.engine().voterReconfigurationStatus().failure())
+            .as("the restore failure is reported as the authority failure, not only logged")
+            .contains(UNREADABLE_SNAPSHOT.message());
     }
 
-    /// Pins the diagnostic itself. The ERROR is the ONLY operator signal on this path — the periodic
-    /// stuck-in-`Syncing` WARN is structurally suppressed here (#1447) — so it must name the
-    /// consequence and render the cause, not log a bare object.
+    /// Pins the diagnostic itself: the ERROR names that consensus participation stopped because
+    /// durable history failed, and renders the cause.
     @Test
     void ownRestoreFails_logsAtErrorNamingTheConsequence() {
-        var engine = coldStarted(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
+        var started = started(3, new FailingRestoreStateMachine(), durableAt(OWN_PHASE, OWN_SNAPSHOT));
 
-        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
-        becameActive(engine);
-
+        becameActive(started.engine());
         assertThat(appender.capturedErrors()).as("a failed own-restore must report the consequence and the cause, not a bare object")
                   .isNotEmpty()
                   .anyMatch(message -> message.contains(FAILURE_FRAGMENT)
-                                       && message.contains(CONSEQUENCE_FRAGMENT)
                                        && message.contains(UNREADABLE_SNAPSHOT.message()));
     }
 
@@ -247,6 +228,24 @@ class RabiaOwnRestoreFailureTest {
     private RabiaEngine<TestCommand> coldStarted(int clusterSize,
                                                  StateMachine<TestCommand> stateMachine,
                                                  RabiaPersistence<TestCommand> persistence) {
+        var started = started(clusterSize, stateMachine, persistence);
+
+        assertThat(awaitCondition(() -> started.network()
+                                               .getMessages()
+                                               .stream()
+                                               .anyMatch(SyncRequest.class::isInstance))).as("engine must have started its sync round before responses are delivered")
+                  .isTrue();
+
+        return started.engine();
+    }
+
+    private record Started(RabiaEngine<TestCommand> engine, TestClusterNetwork network) {}
+
+    /// Constructs and notifies the engine without waiting for a sync round — the fail-closed arms never
+    /// start one.
+    private Started started(int clusterSize,
+                            StateMachine<TestCommand> stateMachine,
+                            RabiaPersistence<TestCommand> persistence) {
         var network = new TestClusterNetwork();
         var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, clusterSize),
                                        network,
@@ -259,12 +258,8 @@ class RabiaOwnRestoreFailureTest {
 
         engines.add(engine);
         engine.clusterState(ClusterStateNotification.active());
-        assertThat(awaitCondition(() -> network.getMessages()
-                                               .stream()
-                                               .anyMatch(SyncRequest.class::isInstance))).as("engine must have started its sync round before responses are delivered")
-                  .isTrue();
 
-        return engine;
+        return new Started(engine, network);
     }
 
     private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {

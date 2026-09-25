@@ -148,6 +148,21 @@ public final class LeaderElectionContext {
     private final NodeId self;
     private final Option<LeaderProposalHandler> proposalHandler;
     private final List<NodeId> expectedCluster;
+
+    private final AtomicReference<Option<List<NodeId>>> installedVoters = new AtomicReference<>(Option.none());
+
+    public org.pragmatica.lang.Unit installVoters(List<NodeId> voters) {
+        installedVoters.set(Option.some(voters.stream().sorted().toList()));
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    public boolean isEligible(NodeId node) {
+        return installedVoters.get()
+                              .map(voters -> voters.contains(node))
+                              .or(true);
+    }
+
     private final MessageRouter router;
     private final TimeSpan proposalRetryDelay;
     private final TimeSpan baseElectionDelay;
@@ -177,6 +192,7 @@ public final class LeaderElectionContext {
     // factory. Replaces the global static FSM_REF.
     private final Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
+    private final AtomicReference<Option<NodeId>> lastAdoptedLeader = new AtomicReference<>(Option.none());
 
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
 
@@ -561,7 +577,8 @@ public final class LeaderElectionContext {
     }
 
     public List<NodeId> expectedCluster() {
-        return expectedCluster;
+        return installedVoters.get()
+                              .or(expectedCluster);
     }
 
     public MessageRouter router() {
@@ -628,12 +645,19 @@ public final class LeaderElectionContext {
 
     // --- Mutable state accessors ---
     public Option<NodeId> currentLeader() {
-        return currentLeader.get();
+        return currentLeader.get()
+                            .filter(this::isEligible);
     }
 
     @Contract
     public void setCurrentLeader(Option<NodeId> leader) {
         currentLeader.set(leader);
+        leader.onPresent(node -> lastAdoptedLeader.set(Option.some(node)));
+    }
+
+    /// Retained across quorum loss solely to validate an equal-sequence committed replay.
+    public Option<NodeId> lastAdoptedLeader() {
+        return lastAdoptedLeader.get();
     }
 
     /// Dedup helper: returns `true` iff `leader` differs from the last notified leader and
@@ -646,7 +670,10 @@ public final class LeaderElectionContext {
     }
 
     public List<NodeId> currentTopology() {
-        return currentTopology.get();
+        return currentTopology.get()
+                              .stream()
+                              .filter(this::isEligible)
+                              .toList();
     }
 
     @Contract
@@ -675,7 +702,8 @@ public final class LeaderElectionContext {
     /// `KVStoreNotification.ValuePut<LeaderKey>` listener — the FSM never gets stuck waiting
     /// for a notification that already fired (or never will).
     public Supplier<Option<NodeId>> currentLeaderFromKvSupplier() {
-        return currentLeaderFromKvSupplier;
+        return () -> currentLeaderFromKvSupplier.get()
+                                                .filter(this::isEligible);
     }
 
     public boolean hasEverHadLeader() {
@@ -817,16 +845,16 @@ public final class LeaderElectionContext {
     // --- Derived helpers ---
     /// Candidate pool for leader election.
     public List<NodeId> candidatePool() {
-        if (expectedCluster.isEmpty() || stuckElectionCount.get() >= stuckElectionThreshold) {
-            return currentTopology.get();
+        if (expectedCluster().isEmpty() || stuckElectionCount.get() >= stuckElectionThreshold) {
+            return currentTopology();
         }
 
         if (!hasEverHadLeader.get()) {
-            return expectedCluster;
+            return expectedCluster();
         }
 
-        var topology = currentTopology.get();
-        var filtered = expectedCluster.stream().filter(topology::contains).toList();
+        var topology = currentTopology();
+        var filtered = expectedCluster().stream().filter(topology::contains).toList();
 
         return filtered.isEmpty()
                ? topology
@@ -834,9 +862,9 @@ public final class LeaderElectionContext {
     }
 
     public int rankOfSelf() {
-        var pool = expectedCluster.isEmpty()
-                   ? currentTopology.get()
-                   : expectedCluster;
+        var pool = expectedCluster().isEmpty()
+                   ? currentTopology()
+                   : expectedCluster();
         var sorted = pool.stream().sorted().toList();
         var rank = sorted.indexOf(self);
 
@@ -846,8 +874,7 @@ public final class LeaderElectionContext {
     }
 
     public boolean isLeader() {
-        return currentLeader.get()
-                            .filter(self::equals)
+        return currentLeader().filter(self::equals)
                             .isPresent();
     }
 }

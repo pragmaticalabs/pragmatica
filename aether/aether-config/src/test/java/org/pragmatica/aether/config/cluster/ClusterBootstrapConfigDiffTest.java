@@ -68,7 +68,7 @@ class ClusterBootstrapConfigDiffTest {
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
             infrastructureConfig(NetworkingType.MANUAL),
             defaultOperationsConfig()
-        );
+        , java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig forgeConfig(int coreCount) {
@@ -266,7 +266,7 @@ class ClusterBootstrapConfigDiffTest {
                 Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
                 infrastructureConfig(NetworkingType.MANUAL),
                 defaultOperationsConfig()
-            );
+            , java.util.Map.of());
             var plan = diff(stored, desired);
 
             assertThat(plan.modifications()).hasSize(1);
@@ -291,7 +291,7 @@ class ClusterBootstrapConfigDiffTest {
                 Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
                 infrastructureConfig(NetworkingType.MANUAL),
                 defaultOperationsConfig()
-            );
+            , java.util.Map.of());
             var plan = diff(stored, desired);
 
             assertThat(plan.hasImmutableChanges()).isTrue();

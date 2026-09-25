@@ -13,6 +13,19 @@ import org.pragmatica.swim.SwimMember.MemberState;
 
 
 public interface GovernorElection {
+    /// Called only after local readiness admission. SWIM contains peers, never local self.
+    static GovernorState evaluateReadyNomination(NodeId self, List<SwimMember> peers, Option<NodeId> currentGovernor) {
+        var incumbent = currentGovernor.filter(node -> node.equals(self) || isAlive(node, peers));
+        var lowest = java.util.stream.Stream.concat(java.util.stream.Stream.of(self),
+                                                    peers.stream()
+                                                         .filter(member -> member.state() == MemberState.ALIVE)
+                                                         .map(SwimMember::nodeId))
+                                            .min(NodeId::compareTo)
+                                            .orElse(self);
+
+        return stateForNode(self, incumbent.or(lowest));
+    }
+
     static GovernorState evaluateElection(NodeId selfId, List<SwimMember> members, Option<NodeId> currentGovernor) {
         var incumbentAlive = currentGovernor.filter(gov -> isAlive(gov, members));
 

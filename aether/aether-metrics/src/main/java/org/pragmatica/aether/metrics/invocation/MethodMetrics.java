@@ -42,7 +42,9 @@ public final class MethodMetrics {
                                   .toArray(AtomicInteger[]::new);
     }
 
-    public Result<Unit> record(long durationNs, boolean success) {
+    /// Completion counters and latency samples form one coherent observation. The same monitor
+    /// protects capture/reset so a failure cannot be attributed to a different count interval.
+    public synchronized Result<Unit> record(long durationNs, boolean success) {
         count.incrementAndGet();
         recordOutcome(success);
         totalDurationNs.addAndGet(durationNs);
@@ -54,7 +56,7 @@ public final class MethodMetrics {
         return unitResult();
     }
 
-    public Snapshot snapshotAndReset() {
+    public synchronized Snapshot snapshotAndReset() {
         var snapshotCount = count.getAndSet(0);
         var snapshotSuccess = successCount.getAndSet(0);
         var snapshotFailure = failureCount.getAndSet(0);
@@ -71,7 +73,7 @@ public final class MethodMetrics {
                                  snapshotSamples);
     }
 
-    public Snapshot snapshot() {
+    public synchronized Snapshot snapshot() {
         var currentCount = count.get();
         var snapshotHistogram = captureHistogram();
         var snapshotSamples = captureSamples(currentCount);

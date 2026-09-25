@@ -319,6 +319,7 @@ class ClusterConfigRoutesApplyTest {
     private static Object dispatch(TestKVStore store, Method method, Object[] args) {
         return switch (method.getName()) {
             case "kvStore" -> store;
+            case "isLeader" -> true;
             case "apply" -> applyBatch(store, args);
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         };
@@ -326,15 +327,22 @@ class ClusterConfigRoutesApplyTest {
 
     @SuppressWarnings("unchecked")
     private static Promise<List<Object>> applyBatch(TestKVStore store, Object[] args) {
-        ((List<KVCommand<AetherKey>>) args[0]).forEach(command -> routeCommand(store, command));
-
-        return Promise.success(List.of());
+        var results = ((List<KVCommand<AetherKey>>) args[0]).stream()
+            .map(command -> routeCommand(store, command)).toList();
+        return Promise.success(results);
     }
 
-    private static void routeCommand(TestKVStore store, KVCommand<AetherKey> command) {
-        if (command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof AetherValue value) {
-            store.applyPut(put.key(), value);
+    private static Object routeCommand(TestKVStore store, KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.LeaderTransaction<?, ?> transaction) {
+            var mutation = transaction.mutations().getFirst();
+            var key = (AetherKey) mutation.key();
+            var value = (AetherValue) mutation.replacement().unwrap();
+            boolean accepted = store.raceWinner.isEmpty() && store.get(key).equals(mutation.expected())
+                && store.isSuccessor(key, value);
+            if (accepted || store.raceWinner.isPresent()) { store.applyPut(key, value); }
+            return new KVCommand.TransactionResult(transaction.transactionId(), accepted);
         }
+        return new KVCommand.TransactionResult("unexpected", false);
     }
 
     private static final class TestKVStore extends KVStore<AetherKey, AetherValue> {
@@ -376,6 +384,15 @@ class ClusterConfigRoutesApplyTest {
             }
 
             return incoming.configVersion() == stored.configVersion() + 1;
+        }
+
+        @Override
+        public <VV> Option<VV> getTyped(org.pragmatica.cluster.state.kvstore.StructuredKey key, Class<VV> type) {
+            if (key == org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE) {
+                return Option.some(type.cast(new org.pragmatica.cluster.state.kvstore.LeaderValue(
+                    new org.pragmatica.consensus.NodeId("core"), 1)));
+            }
+            return Option.option(storage.get(key)).filter(type::isInstance).map(type::cast);
         }
 
         @Override

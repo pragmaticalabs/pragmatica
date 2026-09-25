@@ -112,6 +112,7 @@ class ClusterConfigRoutesScaleNoConfigTest {
     private static Object dispatch(TestKVStore store, Method method, Object[] args) {
         return switch (method.getName()) {
             case "kvStore" -> store;
+            case "isLeader" -> true;
             case "apply" -> applyBatch(store, args);
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         };
@@ -119,15 +120,16 @@ class ClusterConfigRoutesScaleNoConfigTest {
 
     @SuppressWarnings("unchecked")
     private static Promise<List<Object>> applyBatch(TestKVStore store, Object[] args) {
-        ((List<KVCommand<AetherKey>>) args[0]).forEach(command -> routeCommand(store, command));
-
-        return Promise.success(List.of());
-    }
-
-    private static void routeCommand(TestKVStore store, KVCommand<AetherKey> command) {
-        if (command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof AetherValue value) {
-            store.applyPut(put.key(), value);
-        }
+        return Promise.success(((List<KVCommand<AetherKey>>) args[0]).stream().map(command -> {
+            if (command instanceof KVCommand.LeaderTransaction<?, ?> transaction) {
+                var mutation = transaction.mutations().getFirst();
+                var key = (AetherKey) mutation.key();
+                boolean accepted = store.get(key).equals(mutation.expected());
+                if (accepted) { store.applyPut(key, (AetherValue) mutation.replacement().unwrap()); }
+                return (Object) new KVCommand.TransactionResult(transaction.transactionId(), accepted);
+            }
+            return (Object) new KVCommand.TransactionResult("unexpected", false);
+        }).toList());
     }
 
     /// Unconditional write, unlike [ClusterConfigRoutesApplyTest]'s successor-fence model — the
@@ -146,6 +148,15 @@ class ClusterConfigRoutesScaleNoConfigTest {
 
         void applyPut(AetherKey key, AetherValue value) {
             storage.put(key, value);
+        }
+
+        @Override
+        public <VV> Option<VV> getTyped(org.pragmatica.cluster.state.kvstore.StructuredKey key, Class<VV> type) {
+            if (key == org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE) {
+                return Option.some(type.cast(new org.pragmatica.cluster.state.kvstore.LeaderValue(
+                    new org.pragmatica.consensus.NodeId("core"), 1)));
+            }
+            return Option.option(storage.get(key)).filter(type::isInstance).map(type::cast);
         }
 
         @Override

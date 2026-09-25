@@ -17,6 +17,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.metrics.MinuteAggregate;
 import org.pragmatica.aether.api.BuildInfo;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
@@ -195,7 +196,13 @@ public final class StatusRoutes implements RouteSource {
         var derived = node.snapshotCollector().derivedMetrics();
         var metrics = new MetricsSummary(derived.requestRate(),
                                          100.0 - derived.errorRate() * 100.0,
-                                         derived.latencyP50());
+                                         node.snapshotCollector()
+                                             .minuteAggregator()
+                                             .recent(1)
+                                             .stream()
+                                             .mapToDouble(MinuteAggregate::avgLatencyMs)
+                                             .findFirst()
+                                             .orElse(0));
 
         return new StatusResponse(uptimeSeconds,
                                   cluster,
@@ -220,7 +227,8 @@ public final class StatusRoutes implements RouteSource {
                                   node.isLeader(),
                                   leaderId,
                                   BuildInfo.buildInfo().buildTimestamp(),
-                                  BuildInfo.buildInfo().buildVersion());
+                                  BuildInfo.buildInfo().buildVersion(),
+                                  node.voterReconfigurationStatus());
     }
 
     private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader, String kvState) {

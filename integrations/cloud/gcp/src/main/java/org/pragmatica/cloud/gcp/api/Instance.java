@@ -44,4 +44,13 @@ public record Instance(String name,
     /// Wrapper for instance list API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record InstanceListResponse(List<Instance> items) {}
+
+    /// Project-wide inventory is paginated and grouped by zone.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AggregatedInstanceListResponse(Map<String, ScopedInstances> items,
+                                                 String nextPageToken,
+                                                 List<String> unreachables) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ScopedInstances(List<Instance> instances) {}
 }

@@ -8,17 +8,14 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #689 pins the classification it deliberately does NOT change: a blank or absent role label
-/// counts as core, exactly as the explicit literal `core` does, and only the literal `worker` is
-/// excluded from the core set. Acting on an unresolved view is the dangerous direction, so the
-/// default fails toward core; #689 adds detection of the mismatch, never a different default.
+/// Unknown peers never contribute to the core electorate.
 class MemberDescriptorRoleClassificationTest {
     @Test
-    void blankAndCore_areEquivalent_andOnlyWorkerIsExcluded() {
-        assertThat(MemberDescriptor.isCoreRole("")).as("blank counts as core").isTrue();
-        assertThat(MemberDescriptor.isCoreRole("core")).as("the explicit literal").isTrue();
-        assertThat(MemberDescriptor.isCoreRole("")).as("#689: blank and core must stay equivalent")
-                                                   .isEqualTo(MemberDescriptor.isCoreRole("core"));
-        assertThat(MemberDescriptor.isCoreRole("worker")).as("the only excluded literal").isFalse();
+    void isCoreRole_requiresExplicitCoreIdentity() {
+        assertThat(MemberDescriptor.isCoreRole("core")).isTrue();
+        assertThat(MemberDescriptor.isCoreRole("")).isFalse();
+        assertThat(MemberDescriptor.isCoreRole("worker")).isFalse();
+        assertThat(MemberDescriptor.isCoreRole("spot")).isFalse();
+        assertThat(MemberDescriptor.isCoreRole("other")).isFalse();
     }
 }

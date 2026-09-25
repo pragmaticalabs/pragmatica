@@ -177,12 +177,9 @@ public interface SystemTags {
         pin(table, 83, "org.pragmatica.cluster.metrics.PeerConnectivityObservation");
         pin(table, 84, "org.pragmatica.cluster.metrics.PeerHealthObservation");
         // worker protocol  [base 85]
-        pin(table, 85, "org.pragmatica.aether.worker.heartbeat.FollowerHeartbeat");
         pin(table, 86, "org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot");
         pin(table, 87, "org.pragmatica.aether.worker.metrics.PerMethodMetrics");
         pin(table, 88, "org.pragmatica.aether.worker.metrics.PerSliceMetrics");
-        pin(table, 89, "org.pragmatica.aether.worker.mutation.WorkerMutation");
-        pin(table, 90, "org.pragmatica.aether.worker.network.DHTRelayMessage");
         // stream replication and forwarding  [base 91]
         pin(table, 91, "org.pragmatica.aether.stream.consensus.StreamConsensusCommand");
         pin(table, 92, "org.pragmatica.aether.stream.forward.RawEventDto");
@@ -214,7 +211,16 @@ public interface SystemTags {
         // #667: nested in every Rabia SyncResponse; consensus-prefixed, so it must sit in the one-byte
         // window (`SystemCodecPinningTest.hotProtocolTypes_fitInTheOneByteWindow`).
         pin(table, 112, "org.pragmatica.consensus.rabia.ResponderState");
-        // Guarded KV mutation primitives. Remaining 113..122 slots stay reserved.
+        pin(table, 113, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest");
+        pin(table, 114, "org.pragmatica.consensus.rabia.VoterConfiguration");
+        pin(table, 115, "org.pragmatica.consensus.rabia.ConfigurationHandoff");
+        pin(table, 116, "org.pragmatica.cluster.metrics.MetricObservation");
+        pin(table, 117, "org.pragmatica.aether.worker.metrics.SourceMetricsBatch");
+        pin(table, 118, "org.pragmatica.consensus.rabia.VoterAuthority");
+        pin(table, 119, "org.pragmatica.consensus.rabia.ConfigurationCertificate");
+        pin(table, 120, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest");
+        pin(table, 121, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationTransfer");
+        pin(table, 122, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationInstalled");
         // Tag 123 is available: the removed uncorrelated LeaderPut never shipped before GA.
         pin(table, 124, "org.pragmatica.cluster.state.kvstore.KVCommand.ReadWitness");
         pin(table, 125, "org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction");
@@ -222,8 +228,6 @@ public interface SystemTags {
         pin(table, 127, "org.pragmatica.cluster.state.kvstore.KVCommand.TransactionResult");
         // ---- 128..16383: two-byte system tags. ----
         // worker bootstrap (rare, large payloads)  [base 128]
-        pin(table, 128, "org.pragmatica.aether.worker.bootstrap.SnapshotRequest");
-        pin(table, 129, "org.pragmatica.aether.worker.bootstrap.SnapshotResponse");
         // artifact coordinates  [base 192]
         pin(table, 192, "org.pragmatica.aether.artifact.Artifact");
         pin(table, 193, "org.pragmatica.aether.artifact.ArtifactBase");
@@ -477,7 +481,35 @@ public interface SystemTags {
         // this class of gap — see its history in aether/node for why a stubbed serializer cannot.
         pin(table, 1674, "org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey");
         pin(table, 1675, "org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue");
-        // ---- 2112..16383 RESERVED ----
+        pin(table, 1676, "org.pragmatica.aether.slice.kvstore.AetherKey.NodePlacementKey");
+        pin(table, 1677, "org.pragmatica.aether.slice.kvstore.AetherValue.NodePlacementValue");
+        pin(table, 1678, "org.pragmatica.aether.worker.governor.GovernorAuthorityMessage.Request");
+        pin(table, 1679, "org.pragmatica.aether.worker.governor.GovernorAuthorityMessage.Response");
+        pin(table, 1682, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementOperationKey");
+        pin(table, 1683, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue");
+        pin(table, 1684, "org.pragmatica.aether.slice.kvstore.AetherValue.PlacementOperationPhase");
+        pin(table, 1685, "org.pragmatica.aether.worker.governor.CommunityPlacementMessage.DrainRequested");
+        pin(table, 1686, "org.pragmatica.aether.worker.governor.CommunityPlacementMessage.DrainCompleted");
+        pin(table, 1687, "org.pragmatica.aether.worker.governor.CommunityPlacementMessage.DrainAccepted");
+        pin(table, 1688, "org.pragmatica.aether.slice.kvstore.AetherKey.CapacityLedgerKey");
+        pin(table, 1689, "org.pragmatica.aether.slice.kvstore.AetherKey.CapacityReservationKey");
+        pin(table, 1690, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityLedgerValue");
+        pin(table, 1691, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue");
+        pin(table, 1692, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase");
+        pin(table, 1701, "org.pragmatica.aether.worker.health.CommunityHealthMessage.Request");
+        pin(table, 1702, "org.pragmatica.aether.worker.health.CommunityHealthMessage.Report");
+        pin(table, 1704, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRejected");
+        pin(table, 1703, "org.pragmatica.aether.worker.health.CommunityHealthMessage.MemberHealth");
+        pin(table, 1693, "org.pragmatica.consensus.rabia.VotingJournalCheckpoint");
+        pin(table, 1694, "org.pragmatica.consensus.rabia.VotingJournalRecord");
+        pin(table, 1695, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest");
+        pin(table, 1696, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.Manifest");
+        pin(table, 1697, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ScopeContent");
+        pin(table, 1698, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ChunkRequest");
+        pin(table, 1699, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.Chunk");
+        pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
+        pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
+        // ---- 2114..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

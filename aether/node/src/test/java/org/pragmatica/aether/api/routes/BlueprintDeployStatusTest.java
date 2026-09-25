@@ -566,6 +566,11 @@ class BlueprintDeployStatusTest {
     /// Every other abstract method is routed through `unsupported`.
     private record NoopAppHttpServer() implements AppHttpServer {
         @Override
+        public Unit setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission admission) {
+            return Unit.unit();
+        }
+
+        @Override
         public Option<HttpRoutePublisher> httpRoutePublisher() {
             return Option.none();
         }
@@ -633,6 +638,11 @@ class BlueprintDeployStatusTest {
 
         @Override
         @Contract
+        public org.pragmatica.lang.Unit onNodeDeparture(org.pragmatica.consensus.NodeId node) {
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        @Override
         public void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved) {
             unsupported("onNodeRemoved");
         }

@@ -22,6 +22,16 @@ public sealed interface MembershipEvent {
     /// SWIM reports the member ALIVE at `incarnation`.
     record SwimHealthy(long incarnation) implements MembershipEvent {}
 
+    /// Fresh direct pong plus trusted worker provisioning or local controller intent.
+    /// processEpoch is the durable producer epoch, not a SWIM incarnation.
+    record WorkerAdmissionHealthy(long processEpoch) implements MembershipEvent {}
+
+    /// Fresh positive observation from a term-fenced committed governor, never a death signal.
+    record GovernorHealthy(long processEpoch,
+                           String community,
+                           org.pragmatica.consensus.NodeId governor,
+                           long governorTerm) implements MembershipEvent {}
+
     /// SWIM reports the member SUSPECT at `incarnation` (transient doubt — debounced, not terminal).
     record SwimSuspect(long incarnation) implements MembershipEvent {}
 

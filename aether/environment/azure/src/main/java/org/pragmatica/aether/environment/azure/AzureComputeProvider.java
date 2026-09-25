@@ -254,7 +254,8 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                                 List.of(),
                                 InstanceType.ON_DEMAND,
                                 tags,
-                                Option.option(tags.get(NODE_ID_TAG)));
+                                Option.option(tags.get(NODE_ID_TAG)),
+                                Option.option(vm.zones()).flatMap(zones -> Option.from(zones.stream().findFirst())));
     }
 
     static InstanceInfo toInstanceInfoFromRow(ResourceRow row) {
@@ -265,7 +266,8 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                                 List.of(),
                                 InstanceType.ON_DEMAND,
                                 tags,
-                                Option.option(tags.get(NODE_ID_TAG)));
+                                Option.option(tags.get(NODE_ID_TAG)),
+                                Option.option(row.zones()).flatMap(zones -> Option.from(zones.stream().findFirst())));
     }
 
     private static Map<String, String> safeTags(VirtualMachine vm) {

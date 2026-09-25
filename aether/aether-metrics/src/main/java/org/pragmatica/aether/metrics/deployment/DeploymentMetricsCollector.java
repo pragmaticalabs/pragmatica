@@ -62,6 +62,7 @@ public interface DeploymentMetricsCollector {
     @Contract
     void onMembershipDecision(MembershipDecision decision);
 
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
     Map<String, List<DeploymentMetricsEntry>> collectLocalEntries();
 
     record DeploymentKey(Artifact artifact, NodeId nodeId) {}
@@ -260,15 +261,17 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
     @Contract
     public void onMembershipDecision(MembershipDecision decision) {
         switch (decision) {
-            case MembershipDecision.NodeRemoved(NodeId removedNode, _, _, _) -> removeMetricsForNode(removedNode);
-            case MembershipDecision.NodeDecommissioned(NodeId decommissioned, _, _, _) -> removeMetricsForNode(decommissioned);
+            case MembershipDecision.NodeRemoved(NodeId removedNode, _, _, _) -> onNodeDeparture(removedNode);
+            case MembershipDecision.NodeDecommissioned(NodeId decommissioned, _, _, _) -> onNodeDeparture(decommissioned);
             default -> {}
         }
     }
 
-    private void removeMetricsForNode(NodeId nodeId) {
+    public org.pragmatica.lang.Unit onNodeDeparture(NodeId nodeId) {
         removeInProgressForNode(nodeId);
         removeRemoteMetricsForNode(nodeId);
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     private void removeInProgressForNode(NodeId nodeId) {

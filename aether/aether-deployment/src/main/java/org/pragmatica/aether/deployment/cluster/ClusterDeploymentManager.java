@@ -134,6 +134,13 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onWorkerJoin(WorkerJoinDecision decision);
 
+    @Contract
+    default void onNodePlacementPut(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> valuePut) {
+        onWorkerJoin(WorkerJoinDecision.workerJoinDecision(valuePut.cause().key().nodeId(),
+                                                           "worker",
+                                                           org.pragmatica.hlc.HlcTimestamp.ZERO));
+    }
+
     /// The non-core leave channel (#731), symmetric to [`#onWorkerJoin`] — a departed worker's
     /// REMOVED edge never travels on the core `MembershipDecision` stream either.
     @Contract

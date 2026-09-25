@@ -7,7 +7,6 @@ package org.pragmatica.aether.api.routes;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -483,6 +482,22 @@ public final class ClusterConfigRoutes implements RouteSource {
                                         ClusterBootstrapConfig desired,
                                         ApplyConfigRequest request) {
         var plan = ClusterBootstrapConfigDiff.diff(storedConfig, desired);
+        var removed = storedConfig.communities()
+                                  .keySet()
+                                  .stream()
+                                  .filter(id -> !desired.communities()
+                                                        .containsKey(id))
+                                  .toList();
+
+        if (removed.stream().anyMatch(id -> !communityRetired(id))) {
+            return new ClusterConfigError.ParseFailed("Set community.target_size=0 and wait for DISSOLVED before removing its placement policy").promise();
+        }
+
+        if (!removed.isEmpty() && desired.communities().isEmpty() && topologyOf(desired).stream()
+                                                                               .anyMatch(entry -> entry.role()
+                                                                                                       .equals("worker") && entry.count() > 0)) {
+            return new ClusterConfigError.ParseFailed("Removing the final community requires all legacy source worker counts to be zero in the same config").promise();
+        }
 
         if (plan.hasImmutableChanges()) {
             return buildImmutableChangeError(plan).promise();
@@ -500,10 +515,85 @@ public final class ClusterConfigRoutes implements RouteSource {
             return new ClusterConfigError.UnfencedOverwrite(stored.configVersion()).promise();
         }
 
-        return applier.apply(plan.allActions())
+        var validationActions = !removed.isEmpty() && desired.communities().isEmpty()
+                                ? plan.allActions().stream().filter(action -> !workerCountChange(action)).toList()
+                                : plan.allActions();
+
+        return applier.validate(validationActions)
                       .flatMap(_ -> storeUpdatedConfig(desired,
                                                        request.tomlContent(),
                                                        stored.configVersion() + 1));
+    }
+
+    private static boolean workerCountChange(DiffAction action) {
+        return switch (action) {
+            case DiffAction.ScaleUp scale -> scale.role() == org.pragmatica.aether.config.cluster.NodeRole.WORKER;
+            case DiffAction.ScaleDown scale -> scale.role() == org.pragmatica.aether.config.cluster.NodeRole.WORKER;
+            default -> false;
+        };
+    }
+
+    private boolean communityRetired(String community) {
+        var store = nodeSupplier.get().kvStore();
+
+        if (store.getTyped(new AetherKey.CommunityKey(community),
+                           AetherValue.CommunityValue.class)
+                 .filter(value -> value.state() == org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED && value.targetSize() == 0)
+                 .isEmpty() || store.getTyped(new AetherKey.CommunityPlacementOperationKey(community),
+                                              AetherValue.CommunityPlacementOperationValue.class)
+                                    .filter(AetherValue.CommunityPlacementOperationValue::active)
+                                    .isPresent()) {
+            return false;
+        }
+
+        var assigned = new java.util.concurrent.atomic.AtomicBoolean();
+
+        store.forEach(AetherKey.ActivationDirectiveKey.class,
+                      AetherValue.ActivationDirectiveValue.class,
+                      (_, value) -> {
+                          if (value.communityId()
+                                   .equals(community)) {
+                          assigned.set(true);
+                      }
+                      });
+
+        return ! assigned.get();
+    }
+
+    private Result<List<KVCommand.ReadWitness<AetherKey>>> retirementGuards(Option<ClusterConfigValue> before,
+                                                                            ClusterConfigValue after) {
+        var previous = before.flatMap(value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).option())
+                             .map(ClusterBootstrapConfig::communities)
+                             .or(Map.of());
+        var next = ClusterBootstrapConfigParser.parse(after.tomlContent())
+                                               .option()
+                                               .map(ClusterBootstrapConfig::communities)
+                                               .or(Map.of());
+        var guards = new java.util.ArrayList<KVCommand.ReadWitness<AetherKey>>();
+
+        for (var id : previous.keySet()) {
+            if (next.containsKey(id)) {
+                continue;
+            }
+
+            var communityKey = new AetherKey.CommunityKey(id);
+            var operationKey = new AetherKey.CommunityPlacementOperationKey(id);
+            var community = nodeSupplier.get().kvStore().getTyped(communityKey, AetherValue.CommunityValue.class);
+            var operation = nodeSupplier.get()
+                                        .kvStore()
+                                        .getTyped(operationKey, AetherValue.CommunityPlacementOperationValue.class);
+
+            if (community.filter(value -> value.state() == org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED && value.targetSize() == 0)
+                         .isEmpty() || operation.filter(AetherValue.CommunityPlacementOperationValue::active)
+                                                .isPresent()) {
+                return new ClusterConfigError.ParseFailed("Community retirement changed before config commit: " + id).result();
+            }
+
+            guards.add(new KVCommand.ReadWitness<>(communityKey, community.map(value -> (Object) value)));
+            guards.add(new KVCommand.ReadWitness<>(operationKey, operation.map(value -> (Object) value)));
+        }
+
+        return Result.success(List.copyOf(guards));
     }
 
     private static ClusterConfigError.ValidationFailed buildImmutableChangeError(DiffPlan plan) {
@@ -557,12 +647,10 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                  newVersion,
                                                  System.currentTimeMillis());
 
-        return storeFencedConfig(configValue,
-                                 fresh -> tomlContent.equals(fresh.tomlContent())).map(fresh -> (Object) new ApplyConfigResponse(fresh.configVersion(),
-                                                                                                                                 cluster.name()
-                                                                                                                                        .value(),
-                                                                                                                                 coreCount,
-                                                                                                                                 configValue.updatedAt()));
+        return storeFencedConfig(configValue).map(fresh -> (Object) new ApplyConfigResponse(fresh.configVersion(),
+                                                                                            cluster.name().value(),
+                                                                                            coreCount,
+                                                                                            configValue.updatedAt()));
     }
 
     private static Promise<Object> buildDryRunResponse(ClusterConfigValue stored, DiffPlan plan) {
@@ -609,6 +697,14 @@ public final class ClusterConfigRoutes implements RouteSource {
     private Promise<ScaleClusterResponse> applyScale(ClusterConfigValue stored, ScaleRequest request) {
         var role = effectiveRole(nonBlank(request.role()));
         var source = nonBlank(request.source());
+
+        if (role.equals(org.pragmatica.aether.config.cluster.NodeRole.WORKER.value()) && ClusterBootstrapConfigParser.parse(stored.tomlContent())
+                                                                                                                     .option()
+                                                                                                                     .filter(value -> !value.communities()
+                                                                                                                                            .isEmpty())
+                                                                                                                     .isPresent()) {
+            return new ClusterConfigError.ParseFailed("Explicit communities own worker capacity; change community.target_size").promise();
+        }
 
         return checkVersionAsync(stored.configVersion(),
                                  request.expectedVersion()).flatMap(_ -> Promise.resolved(resolveScaleTarget(stored,
@@ -691,12 +787,12 @@ public final class ClusterConfigRoutes implements RouteSource {
         var previousCount = stored.desiredCountFor(source, role);
         var scaled = stored.withDesiredCount(source, role, count);
 
-        return storeFencedConfig(scaled, fresh -> fresh.desiredCountFor(source, role) == count).map(fresh -> new ScaleClusterResponse(true,
-                                                                                                                                      source,
-                                                                                                                                      role,
-                                                                                                                                      previousCount,
-                                                                                                                                      count,
-                                                                                                                                      fresh.configVersion()));
+        return storeFencedConfig(scaled).map(fresh -> new ScaleClusterResponse(true,
+                                                                               source,
+                                                                               role,
+                                                                               previousCount,
+                                                                               count,
+                                                                               fresh.configVersion()));
     }
 
     /// Quorum arithmetic constrains CORE nodes only — it is what keeps a majority reachable. Worker
@@ -769,27 +865,49 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                         targetVersion));
     }
 
-    /// Apply a fenced `Put` of the cluster config and confirm it LANDED (RFC-0018, #570).
-    ///
-    /// The applier's successor fence rejects a `Put` built on a stale read — but the rejection is
-    /// invisible in the apply result (under batch merging every submitter receives the full merged
-    /// result list), so an unconfirmed store would report success for a write that did nothing:
-    /// worse than the race it closes. The engine runs the local `process` before resolving the
-    /// apply promise, so a local re-read afterwards is authoritative for this batch. `landed` is a
-    /// SEMANTIC check — "did the change I asked for stick" — rather than version arithmetic, which
-    /// cannot distinguish my write from a competitor's at the same version.
-    @SuppressWarnings("unchecked")
-    private Promise<ClusterConfigValue> storeFencedConfig(ClusterConfigValue intended,
-                                                          Predicate<ClusterConfigValue> landed) {
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, intended);
+    /// Commit the complete desired config with its expected version and current leader in one
+    /// transaction; correlate the result even when consensus merges this request with another batch.
+    private Promise<ClusterConfigValue> storeFencedConfig(ClusterConfigValue intended) {
+        var node = nodeSupplier.get();
+        var expected = storedClusterConfig();
 
-        return nodeSupplier.get()
-                           .<Object> apply(List.of(command))
-                           .flatMap(_ -> lookupClusterConfig())
-                           .flatMap(fresh -> landed.test(fresh)
-                                             ? Promise.success(fresh)
-                                             : new ClusterConfigError.VersionConflict(intended.configVersion(),
-                                                                                      fresh.configVersion()).promise());
+        return node.kvStore()
+                   .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                             org.pragmatica.cluster.state.kvstore.LeaderValue.class)
+                   .filter(leader -> node.isLeader())
+                   .fold(() -> org.pragmatica.lang.utils.Causes.cause("Current core leader required for config update")
+                                                               .promise(),
+                         leader -> {
+                             var id = java.util.UUID.randomUUID()
+                                                    .toString();
+                             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                           expected.map(value -> value),
+                                                                                           Option.some(intended));
+
+                             return retirementGuards(expected, intended).async()
+                                                    .flatMap(guards -> {
+                                                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                                                       id,
+                                                                                                                                       leader,
+                                                                                                                                       guards,
+                                                                                                                                       List.of(mutation));
+
+                                                                 return node.<Object> apply(List.of(command))
+                                                                            .flatMap(results -> {
+                                                                                         var accepted = results.stream()
+                                                                                                               .filter(KVCommand.TransactionResult.class::isInstance)
+                                                                                                               .map(KVCommand.TransactionResult.class::cast)
+                                                                                                               .anyMatch(result -> result.transactionId()
+                                                                                                                                         .equals(id) && result.accepted());
+
+                                                                                         return accepted
+                                                                                                ? Promise.success(intended)
+                                                                                                : new ClusterConfigError.VersionConflict(intended.configVersion(),
+                                                                                                                                         storedClusterConfig().map(ClusterConfigValue::configVersion)
+                                                                                                                                                            .or(0L)).promise();
+                                                                                     });
+                                                             });
+                         });
     }
 
     private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, String targetVersion) {
@@ -803,8 +921,7 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                  stored.configVersion() + 1,
                                                  System.currentTimeMillis());
 
-        return storeFencedConfig(configValue,
-                                 fresh -> targetVersion.equals(fresh.version())).map(fresh -> (Object) fresh);
+        return storeFencedConfig(configValue).map(fresh -> (Object) fresh);
     }
 
     sealed interface UpgradeError extends Cause {

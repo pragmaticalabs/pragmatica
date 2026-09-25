@@ -97,6 +97,20 @@ public interface TopologyObserver extends TopologyManager {
         NORMAL
     }
 
+    /// Installs the immutable-role electorate projection before the node starts.
+    org.pragmatica.lang.Unit setConsensusMembership(Predicate<NodeId> membership);
+
+    /// Installs trusted bootstrap/state-transfer identities separately from voter admission.
+    @Contract
+    default org.pragmatica.lang.Unit setStateTransferMembership(Predicate<NodeId> membership) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Installed consensus identity, independent of health and desired capacity.
+    default org.pragmatica.lang.Unit installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration configuration) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// Current topology mode. Default `NORMAL` for the abstract interface so legacy /
     /// test-only implementations (notably `TopologyManager` minimal stubs) retain the
     /// snapshot-only contract by default.
@@ -324,7 +338,10 @@ public interface TopologyObserver extends TopologyManager {
                        AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
                        AtomicReference<Set<NodeId>> observedConnections,
                        AtomicReference<TopologyMode> mode,
-                       Supplier<HlcTimestamp> hlcSupplier) implements TopologyObserver {
+                       Supplier<HlcTimestamp> hlcSupplier,
+                       AtomicReference<Predicate<NodeId>> consensusMembership,
+                       AtomicReference<Predicate<NodeId>> stateTransferMembership,
+                       AtomicReference<Option<org.pragmatica.consensus.rabia.VoterConfiguration>> installedVoters) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -344,7 +361,10 @@ public interface TopologyObserver extends TopologyManager {
                     AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
                     AtomicReference<Set<NodeId>> observedConnections,
                     AtomicReference<TopologyMode> mode,
-                    Supplier<HlcTimestamp> hlcSupplier) {
+                    Supplier<HlcTimestamp> hlcSupplier,
+                    AtomicReference<Predicate<NodeId>> consensusMembership,
+                    AtomicReference<Predicate<NodeId>> stateTransferMembership,
+                    AtomicReference<Option<org.pragmatica.consensus.rabia.VoterConfiguration>> installedVoters) {
                 this.config = config;
                 this.router = router;
                 this.quorumPresenceRouter = quorumPresenceRouter;
@@ -363,6 +383,9 @@ public interface TopologyObserver extends TopologyManager {
                 this.observedConnections = observedConnections;
                 this.mode = mode;
                 this.hlcSupplier = hlcSupplier;
+                this.consensusMembership = consensusMembership;
+                this.stateTransferMembership = stateTransferMembership;
+                this.installedVoters = installedVoters;
                 this.effectiveClusterSize.set(config.clusterSize());
                 // Configured-core IDENTITY (v2-architecture §5.4): `coreNodeIds` is the static
                 // quorum/role denominator and is populated directly from `config.coreNodes()`
@@ -560,7 +583,47 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(Predicate<NodeId> membership) {
+                consensusMembership.set(membership);
+
+                return org.pragmatica.lang.Unit.unit();
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit setStateTransferMembership(Predicate<NodeId> membership) {
+                stateTransferMembership.set(membership);
+
+                return org.pragmatica.lang.Unit.unit();
+            }
+
+            @Override
+            public boolean isStateTransferPeer(NodeId nodeId) {
+                return isConsensusMember(nodeId) || stateTransferMembership.get()
+                                                                           .test(nodeId);
+            }
+
+            @Override
+            public boolean isConsensusMember(NodeId nodeId) {
+                return consensusMembership.get()
+                                          .test(nodeId);
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration configuration) {
+                installedVoters.set(Option.some(configuration));
+                effectiveClusterSize.set(configuration.members().size());
+
+                return org.pragmatica.lang.Unit.unit();
+            }
+
+            @Override
             public Set<NodeId> coreNodes() {
+                if (installedVoters.get().isPresent()) {
+                    return installedVoters.get()
+                                          .map(v -> Set.copyOf(v.members()))
+                                          .or(Set.of());
+                }
+
                 return snapshotSource.currentMembershipView()
                                      .map(MembershipView::coreMemberIds)
                                      .or(() -> Collections.unmodifiableSet(coreNodeIds));
@@ -568,6 +631,10 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public EffectiveMembership effectiveMembership() {
+                if (installedVoters.get().isPresent()) {
+                    return new EffectiveMembership(coreNodes(), EffectiveMembership.Source.SNAPSHOT);
+                }
+
                 return snapshotSource.currentMembershipView()
                                      .map(view -> new EffectiveMembership(view.coreMemberIds(),
                                                                           EffectiveMembership.Source.SNAPSHOT))
@@ -915,6 +982,10 @@ public interface TopologyObserver extends TopologyManager {
             @Contract
             @Override
             public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {
+                if (installedVoters.get().isPresent()) {
+                    return;
+                }
+
                 int newSize = message.clusterSize();
                 int currentSize = effectiveClusterSize.get();
 
@@ -1063,6 +1134,12 @@ public interface TopologyObserver extends TopologyManager {
                                           new AtomicReference<>(Option.none()),
                                           new AtomicReference<>(Set.of()),
                                           new AtomicReference<>(TopologyMode.BOOTING),
-                                          hlcSupplier));
+                                          hlcSupplier,
+                                          new AtomicReference<>(id -> config.coreNodes()
+                                                                            .stream()
+                                                                            .anyMatch(node -> node.id()
+                                                                                                  .equals(id))),
+                                          new AtomicReference<>(_ -> false),
+                                          new AtomicReference<>(Option.none())));
     }
 }

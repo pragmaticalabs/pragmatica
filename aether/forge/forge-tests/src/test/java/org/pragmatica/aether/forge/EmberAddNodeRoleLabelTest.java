@@ -76,10 +76,8 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// would fail here too. The base provider is captured through the EXISTING `withComputeProviderDecorator`
 /// seam rather than by widening Ember's API for a test.
 ///
-/// **The equivalence that keeps existing core provisioning unchanged is asserted, not assumed**:
-/// `core` and blank are both non-`worker`, so both classify as core. That is one line of predicate, and
-/// [#coreRoleAndBlank_areEquivalent_soExistingCoreProvisioningIsUnchanged] pins it directly instead of
-/// leaving it as a claim in a commit message.
+/// Provider defaults are resolved before immutable admission. An omitted provisioning role becomes
+/// explicit CORE; an unknown wire role never contributes core authority.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -134,22 +132,12 @@ class EmberAddNodeRoleLabelTest {
         Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
-    /// THE REGRESSION GUARD. Every existing forge test calls `addNode()`, and a node that started
-    /// advertising a role would change how the membership FSM classifies it cluster-wide. The default
-    /// must stay exactly as it was: no role label at all.
+    /// Default manual nodes are explicitly configured core before immutable admission.
     @Test
-    void addNode_advertisesNoRoleLabel_soExistingBehaviourIsUnchanged() {
-        var added = add(LifecycleAwait.nodeSettled("default addNode join in addNode_advertisesNoRoleLabel_soExistingBehaviourIsUnchanged()",
-                                                   cluster,
-                                                   cluster.addNode())
-                                      .id());
-        var labels = advertisedLabels(added);
-
-        log.info("ROLE-LABEL: default addNode -> {} labels={}", added, labels);
-        assertThat(labels.containsKey(NodeInfo.LABEL_ROLE))
-            .as("default addNode() must advertise NO role label — blank classifies as CORE, which is the "
-                + "long-standing behaviour every forge test is written against. Saw labels=%s", labels)
-            .isFalse();
+    void addNode_advertisesExplicitCoreRole() {
+        var added = add(LifecycleAwait.nodeSettled("default core join", cluster, cluster.addNode()).id());
+        assertThat(advertisedLabels(added).get(NodeInfo.LABEL_ROLE)).isEqualTo("core");
+        assertThat(classifiedCoreByPeer(added)).isTrue();
     }
 
     /// The opt-in. Without this label the node classifies as a core and every community-tier mechanism
@@ -165,7 +153,7 @@ class EmberAddNodeRoleLabelTest {
         log.info("ROLE-LABEL: addWorkerNode -> {} labels={}", added, labels);
         assertThat(labels.get(NodeInfo.LABEL_ROLE))
             .as("addWorkerNode() must advertise exactly the literal `MemberDescriptor.isCoreRole` tests "
-                + "against — anything else, INCLUDING a near-miss like \"WORKER\", classifies as core and "
+                + "against — mismatched provider labels would suppress worker behavior and "
                 + "silently restores the suppression this method exists to lift. Saw labels=%s", labels)
             .isEqualTo("worker");
     }
@@ -213,32 +201,23 @@ class EmberAddNodeRoleLabelTest {
             .isTrue();
     }
 
-    /// A role that never resolved stamps NO label, rather than `role=""`. Production reaches this shape
-    /// through `Main.collectNodeLabels`, which puts the key only when `AETHER_ROLE` is present; the two
-    /// are indistinguishable to `isCoreRole` today, but only the empty map matches the wire.
+    /// An omitted provider role resolves to explicit core configuration before admission.
     @Test
-    void provisionedWithBlankRole_advertisesNoLabel_matchingAnUnsetAetherRole() {
+    void provisionedWithBlankRole_advertisesExplicitProviderDefaultCore() {
         var added = provisionWithRole("");
-        var labels = advertisedLabels(added);
-
-        log.info("ROLE-LABEL: provisioned role=<blank> -> {} labels={}", added, labels);
-        assertThat(labels.containsKey(NodeInfo.LABEL_ROLE))
-            .as("an unresolved role must stamp no label at all, not an empty-string one. Saw labels=%s", labels)
-            .isFalse();
+        assertThat(advertisedLabels(added).get(NodeInfo.LABEL_ROLE)).isEqualTo("core");
+        assertThat(classifiedCoreByPeer(added)).isTrue();
     }
 
-    /// The equivalence the propagation rests on, asserted directly against the single predicate that
-    /// owns the rule. If this ever goes red, stamping `core` where blank used to sit is no longer a
-    /// no-op and every core-provisioning path needs re-reading.
+    /// Unknown wire roles never gain core authority; provider defaults are resolved before wire.
     @Test
-    void coreRoleAndBlank_areEquivalent_soExistingCoreProvisioningIsUnchanged() {
+    void coreRoleRequiresExplicitIdentity() {
         assertThat(MemberDescriptor.isCoreRole("core"))
             .as("`core` must classify as core")
-            .isEqualTo(MemberDescriptor.isCoreRole(""))
             .isTrue();
+        assertThat(MemberDescriptor.isCoreRole("")).isFalse();
         assertThat(MemberDescriptor.isCoreRole("worker"))
-            .as("`worker` is the ONLY literal that classifies as non-core — the rule the whole "
-                + "community tier is gated on")
+            .as("worker identity cannot authorize core participation")
             .isFalse();
     }
 

@@ -65,7 +65,12 @@ public interface BootstrapOverlayGenerator {
         var databases = databaseSections(source).stream();
         var sections = Stream.concat(fixed, databases).toList();
 
-        return new TomlDocument(toOrderedMap(sections), Map.of());
+        return SourceCloudBindings.augment(new TomlDocument(toOrderedMap(sections), Map.of()),
+                                           config,
+                                           role,
+                                           Map.of(source.name().value(),
+                                                  sshKeyIds),
+                                           Map.of());
     }
 
     private static Map<String, Map<String, Object>> toOrderedMap(List<Section> sections) {

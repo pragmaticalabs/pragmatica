@@ -46,6 +46,23 @@ class LeaderElectionHandledObservabilityTest {
     }
 
     @Test
+    void installedElectorateFiltersExpectedTransportAndCommittedLeaderViews() {
+        var h = buildHarness();
+        var ctx = ((LeaderElectionState) h.state()).ctx();
+        var worker = new NodeId("a-worker");
+        ctx.setCurrentTopology(List.of(SELF, PEER_A, PEER_B, worker));
+        ctx.setCurrentLeader(Option.some(SELF));
+        ctx.installVoters(List.of(PEER_A, PEER_B));
+        assertThat(ctx.expectedCluster()).containsExactly(PEER_A, PEER_B);
+        assertThat(ctx.currentTopology()).containsExactly(PEER_A, PEER_B);
+        assertThat(ctx.candidatePool()).containsExactly(PEER_A, PEER_B);
+        assertThat(ctx.currentLeader().isEmpty()).isTrue();
+        assertThat(ctx.isLeader()).isFalse();
+        h.dispatch(new ClusterFsmEvent.NodeAdded(worker, List.of(SELF, PEER_A, worker)));
+        assertThat(ctx.currentTopology()).containsExactly(PEER_A);
+    }
+
+    @Test
     void dormant_nodeAdded_recordedAsHandled() {
         var h = buildHarness();
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Dormant.class);

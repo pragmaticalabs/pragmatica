@@ -197,14 +197,9 @@ public final class LeaderReconciler {
     /// deficit that over-provisions; a genuinely-gone node drops from the count via co-confirmed
     /// death or the routed down-hysteresis crossing. presence sampler is retained for its
     /// monotonic [`PresenceSampler#peakMembershipCount`] cold-start latch and trigger wiring.
-    /// Wave 7 deferred: `peakMembershipCount` deliberately STAYS on the PresenceSampler sensor
-    /// (role-blind residual accepted, bounded by the deficit-debounce + quorum-safety gates). An
-    /// FSM-derived peak would be wrong here: the boot seed promotes the CONFIGURED topology
-    /// straight to MEMBER before any real health observation, so the FSM core count equals the
-    /// full configured count at boot and [`#reachedFullMembership`] would latch before genuine
-    /// formation — defeating the cold-start guard it exists for. The sampler peak requires
-    /// genuinely-observed SWIM-healthy presence (K_UP consecutive samples per member). Revisit
-    /// when the seed carries real health (#241 / Wave 9).
+    /// Configured peer discovery now creates OBSERVED identities, not counted members. A current
+    /// role-verified counted CORE set is therefore formation evidence alongside sampled history.
+    /// Keeping both avoids losing a full-membership interval before a departure or a target increase.
     private final MembershipFsm membershipFsm;
     private final IntSupplier configuredCoreCountSupplier;
     /// Leader-term supplier (monotonic, incremented once per election). A value `> 1` on
@@ -329,6 +324,10 @@ public final class LeaderReconciler {
     /// seed) so existing construction / tests keep working unchanged; `AetherNode` wires it to
     /// `ClusterSyncCollector::retainedDispatchedNodes`.
     private final AtomicReference<Supplier<Set<NodeId>>> retainedDispatchedSupplier = new AtomicReference<>(Set::of);
+
+    /// Verified installed electorate for formation evidence independent of desired provider capacity.
+    /// Empty means unavailable evidence; it never establishes formation.
+    private final AtomicReference<Option<Supplier<Set<NodeId>>>> installedVotersSupplier = new AtomicReference<>(none());
 
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
@@ -615,6 +614,34 @@ public final class LeaderReconciler {
         reconcileListener = newListener;
     }
 
+    /// Verified consensus authority, independent of desired provider capacity. Empty means no evidence.
+    public org.pragmatica.lang.Unit setInstalledVotersSupplier(Supplier<Set<NodeId>> supplier) {
+        installedVotersSupplier.set(some(supplier));
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    private record QuorumEvidence(boolean safe, boolean fullyObserved, int threshold) {}
+
+    /// Unwired fixtures retain their legacy capacity model; a wired empty authority fails closed.
+    private QuorumEvidence quorumEvidence(Set<NodeId> currentMembers, int desiredCapacity) {
+        return installedVotersSupplier.get()
+                                      .map(supplier -> installedQuorumEvidence(currentMembers,
+                                                                               supplier.get()))
+                                      .or(() -> new QuorumEvidence(currentMembers.size() >= quorumThreshold(desiredCapacity),
+                                                                   false,
+                                                                   quorumThreshold(desiredCapacity)));
+    }
+
+    private static QuorumEvidence installedQuorumEvidence(Set<NodeId> currentMembers, Set<NodeId> installed) {
+        int threshold = quorumThreshold(installed.size());
+        long present = installed.stream().filter(currentMembers::contains).count();
+
+        return new QuorumEvidence(!installed.isEmpty() && present >= threshold,
+                                  !installed.isEmpty() && present == installed.size(),
+                                  threshold);
+    }
+
     /// Observability — whether this instance currently holds the leader lease.
     public boolean isLeader() {
         return isLeader.get();
@@ -622,7 +649,7 @@ public final class LeaderReconciler {
 
     /// Observability — whether the provisioning latch has armed. Starts `false`; latches
     /// `true` the first reconcile pass that observes the cluster at configured quorum
-    /// (`clusterMembershipCount >= quorumThreshold(configuredCoreCount)`, `configuredCoreCount >=
+    /// (a majority of verified installed voter identities is counted, `configuredCoreCount >=
     /// 1`); never resets within a leader term. While unarmed, provisioning is suppressed.
     public boolean isArmedForProvisioning() {
         return armedForProvisioning.get();
@@ -630,7 +657,9 @@ public final class LeaderReconciler {
 
     /// Observability — whether the reached-full-membership latch has set. Starts `false`; latches
     /// `true` the first reconcile pass that observes the cluster at FULL configured membership
-    /// (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >= 1`), or on a
+    /// (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >= 1`), sampled
+    /// full-membership history, or all members of a nonempty verified installed electorate. The
+    /// installed electorate establishes formation independently of target changes. Also latches on a
     /// RE-ELECTION activation (leader term > 1); never resets within a leader term. While `false`
     /// provisioning is suppressed (Bug C cold-start guard — replaces the buggy timer-anchored
     /// grace; membership-unification-spec P5).
@@ -802,6 +831,7 @@ public final class LeaderReconciler {
         currentMembers.forEach(inFlightProvisioning::remove);
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
+        var authorityEvidence = quorumEvidence(currentMembers, configuredCoreCount);
         // Effective capacity is the SIZE OF THE UNION of confirmed members and in-flight
         // provisioning placeholders — NOT their sum (safety-critical). The identity-match clear
         // above already removes any in-flight key that has become a confirmed member, so a
@@ -814,7 +844,7 @@ public final class LeaderReconciler {
         var effective = effectiveCapacity(currentMembers);
         // Arm-after-first-quorum latch (Bug C; membership-unification-spec P5 — identity-aware
         // reconciler, approximated by a quorum latch). Latch true the first time the cluster is
-        // observed at configured QUORUM (not full membership); never resets. Arming at quorum
+        // observed at installed-electorate QUORUM (not desired capacity); never resets. Arming at quorum
         // rather than full `configuredCoreCount` lets a quorum-holding leader auto-heal after a
         // multi-node kill where only the survivors remain and the dead peers (restart:"no") never
         // return — the process never re-observes full membership, so a full-count latch wedges
@@ -823,27 +853,22 @@ public final class LeaderReconciler {
         // provisioning window is bounded by the leader-activation reconcile delay
         // (nttDepartureTimeout × 1.5), by which time formation has completed. configuredCoreCount
         // must be >= 1 to be armable.
-        if (configuredCoreCount >= 1 && clusterMembershipCount >= quorumThreshold(configuredCoreCount)) {
+        if (configuredCoreCount >= 1 && authorityEvidence.safe()) {
             if (armedForProvisioning.compareAndSet(false, true)) {
                 log.info("Provisioning ARMED at nanoTime={} (clusterMembershipCount={}, configuredCoreCount={}, quorumThreshold={})",
                          now,
                          clusterMembershipCount,
                          configuredCoreCount,
-                         quorumThreshold(configuredCoreCount));
+                         authorityEvidence.threshold());
             }
         }
-        // Reached-full-membership latch (Bug C — cold-start-over is a FACT, not a timer). Sourced
-        // from presence sampler's INDEPENDENT high-water mark ([`PresenceSampler#peakMembershipCount`]), NOT
-        // the per-pass `clusterMembershipCount`: the reconciler is departure-triggered, so its FIRST
-        // pass runs at the post-departure count (e.g. 4/5) and never during the full-membership
-        // window — a per-pass `>= configured` check could therefore never latch (live Docker trace
-        // proved it). presence sampler updates the peak on the 1→full formation growth regardless of reconcile
-        // timing, so the first pass at 4/5 sees peak=5 → latches. Latch true once; never resets.
-        // While false the cluster never reached full — a deficit may be a slow-joining configured
-        // peer, so provisioning is suppressed (COLD_START_NOT_FULL). Once true the cold-start guard
-        // no longer applies: a deficit is a departure, gated only by deficit-debounce +
-        // quorum-safety + the arm latch.
-        if (configuredCoreCount >= 1 && presenceSampler.peakMembershipCount() >= configuredCoreCount) {
+        // A current verified CORE set can reach the old target before the asynchronous sampler.
+        // Latch that evidence now: a subsequent operator increase must not move the formation
+        // threshold beyond an already-formed cluster. The installed electorate also establishes
+        // formation when target updates coalesce before any pass observes the old desired count.
+        // Sampled history still covers departure before
+        // the first reconcile. OBSERVED/unknown-role peers contribute to neither current core count.
+        if (configuredCoreCount >= 1 && (authorityEvidence.fullyObserved() || clusterMembershipCount >= configuredCoreCount || presenceSampler.peakMembershipCount() >= configuredCoreCount)) {
             if (reachedFullMembership.compareAndSet(false, true)) {
                 log.info("Reached full membership at nanoTime={} (peakMembershipCount={}, configuredCoreCount={})",
                          now,
@@ -874,7 +899,7 @@ public final class LeaderReconciler {
         // separately at each of the three sites below let a same-pass toggle make the decision, the
         // log line, and the #336 snapshot disagree about why a deficit went unfilled.
         var autoHealEnabled = ctm.isAutoHealEnabled();
-        var quorumSafe = clusterMembershipCount >= quorumThreshold(configuredCoreCount);
+        var quorumSafe = authorityEvidence.safe();
         var provisioningPermitted = quorumSafe && provisioningAllowed(now,
                                                                       effective,
                                                                       configuredCoreCount,
@@ -1992,7 +2017,7 @@ public final class LeaderReconciler {
         var currentMembers = membershipFsm.coreCountedMembers();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         var effective = effectiveCapacity(currentMembers);
-        var quorumSafe = currentMembers.size() >= quorumThreshold(configuredCoreCount);
+        var quorumSafe = quorumEvidence(currentMembers, configuredCoreCount).safe();
         var captured = Option.option(lastProvisioningDecision);
 
         return new ProvisioningDecisionSnapshot(captured.map(ProvisioningDecisionSnapshot::trigger)

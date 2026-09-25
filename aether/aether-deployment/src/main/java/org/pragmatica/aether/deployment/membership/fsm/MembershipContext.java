@@ -22,7 +22,7 @@ import org.pragmatica.statemachine.Fsm;
 /// the terminal incarnation) and is therefore constructed fresh on every entry via [`#dead`]; a
 /// rejoin produces a fresh OBSERVED instance via [`#observedRejoin`].
 ///
-/// Thread safety: the incarnation high-water mark is an `AtomicLong`. State singletons are `final`.
+/// Thread safety: both evidence high-water marks use `AtomicLong`. State singletons are `final`.
 public final class MembershipContext {
     private final Fsm<MembershipState, MembershipEvent> fsm;
     private final NodeId member;
@@ -36,6 +36,9 @@ public final class MembershipContext {
     /// this identity — even when the DEAD-triggering event (`Stopped`, `JoinGraceExpiredNeverHealthy`,
     /// drain) carries no incarnation of its own.
     private final AtomicLong lastSeenIncarnation = new AtomicLong(0);
+    /// Highest durable producer-process epoch, independent of SWIM boot/refutation counters.
+    /// Governor reports and direct worker admission share this domain, never the SWIM mark.
+    private final AtomicLong lastSeenProcessEpoch = new AtomicLong(0);
 
     MembershipContext(Fsm<MembershipState, MembershipEvent> fsm, NodeId member) {
         this.fsm = fsm;
@@ -65,6 +68,21 @@ public final class MembershipContext {
         return lastSeenIncarnation.get();
     }
 
+    @Contract
+    public void observeProcessEpoch(long processEpoch) {
+        lastSeenProcessEpoch.accumulateAndGet(processEpoch, Math::max);
+    }
+
+    public long lastSeenProcessEpoch() {
+        return lastSeenProcessEpoch.get();
+    }
+
+    public MembershipState.Observed observedProcessRejoin(long processEpoch) {
+        observeProcessEpoch(processEpoch);
+
+        return observed;
+    }
+
     // --- Per-FSM state instances ---
     public MembershipState.Observed observed() {
         return observed;
@@ -91,8 +109,8 @@ public final class MembershipContext {
         return departing;
     }
 
-    /// Fresh DEAD instance per entry, stamped with the current incarnation high-water mark.
+    /// Fresh DEAD instance per entry, stamped with both current evidence high-water marks.
     public MembershipState.Dead dead() {
-        return new MembershipState.Dead(this, lastSeenIncarnation.get());
+        return new MembershipState.Dead(this, lastSeenIncarnation.get(), lastSeenProcessEpoch.get());
     }
 }

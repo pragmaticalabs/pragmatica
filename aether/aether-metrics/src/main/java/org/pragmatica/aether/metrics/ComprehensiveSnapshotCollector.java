@@ -34,6 +34,7 @@ public final class ComprehensiveSnapshotCollector {
     private static final Logger log = LoggerFactory.getLogger(ComprehensiveSnapshotCollector.class);
     private static final long COLLECTION_INTERVAL_MS = 1000;
 
+    private final InvocationCounterAccumulator invocationCounters = new InvocationCounterAccumulator();
     private final GCMetricsCollector gcCollector;
     private final EventLoopMetricsCollector eventLoopCollector;
     private final RabiaMetricsCollector rabiaCollector;
@@ -105,7 +106,6 @@ public final class ComprehensiveSnapshotCollector {
         return unitResult();
     }
 
-    @SuppressWarnings("JBCT-EX-01")
     public Result<Unit> stop() {
         if (!started) {
             return unitResult();
@@ -136,20 +136,16 @@ public final class ComprehensiveSnapshotCollector {
         return derivedCalculator.current();
     }
 
-    @SuppressWarnings("JBCT-EX-01")
     private void collectSnapshot() {
-        try {
-            var snapshot = buildSnapshot();
+        Result.lift(this::buildSnapshot)
+              .flatMap(this::recordSnapshot)
+              .onFailure(cause -> log.warn("Failed to collect comprehensive snapshot: {}",
+                                           cause.message()));
+    }
 
-            minuteAggregator.addSample(snapshot);
-            derivedCalculator.addSample(snapshot);
-            log.trace("Collected comprehensive snapshot: cpu={}, heap={}, invocations={}",
-                      snapshot.cpuUsage(),
-                      snapshot.heapUsage(),
-                      snapshot.totalInvocations());
-        } catch (Exception e) {
-            log.warn("Failed to collect comprehensive snapshot: {}", e.getMessage());
-        }
+    private Result<Unit> recordSnapshot(ComprehensiveSnapshot snapshot) {
+        return minuteAggregator.addSample(snapshot)
+                               .flatMap(_ -> derivedCalculator.addSample(snapshot));
     }
 
     private ComprehensiveSnapshot buildSnapshot() {
@@ -158,21 +154,11 @@ public final class ComprehensiveSnapshotCollector {
         GCMetrics gc = gcCollector.snapshot();
         EventLoopMetrics eventLoop = eventLoopCollector.snapshot();
         RabiaMetrics consensus = rabiaCollector.snapshot();
-        var invocationSnapshots = invocationCollector.snapshot();
-        long totalInvocations = 0;
-        long successfulInvocations = 0;
-        long failedInvocations = 0;
-        double totalLatencyMs = 0;
-
-        for (var methodSnapshot : invocationSnapshots) {
-            var metrics = methodSnapshot.metrics();
-
-            totalInvocations += metrics.count();
-            successfulInvocations += metrics.successCount();
-            failedInvocations += metrics.failureCount();
-            totalLatencyMs += metrics.totalDurationNs() / 1_000_000.0;
-        }
-
+        var counters = invocationCounters.accumulate(invocationCollector.snapshot());
+        long totalInvocations = counters.calls();
+        long successfulInvocations = counters.successes();
+        long failedInvocations = counters.failures();
+        double totalLatencyMs = counters.durationNs() / 1_000_000.0;
         double avgLatencyMs = totalInvocations > 0
                               ? totalLatencyMs / totalInvocations
                               : 0.0;

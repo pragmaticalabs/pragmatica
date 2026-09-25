@@ -1,5 +1,8 @@
 # QUIC Transport Layer Specification
 
+> **RC4 note:** The historical `DHTRelayMessage` lane example below is superseded. That dormant worker relay and its codec were removed; active DHT traffic uses direct `DHTMessage` protocol records. Scoped worker metadata uses CONTROL manifests and SYNC chunks, with no raw consensus Decision relay. See [worker metadata distribution](worker-metadata-distribution-spec.md).
+
+
 ## Version: 1.1
 ## Status: Implementation-Ready
 ## Target: Pre V1.0.0 (v0.24.0)

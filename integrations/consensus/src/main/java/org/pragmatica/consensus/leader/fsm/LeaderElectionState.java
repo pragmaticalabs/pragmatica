@@ -51,7 +51,7 @@ import org.slf4j.LoggerFactory;
 /// All states accept [`ClusterFsmEvent`] as their event type; leader-election domain events
 /// ([`LeaderElectionEvents`]) also implement `ClusterFsmEvent` so they flow through the same
 /// dispatch path.
-public sealed interface LeaderElectionState extends FsmState<LeaderElectionState, ClusterFsmEvent> permits LeaderElectionState.Dormant, LeaderElectionState.QuorumWaiting, LeaderElectionState.AwaitingKvSync, LeaderElectionState.Electing, LeaderElectionState.Led, LeaderElectionState.ReElecting, LeaderElectionState.QuorumLost, LeaderElectionState.Stopped {
+public sealed interface LeaderElectionState extends FsmState<LeaderElectionState, ClusterFsmEvent> permits LeaderElectionState.Dormant, LeaderElectionState.QuorumWaiting, LeaderElectionState.AwaitingKvSync, LeaderElectionState.Electing, LeaderElectionState.Led, LeaderElectionState.ReElecting, LeaderElectionState.QuorumLost, LeaderElectionState.Stopped, LeaderElectionState.Passive {
     Logger log = LoggerFactory.getLogger(LeaderElectionState.class);
 
     /// Marker no-op used in `tx.handle(...)` arms where an event is intentionally absorbed
@@ -74,6 +74,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.transitionTo(ctx.quorumWaiting());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 // ConsensusReady arriving in Dormant is acknowledged but causes no transition —
@@ -162,6 +164,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ConsensusReady _ -> tx.transitionTo(ctx.awaitingKvSync());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
@@ -238,6 +242,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
                 case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
@@ -337,6 +343,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ElectionTick _ -> tx.handle(() -> {
                     adoptLeaderFromKvIfPresent(ctx);
                     trySubmitProposal(ctx, this);
@@ -413,6 +421,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ClusterFsmEvent.NodeGone ng -> {
                     ctx.setCurrentTopology(ng.topology());
                     if (ng.node().equals(leader)) {
@@ -607,6 +617,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ElectionTick _ -> tx.handle(() -> {
                     adoptLeaderFromKvIfPresent(ctx);
                     trySubmitProposal(ctx, this);
@@ -634,6 +646,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 // QuorumEstablished after a transient quorum loss re-enters the AwaitingKvSync
                 // gate. We skip the intermediate QuorumWaiting consensus-readiness re-check
                 // because consensus was already active before the quorum dropped, and remains
@@ -669,6 +683,42 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // Terminal — ignore everything.
             tx.ignore();
         }
+    }
+
+    /// A worker observes committed leadership without entering any core election or quorum state.
+    @Contract
+    record Passive(LeaderElectionContext ctx, java.util.List<NodeId> members) implements LeaderElectionState {
+        @Override
+        public void onEntry() {
+            var previous = ctx.currentLeader();
+
+            ctx.installVoters(members);
+            previous.filter(node -> !ctx.isEligible(node)).onPresent(_ -> clearLeaderAndNotify(ctx));
+        }
+
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
+                case LeaderElectionEvents.VoterReadmitted _ -> tx.transitionTo(ctx.quorumWaiting());
+                case LeaderCommitted committed -> tx.handle(() -> observeCommittedLeader(ctx, committed));
+                case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
+                default -> tx.ignore();
+            }
+        }
+    }
+
+    private static void observeCommittedLeader(LeaderElectionContext ctx, LeaderCommitted committed) {
+        if (!ctx.isEligible(committed.leader()) || committed.leader().equals(ctx.self()) || committed.viewSequence() <= LeaderCommitted.NO_SEQUENCE || committed.viewSequence() < ctx.adoptedViewSequence() || (committed.viewSequence() == ctx.adoptedViewSequence() && ctx.lastAdoptedLeader()
+                                                                                                                                                                                                                                                                            .filter(committed.leader()::equals)
+                                                                                                                                                                                                                                                                            .isEmpty())) {
+            return;
+        }
+
+        ctx.setAdoptedViewSequence(committed.viewSequence());
+        ctx.setCurrentLeader(Option.some(committed.leader()));
+        notifyLeaderChange(ctx);
     }
 
     // --- Shared action helpers ---

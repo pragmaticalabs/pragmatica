@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -53,13 +56,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #241 leader-stamp (worker-membership-spec §4.1 / §3.3 / A10): when the leader assigns a WORKER
-/// role at NodeJoined time it must, in ONE atomic batch, mint a FORMING [`CommunityKey`] for the
+/// role on the worker join channel it must, in ONE atomic batch, mint a FORMING [`CommunityKey`] for the
 /// joining node's source (only the FIRST worker of a source mints it; subsequent workers REUSE the
 /// same community id with no second Put — A10 no-renumber) and write a community-assigned WORKER
 /// [`ActivationDirectiveKey`] carrying that community id. The CORE path is unchanged: no community
 /// Put, a bare CORE directive. An absent/blank source falls back to `"default"` (D2).
 ///
-/// The harness drives the real FSM (`Activate` → `MembershipDecisionReceived(NodeJoined)`) and
+/// The harness drives the real FSM (`Activate` → `WorkerJoinReceived`) and
 /// inspects the commands recorded by the stub cluster — mirrors `ClusterDeploymentStateActiveTest`.
 class ClusterDeploymentStateCommunityMintTest {
     private static final NodeId SELF = new NodeId("node-self");
@@ -94,7 +97,7 @@ class ClusterDeploymentStateCommunityMintTest {
                                                     Set::of,
                                                     Set.of(SELF),
                                                     DeploymentAtomicity.ALL_OR_NOTHING,
-                                                    1,
+                                                    5,
                                                     timeSpan(300).seconds(),
                                                     System::currentTimeMillis,
                                                     memberSourceSupplier).dormant();
@@ -108,7 +111,7 @@ class ClusterDeploymentStateCommunityMintTest {
     }
 
     private void dispatchJoin(NodeId nodeId) {
-        harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeJoined(nodeId, List.of(SELF, nodeId))));
+        harness.dispatch(new WorkerJoinReceived(WorkerJoinDecision.workerJoinDecision(nodeId, "worker", HlcTimestamp.ZERO)));
     }
 
     private List<CommunityValue> communityPutsFor(String communityId) {
@@ -133,10 +136,97 @@ class ClusterDeploymentStateCommunityMintTest {
                                .toList();
     }
 
+    @Test
+    void failedAssignment_isRetriedByNextFreshAdmissionWithoutRoleChange() {
+        cluster.rejectNext = true;
+        joinWorker(WORKER_1, SOURCE_EU);
+        assertThat(kvStore.get(ActivationDirectiveKey.activationDirectiveKey(WORKER_1)).isEmpty()).isTrue();
+        dispatchJoin(WORKER_1);
+        assertThat(kvStore.getTyped(ActivationDirectiveKey.activationDirectiveKey(WORKER_1), ActivationDirectiveValue.class)
+            .unwrap().communityId()).isEqualTo(EXPECTED_COMMUNITY);
+    }
+
+    @Test
+    void concurrentCommunityChange_refusesWholeAssignmentAndRetryPreservesNewState() {
+        cluster.beforeCommit = () -> kvStore.put(CommunityKey.communityKey(EXPECTED_COMMUNITY),
+            CommunityValue.communityValue(SOURCE_EU, "WORKER", 100).withState(CommunityState.DEGRADED));
+        joinWorker(WORKER_1, SOURCE_EU);
+        assertThat(kvStore.get(ActivationDirectiveKey.activationDirectiveKey(WORKER_1)).isEmpty()).isTrue();
+        dispatchJoin(WORKER_1);
+        assertThat(kvStore.get(ActivationDirectiveKey.activationDirectiveKey(WORKER_1)).isPresent()).isTrue();
+        assertThat(kvStore.getTyped(CommunityKey.communityKey(EXPECTED_COMMUNITY), CommunityValue.class).unwrap().state()).isEqualTo(CommunityState.DEGRADED);
+    }
+
+    @Test
+    void explicitCommunity_spansSourcesAndWaitsForObservedZone() {
+        var toml = """
+            config_version = "1.0.0"
+            [cluster]
+            name = "test"
+            version = "1.0.0"
+            [source.east]
+            type = "forge"
+            zones = ["a"]
+            [source.east.worker]
+            count = 10
+            [source.west]
+            type = "forge"
+            zones = ["b"]
+            [source.west.worker]
+            count = 10
+            [community.stable]
+            target_size = 10
+            [community.stable.placement.east]
+            source = "east"
+            zone = "a"
+            [community.stable.placement.west]
+            source = "west"
+            zone = "b"
+            """;
+        kvStore.put(AetherKey.ClusterConfigKey.CURRENT,
+                    new AetherValue.ClusterConfigValue(toml, "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
+        joinWorker(WORKER_1, "east");
+        assertThat(directivesFor(WORKER_1)).isEmpty();
+        kvStore.put(new AetherKey.NodePlacementKey(WORKER_1), new AetherValue.NodePlacementValue("east", Option.some("a"), "instance-1"));
+        dispatchJoin(WORKER_1);
+        kvStore.put(new AetherKey.NodePlacementKey(WORKER_2), new AetherValue.NodePlacementValue("west", Option.some("b"), "instance-2"));
+        joinWorker(WORKER_2, "west");
+        assertThat(directivesFor(WORKER_1).getFirst().communityId()).isEqualTo("stable");
+        assertThat(directivesFor(WORKER_2).getFirst().communityId()).isEqualTo("stable");
+        assertThat(communityPutsFor("stable")).hasSize(1);
+    }
+
+    @Test
+    void retiredPolicyRejectsLateReservedWorker() {
+        var toml = """
+            config_version = "1.0.0"
+            [cluster]
+            name = "test"
+            version = "1.0.0"
+            [source.east]
+            type = "forge"
+            [source.east.worker]
+            count = 0
+            [community.stable]
+            target_size = 0
+            [community.stable.placement.east]
+            source = "east"
+            """;
+        kvStore.put(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(toml, "test", "1.0.0", List.of(), 3, 5, "forge", 1, 1));
+        kvStore.put(new AetherKey.CommunityPlacementOperationKey("stable"),
+            new AetherValue.CommunityPlacementOperationValue("late-create", "stable", WORKER_1, "east", Option.none(),
+                "binding", Option.none(), "", AetherValue.PlacementOperationPhase.AWAITING_READY,
+                new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1), 1, 1, ""));
+        kvStore.put(new AetherKey.NodePlacementKey(WORKER_1), new AetherValue.NodePlacementValue("east", Option.none(), "instance"));
+        joinWorker(WORKER_1, "east");
+        assertThat(directivesFor(WORKER_1)).isEmpty();
+    }
+
     @Nested
     class WorkerCommunityMint {
         @Test
-        void assignNodeRole_firstWorkerOfSource_mintsFormingCommunityAndStampsDirective() {
+        void workerJoin_withCoreDeficit_mintsCommunityWithoutPromotingWorker() {
             joinWorker(WORKER_1, SOURCE_EU);
 
             var puts = communityPutsFor(EXPECTED_COMMUNITY);
@@ -170,14 +260,13 @@ class ClusterDeploymentStateCommunityMintTest {
 
             var batch = cluster.lastBatchContaining(ActivationDirectiveKey.activationDirectiveKey(WORKER_1));
 
-            assertThat(batch)
-                    .as("the community Put and the directive Put must be committed in one atomic batch")
-                    .hasSize(2);
-            assertThat(batch.getFirst())
-                    .as("the community Put precedes the directive Put in the batch")
-                    .isInstanceOf(KVCommand.Put.class);
-            assertThat(((KVCommand.Put<AetherKey, AetherValue>) batch.getFirst()).key())
-                    .isEqualTo(CommunityKey.communityKey(EXPECTED_COMMUNITY));
+            assertThat(batch).hasSize(1);
+            assertThat(batch.getFirst()).isInstanceOf(KVCommand.LeaderTransaction.class);
+            var transaction = (KVCommand.LeaderTransaction<?, ?>) batch.getFirst();
+            assertThat(transaction.mutations()).hasSize(2);
+            assertThat(transaction.mutations().getFirst().key()).isEqualTo(CommunityKey.communityKey(EXPECTED_COMMUNITY));
+            assertThat(transaction.mutations().getLast().expected().isEmpty()).isTrue();
+
         }
 
         @Test
@@ -213,9 +302,8 @@ class ClusterDeploymentStateCommunityMintTest {
     @Nested
     class CoreAssignment {
         @Test
-        void assignNodeRole_coreCandidate_writesBareCoreDirectiveAndNoCommunity() {
-            // coreMax is 1 and SELF already counts as core; promote only when below max. To exercise
-            // the CORE branch, raise the counted set to leave room: re-wire with an empty core set.
+        void coreJoin_atCapacity_preservesCoreRoleAndDoesNotMintCommunity() {
+            // A CORE membership event preserves its role even when configured capacity is full.
             var router = MessageRouter.mutable();
             var localKv = new InMemoryKvStore(router);
             var localCluster = new RecordingClusterNode(SELF, localKv);
@@ -228,12 +316,12 @@ class ClusterDeploymentStateCommunityMintTest {
                                                         router,
                                                         stubTopologyManager(SELF),
                                                         stubSchemaOrchestrator(),
-                                                        Set::of,
+                                                        () -> Set.of(SELF),
                                                         () -> Set.of(SELF),
                                                         Set::of,
                                                         Set.of(SELF),
                                                         DeploymentAtomicity.ALL_OR_NOTHING,
-                                                        5,
+                                                        1,
                                                         timeSpan(300).seconds(),
                                                         System::currentTimeMillis,
                                                         noSource).dormant();
@@ -359,10 +447,15 @@ class ClusterDeploymentStateCommunityMintTest {
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
         final List<List<KVCommand<AetherKey>>> batches = Collections.synchronizedList(new ArrayList<>());
         private final InMemoryKvStore committed;
+        private boolean rejectNext;
+        private Runnable beforeCommit = () -> {};
 
+        @SuppressWarnings({"unchecked", "rawtypes"})
         RecordingClusterNode(NodeId self, InMemoryKvStore committed) {
             this.self = self;
             this.committed = committed;
+            committed.process(committed.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                new org.pragmatica.cluster.state.kvstore.LeaderValue(self, 1)))));
         }
 
         @Override public NodeId self() {return self;}
@@ -377,8 +470,15 @@ class ClusterDeploymentStateCommunityMintTest {
         // into the shared KV store, so a subsequent community-existence read observes it (the reuse /
         // A10 no-renumber path depends on this closed loop).
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            commands.addAll(batch);
+            batch.forEach(command -> {
+                if (command instanceof KVCommand.LeaderTransaction<?, ?> transaction) {
+                    transaction.mutations().forEach(mutation -> mutation.replacement().onPresent(value ->
+                        commands.add(new KVCommand.Put<>((AetherKey) mutation.key(), (AetherValue) value))));
+                } else { commands.add(command); }
+            });
             batches.add(List.copyOf(batch));
+            if (rejectNext) { rejectNext = false; return org.pragmatica.lang.utils.Causes.cause("temporary submission failure").promise(); }
+            var action = beforeCommit; beforeCommit = () -> {}; action.run();
             committed.commit(batch);
             return Promise.success(Collections.emptyList());
         }
@@ -386,7 +486,8 @@ class ClusterDeploymentStateCommunityMintTest {
         List<KVCommand<AetherKey>> lastBatchContaining(AetherKey key) {
             return batches.stream()
                           .filter(batch -> batch.stream().anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
-                                                                              && put.key().equals(key)))
+                                                                              && put.key().equals(key)
+                              || command instanceof KVCommand.LeaderTransaction<?, ?> transaction && transaction.mutations().stream().anyMatch(mutation -> mutation.key().equals(key))))
                           .reduce((first, second) -> second)
                           .orElse(List.of());
         }
@@ -398,7 +499,15 @@ class ClusterDeploymentStateCommunityMintTest {
         }
 
         void put(AetherKey key, AetherValue value) {
-            process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            if (value instanceof org.pragmatica.cluster.state.kvstore.LeaderAuthorized) {
+                var leader = getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                    org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+                process(createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                    java.util.UUID.randomUUID().toString(), leader, List.of(),
+                    List.of(new KVCommand.Mutation<>(key, get(key), Option.some(value)))))));
+            } else {
+                process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            }
         }
 
         void commit(List<KVCommand<AetherKey>> batch) {

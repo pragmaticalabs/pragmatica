@@ -41,6 +41,76 @@ class SystemStreamRegistrarTest {
         return LeaderNotification.leaderChange(Option.empty(), false);
     }
 
+    @Test
+    void leaderNotification_schedulesInitialPass_withoutCallingCommitOnNotificationThread() {
+        var scheduler = new CapturingScheduler();
+        var calls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            calls.incrementAndGet();
+            return unitResult();
+        }, Result::unitResult, scheduler);
+
+        registrar.onLeaderChange(gained());
+        registrar.onLeaderChange(gained());
+
+        assertThat(calls.get()).isZero();
+        assertThat(scheduler.delays()).hasSize(1);
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
+    }
+
+    @Test
+    void staleScheduledActivation_cannotRunOrClearNewTermPass() {
+        var scheduler = new CapturingScheduler();
+        var calls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            calls.incrementAndGet();
+            return unitResult();
+        }, Result::unitResult, scheduler);
+
+        registrar.onLeaderChange(gained());
+        registrar.onLeaderChange(lost());
+        registrar.onLeaderChange(gained());
+        scheduler.fireNext(); // Deliberately executes the cancelled old term callback.
+        assertThat(calls.get()).isZero();
+        assertThat(scheduler.hasPending()).isTrue();
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
+    }
+
+    @Test
+    void leadershipChangesDuringRegistration_doNotOverlapOrRunOldTermsSecondLeg() {
+        var scheduler = new CapturingScheduler();
+        var registrarRef = new AtomicReference<SystemStreamRegistrar>();
+        var calls = new AtomicInteger();
+        var bootstrapCalls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            if (calls.incrementAndGet() == 1) {
+                registrarRef.get().onLeaderChange(lost());
+                registrarRef.get().onLeaderChange(gained());
+                scheduler.fireNext(); // New term cannot overlap the still-running old term.
+                assertThat(calls.get()).isEqualTo(1);
+                return StreamError.General.STREAM_CONFIG_COMMIT_FAILED.result();
+            }
+            return unitResult();
+        }, () -> {
+            bootstrapCalls.incrementAndGet();
+            return unitResult();
+        }, scheduler);
+        registrarRef.set(registrar);
+
+        registrar.onLeaderChange(gained());
+        scheduler.fireNext();
+        assertThat(bootstrapCalls.get()).isZero();
+        assertThat(scheduler.hasPending()).isTrue();
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(bootstrapCalls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
+    }
+
     @Nested
     class RetryUntilCommitted {
 
@@ -331,8 +401,8 @@ class SystemStreamRegistrarTest {
 
     /// Deterministic [`SystemStreamRegistrar.RetryScheduler`] seam: captures each scheduled runnable
     /// instead of timing it so the test can drive retry passes explicitly. A fired runnable is removed
-    /// before invocation (mirroring the production `pendingRetry.set(null)` at the top of
-    /// `onScheduledPass`). Every pass is captured here, including the first (#1419).
+    /// before invocation (mirroring the production `pendingRetry.set(null)` in `claimPass`). Every
+    /// pass is captured here, including the first (#1419).
     private static final class CapturingScheduler implements SystemStreamRegistrar.RetryScheduler {
         private final List<Runnable> pending = new ArrayList<>();
         private final List<TimeSpan> delays = new ArrayList<>();

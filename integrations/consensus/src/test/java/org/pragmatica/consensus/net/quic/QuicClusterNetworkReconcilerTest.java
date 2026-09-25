@@ -742,6 +742,9 @@ class QuicClusterNetworkReconcilerTest {
     /// "reconciler dispatched a dial" — `considerPeerForReconcile` calls `topologyManager.get`
     /// only after the backoff gate allows the attempt.
     private static final class CountingTopology implements TopologyObserver {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
         private final NodeInfo selfInfo;
         private final List<NodeInfo> peers;
         private final boolean returnEmptyOnGet;

@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.consensus.net.OutboundMessageLimit;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -67,10 +68,11 @@ import static org.pragmatica.lang.Unit.unit;
 /// bidirectional stream, sends a Hello response, and notifies the connection handler
 /// with the established [QuicPeerConnection].
 public sealed interface QuicClusterServer {
-    /// The largest length-prefixed frame the cluster transport's decoder accepts, in bytes — the single
-    /// source for both the server and the client pipelines, and the bound message producers split by
+    /// The largest length-prefixed frame the cluster transport's decoder accepts, in bytes. A delegating
+    /// alias of [OutboundMessageLimit#MAX_FRAME_BYTES], which is the single source for both the server
+    /// and the client pipelines; kept because message producers outside this module split by it
     /// (e.g. stream replication, #1287).
-    int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
+    int MAX_FRAME_LENGTH = OutboundMessageLimit.MAX_FRAME_BYTES;
     /// Start listening on the given UDP port.
     Promise<Unit> start(int port);
     /// Stop the server and release resources.
@@ -560,7 +562,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
             var quicChannel = (QuicChannel) ctx.channel().parent();
-            var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
+            var peerConnection = quicPeerConnection(hello.sender(), hello.sender(), quicChannel);
             // The handshake stream is the CONTROL lane.
             peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
             // Install the lazy lane-opener so a write that races the data-lane preamble window can

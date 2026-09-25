@@ -85,6 +85,6 @@ class ClusterBootstrapOrchestratorTest {
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.EMBER, none(), none())),
             infrastructureConfig(NetworkingType.MANUAL),
             defaultOperationsConfig()
-        );
+        , java.util.Map.of());
     }
 }

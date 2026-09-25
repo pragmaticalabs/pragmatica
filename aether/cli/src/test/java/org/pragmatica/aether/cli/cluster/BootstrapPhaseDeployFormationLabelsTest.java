@@ -78,7 +78,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
                                                              sources,
                                                              Map.of(),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                             ops);
+                                                             ops, java.util.Map.of());
     }
 
     /// The wizard's only output — one cloud source carrying the cores — is exactly the shape that

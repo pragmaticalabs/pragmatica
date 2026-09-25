@@ -42,6 +42,38 @@ import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
 /// Network failures should be logged internally, not thrown to callers.
 /// The consensus protocol handles message loss through timeouts and retries.
 public interface ClusterNetwork {
+    /// Additive fault-injection filter. It cannot bypass transport or application authority checks.
+    default Unit setInboundFaultFilter(java.util.function.BiPredicate<NodeId, org.pragmatica.messaging.Message.Wired> filter) {
+        return Unit.unit();
+    }
+
+    /// Validates a state-transfer envelope against the actual encoded transport limit.
+    /// In-memory transports without a frame limit need no additional restriction.
+    default org.pragmatica.lang.Result<Unit> validateOutboundMessage(ProtocolMessage message) {
+        return org.pragmatica.lang.Result.success(Unit.unit());
+    }
+
+    /// Selects one deterministic initiator for each peer pair. Both endpoints must use
+    /// the same immutable-role rule; health must not change the selected initiator.
+    /// Install before startup. The default transport policy uses NodeId ordering.
+    default Unit setConnectionInitiator(java.util.function.BiPredicate<NodeId, NodeId> policy) {
+        return Unit.unit();
+    }
+
+    /// Installs an additional authenticated-peer admission filter before router delivery.
+    /// The transport always enforces sender identity; this filter cannot bypass it.
+    @Contract
+    default Unit setInboundMessagePolicy(java.util.function.BiPredicate<NodeId, org.pragmatica.messaging.Message.Wired> policy) {
+        return Unit.unit();
+    }
+
+    /// Permits proposal evidence relays from installed voters only. Other messages must
+    /// name the authenticated connection peer as sender.
+    @Contract
+    default Unit setProposalRelayMembership(java.util.function.Predicate<NodeId> membership) {
+        return Unit.unit();
+    }
+
     /// Broadcast a message to all nodes in the cluster.
     ///
     /// Note that actual implementation may just send messages directly,

@@ -467,6 +467,11 @@ class NodeDeploymentStateScheduledTaskPublishTest {
         public void onSelfShutdown(SelfShutdown event) {}
 
         @Override
+        public Unit onNodeDeparture(NodeId node) {
+            return Unit.unit();
+        }
+
+        @Override
         public Promise<Unit> stop() {
             return Promise.unitPromise();
         }

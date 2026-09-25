@@ -186,13 +186,12 @@ class RabiaSyncAdoptionQuorumTest {
         /// silently discard a committed phase this node may be the sole surviving witness of.
         ///
         /// Self is a FLOOR, not an adopted candidate — so the assertion is that the RESPONDERS' snapshot
-        /// was not installed. What IS installed is self's own persisted snapshot (#1020): this is a cold
-        /// start, the live state machine is empty at phase 0, and the persisted phase 42 is the only
-        /// copy of that history in the process. (Before #1020 this asserted that NOTHING was installed,
-        /// on the argument that `persistence.save` never runs on commit so the persisted snapshot lags
-        /// the live state. That holds for a resync from ACTIVE — where the live phase is at or past the
-        /// persisted one and the engine still installs nothing — and not for a fresh process, which
-        /// activated on an EMPTY store while its committed history sat on disk.)
+        /// was not installed. What IS installed is self's own durable checkpoint: #1390 restores it at
+        /// boot before collecting responses, and #1020 installs it when a cold process activates on its
+        /// own state over an EMPTY live store. Either way no older peer snapshot may overwrite that
+        /// recovered committed prefix. (Before #1020 this asserted that NOTHING was installed, which
+        /// holds for a resync from ACTIVE — where the live phase is at or past the persisted one — and
+        /// not for a fresh process whose committed history sat on disk.)
         ///
         /// The responders carry a NON-EMPTY snapshot on purpose. `restoreState` skips `restoreSnapshot`
         /// entirely when the adopted state's snapshot is empty, so stale-but-EMPTY responders would leave
@@ -214,6 +213,7 @@ class RabiaSyncAdoptionQuorumTest {
             assertThat(stateMachine.lastRestored())
                 .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed — self's own is")
                 .isEqualTo(SELF_SNAPSHOT);
+            assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(42));
         }
 
         /// The discriminator for the test above: when a RESPONSE is the most advanced state, it must be
@@ -311,10 +311,11 @@ class RabiaSyncAdoptionQuorumTest {
 
             // HALF TWO — CHANGED by #660. D9 previously restored anyway, discarding the node's own
             // committed history. It now holds that history: the cluster's older snapshot is not
-            // installed, and (#1020) its own persisted snapshot is — the live store was empty.
+            // installed, and its own checkpoint is (restored at boot, #1390; own-state install, #1020).
             assertThat(stateMachine.lastRestored())
                 .as("the node must NOT regress onto the cluster's older state — that is the ratified behaviour #660 supersedes")
                 .isEqualTo(SELF_SNAPSHOT);
+            assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(42));
         }
     }
 
@@ -354,7 +355,7 @@ class RabiaSyncAdoptionQuorumTest {
         engines.add(engine);
         engine.clusterState(ClusterStateNotification.active());
 
-        assertThat(awaitCondition(() -> network.getMessages()
+        assertThat(awaitCondition(() -> (clusterSize == 1 && engine.isActive()) || network.getMessages()
                                                .stream()
                                                .anyMatch(SyncRequest.class::isInstance)))
             .as("engine must have started its sync round before responses are delivered")
@@ -365,6 +366,10 @@ class RabiaSyncAdoptionQuorumTest {
 
     private static RabiaPersistence<TestCommand> persistedAt(Phase phase, byte[] snapshot) {
         record fixed(Phase phase, byte[] snapshot) implements RabiaPersistence<TestCommand> {
+            @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> append(RabiaProtocolMessage message) {
+                return org.pragmatica.lang.Result.success(org.pragmatica.lang.Unit.unit());
+            }
+
             @Override
             public Result<Unit> save(StateMachine<TestCommand> stateMachine,
                                      Phase lastCommittedPhase,

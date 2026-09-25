@@ -11,9 +11,11 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.metrics.fsm.ClusterSyncContext;
+import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
@@ -72,6 +74,10 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     @Contract
     void sendPingsNow();
 
+    default Unit publishObservationsNow() {
+        return Unit.unit();
+    }
+
     /// Membership v2 (B5b) — inject the leader-local DRAIN target supplier. `AetherNode` wires this
     /// to `DrainCommandRegistry::drainTargets` after constructing the scheduler so leader pings
     /// carry the global `drainNodes` set for registered targets. Forwarded into the `ClusterSyncContext`.
@@ -85,6 +91,23 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     /// `ClusterSyncContext`. Default no-op for test doubles that don't drive provisioning.
     @Contract
     default void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {}
+
+    /// Full cluster metrics are delivered only to eligible core consumers.
+    @Contract
+    default Unit setPingTargetEligibility(Predicate<NodeId> predicate) {
+        return Unit.unit();
+    }
+
+    default Unit setPeerMetricsForwarding(Supplier<Boolean> predicate) {
+        return Unit.unit();
+    }
+
+    default Unit setMetricsRecipient(Predicate<NodeId> isCore) {
+        return Unit.unit();
+    }
+
+    @Contract
+    default void setSourceMetricsSupplier(Supplier<List<CommunityMetricsSnapshot>> supplier) {}
 
     /// Drive one periodic `PeerConnectivityObservation` emission synchronously.
     /// Wired by the scheduled task at `PeriodicObservationConfig.period()` cadence
@@ -374,6 +397,16 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
     }
 
     @Override
+    public Unit publishObservationsNow() {
+        if (!context.isLeader()) {
+            context.broadcastPing(context.epochSupplier().get(),
+                                  context.currentRabiaTerm());
+        }
+
+        return Unit.unit();
+    }
+
+    @Override
     @Contract
     public void sendPingsNow() {
         context.dispatch(new ClusterSyncEvents.PingTick(context.epochSupplier().get()));
@@ -389,6 +422,34 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
     @Contract
     public void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {
         context.setDispatchedNodesSupplier(supplier);
+    }
+
+    @Override
+    public Unit setPingTargetEligibility(Predicate<NodeId> predicate) {
+        context.setPingTargetEligibility(predicate);
+
+        return Unit.unit();
+    }
+
+    @Override
+    public Unit setPeerMetricsForwarding(Supplier<Boolean> predicate) {
+        context.setPeerMetricsForwarding(predicate);
+
+        return Unit.unit();
+    }
+
+    @Override
+    @Contract
+    public Unit setMetricsRecipient(Predicate<NodeId> isCore) {
+        context.setMetricsRecipient(isCore);
+
+        return Unit.unit();
+    }
+
+    @Override
+    @Contract
+    public void setSourceMetricsSupplier(Supplier<List<CommunityMetricsSnapshot>> supplier) {
+        context.setSourceMetricsSupplier(supplier);
     }
 
     @Override

@@ -52,6 +52,28 @@ public interface StateMachine<C extends Command> {
     /// @return The results of processing each command, in order
     <R> List<R> process(Batch<C> batch);
 
+    /// Apply a committed batch and atomically publish its global next-slot revision.
+    /// Implementations exposing snapshots to concurrent readers override this under their state lock.
+    default <R> List<R> processCommitted(Batch<C> batch, long nextSlot) {
+        return process(batch);
+    }
+
+    /// Recover a committed batch without publishing notifications, retaining its global revision.
+    default Result<Unit> recoverCommitted(Batch<C> batch, long nextSlot) {
+        return recover(batch);
+    }
+
+    /// Atomically restore snapshot content and its global next-slot revision.
+    default Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
+        return restoreSnapshot(snapshot);
+    }
+
+    /// Rebuild committed state from the local WAL before activation. Implementations with
+    /// externally visible notifications override this to suppress them until replayNotifications.
+    default Result<Unit> recover(Batch<C> batch) {
+        return Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable, () -> process(batch)).mapToUnit();
+    }
+
     /// Create a snapshot of the current state machine state.
     /// The snapshot should be serializable and capture the complete state.
     ///

@@ -60,6 +60,8 @@ class CommunityPlacementPlannerTest {
     void setUp() {
         var router = MessageRouter.mutable();
         kvStore = new InMemoryKvStore(router);
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
         var cluster = new RecordingClusterNode(SELF);
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
                 fsm -> new ClusterDeploymentContext(fsm,
@@ -282,7 +284,15 @@ class CommunityPlacementPlannerTest {
         }
 
         void put(AetherKey key, AetherValue value) {
-            process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            if (value instanceof org.pragmatica.cluster.state.kvstore.LeaderAuthorized) {
+                var leader = getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                    org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+                process(createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                    java.util.UUID.randomUUID().toString(), leader, List.of(),
+                    List.of(new KVCommand.Mutation<>(key, get(key), Option.some(value)))))));
+            } else {
+                process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            }
         }
     }
 
