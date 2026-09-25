@@ -168,11 +168,12 @@ ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress
 TRANSIENT_READ_DEADLINE_S="${TRANSIENT_READ_DEADLINE_S:-60}"
 TRANSIENT_READ_BACKOFF_S="${TRANSIENT_READ_BACKOFF_S:-2}"
 
-# transient_failure_type <body>: echo the body's failureType and succeed when it is on the
-# allow-list; fail (echoing nothing) otherwise.
+# transient_failure_type <body>: echo the body's (first) failureType and succeed when it is on the
+# allow-list — by exact name, never by substring or case-folding; fail (echoing nothing) otherwise.
 transient_failure_type() {
     local ft t
-    ft=$(printf '%s' "$1" | sed -nE 's/.*"failureType"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)
+    ft=$(printf '%s' "$1" | grep -oE '"failureType"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
     [ -n "$ft" ] || return 1
     for t in $ENTITY_TRANSIENT_FAILURE_TYPES; do
         if [ "$t" = "$ft" ]; then
@@ -184,7 +185,7 @@ transient_failure_type() {
 }
 
 read_amount() {
-    local key="$1" body ft deadline
+    local key="$1" body ft deadline last_transient=""
 
     # A node outside the key's replica set answers `PartitionNotHeld` — a STABLE refusal meaning
     # "ask another node", NOT "absent". Summing negatives across nodes would read a live entity as
@@ -220,6 +221,7 @@ read_amount() {
             return 3
         fi
         ft=$(transient_failure_type "$body") || break
+        last_transient="$body"
         if [ "$SECONDS" -ge "$deadline" ]; then
             log_warn "read ${key}: a node answered transient ${ft} until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: $(printf '%s' "$body" | head -c 200)" >&2
             return 5
@@ -229,6 +231,8 @@ read_amount() {
 
     if [ -n "$body" ]; then
         log_warn "read ${key}: a node answered, but not found/absent (not a transient type); last body: $(printf '%s' "$body" | head -c 200)" >&2
+    elif [ -n "$last_transient" ]; then
+        log_warn "read ${key}: no node answered this attempt (every endpoint failed at transport or non-2xx); the previous attempt WAS answered with a transient refusal: $(printf '%s' "$last_transient" | head -c 200)" >&2
     else
         log_warn "read ${key}: no node answered (every endpoint failed at transport or non-2xx)" >&2
     fi
