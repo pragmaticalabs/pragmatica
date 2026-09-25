@@ -11,6 +11,8 @@
 #          under `aether-chaos-cluster` — NEVER `aether-cluster`, which the Hetzner provider reads
 #          as a missed ingress firewall and so refuses every CTM replacement (#1500) — on create,
 #          and is relabelled (legacy `aether-cluster` stripped) when an earlier run's is reused.
+#   F3-F4  the strip is checked by reading the firewall back: a surviving `aether-cluster` label
+#          is reported (F3), a clean read-back is silent (F4, the control).
 #   K1-K5  tools/cloud-reaper.sh against a stubbed Hetzner API: a leaked chaos firewall is
 #          listed in dry-run and deleted with --destroy in every selector mode, never outside
 #          its cluster, and a protected cluster's chaos firewall is kept.
@@ -109,22 +111,23 @@ cat > "${WORK}/bin/hcloud" <<'EOF'
 echo "hcloud $*" >> "$HC_LOG"
 case "$1 $2" in
     "firewall create") [ "${HC_EXISTS:-0}" = 1 ] && { echo "name is already used (uniqueness_error)" >&2; exit 1; }; exit 0 ;;
-    "firewall describe") echo 4242 ;;
+    "firewall describe") case "$*" in *"-o json"*) printf '%s' "${HC_DESC_JSON:-{\"labels\":{}\}}" ;; *) echo 4242 ;; esac ;;
 esac
 exit 0
 EOF
 chmod +x "${WORK}/bin/hcloud"
-partition() {  # exists(0|1) -> prints the hcloud call log
+partition() {  # exists(0|1) [describe-json] -> prints the hcloud call log; output -> $WORK/hc-<exists>.out
     local node="restore-gate-test-$$"
     # common.sh requires TARGET_HOST; localhost is inert here (partition never ssh's).
     ( export PATH="${WORK}/bin:$PATH" HC_LOG="${WORK}/hc-$1.log" HC_EXISTS="$1" HOME="${WORK}" TARGET_HOST=localhost
+      [ -n "${2:-}" ] && export HC_DESC_JSON="$2"
       : > "$HC_LOG"
       source "${INTEG_DIR}/lib/common.sh" >/dev/null 2>&1 || echo "SOURCE-FAILED common.sh" >> "$HC_LOG"
       source "${INTEG_DIR}/lib/cluster.sh" >/dev/null 2>&1 || echo "SOURCE-FAILED cluster.sh" >> "$HC_LOG"
       cloud_server_id() { echo 777; }
       _cloud_transport_ports() { echo "8090 8190"; }
       export BOOTSTRAP_CLUSTER_NAME=test-b
-      cloud_partition_node "$node" >/dev/null 2>&1 || true
+      cloud_partition_node "$node" > "${WORK}/hc-$1.out" 2>&1 || true
       rm -f "/tmp/aether-partition-fw-${node}.id" )
     cat "${WORK}/hc-$1.log"
 }
@@ -139,6 +142,13 @@ if printf '%s' "$calls" | grep -q 'firewall add-label --overwrite .* aether-chao
    && ! printf '%s' "$calls" | grep -q 'aether-cluster='; then
     ok "F2 reused (pre-existing) firewall is relabelled, and a legacy aether-cluster label is stripped"
 else fail "F2 exists path: $(printf '%s' "$calls" | tr '\n' '|')"; fi
+if ! grep -q 'aether-cluster' "${WORK}/hc-1.out"; then
+    ok "F4 control: a reused firewall whose read-back has no aether-cluster label raises no warning"
+else fail "F4 clean read-back warned: $(tr '\n' '|' < "${WORK}/hc-1.out")"; fi
+partition 1 '{"id":4242,"labels":{"aether-cluster":"test-b","aether-chaos-cluster":"test-b","aether-role":"partition"}}' >/dev/null
+if grep -q "STILL carries aether-cluster after remove-label" "${WORK}/hc-1.out"; then
+    ok "F3 a legacy aether-cluster label that survives remove-label is reported, not swallowed"
+else fail "F3 surviving legacy label: $(tr '\n' '|' < "${WORK}/hc-1.out")"; fi
 
 # --- K: cloud-reaper.sh reaps chaos firewalls ---------------------------------------------
 # A stub `curl` serves a tiny Hetzner account from a JSON file, applying label selectors the way

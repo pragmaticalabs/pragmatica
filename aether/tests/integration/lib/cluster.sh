@@ -2259,7 +2259,16 @@ cloud_partition_node() {
                     "aether-chaos-cluster=${chaos_cluster}" \
                     "aether-role=partition" >/dev/null 2>&1 \
                     || log_warn "cloud_partition_node: could not label existing firewall '${fw_name}' — reapers will not see it"
+                # remove-label errors when the label is already absent, so its status cannot tell
+                # "nothing to do" from a real API failure. Check the post-condition instead: a reused
+                # firewall that KEEPS aether-cluster silently re-creates the #1500 red.
                 hcloud firewall remove-label "$fw_name" aether-cluster >/dev/null 2>&1 || true
+                local fw_json
+                if ! fw_json=$(hcloud firewall describe "$fw_name" -o json 2>/dev/null); then
+                    log_warn "cloud_partition_node: could not read back '${fw_name}' to confirm its legacy aether-cluster label is gone — if it remains, CTM replacements are refused while the partition is up (#1500)"
+                elif printf '%s' "$fw_json" | grep -qE '"aether-cluster"[[:space:]]*:'; then
+                    log_warn "cloud_partition_node: '${fw_name}' STILL carries aether-cluster after remove-label — CTM replacements will be refused while the partition is up (#1500); remove it by hand: hcloud firewall remove-label ${fw_name} aether-cluster"
+                fi
             fi
             fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null)
             if [ -z "$fw_id" ]; then

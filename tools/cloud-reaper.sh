@@ -68,7 +68,8 @@ FLAGS
                        aether-chaos-cluster=<name> match. Excludes orphans even if they
                        likely belong to the cluster.
     --exclude-cluster <name>
-                       Never delete resources labeled aether-cluster=<name>. Repeatable.
+                       Never delete resources labeled aether-cluster=<name>, nor chaos
+                       firewalls labeled aether-chaos-cluster=<name>. Repeatable.
                        Adds to the built-in protected set (see below).
     --allow-protected  Disable protected-cluster filtering. Required to delete the standing
                        shared infrastructure listed below. Use deliberately.
@@ -76,7 +77,7 @@ FLAGS
     --force            Skip the 5-second confirmation prompt (CI use).
     --help, -h         Print this help and exit.
 
-PROTECTED BY DEFAULT
+PROTECTED BY DEFAULT (both label keys: aether-cluster and aether-chaos-cluster)
     test-pg            The standing PostgreSQL VM the cloud suites connect to. It is
                        aether-labeled but owned by NO integration run, so every catch-all
                        selector matches it. It was deleted this way on 2026-08-03 by a run
