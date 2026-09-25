@@ -10,6 +10,13 @@
 # inherited a wrong/missing cluster label. Pass --strict-cluster to limit to exact
 # `aether-cluster` matches only.
 #
+# `aether-chaos-cluster` is the third key: the integration harness's partition-chaos firewalls
+# carry it INSTEAD of `aether-cluster` (#1500), because the Hetzner provider treats any firewall
+# labelled `aether-cluster=<name>` as a missed ingress firewall and refuses CTM replacements while
+# one exists. Every mode selects it — `--cluster X` (strict or not) as the exact
+# `aether-chaos-cluster=X`, the catch-all as the bare key — so a leaked chaos firewall is still
+# listed and reaped.
+#
 # This is a SAFETY NET. It does NOT consult ~/.aether/clusters/<name>/bootstrap-state.json
 # or any local state. It is 100% Hetzner-API-driven (label-match-only) so it
 # works even when:
@@ -51,14 +58,18 @@ USAGE
     cloud-reaper.sh [--cluster <name>] [--destroy] [--force] [--help]
 
 FLAGS
-    --cluster <name>   Filter to resources labeled aether-cluster=<name>. Also includes
-                       orphans (aether-node-id present but no aether-cluster) since they
-                       commonly belong to <name> after a failed bootstrap.
-                       Default: any non-empty aether-cluster OR aether-node-id label.
-    --strict-cluster   Used with --cluster <name>: require exact aether-cluster=<name>
-                       match. Excludes orphans even if they likely belong to the cluster.
+    --cluster <name>   Filter to resources labeled aether-cluster=<name> or
+                       aether-chaos-cluster=<name> (the harness's partition-chaos firewalls).
+                       Also includes orphans (aether-node-id present but no aether-cluster)
+                       since they commonly belong to <name> after a failed bootstrap.
+                       Default: any non-empty aether-cluster, aether-chaos-cluster OR
+                       aether-node-id label.
+    --strict-cluster   Used with --cluster <name>: require exact aether-cluster=<name> or
+                       aether-chaos-cluster=<name> match. Excludes orphans even if they
+                       likely belong to the cluster.
     --exclude-cluster <name>
-                       Never delete resources labeled aether-cluster=<name>. Repeatable.
+                       Never delete resources labeled aether-cluster=<name>, nor chaos
+                       firewalls labeled aether-chaos-cluster=<name>. Repeatable.
                        Adds to the built-in protected set (see below).
     --allow-protected  Disable protected-cluster filtering. Required to delete the standing
                        shared infrastructure listed below. Use deliberately.
@@ -66,7 +77,7 @@ FLAGS
     --force            Skip the 5-second confirmation prompt (CI use).
     --help, -h         Print this help and exit.
 
-PROTECTED BY DEFAULT
+PROTECTED BY DEFAULT (both label keys: aether-cluster and aether-chaos-cluster)
     test-pg            The standing PostgreSQL VM the cloud suites connect to. It is
                        aether-labeled but owned by NO integration run, so every catch-all
                        selector matches it. It was deleted this way on 2026-08-03 by a run
@@ -160,20 +171,20 @@ API="https://api.hetzner.cloud/v1"
 # (Hetzner label selectors are AND-only; OR is implemented by multiple queries + dedupe).
 #
 # Selection matrix:
-#   --cluster X --strict-cluster  ->  ["aether-cluster=X"]              (exact match only)
-#   --cluster X                    ->  ["aether-cluster=X", "aether-node-id"]
+#   --cluster X --strict-cluster  ->  ["aether-cluster=X", "aether-chaos-cluster=X"]  (exact only)
+#   --cluster X                    ->  ["aether-cluster=X", "aether-chaos-cluster=X", "aether-node-id"]
 #                                       + post-filter: keep aether-node-id rows ONLY when
 #                                         their aether-cluster label is empty/missing
 #                                         (orphan capture, no cross-cluster bleed)
-#   (no flag)                      ->  ["aether-cluster", "aether-node-id"]   (catch-all)
+#   (no flag)                      ->  ["aether-cluster", "aether-chaos-cluster", "aether-node-id"]
 SELECTORS=()
 if [ -n "$CLUSTER" ]; then
-    SELECTORS+=("aether-cluster=${CLUSTER}")
+    SELECTORS+=("aether-cluster=${CLUSTER}" "aether-chaos-cluster=${CLUSTER}")
     if [ "$STRICT_CLUSTER" != true ]; then
         SELECTORS+=("aether-node-id")
     fi
 else
-    SELECTORS+=("aether-cluster" "aether-node-id")
+    SELECTORS+=("aether-cluster" "aether-chaos-cluster" "aether-node-id")
 fi
 SELECTOR_DESC=$(IFS=','; printf '%s' "${SELECTORS[*]}")
 
@@ -253,11 +264,16 @@ list_resource() {
         if ! body=$(hcloud_get "/${endpoint}?label_selector=${enc_selector}&per_page=50"); then
             return 1
         fi
+        # Column 3 is the OWNING cluster: `aether-cluster`, or — for a partition-chaos firewall,
+        # which deliberately carries no `aether-cluster` (#1500) — `aether-chaos-cluster`. Every
+        # filter below (orphan scope, protected clusters) reads it, so a chaos firewall is scoped
+        # and protected exactly like the cluster it belongs to.
         raw+=$(printf '%s\n' "$body" | jq -r --arg key "$key" '
             .[$key][]?
             | [ (.id | tostring),
                 (.name // ""),
-                (.labels["aether-cluster"] // ""),
+                (if ((.labels["aether-cluster"] // "") != "") then .labels["aether-cluster"]
+                 else (.labels["aether-chaos-cluster"] // "") end),
                 (.labels["aether-node-id"] // "") ]
             | @tsv')
         raw+=$'\n'

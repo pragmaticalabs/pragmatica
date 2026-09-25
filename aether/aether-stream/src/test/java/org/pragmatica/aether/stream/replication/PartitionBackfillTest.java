@@ -36,7 +36,7 @@ class PartitionBackfillTest {
 
     private ReplicaRegistry registry;
     private StreamPartitionManager manager;
-    private StreamPartitionRecovery recovery;
+    private AlignedRecovery recovery;
 
     @BeforeEach
     void setUp() {
@@ -1002,7 +1002,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1293,7 +1293,7 @@ class PartitionBackfillTest {
             // the production receive handler does WITHOUT updating self's own registry descriptor. Self's
             // registry confirmedOffset therefore stays 15 — the quiesce invariant — across every tick.
             for (var tick = 0; tick < 10; tick++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("live-" + tick).getBytes(), 2000L + tick).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("live-" + tick).getBytes(), 2000L + tick).unwrap();
                 assertThat(backfill.redriveCandidates())
                         .as("live-replicating non-owner must stay quiesced on tick %d (no per-tick owner probe)", tick)
                         .isEmpty();
@@ -1302,7 +1302,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1539,7 +1539,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1707,7 +1707,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1867,7 +1867,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -2333,7 +2333,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -2375,9 +2375,9 @@ class PartitionBackfillTest {
 
     /// #567 — the append floor for a PEER-source catch-up pull.
     ///
-    /// [StreamPartitionRecovery#appendRecoveredEvent] assigns SEQUENTIAL offsets at the ring tail, so a
-    /// `fromOffset` below the local head does not overwrite — it re-appends the overlap as brand-new
-    /// offsets, duplicating history. The only authority on "what have I already landed" is the local ring,
+    /// Before #1505 the apply assigned SEQUENTIAL offsets at the ring tail, so a `fromOffset` below the
+    /// local head did not overwrite — it re-appended the overlap as brand-new offsets, duplicating history.
+    /// (The apply now verifies an overlap at its own offsets; the floor still keeps the pull from re-reading it.) The only authority on "what have I already landed" is the local ring,
     /// which is precisely what [SelfWatermark] exists to report and what its own contract warns about:
     /// the registry self-descriptor `confirmedOffset` is NOT a substitute, because after a failover /
     /// restart it reads `-1` while the ring holds real recovered events.
@@ -2483,7 +2483,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 

@@ -90,7 +90,7 @@ class StreamOwnershipViewsTest {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
         var appends = new AtomicInteger();
         var handler = ReplicationReceiveHandler.replicationReceiveHandler(new NodeId("node-c"),
-                                                                          (_, _, _, _, _) -> Result.success((long) appends.getAndIncrement()),
+                                                                          (_, _, _, _, _, _) -> Result.success((long) appends.getAndIncrement()),
                                                                           (_, _) -> 0L,
                                                                           (_, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
                                                                           (_, _) -> {},

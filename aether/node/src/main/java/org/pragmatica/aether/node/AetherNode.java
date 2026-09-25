@@ -210,7 +210,7 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
-import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
+import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
@@ -4521,7 +4521,7 @@ public interface AetherNode extends ManageableNode {
         var streamCursorStore = CursorStore.cursorStore(streamStorage);
         var streamTieredReader = TieredStreamReader.tieredStreamReader(streamSegmentIndex, streamStorage);
         // #336 epoch-adoption: the committed owner-epoch source is SHARED between the live-append stamp
-        // (StreamPartitionManager, below) and the backfill/recovery seam (streamPartitionRecovery, below), so
+        // (StreamPartitionManager, below) and the backfill/recovery seam (streamAlignedRecovery, below), so
         // a recovered/backfilled event carries the SAME committed fencing token a live append would. Both
         // read the identical committed StreamPartitionOwnershipValue.ownerEpoch the fence high-water derives
         // from — otherwise the recovery seam's Epoch.ZERO (0:0) is rejected by an advanced high-water (1:N).
@@ -4634,9 +4634,11 @@ public interface AetherNode extends ManageableNode {
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
-        // A4: lands backfilled/recovered events into the local ring offset-preserving WITHOUT
-        // re-replicating (the receiver is not an owner), replacing the StreamPartitionRecovery NOOP
-        // for both governor-failover recovery and the A4 backfill path below.
+        // A4 / #1505: every replica-side recovery apply — governor-failover segment replay and the A4 backfill
+        // below — lands each event at its OWN owner offset WITHOUT re-replicating (the receiver is not an owner),
+        // through the same ordered section as the live receive handler (whose `streamPartitionManager::appendRecovered`
+        // binds the offset-addressed overload). A live batch or a lagging replay floor therefore cannot shift an
+        // event: an offset already held is verified, never re-appended at the tail (#1505 F1).
         // #336 epoch adoption (NOT invention): stamp the recovery/backfill append with the SAME committed
         // owner epoch a live publish stamps (streamOwnerEpochSource reads the committed
         // StreamPartitionOwnershipValue.ownerEpoch — the identical source the fence high-water is seeded
@@ -4644,14 +4646,15 @@ public interface AetherNode extends ManageableNode {
         // instead of being rejected at the Epoch.ZERO floor (0:0 < 1:N). Cold-start/unowned arcs read
         // Epoch.ZERO == the fence's ZERO default (equal → passes), so fresh-stream recovery is not regressed.
         // The fence itself is untouched — this is a truthful stamp, not a wholesale exemption.
-        StreamPartitionRecovery streamPartitionRecovery = (s, p, payload, ts) -> streamPartitionManager.appendRecovered(s,
-                                                                                                                        p,
-                                                                                                                        payload,
-                                                                                                                        ts,
-                                                                                                                        streamOwnerEpochSource.currentOwnerEpoch(s,
-                                                                                                                                                                 p));
+        AlignedRecovery streamAlignedRecovery = (s, p, offset, payload, ts) -> streamPartitionManager.appendRecovered(s,
+                                                                                                                      p,
+                                                                                                                      offset,
+                                                                                                                      payload,
+                                                                                                                      ts,
+                                                                                                                      streamOwnerEpochSource.currentOwnerEpoch(s,
+                                                                                                                                                               p));
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
-                                                                                    streamPartitionRecovery,
+                                                                                    streamAlignedRecovery,
                                                                                     streamPartitionManager::syncReplicated);
         // A4: production catch-up wiring. The forward transport/client are constructed here (ahead of
         // the A6 read-forwarding wiring further below, which reuses the same instances) so the
@@ -4767,7 +4770,7 @@ public interface AetherNode extends ManageableNode {
                                                                              membershipFsm);
         var streamCommittedOwnerSource = streamOwnershipViews.routing();
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
-                                                                          streamPartitionRecovery,
+                                                                          streamAlignedRecovery,
                                                                           streamCatchupTransport,
                                                                           streamReplicationTransport,
                                                                           streamWatermarkProbe,
@@ -4777,7 +4780,8 @@ public interface AetherNode extends ManageableNode {
                                                                           () -> streamPlacementMembers(clusterEventsControllerRef,
                                                                                                        clusterTopologyManager),
                                                                           streamCommittedOwnerSource,
-                                                                          streamPartitionManager::syncReplicated);
+                                                                          streamPartitionManager::syncReplicated,
+                                                                          streamPartitionManager.quarantineView());
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry

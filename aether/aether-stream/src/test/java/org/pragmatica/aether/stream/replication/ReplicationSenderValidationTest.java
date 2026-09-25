@@ -41,7 +41,7 @@ class ReplicationSenderValidationTest {
 
     private ReplicationReceiveHandler handler(long localNext, CommittedStreamOwnerSource committedOwners) {
         return replicationReceiveHandler(SELF,
-                                         (_, _, _, _, _) -> Result.success((long) appends.getAndIncrement()),
+                                         (_, _, _, _, _, _) -> Result.success((long) appends.getAndIncrement()),
                                          (_, _) -> localNext,
                                          (_, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
                                          (_, _) -> {},

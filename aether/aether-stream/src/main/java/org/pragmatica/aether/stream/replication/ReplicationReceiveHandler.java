@@ -9,8 +9,11 @@ import java.util.function.BiConsumer;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Result;
@@ -20,6 +23,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
+import static org.pragmatica.lang.Option.none;
 
 
 /// Replica-side receive/apply for the A6 replication path.
@@ -41,15 +45,34 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 ///     permanently diverge. The batch is REJECTED (nothing applied) and `onGap` fires so the replica
 ///     re-enters SYNCING/backfill and pulls the missing prefix from a caught-up source.
 ///   - `fromOffset  < localNext` — a stale/duplicate re-delivery: the overlapping prefix is already
-///     present locally, so it is SKIPPED (idempotent) and only the tail at-or-beyond `localNext` is
-///     applied. A batch fully below `localNext` is acked at its nominal end (the owner already has
-///     these) with no append and no gap.
+///     present locally. It is VERIFIED, not assumed (#1505): each held event must equal the offered one,
+///     and only then is it skipped. The tail at-or-beyond `localNext` is appended. A batch fully below
+///     `localNext` is acked at its end only when every one of its events is verified held.
 ///
-/// Offsets are preserved because each surviving batch is applied only when it is exactly contiguous
-/// with what the replica already holds, and the ring assigns sequential offsets. The apply itself goes
-/// through {@link RecoveredAppender#appendRecovered} (the A4 seam, backed by
-/// `StreamPartitionManager::appendRecovered`) which appends WITHOUT re-invoking the replication
-/// manager — this is what stops an infinite replicate→apply→replicate loop.
+/// `localNext` is read before the apply, so it only routes. The offset authority is the apply itself:
+/// every event is offered at its OWN owner offset `fromOffset + i` through
+/// {@link RecoveredAppender#appendRecovered}, backed by `StreamPartitionManager::appendRecovered`'s
+/// offset-addressed overload. That overload decides append-here, verify-held or refuse inside the
+/// partition's ordered append section, the same section the catch-up apply ({@link PartitionBackfill}) lands
+/// through. A catch-up response racing a live batch for the same offsets therefore cannot shift either one.
+/// The append does not re-invoke the replication manager, which is what stops an infinite
+/// replicate→apply→replicate loop.
+///
+/// ## Divergent held event: quarantine (#1505 F2)
+/// An offset `N` that holds a DIFFERENT event than the owner offers means this replica's log has diverged
+/// from the owner's there. The partition manager then QUARANTINES the partition on this replica, inside the
+/// same ordered section that found the divergence: every later offer at an offset `>= N`, in this batch or any
+/// later one, live or duplicate, is refused as [StreamError.ReplicaQuarantined]. Nothing at or past `N` is
+/// therefore ever acked, and an ack is cumulative on the owner, so no ack can cover `N`. Offsets below `N`
+/// still verify and ack. The owner's min-sync barrier stops counting this replica at `N - 1` for as long as the
+/// quarantine lasts.
+///
+/// The refusal still fires `onGap`. In production that runs the backfill orchestrator, which refuses every
+/// self-promotion of a quarantined partition and demotes a CAUGHT_UP one to SYNCING ({@link PartitionBackfill}).
+/// That is how a replica that was already CAUGHT_UP stops being one. No catch-up can repair the entry: a
+/// backfill pulls only from the local head + 1, and the ring has no overwrite. The quarantine is logged at
+/// ERROR once, by the partition manager, and lasts until the manager is gone. Repair is #1514; persistence and
+/// owner-election exclusion are #1513.
 ///
 /// ## Sender validation (#1230)
 /// Before anything else, a batch whose sender cannot be the committed owner of the partition at the batch's
@@ -74,14 +97,18 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 public final class ReplicationReceiveHandler {
     private static final Logger log = LoggerFactory.getLogger(ReplicationReceiveHandler.class);
 
-    /// Non-replicating, offset-preserving append seam carrying the SENDING owner's `ownerEpoch`
-    /// fencing token (#345 item 1d-ii). In production this is `StreamPartitionManager::appendRecovered`,
-    /// which fences the append against the replica's own partition high-water before landing it — a
-    /// deposed owner's batch is rejected at the replica's commit point.
+    /// Non-replicating, OFFSET-ADDRESSED append seam carrying the SENDING owner's `ownerEpoch` fencing token
+    /// (#345 item 1d-ii). In production this is `StreamPartitionManager::appendRecovered`'s offset-addressed
+    /// overload, which fences the append against the replica's own partition high-water before landing it, so a
+    /// deposed owner's batch is rejected at the replica's commit point. It succeeds with `offset` exactly when the
+    /// replica now holds the offered event at `offset` (#1505). That covers two cases: appended there now, or
+    /// already held with identical content. It refuses without appending when offsets below `offset` are
+    /// missing, or when a DIFFERENT event is held at `offset` ([StreamError.ReplicaEntryConflict]).
     @FunctionalInterface
     public interface RecoveredAppender {
         Result<Long> appendRecovered(String streamName,
                                      int partition,
+                                     long offset,
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch);
@@ -213,7 +240,6 @@ public final class ReplicationReceiveHandler {
         var payloads = message.payloads();
         var timestamps = message.timestamps();
         var fromOffset = message.fromOffset();
-        var batchEnd = fromOffset + payloads.size() - 1;
 
         if (!senderMayBeCommittedOwner(message)) {
             refuseUnauthorizedSender(message);
@@ -229,13 +255,7 @@ public final class ReplicationReceiveHandler {
             return;
         }
 
-        if (batchEnd < localNext) {
-            handleStaleDuplicate(message, fromOffset, batchEnd, localNext);
-
-            return;
-        }
-
-        applyContiguous(message, streamName, partition, fromOffset, payloads, timestamps, localNext);
+        applyAligned(message, streamName, partition, fromOffset, payloads, timestamps);
     }
 
     /// #1230: a batch is landed and acked only when its sender can be the committed owner of the partition
@@ -294,55 +314,30 @@ public final class ReplicationReceiveHandler {
         onGap.accept(message.streamName(), message.partition());
     }
 
-    /// Whole batch is below `localNext`: the replica already holds these offsets (a duplicate/stale
-    /// re-delivery). Nothing to apply; re-ack the batch end so the owner's watermark view is not stuck
-    /// below what the replica already has, and surface no gap.
-    private void handleStaleDuplicate(ReplicationMessage.ReplicateEvents message,
-                                      long fromOffset,
-                                      long batchEnd,
-                                      long localNext) {
-        log.debug("ReplicationReceiveHandler: duplicate batch for {}[{}] — [{}, {}] already applied (next expected {}) "
-                 + "— re-acking, no append",
-                  message.streamName(),
-                  message.partition(),
-                  fromOffset,
-                  batchEnd,
-                  localNext);
-        transport.send(message.governorId(),
-                       replicateAck(self, message.streamName(), message.partition(), batchEnd));
-    }
+    /// `fromOffset <= localNext`: every event is offered at its own owner offset `fromOffset + i` (#1505). An
+    /// offset already held is verified identical and skipped, and an offset at the head is appended. So an
+    /// overlapping or wholly-duplicate batch is idempotent. The ack is the highest offset of the VERIFIED
+    /// contiguous prefix of this batch, sent only after the durability barrier. A duplicate's ack therefore
+    /// also waits for any catch-up write of the same offsets to be fsynced.
+    ///
+    /// The ack is this BATCH's verified prefix, not the replica's head, and the owner stores the last ack it
+    /// receives (#1505 F4). So an old duplicate, or a batch that stops at a divergence, can lower the owner's
+    /// view of this replica. After a divergence at `N` that lowering is the point: the old ack for `N` covered an
+    /// entry now known to differ. For an old duplicate it is conservative, and the next live ack restores it.
+    private void applyAligned(ReplicationMessage.ReplicateEvents message,
+                              String streamName,
+                              int partition,
+                              long fromOffset,
+                              List<byte[]> payloads,
+                              List<Long> timestamps) {
+        var outcome = applyBatch(streamName, partition, fromOffset, payloads, timestamps, message.ownerEpoch());
 
-    /// `fromOffset <= localNext <= batchEnd`: the batch is contiguous with (or overlaps the tail of)
-    /// what the replica holds. Skip the already-present prefix `[fromOffset, localNext-1]` and apply
-    /// from `localNext` onward, preserving offsets.
-    private void applyContiguous(ReplicationMessage.ReplicateEvents message,
-                                 String streamName,
-                                 int partition,
-                                 long fromOffset,
-                                 List<byte[]> payloads,
-                                 List<Long> timestamps,
-                                 long localNext) {
-        var skip = (int)(localNext - fromOffset);
-        var applied = applyBatch(streamName, partition, localNext, payloads, timestamps, skip, message.ownerEpoch());
-        var expected = payloads.size() - skip;
-
-        if (applied < expected) {
-            log.warn("ReplicationReceiveHandler: applied {}/{} new events for {}[{}] from offset {} (owner {}) "
-                    + "— triggering backfill repair",
-                     applied,
-                     expected,
-                     streamName,
-                     partition,
-                     localNext,
-                     message.governorId());
-            onGap.accept(streamName, partition);
-        }
-
-        if (applied <= 0) {
+        outcome.refusal().onPresent(cause -> reportShortApply(message, fromOffset + outcome.held(), cause));
+        if (outcome.held() <= 0) {
             return;
         }
 
-        var highestApplied = localNext + applied - 1;
+        var highestHeld = fromOffset + outcome.held() - 1;
         // Ack ONLY after the batch is fsynced here (#634 item 1): the owner's min-sync barrier counts
         // this ack as a durable copy, so acking from RAM would let correlated power loss inside the
         // unsealed window erase writes the caller was told reached RF. A failed sync WITHHOLDS the ack —
@@ -350,45 +345,94 @@ public final class ReplicationReceiveHandler {
         // the owner's barrier degrades honestly instead of over-counting.
         durability.sync(streamName, partition)
                   .onSuccess(_ -> transport.send(message.governorId(),
-                                                 replicateAck(self, streamName, partition, highestApplied)))
+                                                 replicateAck(self, streamName, partition, highestHeld)))
                   .onFailure(cause -> log.warn("ReplicationReceiveHandler: durability sync failed for {}[{}] "
                                               + "up to {} — WITHHOLDING ack (applied but not fsynced): {}",
                                                streamName,
                                                partition,
-                                               highestApplied,
+                                               highestHeld,
                                                cause.message()));
     }
 
-    private int applyBatch(String streamName,
-                           int partition,
-                           long applyFrom,
-                           List<byte[]> payloads,
-                           List<Long> timestamps,
-                           int skip,
-                           Epoch ownerEpoch) {
-        var applied = 0;
+    /// The batch stopped at `refusedAt`, and `onGap` fires for every stop. After an append failure, or a gap opened
+    /// by a concurrent change of the local head, it pulls the missing tail (M5). After a divergence it runs the
+    /// backfill orchestrator, which refuses and demotes a quarantined partition (class doc, "quarantine"). A
+    /// quarantine refusal repeats on every batch, and the partition manager already logged the quarantine at
+    /// ERROR once, so it is logged here at DEBUG only.
+    private void reportShortApply(ReplicationMessage.ReplicateEvents message, long refusedAt, Cause cause) {
+        if (isDivergence(cause)) {
+            log.debug("ReplicationReceiveHandler: refusing {}[{}] from offset {} (owner {}): {} — nothing acked at or past it",
+                      message.streamName(),
+                      message.partition(),
+                      refusedAt,
+                      message.governorId(),
+                      cause.message());
+            onGap.accept(message.streamName(), message.partition());
 
-        for (var i = skip; i < payloads.size(); i++) {
-            var result = appender.appendRecovered(streamName, partition, payloads.get(i), timestamps.get(i), ownerEpoch);
-
-            if (result.isFailure()) {
-                result.onFailure(cause -> log.warn("ReplicationReceiveHandler: append failed for {}[{}] at offset {}: {}",
-                                                   streamName,
-                                                   partition,
-                                                   applyFrom,
-                                                   cause.message()));
-                break;
-            }
-
-            applied++;
+            return;
         }
 
-        return applied;
+        log.warn("ReplicationReceiveHandler: applied up to offset {} of [{}, {}] for {}[{}] (owner {}): {} "
+                + "— triggering backfill repair",
+                 refusedAt - 1,
+                 message.fromOffset(),
+                 message.fromOffset() + message.payloads().size() - 1,
+                 message.streamName(),
+                 message.partition(),
+                 message.governorId(),
+                 cause.message());
+        onGap.accept(message.streamName(), message.partition());
+    }
+
+    private static boolean isDivergence(Cause cause) {
+        return cause instanceof StreamError.ReplicaEntryConflict || cause instanceof StreamError.ReplicaQuarantined;
+    }
+
+    /// #1505 F3: an offset of an overlapping prefix that the ring has already EVICTED cannot be compared, but it
+    /// was landed at its own offset by this same authority when it arrived, and a divergence found then would have
+    /// quarantined the partition. So it is passed over, and the batch goes on to the offsets still held and to its
+    /// new tail. Stopping there stalled a batch whose tail was genuinely new, and nothing re-sent that tail.
+    private static boolean isEvicted(Result<Long> result) {
+        return result.fold(cause -> cause instanceof StreamError.CursorExpired, _ -> false);
+    }
+
+    /// How far a batch landed: `held` events of its prefix are held at their owner offsets, and `refusal` is the
+    /// cause that stopped it, if anything did.
+    private record BatchOutcome(int held, Option<Cause> refusal) {
+        static BatchOutcome batchOutcome(int held, Option<Cause> refusal) {
+            return new BatchOutcome(held, refusal);
+        }
+    }
+
+    private BatchOutcome applyBatch(String streamName,
+                                    int partition,
+                                    long fromOffset,
+                                    List<byte[]> payloads,
+                                    List<Long> timestamps,
+                                    Epoch ownerEpoch) {
+        for (var i = 0; i < payloads.size(); i++) {
+            var result = appender.appendRecovered(streamName,
+                                                  partition,
+                                                  fromOffset + i,
+                                                  payloads.get(i),
+                                                  timestamps.get(i),
+                                                  ownerEpoch);
+
+            if (result.isFailure() && !isEvicted(result)) {
+                return BatchOutcome.batchOutcome(i, refusalOf(result));
+            }
+        }
+
+        return BatchOutcome.batchOutcome(payloads.size(), none());
+    }
+
+    private static Option<Cause> refusalOf(Result<Long> result) {
+        return result.fold(Option::some, _ -> none());
     }
 
     /// The replica's next-expected offset for `(streamName, partition)`, or `fromOffset` itself when no
-    /// real local-head view is wired ({@link #NO_LOCAL_HEAD}) so the batch applies verbatim — the
-    /// pre-#260 trust-the-owner behavior of the non-verifying factories.
+    /// real local-head view is wired ({@link #NO_LOCAL_HEAD}), so no gap is pre-detected and every event is
+    /// offered to the appender. The appender's offset check still applies (#1505).
     private long resolveLocalNext(String streamName, int partition, long fromOffset) {
         return localHead == NO_LOCAL_HEAD
                ? fromOffset

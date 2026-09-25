@@ -108,6 +108,18 @@ fi
 # Post-heal recovery budget. SWIM reconvergence + QUIC fresh handshake +
 # periodic observation cycle + KV consensus apply: empirically ~10-20s on
 # remote Docker. 30s gives 10-20s headroom.
+#
+# CALIBRATED ON DOCKER, where a heal is a REJOIN: the partitioned containers are still alive.
+# On cloud, S06 measures REPLACEMENT whenever the minority was evicted during the partition: CTM
+# terminates the evicted VMs ("reaping container to prevent phantom resurrection"), so after the
+# heal there is nothing left to rejoin and the count returns to 5 only when CTM-provisioned
+# replacements boot and join. That is a different and slower mechanism than this budget was
+# measured for. It is NOT re-tuned here, because there is no clean cloud measurement of
+# replacement time yet: the one cloud red (s27 cluster B, 2026-09-25) was dominated by the
+# harness's own partition firewalls blocking every replacement until heal (#1500, now fixed), so
+# its "joined ~10s after the window closed" is not a replacement baseline. Eviction on cloud is
+# also intermittent (two 2026-09-24 runs passed S06 in 0-1s with no eviction). Re-measure before
+# changing the budget.
 HEAL_BUDGET_S=30
 
 # Docker cluster-network name. Used ONLY on the non-cloud (docker network
@@ -356,7 +368,7 @@ test_cluster_heals_to_5_onduty() {
         "[ \$(cluster_active_core_count) -eq 5 ]" "$HEAL_BUDGET_S"; then
         local now_count
         now_count=$(cluster_active_core_count)
-        log_fail "S06 violation: cluster did not return to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal (current count=${now_count}). Possible regression: post-heal SWIM/QUIC reconvergence stuck, or one of the minority nodes was incorrectly removed from membership late (after the partition assertion window closed but before reconnect took effect)."
+        log_fail "S06 violation: cluster did not return to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal (current count=${now_count}). Possible regression: post-heal SWIM/QUIC reconvergence stuck, or one of the minority nodes was incorrectly removed from membership late (after the partition assertion window closed but before reconnect took effect). On cloud with an evicted minority this window measures CTM REPLACEMENT, not rejoin (see HEAL_BUDGET_S)."
         return 1
     fi
     assert_cluster_healthy "S06: cluster returned to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal"
