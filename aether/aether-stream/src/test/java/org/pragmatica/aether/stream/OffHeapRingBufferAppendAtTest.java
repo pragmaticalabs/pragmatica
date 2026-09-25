@@ -131,8 +131,8 @@ class OffHeapRingBufferAppendAtTest {
     }
 
     /// #1505 R2: the fence is READ inside the ordered section, not only recorded there. Writer B offers the next
-    /// offset (3) while writer A offers a divergent event at 1. B's fence read parks until A has recorded the
-    /// divergence, for at most 500 ms. With the read inside the section, B holds the section while parked, so A
+    /// offset (3) while writer A offers a divergent event at 1. B's fence read takes its value, then parks until A has
+    /// recorded the divergence, for at most 500 ms. With the read inside the section, B holds the section while parked, so A
     /// cannot record. B's read times out, B appends 3, and only then does A record, with the head already at 3.
     /// With the read hoisted out of the section, A records while B is parked. B then appends 3 on a stale "no
     /// divergence" read, past a divergence already known. The invariant pinned: nothing is appended after a
@@ -149,11 +149,13 @@ class OffHeapRingBufferAppendAtTest {
 
                 @Override
                 public long divergedAt() {
+                    var seen = divergedAt;
+
                     if (Thread.currentThread() == writerB.get()) {
                         bReading.countDown();
                         awaitQuietly(recorded, 500);
                     }
-                    return divergedAt;
+                    return seen;
                 }
 
                 @Override
