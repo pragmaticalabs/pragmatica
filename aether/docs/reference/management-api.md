@@ -3322,7 +3322,7 @@ sources, "scale cores to 7" does not say where the new nodes go.
 | `source` | Source name. Blank asks the server to infer it, which succeeds only when exactly one source declares `role`. |
 | `role` | `core`, `worker` or `spot`. Blank defaults to `core`. |
 | `count` | Target node count for this source and role. |
-| `expectedVersion` | Config version read from `GET /api/v1/cluster/config`; the request is rejected if it no longer matches. |
+| `expectedVersion` | Config version read from `GET /api/v1/cluster/config`; the request is rejected if it no longer matches. Required: an omitted or `null` field is refused at decode time (HTTP 400, `Type mismatch: expected long`). An explicit `0` is not a wildcard: against a stored config it is refused as an unfenced overwrite (#1086). |
 
 **Response:**
 ```json
@@ -3349,7 +3349,14 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
 
 **Conflicts** (HTTP 409):
 
-- `expectedVersion` no longer matches the stored config version (checked before the write).
+- `expectedVersion` no longer matches the stored config version (checked first, before validation
+  and before the write).
+- `expectedVersion` is an explicit `0` against a stored config — `UnfencedOverwrite`, the same #289
+  fence `POST /api/v1/cluster/config` applies. Every stored config a scale can reach carries a
+  version of at least 1, so `0` never means "fresh cluster" here; it is a mismatch. Unlike a stale
+  non-zero version, it is checked at the write, after validation, so a request the validator would
+  refuse still answers with the validator's own cause (#1086). An omitted or `null` field is neither
+  case: it fails decoding with HTTP 400.
 - The write itself lost a concurrent race (RFC-0018): the KV applier rejects a config write built on
   a stale read, and the route confirms the requested count actually landed before reporting success.
   A `VersionConflict` here means another writer — an operator or the auto-heal reconciler — advanced
@@ -5306,11 +5313,14 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 
 **Cross-artifact group collision (#545).** `SubscriptionKey`/`ConsumerKey` are `(stream, partition, consumer group)` — deliberately WITHOUT the artifact, because that is the correct identity for "which physical consumer serializes reads for this group." Two DIFFERENT artifacts declaring the same `(stream, consumer group)` therefore collide at that key: sharing one group across different artifacts is not supported in this release, and neither declaration consumes until the collision is resolved (rename the group, or remove one of the conflicting declarations). `diagnostic` on BOTH colliding entries names every artifact involved, the stream, and the group — this endpoint is the only place that names it. Two VERSIONS of the SAME artifact sharing a group is NOT this case — that is the intended blue-green upgrade collapse, and consumption continues uninterrupted through it. **`GET /api/v1/blueprints/status/{id}` carries no hint of this collision**: a slice can be fully `DEPLOYED` while its declarative consumer sits idle on one, since the collision is a stream-registration fact, not a slice-instance fact.
 
+**Assigned here, consumable nowhere (#1389).** A node can be the COMMITTED assignee for partitions while the declaring slice is not loaded on it. Nothing there can consume them, so the group's only observable used to be growing lag. Two things now report it. `attachSkippedNoLocalSliceCount` counts entries into that state, and `diagnostic` on the affected consumer names the group, stream, partitions, this node and the missing slice; the same text is logged once at `WARN` per transition. It is a `WARN` and not an `ERROR` because the COMMON cause is a descale that the leader repairs — but it is not always transient, see below: every node-side unload path that transitions the deployment away from `ACTIVE` (`handleUnloading`, `performDeactivation`) makes this node stop being a candidate, and the leader rewrites the record on its next pass. The report is deliberately suppressed for that in-flight case — it fires only while this node is STILL the computed assignee, which is the state no leader pass will repair. **This state can be PERMANENT, and that is the case worth paging on.** The repair above is conditional on the deployment leaving `ACTIVE`. `handleReactivationFailure` and the quorum-loss `suspendSlice` path both unregister the slice from invocation WITHOUT transitioning the deployment, so the map keeps reporting `ACTIVE` here, this node stays the computed assignee, and **no leader pass will ever reassign the partition**. Nothing clears it on its own. **Operator recovery:** confirm the slice's deployment state on this node; where the map says `ACTIVE` while nothing is loaded, redeploy or unload the slice here so the leader's candidate set drops this node. A count that keeps rising while `attachedSubscriptions` stays flat is the durable-group liveness gap [design intent — unverified: pinned by `StreamConsumerManagerTest$ParkedAssignment` at unit level; not reproduced on a live cluster].
+
 **Response:**
 ```json
 {
   "attachedSubscriptions": 2,
   "cursorCommitFailureCount": 0,
+  "attachSkippedNoLocalSliceCount": 0,
   "consumers": [
     {
       "stream": "orders",
@@ -5346,6 +5356,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 |-------|-------------|
 | `attachedSubscriptions` | Subscriptions actually attached ON THIS NODE — the number of partitions assigned here, not the stream's partition count |
 | `cursorCommitFailureCount` | Node-wide count of cursor commits — final flush at detach, or periodic checkpoint — that failed or did not settle within their bound (#654). Monotonic for the life of the node's runtime; keeps counting a failure after the consumer that produced it detaches |
+| `attachSkippedNoLocalSliceCount` | Node-wide count of times this node was named for partitions it could NOT consume because the declaring slice is not loaded here (#1389). Counted once per declaration entering that state, and once per attach that found the slice gone mid-pass — matching the `WARN` lines one for one, NOT a partition count. Monotonic for the life of the node's runtime |
 | `consumers[].stream` | Stream the consumer is declared against |
 | `consumers[].configSection` | The `[streams.X]` section in the slice's `resources.toml` |
 | `consumers[].artifact` | Artifact declaring the consumer |
@@ -5456,17 +5467,31 @@ POST /api/v1/streams
 
 **Auth:** OPERATOR_AND_ABOVE
 
-Creates a stream with the given name and optional partition count. Idempotent — returns success if stream already exists.
+Creates the stream `name` — a catalog address `namespace:stream:version` — with an optional partition
+count, and registers it in the stream catalog. Since #968 this is the body-carried form of
+[`POST /api/v1/streams/{namespace}/{stream}/{version}`](#create-stream-version): both write the same two stores, and
+`"created"` is answered only after **both** the stream config and the catalog entry have committed
+through consensus. The created stream is then visible in `GET /api/v1/streams` and
+`GET /api/v1/streams/namespaces` on every node. (Before #968 this route only materialized the stream's
+ring buffers and answered `"created"` for a stream no catalog read could find.)
 
-A name carrying a reserved stream-kind prefix — `system:`, `topic:` or `entity:` — is refused with
-`400 Bad Request` (`ReservedStreamName`, naming the prefix) and nothing is created; see
-[Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). The enumerated system streams keep
-their `405` refusal ([`system:*` write gate](#system-write-gate-405)).
+Outcomes, by status:
+
+| Outcome | Status | Body |
+|---|---|---|
+| Created — config and catalog entry both committed | `200` | `{"name", "partitions", "status": "created"}` |
+| Already in the catalog (idempotent repeat) | `200` | `{"name", "partitions": <the existing count>, "status": "exists"}` |
+| `name` missing | `400` | `Missing stream name` |
+| `name` is not a catalog address (a bare name such as `my-stream`) | `400` | names the `namespace:stream:version` form to retype — a bare name has no catalog address, so nothing could list, read or delete the stream it would mint |
+| `name` carries a reserved stream-kind prefix (`system:`, `topic:`, `entity:`) | `400` | `ReservedStreamName`, naming the prefix; nothing is created — see [Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). Runs before the existence check, so a reserved name is never answered `"exists"`. |
+| `name` is an enumerated system stream (bare or catalog spelling) | `405` | [`system:*` write gate](#system-write-gate-405) |
+| Stream config commit failed or timed out (10 s) | `500` | the cause; nothing is registered |
+| Catalog entry commit failed or timed out (10 s) | `500` | the cause; the ring stays materialized, and a retry registers it rather than failing on the half-done first attempt |
 
 **Request:**
 ```json
 {
-  "name": "my-stream",
+  "name": "com.example.app:orders:1.0.0",
   "partitions": 4
 }
 ```
@@ -5474,7 +5499,7 @@ their `405` refusal ([`system:*` write gate](#system-write-gate-405)).
 **Response:**
 ```json
 {
-  "name": "my-stream",
+  "name": "com.example.app:orders:1.0.0",
   "partitions": 4,
   "status": "created"
 }
@@ -5698,6 +5723,11 @@ reserved stream-kind prefix — a `topic` or `entity` namespace — is refused w
 before anything is materialized or registered; see
 [Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). A `system`-namespace address
 reduces to its bare name (the flat operator-stream spelling) and is not reserved.
+
+`"created"` is answered only after both the stream config and the catalog entry have committed
+through consensus (#968: the catalog put used to be fired without awaiting it, so a refused or
+timed-out commit still answered `"created"`). A catalog commit that fails or times out (10 s) is a
+`500` carrying the cause; the ring stays materialized and a retry registers it.
 
 ### Publish
 

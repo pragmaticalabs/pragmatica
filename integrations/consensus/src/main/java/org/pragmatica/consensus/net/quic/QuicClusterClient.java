@@ -268,6 +268,12 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         return Promise.promise(this::initiateClose);
     }
 
+    /// A resolved address with a real `InetAddress` behind it — the two things Netty's QUIC
+    /// `SockaddrIn` dereferences. Named so the dial guard reads as one question.
+    private static boolean isDialable(InetSocketAddress address) {
+        return ! address.isUnresolved() && address.getAddress() != null;
+    }
+
     @SuppressWarnings("JBCT-PAT-01")  // Netty bootstrap bind
     private void initiateConnection(NodeId peerId, InetSocketAddress address, Promise<QuicPeerConnection> promise) {
         // Guard against an unresolved/null peer address (e.g. a stale or unknown DNS name).
@@ -275,7 +281,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // InetAddress and crash the node with an NPE. Instead fail the dial cleanly down the
         // same connection-failure path a normal dial failure takes, so the caller retries on
         // a later tick.
-        if (address == null || address.isUnresolved() || address.getAddress() == null) {
+        // #1442: wrapped at the boundary rather than null-checked in place. Behaviour is unchanged —
+        // the same three conditions still refuse the dial, and `String.valueOf` still renders a null
+        // address as "null" in the cause.
+        if (Option.option(address).filter(QuicClusterClientInstance::isDialable).isEmpty()) {
             log.debug("Skipping QUIC dial to peer {}: unresolved address {}", peerId, address);
             promise.fail(QuicTransportError.UnresolvedAddress.FACTORY.apply(String.valueOf(address)));
 

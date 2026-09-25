@@ -59,6 +59,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -456,6 +457,8 @@ public class RabiaEngine<C extends Command> {
     /// not-yet-caught-up replacement leader (#329).
     private final AtomicReference<Phase> highestObservedClusterPhase = new AtomicReference<>(Phase.ZERO);
     private final AtomicReference<EngineState> engineState = new AtomicReference<>(new EngineState.Stopped());
+    private final AtomicBoolean stopping = new AtomicBoolean();
+    private final Promise<Unit> stoppedCompletion = Promise.promise();
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
     /// The old-phase sweep, armed on ACTIVATION rather than in the constructor (#714).
     ///
@@ -482,8 +485,6 @@ public class RabiaEngine<C extends Command> {
     /// Wave-1 §6.4 detect-only boot future-history check (cluster-topology-overhaul spec):
     /// one-shot gate so the persisted-vs-cluster phase comparison runs exactly once per process,
     /// at the FIRST sync restore (the moment the node first learns the cluster's reported state).
-    private final AtomicBoolean stopping = new AtomicBoolean();
-    private final Promise<Unit> stoppedCompletion = Promise.promise();
     private final AtomicBoolean bootFutureHistoryChecked = new AtomicBoolean(false);
 
     /// Listener invoked (persistedPhaseValue, clusterReportedPhaseValue) when the §6.4
@@ -1488,10 +1489,26 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void registerBatch(Batch<C> batch, Consumer<Batch<C>> onBatchPrepared) {
-        pendingBatches.put(batch.id(), batch);
+        // #958: the id is a content hash, so a second local submission of identical commands
+        // must merge its correlationId into the already-pending batch, exactly as
+        // doHandleNewBatch does for a remote one. A plain put() replaced the pending batch,
+        // dropping the first caller's correlationId; commitChanges() then completed only the
+        // survivor and the first caller saw ApplyTimeout although its command had applied.
+        mergePending(batch);
         metrics.updatePendingBatches(self, pendingBatches.size());
         onBatchPrepared.accept(batch);
         triggerPhaseIfNeeded();
+    }
+
+    /// The one way a batch enters `pendingBatches` while live: merge by content-derived id.
+    /// `compute()` makes the merge atomic; the lambda routes through `Option.option(existing)`
+    /// so the absent case is expressed via `fold` rather than a raw `existing == null` sentinel.
+    /// Same id ⟹ same commands, so only correlationIds are combined, via the state machine.
+    private void mergePending(Batch<C> incoming) {
+        pendingBatches.compute(incoming.id(),
+                               (_, existing) -> Option.option(existing).fold(() -> incoming,
+                                                                             current -> stateMachine.merge(current,
+                                                                                                           incoming)));
     }
 
     private void broadcastBatch(Batch<C> batch) {
@@ -1512,10 +1529,22 @@ public class RabiaEngine<C extends Command> {
 
     public synchronized Promise<Unit> stop() {
         if (stopping.compareAndSet(false, true)) {
-            executor.execute(() -> performStop(stoppedCompletion));
+            submitStop();
         }
 
         return stoppedCompletion;
+    }
+
+    /// #1442: the submission's own `Result` is consumed here instead of being dropped in a statement
+    /// inside [#stop]. Nothing about the shutdown changes — the executor refuses the task once it is
+    /// itself shutting down, and routing that refusal into `stoppedCompletion` is what makes `stop()`
+    /// settle rather than hang; on success there is nothing to carry, because completion arrives from
+    /// [#performStop].
+    private Unit submitStop() {
+        return Result.lift(Causes::fromThrowable,
+                           () -> executor.execute(() -> performStop(stoppedCompletion)))
+                     .onFailure(stoppedCompletion::fail)
+                     .or(Unit.unit());
     }
 
     private void performStop(Promise<Unit> promise) {
@@ -1526,6 +1555,12 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         notifyConsensusStateTransition();
+        // Backstop sweep (rc4, #1341), kept alongside the rejection path (#1390) — a union, ruling
+        // 151b0edfe. Admission is closed, and every task admitted before `stop()` has already run or
+        // been refused through its `onStopped` callback in [#safeExecute], which fails a refused
+        // request at the point of refusal; what remains here is a request whose batch was registered
+        // and is still awaiting a decision, which only this sweep can settle. Snapshot contents and
+        // the phase frontier therefore describe the same state.
         correlationMap.forEach((_, pending) -> pending.fail(new ConsensusError.NodeInactive(self)));
         correlationMap.clear();
         reconfigurationPromises.values().forEach(pending -> pending.fail(new ConsensusError.NodeInactive(self)));
@@ -1808,15 +1843,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doHandleNewBatch(Batch<C> incoming) {
-        // Use compute() for atomic merge to avoid race conditions. The compute
-        // lambda routes through `Option.option(existing)` so the absent case is
-        // expressed via `fold` rather than a raw `existing == null` sentinel.
-        // Same id ⟹ same commands (content-derived id), so we merge correlationIds
-        // directly via the state machine.
-        pendingBatches.compute(incoming.id(),
-                               (_, existing) -> Option.option(existing).fold(() -> incoming,
-                                                                             current -> stateMachine.merge(current,
-                                                                                                           incoming)));
+        mergePending(incoming);
         if (engineState.get().isInPhase()) {
             // Already in phase - broadcast our proposal for this batch if not already proposed
             broadcastOwnProposalIfNeeded();
@@ -2025,7 +2052,7 @@ public class RabiaEngine<C extends Command> {
         if (responses.isEmpty()) {
             // Only reachable at clusterSize 1, where the requirement is zero responses: self is the
             // whole majority and there is no peer to adopt from.
-            activateWithoutAdoption("no peers to adopt from");
+            activateWithoutAdoption(persisted, "no peers to adopt from");
 
             return;
         }
@@ -2034,7 +2061,7 @@ public class RabiaEngine<C extends Command> {
 
         detectBootFutureHistory(persisted, candidate);
         if (candidate.lastCommittedPhase().compareTo(ownStateFloor(persisted)) < 0) {
-            activateWithoutAdoption("every response is behind this node's own state");
+            activateWithoutAdoption(persisted, "every response is behind this node's own state");
 
             return;
         }
@@ -2043,13 +2070,13 @@ public class RabiaEngine<C extends Command> {
         restoreState(candidate);
     }
 
-    /// Activates on this node's OWN state, installing nothing.
+    /// Activates on this node's OWN state, installing no RESPONSE.
     ///
     /// Reached when the response threshold is met but no response carries a state more advanced than
     /// this node already holds. Self is part of the majority, so the majority's most advanced state is
-    /// already here and there is nothing to fetch.
+    /// already self's and there is nothing to fetch from a peer.
     ///
-    /// This deliberately does NOT route through [#restoreState]: that would call
+    /// This deliberately does NOT route a response through [#restoreState]: that would call
     /// `stateMachine.restoreSnapshot` with a state that is BEHIND the live one, overwriting a live state
     /// machine with a staler snapshot while `applyRestoredState`'s advance-only `currentPhase` kept the
     /// counter where it was — committed writes gone with no phase to indicate it. That is precisely the
@@ -2057,7 +2084,50 @@ public class RabiaEngine<C extends Command> {
     ///
     /// Mirrors the tail of [#restoreState]'s empty-snapshot branch — activate, then replay, then notify —
     /// so post-restore listeners still fire exactly once, as they did when an empty response was adopted.
-    private void activateWithoutAdoption(String reason) {
+    ///
+    /// #1020 — "already here" is true of the LIVE state machine only when self's history is in it.
+    /// A process restarted from disk holds its history in `persistence.load()` and nothing else:
+    /// `load()` fed the sync-response payload, the adoption floor and the future-history detector,
+    /// and never the state machine. Activating bare here left such a node ACTIVE with an EMPTY store
+    /// at phase 0 — an API key it had committed and acknowledged answered 403 after a full-cluster
+    /// stop with `[backup]` enabled, on exactly the node whose snapshot was the most advanced. So
+    /// when the persisted phase is ahead of the live one, the persisted state IS the own state and is
+    /// installed through [#restoreState] (phase advance-only, pending batches, re-persist, activate,
+    /// replay, notify). A live phase at or past the persisted one means the history is already in
+    /// the process — a resync from ACTIVE — and installing the older snapshot would regress it.
+    ///
+    /// **This method does not always activate, despite its name and the paragraph above.** The
+    /// own-restore arm routes through [#restoreState], whose `activate()` hangs off `onSuccessRun`:
+    /// a `restoreSnapshot` that FAILS therefore skips activation entirely and the engine stays
+    /// `Syncing`, re-entering this same branch on every retry tick. Before #1020 this branch
+    /// activated unconditionally, so the behaviour is new here. It is fail-closed — a node that
+    /// cannot read its own snapshot never serves the empty store this ticket is about — and the
+    /// failure is reported by [#logRestoreFailure], which is the ONLY signal on that path (#1447).
+    ///
+    /// Whether that wedge is correct, whether it should be bounded or terminal, and what the
+    /// readiness surface should say while it persists are **#1468's** decisions and deliberately not
+    /// taken here (retargeted from #1013 on 2026-09-23: #1013 narrowed to the storage metadata-snapshot
+    /// restore on the boot path and closed with PR #1418; this consensus arm is #1468's).
+    /// The current behaviour is pinned by
+    /// `RabiaOwnRestoreFailureTest#ownRestoreFails_staysInactive_untilTicket1013Decides`, which is an
+    /// ENABLED tripwire: changing this reddens it, by design.
+    private void activateWithoutAdoption(Option<SavedState<C>> persisted, String reason) {
+        persisted.filter(state -> state.lastCommittedPhase()
+                                       .compareTo(currentPhase.get()) > 0)
+                 .onPresent(state -> restoreOwnState(state, reason))
+                 .onEmpty(() -> activateOnLiveState(reason));
+    }
+
+    private void restoreOwnState(SavedState<C> state, String reason) {
+        log.info("Node {} activating on its own persisted state ({}); persisted phase {}, live phase {}",
+                 self,
+                 reason,
+                 state.lastCommittedPhase(),
+                 currentPhase.get());
+        restoreState(state);
+    }
+
+    private void activateOnLiveState(String reason) {
         log.debug("Node {} activating on its own state ({}); own phase {}", self, reason, currentPhase.get());
         syncResponses.clear();
         activate();
@@ -2165,7 +2235,41 @@ public class RabiaEngine<C extends Command> {
                     .onSuccessRun(this::activate)
                     .onSuccessRun(this::replayStateNotifications)
                     .onSuccessRun(this::notifyStateRestored)
-                    .onFailure(cause -> log.error("Node {} failed to restore state: {}", self, cause));
+                    .onFailure(cause -> logRestoreFailure(cause));
+    }
+
+    /// #1020 — the ONE operator signal on a failed restore, so it names the CONSEQUENCE and not only
+    /// the cause.
+    ///
+    /// A `restoreSnapshot` that fails skips `activate()`, so the engine stays `Syncing` and the retry
+    /// tick re-enters the same branch. The periodic stuck-in-`Syncing` WARN does NOT cover this:
+    /// [#doSynchronize] calls [#warnIfSyncStuck] only after `adoptIfThresholdMet()` returns false, and
+    /// [#adoptCollectedState] resets `syncRounds` on every entry, so a loop that keeps re-entering
+    /// adoption never reaches [#WARN_EVERY_N_SYNC_ROUNDS] — and at `clusterSize` 1 the call is
+    /// unreachable outright (#1447). This line is therefore the whole operator surface for the state,
+    /// which is why it spells out that the node is NOT active rather than logging a bare cause.
+    ///
+    /// Whether a failed restore SHOULD wedge the node, and what readiness reports while it does, is
+    /// **#1468's** decision, not this one's (retargeted from #1013 on 2026-09-23). Pinned by
+    /// `RabiaOwnRestoreFailureTest#ownRestoreFails_staysInactive_untilTicket1013Decides`.
+    private void logRestoreFailure(Cause cause) {
+        log.error("Node {} FAILED to restore state and is NOT active: {}. It stays in sync/retry and serves no "
+                 + "requests; every retry re-enters this same branch until the snapshot can be read.",
+                  self,
+                  cause.message());
+    }
+
+    /// #1020 — a failed re-persist after a restore. #1390's `authorityFailure` fences voting on it;
+    /// rc4's ERROR names the consequence, because `GitBackedPersistence` carries no logger of its own
+    /// and this is the only place the failure is heard. Pinned by
+    /// `RabiaRestoredStateSaveFailureLogTest`.
+    private void recordRestoredStateSaveFailure(Cause cause) {
+        authorityFailure = Option.some(cause);
+        log.error("Node {} restored state but FAILED to persist it: {}. The restore is "
+                  + "in memory ONLY — this node's disk still holds its previous checkpoint, "
+                  + "so a restart will lose the restored history and serve a stale store.",
+                  self,
+                  cause);
     }
 
     /// Fire the state machine's deferred notification burst (cluster-topology-overhaul §5.8,
@@ -2320,7 +2424,11 @@ public class RabiaEngine<C extends Command> {
                                                           authorityFailure = Option.some(ReconfigurationError.INCOMPATIBLE_EPOCH);
                                                       }
                                                       }));
-        saveAuthority().onFailure(cause -> authorityFailure = Option.some(cause));
+        // #1020 (rc4) — this re-persist is what makes the restored state durable for the NEXT restart,
+        // and its failure used to be silent end to end. #1390 routes the save through the authority
+        // snapshot and fences voting on failure; rc4's ERROR is kept alongside so the failure is also
+        // heard (union, merge of #1390 into rc4).
+        saveAuthority().onFailure(this::recordRestoredStateSaveFailure);
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
 

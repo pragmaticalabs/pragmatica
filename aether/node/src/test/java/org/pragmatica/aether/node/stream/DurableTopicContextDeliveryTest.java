@@ -296,7 +296,8 @@ class DurableTopicContextDeliveryTest {
     private static void subscribe(TopicSubscriptionRegistry topics, MethodName method) {
         var key = TopicSubscriptionKey.topicSubscriptionKey(ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap(),
                                                             ARTIFACT,
-                                                            method);
+                                                            method,
+                                                            SELF);
 
         topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, TopicSubscriptionValue.topicSubscriptionValue(SELF)),
                                                 Option.none()));

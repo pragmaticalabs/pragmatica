@@ -84,33 +84,31 @@ class BatchPublishOutcomeTest {
                   .isEqualTo(1);
     }
 
-    /// Within a partition group the chain stops at the first failure: the second event of partition 1 is never
-    /// written and is reported NOT attempted (safe to retry), not folded into the group's failure.
+    /// Local batches submit the entire run before a cumulative barrier; failure makes every
+    /// submitted event uncertain rather than incorrectly reporting a safely retryable suffix.
     @Test
-    void failedGroup_stopsAtTheFirstFailure_laterEventsOfTheGroupNotAttempted() {
+    void failedLocalBatch_reportsEverySubmittedEventAsUnknown() {
         var first = keyFor(1);
         var second = keyFor(1, first);
         var outcomes = eventualPublisher().publishBatch(List.of(first, second)).await().unwrap();
 
         assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_UNKNOWN),
-                                             new PublishOutcome.NotAttempted(StreamPublisherError.PrecedingEventFailed.precedingEventFailed(1, BARRIER_UNKNOWN)));
-        assertThat(appended(1)).as("only the first event of the group reached the ring").isEqualTo(1);
+                                             new PublishOutcome.OutcomeUnknown(BARRIER_UNKNOWN));
+        assertThat(appended(1)).as("both events reached the ring before the cumulative barrier").isEqualTo(2);
     }
 
-    /// rev1350 F1: a two-event group cannot see a `precedingFailure` that ignores a NotAttempted predecessor —
-    /// with three events, event 3 would be appended after event 2 was skipped, breaking per-key order. The
-    /// chain must stay stopped: outcomes `[OutcomeUnknown, NotAttempted, NotAttempted]`, exactly ONE append.
+    /// A third local event is also already submitted when the batch barrier fails.
     @Test
-    void failedGroup_staysStopped_pastTheSecondEvent_threeEventGroup() {
+    void failedLocalBatch_neverLabelsSubmittedThirdEventNotAttempted() {
         var first = keyFor(1);
         var second = keyFor(1, first);
         var third = keyFor(1, first, second);
-        var skipped = new PublishOutcome.NotAttempted(StreamPublisherError.PrecedingEventFailed.precedingEventFailed(1, BARRIER_UNKNOWN));
+        var skipped = new PublishOutcome.OutcomeUnknown(BARRIER_UNKNOWN);
 
         var outcomes = eventualPublisher().publishBatch(List.of(first, second, third)).await().unwrap();
 
         assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_UNKNOWN), skipped, skipped);
-        assertThat(appended(1)).as("exactly one append on partition 1 — the third event must not be written").isEqualTo(1);
+        assertThat(appended(1)).as("all three events were submitted before the cumulative barrier").isEqualTo(3);
     }
 
     /// Outcomes sit at their INPUT index whatever the partition grouping: a partition-1 event first, then two
@@ -125,6 +123,16 @@ class BatchPublishOutcomeTest {
                                              new PublishOutcome.Published(0L),
                                              new PublishOutcome.Published(1L));
         assertThat(appended(0)).isEqualTo(2);
+    }
+
+    @Test
+    void oversizedRunFallback_preservesSuccessfulPrefixAndNeverAttemptsTheSuffix() {
+        var outcomes = StreamWriteRouter.localOnly(partitionManager).publishBatch(STREAM, 0,
+            List.of(new byte[]{1}, new byte[2 * 1024 * 1024], new byte[]{3}), 1).await().unwrap();
+        assertThat(outcomes.get(0)).isEqualTo(new PublishOutcome.Published(0));
+        assertThat(outcomes.get(1)).isInstanceOf(PublishOutcome.OutcomeUnknown.class);
+        assertThat(outcomes.get(2)).isInstanceOf(PublishOutcome.NotAttempted.class);
+        assertThat(appended(0)).isEqualTo(1);
     }
 
     @Test

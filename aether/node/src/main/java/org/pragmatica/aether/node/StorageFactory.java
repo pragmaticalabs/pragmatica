@@ -55,6 +55,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
     static final String STREAMS_NAME = "streams";
+    /// #849: the `streams` DHT namespace. Its encryption marker lives at
+    /// `stream-segments/.encryption-enabled`, same layout as `<name>-blocks/.encryption-enabled`.
+    static final String STREAM_SEGMENTS_DHT_PREFIX = "stream-segments";
     /// Hot-ring mirror in the memory tier — small; the live ring already holds recent events,
     /// the memory tier is only the first read-waterfall hop for just-sealed segment blocks.
     private static final long STREAM_MEMORY_BYTES = 16L * 1024 * 1024;
@@ -498,10 +501,10 @@ public final class StorageFactory {
     /// `streamDataDir` so blocks and refs survive a same-node restart. The disk tier degrades to
     /// memory+DHT when `streamDataDir` is not writable (mirrors `createOne`'s
     /// `handleDiskTierUnavailable`), so node boot never fails on an unmountable data dir.
-    static StorageSetup defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
-        var tiers = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
+    static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
+        var build = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
 
-        return assembleStreamSetup(tiers, streamDataDir.resolve("snapshots"), nodeId);
+        return assembleStreamSetup(build.tiers(), streamDataDir.resolve("snapshots"), nodeId, build.dhtMarkerCheck());
     }
 
     /// #253 — encrypted counterpart to the three-arg overload above. Streams has no per-instance
@@ -545,16 +548,19 @@ public final class StorageFactory {
         var snapshotDir = request.streamDataDir().resolve("snapshots");
 
         return request.keyring()
-                      .fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(segmentsDir, STREAMS_NAME).map(_ -> new PendingSetup(defaultStreamStorage(request.dhtClient(),
-                                                                                                                                                                  request.streamDataDir(),
-                                                                                                                                                                  request.nodeId()),
-                                                                                                                                             Option.none())),
+                      .fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(segmentsDir, STREAMS_NAME)
+                                                       .flatMap(_ -> defaultStreamStorage(request.dhtClient(),
+                                                                                          request.streamDataDir(),
+                                                                                          request.nodeId()))
+                                                       .map(setup -> new PendingSetup(setup,
+                                                                                      Option.none())),
                             ring -> armEncryptedStreamTiers(request.dhtClient(),
                                                             segmentsDir,
-                                                            ring).map(build -> new PendingSetup(assembleStreamSetup(build.tiers(),
-                                                                                                                    snapshotDir,
-                                                                                                                    request.nodeId()),
-                                                                                                build.armedDisk())));
+                                                            ring).flatMap(build -> assembleStreamSetup(build.tiers(),
+                                                                                                       snapshotDir,
+                                                                                                       request.nodeId(),
+                                                                                                       build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
+                                                                                                                                                             build.armedDisk()))));
     }
 
     /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
@@ -565,62 +571,53 @@ public final class StorageFactory {
                               String nodeId,
                               Option<EncryptionKeyring> keyring) {}
 
+    /// #849: the streams DHT tier goes through [#maybeEncryptDht] like every `<name>-blocks`
+    /// namespace -- gated on a `readGate` and carrying the [DhtMarkerCheck] that
+    /// `AetherNode.start()` verifies post-formation -- so `streams_encrypted` switched off over a
+    /// namespace whose marker says encrypted refuses with `EncryptedTierRequiresKeyring` before any
+    /// read, instead of admitting the boot and failing every segment read on the content-address
+    /// check. Before #849 both builders used the ungated two-arg `DhtStorageTier` and no marker was
+    /// ever written for `stream-segments`.
     private static Result<TierBuild> armEncryptedStreamTiers(Option<DHTClient> dhtClient,
                                                              Path segmentsDir,
                                                              EncryptionKeyring keyring) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
-        var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"))
-                               .map(dht -> EncryptingStorageTier.wrap(dht, keyring));
+        var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
 
         return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
                                                                                     log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
                                                                                              cause.message());
 
-                                                                                    return Result.success(new TierBuild(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
-                                                                                                                                                                 dht))
-                                                                                                                               .or(List.of(memoryTier)),
-                                                                                                                        Option.none()));
+                                                                                    return Result.success(withDht(dhtBuild,
+                                                                                                                  List.of(memoryTier)));
                                                                                 },
                                                                                 disk -> EncryptingStorageTier.armLocalDisk(disk,
                                                                                                                            segmentsDir,
-                                                                                                                           keyring).map(armed -> new TierBuild(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
-                                                                                                                                                                                                        armed.tier(),
-                                                                                                                                                                                                        dht))
-                                                                                                                                                                      .or(List.of(memoryTier,
-                                                                                                                                                                                  armed.tier())),
-                                                                                                                                                               Option.none(),
-                                                                                                                                                               Option.some(armed))));
+                                                                                                                           keyring).map(armed -> withDht(dhtBuild,
+                                                                                                                                                         List.of(memoryTier,
+                                                                                                                                                                 armed.tier()),
+                                                                                                                                                         Option.some(armed))));
     }
 
-    private static List<StorageTier> buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
+    private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
-        var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"));
+        var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
 
-        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> streamTiersWithoutDisk(cause,
-                                                                                                                memoryTier,
-                                                                                                                dhtTier),
-                                                                                disk -> streamTiers(memoryTier,
-                                                                                                    disk,
-                                                                                                    dhtTier));
+        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
+                                                                                    log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
+                                                                                             cause.message());
+
+                                                                                    return withDht(dhtBuild,
+                                                                                                   List.of(memoryTier));
+                                                                                },
+                                                                                disk -> withDht(dhtBuild,
+                                                                                                List.of(memoryTier, disk)));
     }
 
-    private static List<StorageTier> streamTiersWithoutDisk(Cause cause,
-                                                            MemoryTier memoryTier,
-                                                            Option<DhtStorageTier> dhtTier) {
-        log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback", cause.message());
-
-        return dhtTier.map(dht -> List.<StorageTier> of(memoryTier, dht))
-                      .or(List.of(memoryTier));
-    }
-
-    private static List<StorageTier> streamTiers(MemoryTier memoryTier,
-                                                 StorageTier diskTier,
-                                                 Option<DhtStorageTier> dhtTier) {
-        return dhtTier.map(dht -> List.<StorageTier> of(memoryTier, diskTier, dht))
-                      .or(List.of(memoryTier, diskTier));
-    }
-
-    private static StorageSetup assembleStreamSetup(List<StorageTier> tiers, Path snapshotDir, String nodeId) {
+    private static Result<StorageSetup> assembleStreamSetup(List<StorageTier> tiers,
+                                                            Path snapshotDir,
+                                                            String nodeId,
+                                                            Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
         var instance = StorageInstance.storageInstance(STREAMS_NAME, tiers, metadataStore);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
@@ -635,16 +632,18 @@ public final class StorageFactory {
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
 
-        restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate);
-        log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
+        return restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate).map(_ -> {
+            log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
 
-        return StorageSetup.storageSetup(STREAMS_NAME,
-                                         instance,
-                                         snapshotManager,
-                                         readinessGate,
-                                         metadataStore,
-                                         demotionManager,
-                                         garbageCollector);
+            return StorageSetup.storageSetup(STREAMS_NAME,
+                                             instance,
+                                             snapshotManager,
+                                             readinessGate,
+                                             metadataStore,
+                                             demotionManager,
+                                             garbageCollector,
+                                             dhtMarkerCheck);
+        });
     }
 
     private static Result<PendingSetup> createOne(String name,
@@ -664,12 +663,12 @@ public final class StorageFactory {
         return buildTiers(name, config, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
                                                                                                    + "': " + cause.message(),
                                                                                                     Option.some(cause)))
-                         .map(build -> new PendingSetup(assembleSetup(name,
-                                                                      build.tiers(),
-                                                                      config,
-                                                                      nodeId,
-                                                                      build.dhtMarkerCheck()),
-                                                        build.armedDisk()));
+                         .flatMap(build -> assembleSetup(name,
+                                                         build.tiers(),
+                                                         config,
+                                                         nodeId,
+                                                         build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
+                                                                                                               build.armedDisk())));
     }
 
     private static Result<TierBuild> buildTiers(String name,
@@ -989,11 +988,11 @@ public final class StorageFactory {
         return new TierBuild(tiers, dhtBuild.markerCheck(), armedDisk);
     }
 
-    private static StorageSetup assembleSetup(String name,
-                                              List<StorageTier> tiers,
-                                              StorageConfig config,
-                                              String nodeId,
-                                              Option<DhtMarkerCheck> dhtMarkerCheck) {
+    private static Result<StorageSetup> assembleSetup(String name,
+                                                      List<StorageTier> tiers,
+                                                      StorageConfig config,
+                                                      String nodeId,
+                                                      Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(name);
         var instance = StorageInstance.storageInstance(name, tiers, metadataStore);
         var snapshotConfig = buildSnapshotConfig(config, nodeId);
@@ -1004,17 +1003,18 @@ public final class StorageFactory {
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
 
-        restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate);
-        log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
+        return restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate).map(_ -> {
+            log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
 
-        return StorageSetup.storageSetup(name,
-                                         instance,
-                                         snapshotManager,
-                                         readinessGate,
-                                         metadataStore,
-                                         demotionManager,
-                                         garbageCollector,
-                                         dhtMarkerCheck);
+            return StorageSetup.storageSetup(name,
+                                             instance,
+                                             snapshotManager,
+                                             readinessGate,
+                                             metadataStore,
+                                             demotionManager,
+                                             garbageCollector,
+                                             dhtMarkerCheck);
+        });
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {
@@ -1027,12 +1027,35 @@ public final class StorageFactory {
                                              nodeId);
     }
 
-    private static void restoreAndSignalReady(String name,
-                                              SnapshotManager snapshotManager,
-                                              MetadataStore metadataStore,
-                                              StorageReadinessGate readinessGate) {
-        snapshotManager.restoreFromLatest().onPresent(snapshot -> applySnapshot(name, snapshot, metadataStore));
-        readinessGate.snapshotLoaded();
+    /// #1013: readiness is signalled on exactly two of the manager's three outcomes -- a restored
+    /// snapshot, or NOTHING on disk (the manager establishes that by looking, not by a failed read).
+    /// The third, something on disk that does not restore, used to fall through to the same
+    /// `snapshotLoaded()` with only a WARN and an ABSENT "Restored snapshot" line to tell it apart
+    /// from a first boot; the node then came up read-ready on empty metadata and replayed its WAL
+    /// as if the metadata had never existed. Now it is a boot failure naming the instance, through
+    /// the same `Result` path #253 gave a tier that fails to build.
+    ///
+    /// What the gate does on that path is NOT an observable state: `snapshotLoaded()` is simply
+    /// never called, [#assembleSetup] never constructs the `StorageSetup`, `createAll` fails and
+    /// `AetherNode` aborts the boot -- so the gate object is discarded with the rest of the
+    /// half-built setup. No operator can read it in `LOADING_SNAPSHOT`, because there is no node to
+    /// read it from; the refusal itself is the whole operator-visible surface.
+    private static Result<Unit> restoreAndSignalReady(String name,
+                                                      SnapshotManager snapshotManager,
+                                                      MetadataStore metadataStore,
+                                                      StorageReadinessGate readinessGate) {
+        return snapshotManager.restoreFromLatest()
+                              .mapError(cause -> Causes.cause("Storage '" + name
+                                                             + "' has a metadata snapshot that does not restore, "
+                                                             + "readiness not signalled: " + cause.message(),
+                                                              Option.some(cause)))
+                              .onSuccess(restored -> restored.onPresent(snapshot -> applySnapshot(name,
+                                                                                                  snapshot,
+                                                                                                  metadataStore))
+                                                             .onEmpty(() -> log.info("No snapshot on disk for '{}': metadata starts empty",
+                                                                                     name)))
+                              .onSuccessRun(readinessGate::snapshotLoaded)
+                              .mapToUnit();
     }
 
     private static void applySnapshot(String name, MetadataSnapshot snapshot, MetadataStore metadataStore) {

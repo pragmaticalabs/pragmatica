@@ -271,19 +271,35 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// `LeaderKey` write (H4 leader fence), a stale-epoch write to any [EpochBearing] value
     /// (ownership fence), a non-successor write to a [VersionFenced] value (lost-update fence,
     /// RFC-0018 #570), a regressive write to a [MonotonicFenced] value (running-max fence,
-    /// #700), or a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271). All arms are pure functions of the committed storage content and the
+    /// #700), a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271), or a write that would erase a committed
+    /// [LeaderAuthorized] or [OwnerFenced] marker (fence-drop arms). All arms are pure functions of the committed storage content and the
     /// incoming value alone, so every replica decides identically inside the consensus applier.
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return dropsOwnerFence(key, incoming) || staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key,
-                                                                                                                                          incoming) || regressiveWatermarkWrite(key,
-                                                                                                                                                                                incoming) || unassignedWrite(key,
-                                                                                                                                                                                                             incoming);
+        return dropsOwnerFence(key, incoming) || dropsLeaderAuthorization(key, incoming) || staleLeaderWrite(key,
+                                                                                                             incoming) || staleEpochWrite(key,
+                                                                                                                                          incoming) || staleSuccessorWrite(key,
+                                                                                                                                                                           incoming) || regressiveWatermarkWrite(key,
+                                                                                                                                                                                                                 incoming) || unassignedWrite(key,
+                                                                                                                                                                                                                                              incoming);
     }
 
     private boolean dropsOwnerFence(K key, Object incoming) {
         return storage.get(key) instanceof OwnerFenced<?, ?> && !(incoming instanceof OwnerFenced<?, ?>);
+    }
+
+    /// The authority-drop fence for [LeaderAuthorized] values, mirroring [#dropsOwnerFence]: a write
+    /// replacing a committed `LeaderAuthorized` value with one that is NOT `LeaderAuthorized` is
+    /// rejected. Without it the marker is a property of the VALUE only, so a single authorized
+    /// transaction writing a derived or defaulted replacement that happens not to carry the marker
+    /// leaves the key unprotected forever — a bare `Put` then lands ([#processCommand] only drops a
+    /// `Put` while one of the two values is marked) and a witnessless `Remove` deletes it
+    /// ([#staleRemove] only refuses while the COMMITTED value is marked). De-authorization is still
+    /// available, but only as a deletion: [#validMutation] admits a transaction that REMOVES a
+    /// `LeaderAuthorized` value, which leaves no fenced key behind.
+    private boolean dropsLeaderAuthorization(K key, Object incoming) {
+        return storage.get(key) instanceof LeaderAuthorized && !(incoming instanceof LeaderAuthorized);
     }
 
     /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are

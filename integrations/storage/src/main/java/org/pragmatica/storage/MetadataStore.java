@@ -31,6 +31,10 @@ public interface MetadataStore {
     /// (i.e. the write never progressed past the claim). If a concurrent caller
     /// advanced the lifecycle past the sentinel, the entry is preserved.
     /// Returns true if the claim was released.
+    ///
+    /// The same compare-and-remove is what GC uses to take an orphan record it scanned (#801):
+    /// `sentinel` is then the record as scanned, and a `false` means something touched the block
+    /// after the scan and it must not be collected on that verdict.
     boolean releaseClaim(BlockId blockId, BlockLifecycle sentinel);
     /// Atomically update lifecycle metadata using the provided function.
     /// Returns the updated lifecycle, or none if the block does not exist.

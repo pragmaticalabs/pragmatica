@@ -241,6 +241,7 @@ class ContentStoreReclamationTest {
 
             var restoredStore = MetadataStore.inMemoryMetadataStore("reclamation-restored");
             var snapshot = snapshotManager(restoredStore, config).restoreFromLatest()
+                                                                 .unwrap()
                                                                  .unwrap();
 
             restoredStore.restoreLifecycles(snapshot.lifecycles());

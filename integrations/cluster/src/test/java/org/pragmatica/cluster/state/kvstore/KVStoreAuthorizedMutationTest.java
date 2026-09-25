@@ -27,6 +27,11 @@ class KVStoreAuthorizedMutationTest {
         store.process(store.createBatch(List.of(command)));
     }
 
+    private KVCommand.TransactionResult transaction(String id, KVCommand.Mutation<StructuredKey, Object> mutation) {
+        return (KVCommand.TransactionResult) store.process(store.createBatch(List.of(new KVCommand.LeaderTransaction<>(KEY, id, LEADER, List.of(), List.of(mutation)))))
+                                                  .getFirst();
+    }
+
     @Test
     void sequentialClaims_onlyFirstSucceeds() {
         apply(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
@@ -53,5 +58,38 @@ class KVStoreAuthorizedMutationTest {
         apply(new KVCommand.Put<>(KEY, "unfenced"));
         apply(new KVCommand.Remove<>(KEY, Option.some(value)));
         assertThat(store.get(KEY).unwrap()).isEqualTo(value);
+    }
+
+    /// An authorized transaction may refresh the value but may NOT replace it with an unmarked one:
+    /// a downgrade would leave the key open to a bare `Put` and a witnessless `Remove` forever. The
+    /// accepted refresh is the in-run control — it proves the refusal is the downgrade arm and not a
+    /// blanket rejection of the second transaction.
+    @Test
+    void authorizedValueCannotBeDowngradedToAnUnmarkedOne() {
+        apply(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+        var claimed = new Value("accepted");
+        assertThat(transaction("claim", new KVCommand.Mutation<>(KEY, Option.none(), Option.some(claimed))).accepted()).isTrue();
+
+        var refreshed = new Value("still-authorized");
+        assertThat(transaction("refresh", new KVCommand.Mutation<>(KEY, Option.some(claimed), Option.some(refreshed))).accepted()).isTrue();
+        assertThat(store.get(KEY).unwrap()).isEqualTo(refreshed);
+
+        assertThat(transaction("downgrade", new KVCommand.Mutation<>(KEY, Option.some(refreshed), Option.some("plain"))).accepted()).isFalse();
+        assertThat(store.get(KEY).unwrap()).isEqualTo(refreshed);
+
+        apply(new KVCommand.Put<>(KEY, "forged"));
+        apply(new KVCommand.Remove<>(KEY));
+        assertThat(store.get(KEY).unwrap()).isEqualTo(refreshed);
+    }
+
+    /// Deletion remains the de-authorization path: it leaves no unprotected key behind, so it is
+    /// admitted where the in-place downgrade above is refused.
+    @Test
+    void authorizedValueCanStillBeRemovedByItsLeader() {
+        apply(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+        var claimed = new Value("accepted");
+        assertThat(transaction("claim", new KVCommand.Mutation<>(KEY, Option.none(), Option.some(claimed))).accepted()).isTrue();
+        assertThat(transaction("release", new KVCommand.Mutation<>(KEY, Option.some(claimed), Option.none())).accepted()).isTrue();
+        assertThat(store.get(KEY).isEmpty()).isTrue();
     }
 }

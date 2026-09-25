@@ -35,6 +35,10 @@ SKIP_BUILD=false
 SKIP_DEPLOY=false
 SKIP_TEARDOWN=false
 SKIP_IMAGE_PUSH=false
+# --keep-on-failure: on a non-zero exit, leave the clusters up for log extraction instead of
+# tearing them down, and pass the same flag to `aether cluster bootstrap` so a failed
+# formation keeps its VMs too. Empty or the flag itself, so it expands safely under set -u.
+KEEP_ON_FAILURE_FLAG=""
 
 RESULTS_FILE="$(mktemp /tmp/aether-test-results.XXXXXX)"
 RESULTS_JSON="${SCRIPT_DIR}/test-results.json"
@@ -115,6 +119,7 @@ while [ $# -gt 0 ]; do
         --skip-build)    SKIP_BUILD=true; shift ;;
         --skip-deploy)   SKIP_DEPLOY=true; shift ;;
         --skip-teardown) SKIP_TEARDOWN=true; shift ;;
+        --keep-on-failure) KEEP_ON_FAILURE_FLAG="--keep-on-failure"; shift ;;
         --skip-image-push) SKIP_IMAGE_PUSH=true; shift ;;
         -h|--help)
             echo "Usage: $0 --env docker|remote|cloud [OPTIONS]"
@@ -126,6 +131,10 @@ while [ $# -gt 0 ]; do
             echo "  --skip-build       Skip build.sh and blueprint builds"
             echo "  --skip-deploy      Skip cluster provisioning (reuse running clusters)"
             echo "  --skip-teardown    Leave clusters running after tests"
+            echo "  --keep-on-failure  On a failed run (or failed bootstrap) leave clusters running for log"
+            echo "                     extraction; a green run still tears down. An interrupt (Ctrl-C,"
+            echo "                     SIGTERM, SIGHUP) counts as a failure and also preserves. Cloud VMs"
+            echo "                     stay BILLABLE."
             echo "  --skip-image-push  Skip pushing aether-node.jar + rebuilding remote image (reuse what is already on remote)"
             echo ""
             echo "Environment variables:"
@@ -326,13 +335,16 @@ collect_blueprints() {
 # preserve evidence, and losing evidence must not also lose the result that produced it.
 capture_node_logs() {
     local suite_name="$1" target_cluster="$2"
+    # Start of the window to capture (epoch seconds); the suite's start when called from
+    # run_suite. Defaults to the last hour so a caller that omits it still gets a bound.
+    local since_epoch="${3:-$(( $(date +%s) - 3600 ))}"
     local out_dir="${SCRIPT_DIR}/failure-logs/${suite_name}"
 
     mkdir -p "$out_dir" 2>/dev/null || return 0
     # Clear STALE captures first: this dir accumulates across runs, and run3's diagnosis
     # nearly used run2's node-5.log sitting beside run3's fresh files. A capture must
     # only ever contain THIS run's evidence.
-    rm -f "${out_dir}"/*.log 2>/dev/null || true
+    rm -f "${out_dir}"/*.log "${out_dir}/provisioning-snapshot.txt" 2>/dev/null || true
     date -u '+captured %Y-%m-%dT%H:%M:%SZ' > "${out_dir}/capture-manifest.txt" 2>/dev/null || true
 
     local names
@@ -358,6 +370,60 @@ capture_node_logs() {
             for f in $streamed; do
                 remote_exec "tail -c 2000000 ${f}" > "${out_dir}/streamed-$(basename "$f")" 2>&1 || true
             done
+            ;;
+        cloud)
+            # Capture from every VM of this cluster at SUITE END (after each test's own cleanup
+            # restore — NOT at the instant of failure; a restore that re-bootstrapped the cluster
+            # leaves only the new generation to read, and the manifest says which VMs answered).
+            # Previously this branch did not exist: cloud fell through to `return 0` after writing
+            # the manifest, so every failed cloud suite carried a "captured" manifest and no logs
+            # (2026-09-23, 8 of 8 failed suites), and by run end those VMs had been reaped.
+            # Bounded by TIME, not lines: `--since` the suite's start, because nodes log thousands
+            # of lines a minute during churn and a fixed tail can end before the failing test.
+            # _cloud_running_vm_ips matches seeds by IP and CTM replacements by node-id name, so
+            # a replacement labelled with a different `aether-cluster` value is still captured.
+            local cluster_name ips ip enum_rc=0 rc ok=0 attempted=0
+            if [ -z "${AETHER_SSH_KEY:-}" ]; then
+                echo "AETHER_SSH_KEY unset — cannot reach VMs, nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: AETHER_SSH_KEY unset — cloud node-log capture skipped"
+                return 0
+            fi
+            if [ "$target_cluster" = "a" ]; then cluster_name="$CLUSTER_A_NAME"; else cluster_name="$CLUSTER_B_NAME"; fi
+            ips=$(_cloud_running_vm_ips "$cluster_name" 2>/dev/null) || enum_rc=$?
+            if [ "$enum_rc" -ne 0 ]; then
+                # Unavailable is not empty (_cloud_running_vm_ips's own contract).
+                echo "VM enumeration UNAVAILABLE for cluster ${cluster_name} (rc=${enum_rc}) — nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: cloud VM enumeration unavailable (rc=${enum_rc}) — nothing captured"
+                return 0
+            fi
+            local remote_cmd="docker logs --timestamps --since ${since_epoch} aether-node"
+            [ "${CLOUD_RUNTIME:-container}" = "jvm" ] && remote_cmd="journalctl -u aether-node --no-pager --since @${since_epoch} -o short-iso"
+            echo "window: since epoch ${since_epoch} (suite start)" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            for ip in $ips; do
+                attempted=$((attempted + 1))
+                # Outer bound covers connect + transfer; the remote `timeout` covers a command that
+                # hangs on a live connection, which ssh keepalives cannot detect (#628 note at
+                # common.sh remote_exec_bounded). A capture must never stall the run it serves.
+                rc=0
+                _run_with_timeout "${CLOUD_CAPTURE_SSH_TIMEOUT_S:-90}" \
+                    ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY}" "${CLOUD_SSH_USER:-root}@${ip}" \
+                    "hostname; timeout 60 ${remote_cmd}" > "${out_dir}/vm-${ip}.log" 2>&1 || rc=$?
+                [ "$rc" -eq 0 ] && ok=$((ok + 1))
+                printf 'vm %s rc=%s lines=%s\n' "$ip" "$rc" "$(wc -l < "${out_dir}/vm-${ip}.log" | tr -d ' ')" \
+                    >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            done
+            provisioning_snapshot > "${out_dir}/provisioning-snapshot.txt" 2>&1 || true
+            if [ "$attempted" -eq 0 ]; then
+                # Say so: a manifest with nothing beside it must never read as a capture.
+                echo "NO VMs found for cluster ${cluster_name} — nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                log_warn "${suite_name}: node-log capture found NO VMs for cluster ${cluster_name} — nothing captured"
+                return 0
+            fi
+            echo "captured ${ok} of ${attempted} VM(s)" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            if [ "$ok" -eq 0 ]; then
+                log_warn "${suite_name}: node-log capture reached ${attempted} VM(s) and NONE returned logs (see rc= in ${out_dir}/capture-manifest.txt)"
+                return 0
+            fi
             ;;
         *) return 0 ;;
     esac
@@ -471,7 +537,7 @@ run_suite() {
         fi
         if [ -f "$restore_marker" ]; then
             log_fail "${suite_name}: baseline restore failed after $(basename "$test_file") — capturing evidence and aborting the remaining test files (quarantine)"
-            capture_node_logs "${suite_name}-restore-failed" "$target_cluster" || true
+            capture_node_logs "${suite_name}-restore-failed" "$target_cluster" "$start_time" || true
             suite_fail=$((suite_fail + 1))
             break
         fi
@@ -488,7 +554,7 @@ run_suite() {
     # so without this a failed suite leaves no evidence and the only way to investigate
     # is to reproduce it — which does not work for a failure that does not reproduce.
     if [ "$status" = "failed" ]; then
-        capture_node_logs "$suite_name" "$target_cluster" || true
+        capture_node_logs "$suite_name" "$target_cluster" "$start_time" || true
     fi
 
     echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration}}" >> "$RESULTS_FILE"
@@ -816,7 +882,7 @@ deploy_docker() {
 # CLOUD_TOML_A / CLOUD_TOML_B must already be resolved (and exported — #441
 # S20) by the Step-2 cloud branch before either function runs.
 bootstrap_cloud_cluster_a() {
-    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 600
+    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 600 ${KEEP_ON_FAILURE_FLAG:+"$KEEP_ON_FAILURE_FLAG"}
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
     # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
@@ -838,7 +904,7 @@ bootstrap_cloud_cluster_a() {
 }
 
 bootstrap_cloud_cluster_b() {
-    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 600
+    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 600 ${KEEP_ON_FAILURE_FLAG:+"$KEEP_ON_FAILURE_FLAG"}
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     local cluster_b_ip
     cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
@@ -868,6 +934,12 @@ cloud_bringup_cluster_b() {
     if [ "$SKIP_DEPLOY" = false ]; then
         log_step "Bootstrapping cloud Cluster B (runtime=${CLOUD_RUNTIME})"
         bootstrap_cloud_cluster_b
+        # Same meaning as after cluster A's bootstrap (Step 2): resources exist now. Without it a
+        # B-only run (`--suites` naming only cluster-B suites) never set the flag, so teardown
+        # skipped the bare orphan sweep — and CTM replacements, labelled `cloud-<cluster>`, are
+        # matched by no scoped reap — and --keep-on-failure reported "nothing to reap" over live
+        # VMs (2026-09-24: 5 VMs running while the handler printed that).
+        CLOUD_RESOURCES_PROVISIONED=true
     fi
 
     # Step 3 analog
@@ -953,9 +1025,10 @@ teardown() {
             # Catch-all sweep for CTM-provisioned ORPHANS. The scoped `--cluster <name>`
             # reaps above filter on `aether-cluster=<name>` (plus same-cluster orphans),
             # but CTM-provisioned replacement VMs may carry a DIFFERENT or MISSING
-            # `aether-cluster` label value (the seed/replacement prefix mismatch:
-            # cluster reports `aether-cloud-test-b-node-<ULID>` while the VM is labeled
-            # `aether-node-id=aether-b-node-<ULID>` with no matching `aether-cluster`).
+            # `aether-cluster` label value (historically: CTM labelled replacements with the
+            # TOML's `[cluster] name` rather than the harness cluster name, fixed by #1487 —
+            # and a replacement created before its cluster name was stamped carries only
+            # `aether-node-id`, with no `aether-cluster` at all).
             # Those rows are dropped by the per-cluster orphan filter and survived
             # teardown last run (4 orphan VMs leaked). A final bare reaper run (no
             # --cluster) matches ANY `aether-cluster` OR `aether-node-id` label and
@@ -1141,7 +1214,59 @@ A_SUITES_SELECTED=${#A_SUITES[@]}
 # Install EXIT trap so teardown runs even when later steps fail (set -e exit, errors,
 # unbound variables). Without this, any failure between Step 2 and Step 11 leaks
 # bootstrapped clusters — on cloud, that is real €/hour cost.
-trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT
+#
+# The handler re-exits with the run's real status. A run aborted by `set -u` used to exit 0 and
+# read as success to any caller checking it: macOS /bin/bash 3.2 loses an unbound-variable
+# abort's status whenever an EXIT trap runs, entering the trap with `$?`=0. So success is proven
+# only by reaching the final exit (RUN_REACHED_END); a 0 without it is an abort.
+RUN_REACHED_END=false
+on_exit() {
+    local rc=$?
+    # errexit off inside the handler: one failing teardown step must not abort the rest of the
+    # cleanup, nor replace the run's status with its own. The run's status is `rc`, re-raised below.
+    set +e
+    if [ "$rc" -eq 0 ] && [ "$RUN_REACHED_END" != true ]; then
+        log_error "Run aborted before completion (no final result) — exiting 1, not 0"
+        rc=1
+    fi
+    # This run's scratch state (endpoint memory), keyed by AETHER_RUN_ID so only ours. Removed on
+    # EVERY exit path: it is useless to any later run, so preserving clusters is no reason to keep it.
+    rm -f "${TMPDIR:-/tmp}/aether-live-endpoint-"*"-${AETHER_RUN_ID:-norun}" \
+          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" 2>/dev/null
+    if [ "$SKIP_TEARDOWN" = false ]; then
+        if [ -n "$KEEP_ON_FAILURE_FLAG" ] && [ "$rc" -ne 0 ]; then
+            preserve_on_failure "$rc"
+        else
+            teardown
+        fi
+    fi
+    exit "$rc"
+}
+
+# --keep-on-failure path: nothing is destroyed; the PG firewall is still closed because log
+# extraction does not need the shared PG VM reachable.
+preserve_on_failure() {
+    log_step "Run failed (rc=$1) with --keep-on-failure — clusters PRESERVED for log extraction"
+    if [ "$ENV_TYPE" = "cloud" ]; then
+        if [ "${CLOUD_RESOURCES_PROVISIONED:-false}" = true ]; then
+            log_warn "Preserved cloud VMs are BILLABLE. Reap this run's clusters when done:"
+            log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_A_NAME} --destroy --force"
+            log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_B_NAME} --destroy --force"
+            log_warn "  CTM replacement VMs may carry no matching cluster label; the bare"
+            log_warn "  'cloud-reaper.sh --destroy --force' catches them but destroys EVERY aether-labelled"
+            log_warn "  resource in the account except test-pg — never run it while another run is live."
+        else
+            # No bootstrap COMPLETED. That is not "nothing exists": a bootstrap that failed under
+            # --keep-on-failure keeps the VMs it created. List without deleting:
+            log_warn "No cluster bootstrap completed this run, but a failed bootstrap under --keep-on-failure keeps its VMs."
+            log_warn "  List (dry run, deletes nothing): with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh"
+        fi
+        "${REPO_ROOT}/../tools/pg-firewall.sh" close 2>&1 | tail -1 || true
+    else
+        log_warn "Containers left running on ${TARGET_HOST:-localhost}; a later normal run's teardown removes them."
+    fi
+}
+trap on_exit EXIT
 
 # Open the Hetzner firewall guarding the PG VM for the duration of the cloud test
 # window. Closed again by teardown(). Skipped on docker/remote (those use the
@@ -1349,9 +1474,9 @@ if [ "$PREFLIGHT_STOP" = true ]; then
     # THIS machine's CLI is blocked" — connectivity_preflight returns non-zero ONLY in
     # that case. Tearing the cluster down here would destroy a healthy cluster and force
     # a full re-bootstrap once the operator fixes Local Network access. So preserve it by
-    # reusing the existing skip-teardown mechanism: the EXIT trap (installed above,
-    # `trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT`) honours SKIP_TEARDOWN, the
-    # same flag `--skip-teardown` sets. No parallel teardown path.
+    # reusing the existing skip-teardown mechanism: the EXIT handler (`on_exit`, installed
+    # above) honours SKIP_TEARDOWN, the same flag `--skip-teardown` sets. No parallel
+    # teardown path.
     SKIP_TEARDOWN=true
     log_error "Cluster PRESERVED (not torn down): it is healthy and reachable via curl; only this machine's CLI is blocked."
     log_error "After fixing access, re-run the suite to reuse it (add --skip-deploy to skip re-bootstrap)."
@@ -1417,6 +1542,7 @@ set -e
 # Cleanup temp files (teardown runs from EXIT trap installed earlier)
 rm -f "$RESULTS_FILE" "$TIMINGS_FILE"
 
+RUN_REACHED_END=true
 exit "$FINAL_RESULT"
 
 exit $FINAL_RESULT

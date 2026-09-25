@@ -5,6 +5,8 @@
 
 package org.pragmatica.aether.endpoint;
 
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -40,14 +42,13 @@ class TopicSubscriptionRegistryTest {
     }
 
     private void registerSubscription(String topicName, Artifact artifact, MethodName method, NodeId nodeId) {
-        var key = TopicSubscriptionKey.topicSubscriptionKey(resourceAddress(topicName), artifact, method);
-        var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId);
-        var put = new KVCommand.Put<>(key, value);
-        registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
+        registerSubscriptionAt(resourceAddress(topicName), artifact, method, nodeId);
     }
 
-    private void removeSubscription(String topicName, Artifact artifact, MethodName method) {
-        var key = TopicSubscriptionKey.topicSubscriptionKey(resourceAddress(topicName), artifact, method);
+    /// #1448: the node is part of the KEY, so a remove names the INSTANCE being unloaded, not the
+    /// subscription as a whole. A remove for one node cannot reach another node's row.
+    private void removeSubscription(String topicName, Artifact artifact, MethodName method, NodeId nodeId) {
+        var key = TopicSubscriptionKey.topicSubscriptionKey(resourceAddress(topicName), artifact, method, nodeId);
         var remove = new KVCommand.Remove<TopicSubscriptionKey>(key);
         registry.onSubscriptionRemove(new ValueRemove<>(remove, Option.none()));
     }
@@ -63,7 +64,7 @@ class TopicSubscriptionRegistryTest {
 
     /// Register a subscription at an explicit, fully-qualified address (`namespace:name:version`).
     private void registerSubscriptionAt(ResourceAddress address, Artifact artifact, MethodName method, NodeId nodeId) {
-        var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method);
+        var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method, nodeId);
         var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId);
         var put = new KVCommand.Put<>(key, value);
         registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
@@ -114,8 +115,11 @@ class TopicSubscriptionRegistryTest {
 
         @Test
         void findSubscribers_multipleVersionsSameTopic_roundRobinPerGroup() {
-            // TopicSubscriptionKey = (topicName, artifact, method) — same key overwrites
-            // Use different versions to create separate groups for round-robin
+            // TopicSubscriptionKey = (address, artifact, method, node). Two VERSIONS of one slice are
+            // two artifacts, hence two groups, hence one selected subscriber each. (Before #1448 the
+            // key had no node and this comment read "same key overwrites" — differing versions were
+            // the only way to get two rows at all. Same-version instances now get a row each; that
+            // case is covered by sameSliceOnTwoNodes_* below.)
             var artifact2 = Artifact.artifact("org.example:my-slice:1.0.1").unwrap();
 
             registerSubscription("orders", artifact, method, nodeA);
@@ -160,15 +164,46 @@ class TopicSubscriptionRegistryTest {
             assertEquals(nodeB, paymentSubscribers.getFirst().nodeId());
         }
 
+        /// #1448 INVERTED THIS TEST, and the old assertion was encoding the defect rather than a
+        /// requirement. It read `onSubscriptionPut_duplicateKey_updatesValue`: two INSTANCES of one
+        /// slice were one key, so the second node's put OVERWROTE the first and the registry could
+        /// only ever route to the last writer. With the node in the key they are two rows, both
+        /// retained, and the round-robin that `findSubscribers` already implements finally has two
+        /// members to alternate between. One subscriber per call is unchanged — that is the
+        /// at-most-once-per-group contract.
         @Test
-        void onSubscriptionPut_duplicateKey_updatesValue() {
+        void onSubscriptionPut_sameSliceOnTwoNodes_bothRetainedAndRoundRobined() {
             registerSubscription("orders", artifact, method, nodeA);
             registerSubscription("orders", artifact, method, nodeB);
 
+            assertEquals(2, registry.allSubscriptions().size(), "two instances are two rows, not one overwrite");
+
+            var first = registry.findSubscribers(routingKey("orders"));
+            var second = registry.findSubscribers(routingKey("orders"));
+
+            assertEquals(1, first.size(), "one subscriber per group per call");
+            assertEquals(1, second.size());
+            assertEquals(List.of(nodeA, nodeB),
+                         List.of(first.getFirst().nodeId(), second.getFirst().nodeId()),
+                         "successive publishes alternate across the group's instances (sorted by node id)");
+        }
+
+        /// The ephemeral half of #1448, which the durable-group tests in `aether/node` cannot see:
+        /// one instance unloading must not un-route the topic for the instance still running. Before
+        /// the node was in the key this removed the only row and `findSubscribers` returned empty,
+        /// which is the branch `TopicPublisher.publish` answers with success-and-zero-deliveries.
+        @Test
+        void onSubscriptionRemove_oneOfTwoInstances_otherStillRoutable() {
+            registerSubscription("orders", artifact, method, nodeA);
+            registerSubscription("orders", artifact, method, nodeB);
+
+            removeSubscription("orders", artifact, method, nodeB);
+
             var subscribers = registry.findSubscribers(routingKey("orders"));
 
-            assertEquals(1, subscribers.size());
-            assertEquals(nodeB, subscribers.getFirst().nodeId());
+            assertEquals(1, subscribers.size(), "the surviving instance is still a subscriber");
+            assertEquals(nodeA, subscribers.getFirst().nodeId());
+            assertEquals(1, registry.allSubscriptions().size(), "and only the unloading node's row was removed");
         }
     }
 
@@ -178,7 +213,7 @@ class TopicSubscriptionRegistryTest {
         void onSubscriptionRemove_existingSubscription_noLongerFound() {
             registerSubscription("orders", artifact, method, nodeA);
 
-            removeSubscription("orders", artifact, method);
+            removeSubscription("orders", artifact, method, nodeA);
 
             var subscribers = registry.findSubscribers(routingKey("orders"));
             assertTrue(subscribers.isEmpty());
@@ -186,7 +221,7 @@ class TopicSubscriptionRegistryTest {
 
         @Test
         void onSubscriptionRemove_nonExistentKey_noError() {
-            removeSubscription("orders", artifact, method);
+            removeSubscription("orders", artifact, method, nodeA);
 
             var subscribers = registry.findSubscribers(routingKey("orders"));
             assertTrue(subscribers.isEmpty());

@@ -50,6 +50,7 @@ import org.slf4j.LoggerFactory;
 ///     pending retry and disarms; only the leader can commit.
 ///   - **Bounded backoff.** Exponential from `INITIAL_BACKOFF` to `MAX_BACKOFF`; never busy-loops, at
 ///     most one outstanding scheduled retry (deduped via the future ref).
+///   - **EVERY pass runs on the scheduler, including the first.** See [`#FIRST_PASS_DELAY`].
 ///
 /// Wiring: a single instance is constructed in `AetherNode` and its [`#onLeaderChange`] is appended to
 /// the `LeaderChange` routes (replacing the fire-once `registerSystemStreamsOnLeaderChange`). The two
@@ -59,6 +60,22 @@ public final class SystemStreamRegistrar {
     private static final Logger LOG = LoggerFactory.getLogger(SystemStreamRegistrar.class);
     static final TimeSpan INITIAL_BACKOFF = TimeSpan.timeSpan(500L).millis();
     static final TimeSpan MAX_BACKOFF = TimeSpan.timeSpan(30L).seconds();
+    /// #1419 — the first pass is SCHEDULED at zero delay, never run inline on the caller's thread.
+    ///
+    /// `onLeaderChange` is a `LeaderChange` route, and Rabia delivers that notification from
+    /// `RabiaEngine.commitChanges` **on its single apply thread**, mid-apply. Both legs block that
+    /// thread: `createStream` awaits `StreamPartitionManager`'s `StreamConfigKey` commit and
+    /// `bootstrap` awaits `KvBackedStreamRegistry`'s catalog commit, and each of those commits can
+    /// only be applied by the very thread doing the awaiting. An inline pass therefore waits for
+    /// something it is itself preventing: the await can never be satisfied, it burns its full bound
+    /// (10 s per leg), and the node's whole consensus apply loop is frozen for that long on every
+    /// leader gain — long enough for queued management requests to expire.
+    ///
+    /// Zero delay, not a backoff step: the first pass still starts immediately, merely on the
+    /// scheduler's virtual thread instead of the notification thread — which is where every retry
+    /// pass has always run, and why only first passes exhibited the stall. Both legs are idempotent
+    /// and level-triggered, so nothing observes the handover.
+    static final TimeSpan FIRST_PASS_DELAY = TimeSpan.timeSpan(0L).millis();
 
     private final Supplier<Result<?>> createStreamLeg;
     private final Supplier<Result<?>> bootstrapLeg;
@@ -99,9 +116,10 @@ public final class SystemStreamRegistrar {
         return new SystemStreamRegistrar(createStreamLeg, bootstrapLeg, scheduler);
     }
 
-    /// `LeaderChange` route hook. On leader-gain arm the retry loop and schedule the first pass;
-    /// on leader-loss disarm (cancel the pending retry) — only the leader can commit, so a deposed
-    /// leader must stop attempting.
+    /// `LeaderChange` route hook. On leader-gain arm the retry loop and hand the first pass to the
+    /// scheduler; on leader-loss disarm (cancel the pending retry) — only the leader can commit, so a
+    /// deposed leader must stop attempting. Returns without touching consensus, so the notification
+    /// thread is never held (see [`#FIRST_PASS_DELAY`]).
     @Contract
     public void onLeaderChange(LeaderNotification.LeaderChange change) {
         if (change.localNodeIsLeader()) {
@@ -122,8 +140,10 @@ public final class SystemStreamRegistrar {
         // once the config is committed it stays committed across re-elections (idempotent), so a
         // re-elected leader only re-attempts a leg that never completed.
         nextBackoff.set(INITIAL_BACKOFF);
-        schedulePass(activationEpoch.incrementAndGet(),
-                     TimeSpan.timeSpan(0).nanos());
+        // The armed/not-armed answer is deliberately discarded here (#1419): unlike scheduleRetry, this
+        // call consumes no backoff step, and every `false` path (a pass already pending, a leadership
+        // loss in the window) is a correct no-op for a leader-gain.
+        schedulePass(activationEpoch.incrementAndGet(), FIRST_PASS_DELAY);
     }
 
     @Contract
@@ -229,19 +249,32 @@ public final class SystemStreamRegistrar {
     private synchronized void finishPass() {
         executing.set(false);
         if (leader.get() && !isComplete()) {
-            var delay = nextBackoff.get();
+            scheduleRetry();
+        }
+    }
 
-            schedulePass(activationEpoch.get(), delay);
+    /// Consumes a backoff step only when THIS call armed the next pass (#1419), so a deduped or
+    /// disarmed attempt leaves the curve where it was. Runs under [#finishPass]'s monitor.
+    @Contract
+    private void scheduleRetry() {
+        var delay = nextBackoff.get();
+
+        if (schedulePass(activationEpoch.get(), delay)) {
             nextBackoff.set(nextBackoffAfter(delay));
         }
     }
 
     /// Publication and callback claiming share this short monitor; registration never holds it.
-    @Contract
-    private synchronized void schedulePass(long epoch, TimeSpan delay) {
-        if (pendingRetry.get() == null && isCurrent(epoch)) {
-            pendingRetry.set(scheduler.schedule(() -> onRetryFire(epoch), delay));
+    /// Arms at most one outstanding pass for the current term (#1390) and reports whether THIS call
+    /// armed it (#1419).
+    private synchronized boolean schedulePass(long epoch, TimeSpan delay) {
+        if (pendingRetry.get() != null || !isCurrent(epoch)) {
+            return false;
         }
+
+        pendingRetry.set(scheduler.schedule(() -> onRetryFire(epoch), delay));
+
+        return true;
     }
 
     @SuppressWarnings("JBCT-RET-08")

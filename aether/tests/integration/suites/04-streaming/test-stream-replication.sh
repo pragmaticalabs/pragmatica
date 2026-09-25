@@ -26,13 +26,18 @@ test_create_stream() {
 }
 
 test_publish_events_for_replication() {
-    local success=0
+    local success=0 errfile
+    errfile=$(mktemp)
     for i in $(seq 1 10); do
         local payload="{\"key\":\"repl-${i}\",\"data\":\"replicated-payload-${i}\",\"timestamp\":$(now_epoch)}"
-        if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
+        # `2>&1` here discarded the `api ... status=NNN: <body>` diagnostic `_api_call` emits on
+        # stderr, leaving a short count as the only evidence of why a publish failed.
+        if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>>"$errfile"; then
             success=$((success + 1))
         fi
     done
+    [ "$success" -eq 10 ] || log_warn "Replication publish diagnostics (first 500B): $(head -c 500 "$errfile" 2>/dev/null | tr -d '\n')"
+    rm -f "$errfile"
     assert_eq "$success" "10" "All 10 events published for replication test"
 }
 
@@ -56,13 +61,22 @@ test_read_events_from_partition() {
     # aether/node/.../StreamRoutes.java::EventRecord). Every event carries
     # exactly one `"offset"` field, so a count of `"offset"` occurrences inside
     # the events array equals the number of returned events.
-    local result event_count
-    result=$(aether_failover streams read "$STREAM_NAME" 0 --limit 50 --format json) || {
-        log_fail "aether streams read ${STREAM_NAME} 0 failed (exit non-zero)"
+    #
+    # The CLI takes the CATALOG IDENTITY (`namespace:stream:version`), never a bare name: #1044
+    # made a bare name a hard error ("is a bare stream name, which is ambiguous: it names no
+    # namespace"), because the bare form used to default to `system:`, which holds no app stream.
+    # `stream_identity` resolves it from the live catalog, so this cannot drift again.
+    local result event_count identity
+    identity=$(stream_identity "$STREAM_NAME") || {
+        log_fail "stream_identity ${STREAM_NAME} failed — stream absent from the catalog"
+        return 1
+    }
+    result=$(aether_failover streams read "$identity" 0 --limit 50 --format json) || {
+        log_fail "aether streams read ${identity} 0 failed (exit non-zero)"
         return 1
     }
     if [ -z "$result" ]; then
-        log_fail "aether streams read ${STREAM_NAME} 0 returned empty body"
+        log_fail "aether streams read ${identity} 0 returned empty body"
         return 1
     fi
     event_count=$(printf '%s' "$result" | grep -oE '"offset"[[:space:]]*:' | wc -l | tr -d ' ')
@@ -113,14 +127,30 @@ test_read_from_non_governor_node() {
         alt_endpoint="http://${TARGET_HOST}:${alt_port}"
     fi
 
-    local result rc
+    # The metadata route is `/streams/{namespace}/{stream}/{version}` since the 2026-09-02 catalog
+    # migration (7a523c9e3). The flat two-segment `/streams/{name}` used here did not 404 — it
+    # MISROUTED into the same RouteMatcher bucket and answered 500, which `curl -sf` turned into an
+    # empty body, and the `assert_ne` below then reported as "metadata absent from the non-governor",
+    # i.e. a replication gap that was never real.
+    local result coord status
+    coord=$(stream_coordinate "$STREAM_NAME") || {
+        log_fail "stream_coordinate ${STREAM_NAME} failed — stream absent from the catalog"
+        return 1
+    }
     # `_api_call`-style error capture so a connection-refused at the alt endpoint
     # surfaces as a warn rather than silently collapsing to empty body (which the
-    # `assert_ne` below would conflate with "stream metadata absent").
-    result=$(curl -sf -H "X-API-Key: ${API_KEY}" --connect-timeout 5 \
-                  "${alt_endpoint}/api/v1/streams/${STREAM_NAME}" 2>/dev/null) && rc=0 || rc=$?
-    if [ "$rc" -ne 0 ] && [ -z "$result" ]; then
-        log_warn "Read from non-governor: curl rc=${rc} from ${alt_endpoint}/api/v1/streams/${STREAM_NAME} (empty body — treating as missing metadata for assertion)"
+    # `assert_ne` below would conflate with "stream metadata absent"). The old `-sf`
+    # discarded the error BODY, which is the diagnosis; take the status from a `-w`
+    # trailer instead — one request, and no dependency on curl's `--fail-with-body`.
+    local raw
+    raw=$(curl -sk -H "X-API-Key: ${API_KEY}" --connect-timeout 5 \
+               -w "\n__API_HTTP_STATUS:%{http_code}__" \
+               "${alt_endpoint}/api/v1/streams/${coord}" 2>&1) || true
+    status=$(printf '%s' "$raw" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | sed 's/__API_HTTP_STATUS://;s/__//')
+    result=$(printf '%s' "$raw" | sed '$d')
+    if ! { [ -n "$status" ] && [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; }; then
+        log_warn "Read from non-governor: status=${status:-000} from ${alt_endpoint}/api/v1/streams/${coord} :: body=$(printf '%s' "$result" | head -c 300 | tr -d '\n')"
+        result=""
     fi
 
     # Empty IS the failure mode — replication is the feature under test. If the

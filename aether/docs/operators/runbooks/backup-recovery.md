@@ -57,11 +57,29 @@ one is restored, at WARN:
     snapshot snapshot-000041.dat (epoch=41) instead. Metadata recorded only in the unreadable
     file is lost unless a WAL replays it. See docs/operators/runbooks/backup-recovery.md
 
-A torn snapshot is never restored. If no retained snapshot is complete the WARN ends in
-`metadata starts EMPTY` and the node boots with empty metadata for that instance — readiness is
-still signalled (#1013, open).
+A torn snapshot is never restored. If something is on disk — a `LATEST` file, or any
+`snapshot-*.dat` — and none of it restores, the node REFUSES to boot (#1013): `createAll` fails with
 
-**Operator action on that WARN:**
+    Failed to create storage '<instance>': Storage '<instance>' has a metadata snapshot that does not
+    restore, readiness not signalled: Snapshot <dir>/snapshot-000042.dat named by LATEST is
+    unreadable and none of the 0 other retained snapshot(s) restores; refusing to start with EMPTY
+    metadata. See docs/operators/runbooks/backup-recovery.md
+
+and the instance's readiness gate never leaves `LOADING_SNAPSHOT`. Only a directory holding neither
+`LATEST` nor a snapshot file (or no directory at all) boots with empty metadata, as a first boot
+does; a directory that exists but cannot be listed refuses too, since absence cannot be established
+from a failed read. Before #1013 every one of these booted read-ready on empty metadata with at most
+a WARN, and replayed the WAL as if the metadata had never existed.
+
+**Operator action on the refusal:** the boot names the file. Restore the snapshot directory from a
+backup of the volume, or — if the metadata is genuinely expendable (a `content` or `artifacts`
+instance whose blocks can be re-fetched) — stop the node, move the unreadable `snapshot-*.dat` files
+and `LATEST` out of the directory, and start it: an empty directory is a first boot. For the
+`streams` instance the refs in the snapshot are how sealed segments are indexed at boot
+(`SegmentIndex.rebuildFromRefs`); started empty, the segments on disk are not indexed, so treat the
+refusal as data loss until the file is recovered.
+
+**Operator action on the fallback WARN (an older snapshot restored):**
 1. Nothing is required for the node to run: the next snapshot write repoints `LATEST` at a fresh
    complete file. The read path does not rewrite `LATEST` and does not delete the unreadable file.
 2. Keep the unreadable file until you have decided whether the mutations between the two epochs

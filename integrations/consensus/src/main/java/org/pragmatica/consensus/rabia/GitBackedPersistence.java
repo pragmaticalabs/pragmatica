@@ -34,6 +34,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import static org.pragmatica.lang.io.FileOps.createDirectories;
 import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.io.FileOps.moveAtomic;
@@ -183,15 +184,19 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         return "# Phase: " + phase.value() + "\n" + toml;
     }
 
+    /// #1020 — the backup directory is created here rather than assumed. A `[backup] path` that does
+    /// not exist failed EVERY save while the node ran on as though persistence were off, so a cluster
+    /// configured for durability kept no state at all. Creating it is also what makes the restore-path
+    /// save in `RabiaEngine#applyRestoredState` able to land; the two are halves of one guarantee.
     private Result<Unit> writeTomlFile(String toml) {
         var partial = backupDir.resolve(PARTIAL_FILE);
 
-        return fileWriter.apply(partial, toml)
-                         .flatMap(_ -> moveAtomic(partial,
-                                                  backupDir.resolve(STATE_FILE)))
-                         .onFailure(_ -> deleteIfExists(partial))
-                         .mapToUnit()
-                         .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
+        return createDirectories(backupDir).flatMap(_ -> fileWriter.apply(partial, toml))
+                                .flatMap(_ -> moveAtomic(partial,
+                                                         backupDir.resolve(STATE_FILE)))
+                                .onFailure(_ -> deleteIfExists(partial))
+                                .mapToUnit()
+                                .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
     }
 
     private static Result<Unit> writeDurably(Path path, String content) {

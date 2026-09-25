@@ -308,7 +308,7 @@ if [ ! -f "$INSTALL_DIR/lib/aether-node.jar" ]; then
     echo "The installation is incomplete or corrupted. Run install.sh again." >&2
     exit 1
 fi
-exec java -XX:+UseZGC \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-node.jar" "\$@"
+exec java -XX:+ExitOnOutOfMemoryError -XX:+UseZGC \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-node.jar" "\$@"
 WRAPPER
 
     cat > "$INSTALL_DIR/bin/aether-forge" << WRAPPER

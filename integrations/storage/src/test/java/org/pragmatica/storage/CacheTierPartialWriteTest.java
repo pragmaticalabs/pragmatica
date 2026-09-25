@@ -179,6 +179,13 @@ class CacheTierPartialWriteTest {
     /// SF-2 on the real `LocalDiskTier` with the real writer: a non-empty directory squatting on
     /// the block path makes the rename fail after the reservation; the reservation must be released
     /// and nothing left behind.
+    ///
+    /// This is the NON-EMPTY half of the pair whose empty half is
+    /// `localDiskTier_emptyDirectorySquattingTheBlockPath_failsThePut_andIsLeftInPlace`, and that
+    /// test cites this one for the parity. Both halves of the shared outcome are therefore asserted
+    /// here too -- the put fails AND the squatter survives untouched -- because the citation is only
+    /// checkable if this test actually pins what it is cited for. It previously pinned the failure
+    /// alone.
     @Test
     @SuppressWarnings("JBCT-EX-01")
     void localDiskTier_failedWrite_releasesTheReservation() throws Exception {
@@ -187,12 +194,15 @@ class CacheTierPartialWriteTest {
         var content = block(2048);
         var id = BlockId.blockId(content).unwrap();
         var squat = blockPath(dir, id);
+        var occupant = squat.resolve("occupant");
 
         Files.createDirectories(squat);
-        Files.writeString(squat.resolve("occupant"), "not a block");
+        Files.writeString(occupant, "not a block");
         tier.put(id, content).await().onSuccess(_ -> fail("writing over a non-empty directory must fail"));
         assertThat(tier.usedBytes()).as("a failed write keeps no reservation").isZero();
         assertThat(partialFiles(dir)).isEmpty();
+        assertThat(Files.isDirectory(squat)).as("nothing at the block path was removed").isTrue();
+        assertThat(occupant).as("the squatter's contents are untouched").hasContent("not a block");
     }
 
     /// #1144: the release is a dependent action on the put's promise, so it has run by the time the
@@ -235,21 +245,32 @@ class CacheTierPartialWriteTest {
         assertThat(tier.usedBytes()).isZero();
     }
 
-    /// The rename replaces an EMPTY directory squatting on the block path (the JDK removes it
-    /// before the rename), and the count then reflects the block alone — a directory was never a
-    /// previous copy to correct for.
+    /// An EMPTY directory squatting on the block path fails the put exactly as a non-empty one
+    /// does: the atomic rename (#1169) never removes anything at the target, so `rename(file,
+    /// dir)` is refused and the squatter is left in place. The reservation is released and no
+    /// partial is left. (Until #1169 this test pinned the opposite -- "the JDK removes it before
+    /// the rename" -- which specified the non-atomic move's unlink step as a feature; that step
+    /// is the one that left the block path observably ABSENT during every real replace.)
+    ///
+    /// The non-empty sibling this claims parity with is
+    /// `localDiskTier_failedWrite_releasesTheReservation` above -- named, because an unnamed "the
+    /// sibling test" is a citation no reader can check. Emptiness is what differs and what does
+    /// not matter: `moveAtomic` refuses `rename(file, dir)` for any directory target, so neither
+    /// squatter is ever unlinked.
     @Test
     @SuppressWarnings("JBCT-EX-01")
-    void localDiskTier_emptyDirectorySquattingTheBlockPath_isReplacedByTheBlock() throws Exception {
+    void localDiskTier_emptyDirectorySquattingTheBlockPath_failsThePut_andIsLeftInPlace() throws Exception {
         var dir = tempDir.resolve("empty-squat");
         var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024).unwrap();
         var content = block(2048);
         var id = BlockId.blockId(content).unwrap();
+        var squat = blockPath(dir, id);
 
-        Files.createDirectories(blockPath(dir, id));
-        tier.put(id, content).await().onFailure(cause -> fail("an empty directory is replaced: " + cause.message()));
-        assertThat(tier.get(id).await().unwrap().unwrap()).isEqualTo(content);
-        assertThat(tier.usedBytes()).isEqualTo(2048);
+        Files.createDirectories(squat);
+        tier.put(id, content).await().onSuccess(_ -> fail("the atomic rename must not replace a directory"));
+        assertThat(Files.isDirectory(squat)).as("nothing at the block path was removed").isTrue();
+        assertThat(tier.usedBytes()).as("a failed write keeps no reservation").isZero();
+        assertThat(partialFiles(dir)).isEmpty();
     }
 
     /// A partial file left by a write the process did not survive is removed at startup and never

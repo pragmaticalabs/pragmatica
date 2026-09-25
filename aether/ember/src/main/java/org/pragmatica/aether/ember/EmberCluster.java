@@ -54,6 +54,7 @@ import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.aether.config.ApiVersioningDetection;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SecurityMode;
@@ -197,6 +198,8 @@ public final class EmberCluster {
     /// writable base dir (e.g. a JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the
     /// disk tier and the per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
+    /// Opt-in restart-stable consensus state for recovery tests; retained across stop/start.
+    private final AtomicReference<Option<Path>> consensusBaseDir = new AtomicReference<>(Option.none());
     /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
     /// not opt into [#withDataBaseDir]. Created ONCE per `EmberCluster` instance and deliberately
     /// NOT cleaned by [#stop], because that is exactly what gives the marker its meaning here:
@@ -415,6 +418,24 @@ public final class EmberCluster {
     @Contract
     public void withDataBaseDir(Path baseDir) {
         dataBaseDir.set(Option.option(baseDir));
+    }
+
+    /// Enable production consensus persistence in pre-created per-node directories before the first start.
+    /// The caller provisions <baseDir>/<nodeId> for initial and future nodes, as production provisioning does.
+    /// The participation marker remains durable; this never reasserts newness on restart.
+    @Contract
+    public Unit withConsensusBaseDir(Path baseDir) {
+        consensusBaseDir.set(Option.some(baseDir));
+
+        return Unit.unit();
+    }
+
+    private Option<BackupConfig> consensusBackup(NodeId nodeId) {
+        return consensusBaseDir.get()
+                               .map(base -> BackupConfig.backupConfig(false,
+                                                                      "5m",
+                                                                      base.resolve(nodeId.id()).toString(),
+                                                                      ""));
     }
 
     /// TEST SEAM (#491 pinned convergence variant) — raise the SWIM suspect timeout, the transport
@@ -1332,7 +1353,7 @@ public final class EmberCluster {
                                           AetherNodeConfig.DeploymentDefaults.DEFAULT,
                                           HttpProtocol.H1,
                                           perNodeStorageConfig(nodeId),
-                                          Option.empty(),
+                                          consensusBackup(nodeId),
                                           membership,
 
         // membership-config override: raised split-timeout ONLY for the #491 pinned convergence variant

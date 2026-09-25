@@ -391,7 +391,7 @@ test_deploy_repl_stream_blueprint() {
     #
     # Defensive: drop any stale same-named stream left by a prior crashed run so the
     # partition under test starts empty (offset 0).
-    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    stream_delete_if_present "$STREAM_NAME"
     if ! push_blueprint "$STREAM_BP" >/dev/null; then
         log_fail "Failed to push blueprint ${STREAM_BP}"
         return 1
@@ -615,7 +615,7 @@ test_replica_set_converged() {
 # ON_DUTY healthy cores). Best-effort stream delete first so a shared cluster does
 # not accumulate per-run streams. Runs on ANY exit path (incl. set -e abort).
 cleanup() {
-    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    stream_delete_if_present "$STREAM_NAME"
     # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
     # quarantines the remaining test files — the old warn-and-continue let a broken
     # cluster fail every downstream scenario on its own subject.

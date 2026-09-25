@@ -714,10 +714,28 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                     resolved,
                                                                                     role,
                                                                                     request.count())))
+                                .flatMap(resolved -> Promise.resolved(fenceScaleWrite(stored,
+                                                                                      resolved,
+                                                                                      request.expectedVersion())))
                                 .flatMap(resolved -> executeScale(stored,
                                                                   resolved,
                                                                   role,
                                                                   request.count()));
+    }
+
+    /// #1086: the #289 fence on the scale path. [#checkVersionAsync] treats `expectedVersion=0` as the
+    /// fresh-cluster bypass, so a scale body carrying an explicit `expectedVersion:0` rewrote a populated
+    /// config's desired count with no fence at all. (An omitted or `null` field never reaches here: the
+    /// record field is a primitive `long`, the wired codec refuses it at decode time and
+    /// `RequestContext.jsonBody` answers 400.) Every stored config a scale can reach is
+    /// populated (`INITIAL_CONFIG_VERSION`, and the bootstrap seed is stamped 1), so 0 here is never a
+    /// first write — it is a mismatch, refused like any other. Placed where #289 placed it on
+    /// apply-config: at the write, after the validator, so a request the validator refuses anyway still
+    /// answers with the validator's own cause.
+    private static Result<String> fenceScaleWrite(ClusterConfigValue stored, String source, long expectedVersion) {
+        return isUnfencedOverwrite(stored.configVersion(), expectedVersion)
+               ? new ClusterConfigError.UnfencedOverwrite(stored.configVersion()).result()
+               : Result.success(source);
     }
 
     static Option<String> nonBlank(String value) {

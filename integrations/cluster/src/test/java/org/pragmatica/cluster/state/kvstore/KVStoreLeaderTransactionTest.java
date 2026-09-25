@@ -104,6 +104,29 @@ class KVStoreLeaderTransactionTest {
         assertThat(notifications.get()).isEqualTo(3);
     }
 
+    /// The ACCEPTANCE arm of the read set, which the refusal test above cannot pin: it presents one
+    /// matching and one stale witness, so inverting the witness comparison keeps it green — the
+    /// matching witness fails instead of the stale one and the transaction is refused either way.
+    /// Here every guard is satisfied (two present values and one deliberately absent key), so the
+    /// transaction must be APPLIED, and an inverted comparison refuses it.
+    @Test
+    void satisfiedReadGuardsAdmitTransactionAndChangeEveryWrittenKey() {
+        apply(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+        var firstRead = new Key("first-read");
+        var secondRead = new Key("second-read");
+        apply(new KVCommand.Put<>(firstRead, "unchanged"));
+        apply(new KVCommand.Put<>(secondRead, "also-unchanged"));
+        var result = (KVCommand.TransactionResult) apply(new KVCommand.LeaderTransaction<>(FIRST, "read-satisfied", LEADER,
+            List.of(new KVCommand.ReadWitness<StructuredKey>(firstRead, Option.some("unchanged")),
+                    new KVCommand.ReadWitness<StructuredKey>(secondRead, Option.some("also-unchanged")),
+                    new KVCommand.ReadWitness<StructuredKey>(new Key("never-written"), Option.none())),
+            List.of(insert(FIRST, "a"), insert(SECOND, "b"))));
+        assertThat(result).isEqualTo(new KVCommand.TransactionResult("read-satisfied", true));
+        assertThat(store.get(FIRST).unwrap()).isEqualTo("a");
+        assertThat(store.get(SECOND).unwrap()).isEqualTo("b");
+        assertThat(notifications.get()).isEqualTo(5);
+    }
+
     @Test
     void staleLeaderSingleMutationReportsCallerChosenCorrelation() {
         apply(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(new NodeId("successor"), 2)));

@@ -12,7 +12,7 @@
 |---|---|---|
 | C1 | Cluster reaches canonical "ready" state with N=5 ON_DUTY healthy cores and an elected leader before any network probe runs | `aether/docs/specs/test-readiness-contract.md §1.1`; `membership-architecture-v2-spec.md §§3-5` |
 | C2 | Gossip transport is TLS — every cluster peer-to-peer connection is initiated through `QuicSslContext` and reports a non-zero handshake counter | `aether/docs/specs/quic-transport-spec.md §3.6` (TLS Always On); `aether/docs/specs/swim-driven-topology-spec.md §6` (SWIM → QUIC lifecycle) |
-| C3 | TLS handshake success ratio is high — `quic_handshake_failures_total / quic_handshake_total ≤ 0.5` (current threshold; audit §1.14 marks 50% lax — should tighten to ≤ 0.05 post-RC1) | `aether/docs/specs/quic-transport-spec.md §3.6, §3.8` |
+| C3 | TLS handshakes do not fail — **NOT CHECKABLE with the exposed metrics.** `quic_handshake_failures_total` is incremented by every failed dial (`QuicClusterNetwork.onConnectFailed` → `onHandshakeFailure`), whatever the cause, so its ratio to `quic_handshake_total` measures churn, not TLS (5/20 and 5/9 on two runs with identical failures). No test covers C3 until the product exposes a TLS-specific failure count. | `aether/docs/specs/quic-transport-spec.md §3.6, §3.8` |
 | C4 | Health/liveness endpoints serve 200 over the encrypted management path while gossip is encrypted | `aether/docs/specs/quic-transport-spec.md §3.6`; `test-readiness-contract.md §3` |
 | C5 | Every cluster peer is QUIC-connected to ≥ N-1 others — partial-connectivity (one-sided peering) is a violation | `aether/docs/specs/quic-transport-spec.md §3.1, §3.7` (one connection per peer pair, NodeId-ordered) |
 | C6 | A killed cluster member produces `NODE_FAILED` in the event log AND a CTM-driven replacement NODE_JOINED, without breaking quorum during the transition | `aether/docs/specs/swim-driven-topology-spec.md §6`; `membership-architecture-v2-spec.md §5.1` (ON_DUTY+SwimFaulty→DECOMMISSIONED) |
@@ -33,10 +33,9 @@
 | TC ID | Test function | File:line | Contract(s) | Severity | Notes |
 |---|---|---|---|---|---|
 | TC-12-NETWORK-001 | `test_cluster_ready` | `test-gossip-encryption.sh:9` | C1 | smoke | Pre-condition. Audit §1.14 LOW — `log_pass` after `wait_for_cluster_ready` is structural sticker, not a check (acceptable for setup gate). |
-| TC-12-NETWORK-002 | `test_cluster_formed_with_encryption` | `test-gossip-encryption.sh:14` | C1 | regression-net | Mis-named in audit — asserts `cluster_active_core_count == 5` but does NOT itself check encryption (encryption claim is covered by TC-12-NETWORK-003/-004). Rename suggested. |
+| TC-12-NETWORK-002 | `test_cluster_formed_with_encryption` | `test-gossip-encryption.sh:14` | C1 | regression-net | Mis-named in audit — asserts `cluster_active_core_count == 5` but does NOT itself check encryption (encryption claim is covered by TC-12-NETWORK-003). Rename suggested. |
 | TC-12-NETWORK-003 | `test_gossip_encryption_active_via_config` | `test-gossip-encryption.sh:27` | C2 | core | Reads `quic_handshake_total` from `/api/metrics/transport`. Empty body fails (prior warn-then-pass RESOLVED, audit §1.14). |
-| TC-12-NETWORK-004 | `test_gossip_encryption_via_transport` | `test-gossip-encryption.sh:50` | C2, C3 | core | Asserts `quic_handshake_total ≥ 1` AND `failures ≤ total/2`. Audit §1.14 MEDIUM — 50% ceiling too lax; tighten to ≤ 5% once expected post-chaos churn characterised. |
-| TC-12-NETWORK-005 | `test_nodes_communicating_encrypted` | `test-gossip-encryption.sh:79` | C1 | regression-net | Audit §1.14 LOW (WEAK) — proves leader+events present, not encryption. Indirect: redundant with TC-12-NETWORK-003/-004; kept as gossip-live canary. |
+| TC-12-NETWORK-005 | `test_nodes_communicating_encrypted` | `test-gossip-encryption.sh:79` | C1 | regression-net | Audit §1.14 LOW (WEAK) — proves leader+events present, not encryption. Indirect: redundant with TC-12-NETWORK-003; kept as gossip-live canary. |
 | TC-12-NETWORK-006 | `test_health_probes_over_encrypted_transport` | `test-gossip-encryption.sh:90` | C4 | core | Asserts `/health/live` returns 200 while gossip is encrypted. Decoupled from C2 (relies on sibling test for encryption claim). |
 | TC-12-NETWORK-007 | `test_cluster_ready` | `test-quic-connectivity.sh:12` | C1 | smoke | Soft `wait_for_phase NORMAL` (warn-then-pass on miss). Documented degraded-cluster pass-through; subsequent tests are the safety net. |
 | TC-12-NETWORK-008 | `test_all_nodes_connected` | `test-quic-connectivity.sh:25` | C5 | core | Audit §1.14 MEDIUM — only entry node sampled; a one-sided partition (one node with 4 peers, another with 0) PASSES. Tracked as `[CONTRACT-GAP-12.A]`. |
@@ -67,10 +66,10 @@
 | TC ID | Limitation | Tracking |
 |---|---|---|
 | TC-12-NETWORK-008 | Per-node QUIC connectivity not iterated — one-sided partitions pass | audit §1.14 MEDIUM; `[CONTRACT-GAP-12.A]` |
-| TC-12-NETWORK-004 | 50% TLS handshake failure ceiling is too lax for production regression at 10–40% | audit §1.14 MEDIUM; `[CONTRACT-GAP-12.B]` |
+| C3 | No test: the only failure counter counts every failed dial, not TLS failures, so no threshold on it can speak to TLS (the former TC-12-NETWORK-004 measured churn and was removed 2026-09-24) | `[CONTRACT-GAP-12.B]` |
 | TC-12-NETWORK-012 | DETECTION_TIMEOUT threshold formerly demoted — verify CLOSED in db221dee4 actually wires strict fail | RC1-blocker #17 CLOSED in db221dee4 (per task brief); confirm before next release |
 | TC-12-NETWORK-002 | Test name says "with encryption" but only asserts core count — rename | audit §1.14 LOW |
-| TC-12-NETWORK-005 | Implicit reasoning ("if QUIC broken, leader empty") not directly tested — redundant with TC-12-NETWORK-003/-004 | audit §1.14 LOW |
+| TC-12-NETWORK-005 | Implicit reasoning ("if QUIC broken, leader empty") not directly tested — redundant with TC-12-NETWORK-003 | audit §1.14 LOW |
 
 ---
 

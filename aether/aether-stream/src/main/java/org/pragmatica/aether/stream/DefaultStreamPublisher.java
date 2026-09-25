@@ -183,7 +183,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     }
 
     /// #266: an EVENTUAL batch is grouped by each event's COMPUTED partition (not routed wholesale to
-    /// the first event's partition) and each group is routed through the SAME per-event path as single
+    /// the first event's partition) and each group uses the SAME owner authority and min-sync guards as single
     /// {@link #publish} — local owner publish + replicate + min-sync await, or write-forward to the
     /// remote owner. This preserves key→partition affinity and gives the batch identical replication
     /// semantics to single publish (composes with #262), instead of the prior whole-batch misroute that
@@ -216,65 +216,15 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         return groups;
     }
 
-    /// Publish one partition's events strictly in order: each event awaits the previous so the partition's
-    /// append/forward sequence preserves per-key ordering. Different partition groups run concurrently (the
-    /// caller's `allOf`). The chain stops writing at the first failure — the failed event is
-    /// [PublishOutcome.OutcomeUnknown] and every later event of the group is [PublishOutcome.NotAttempted]
-    /// (#1342) — and always resolves with one outcome per event of the group.
+    /// Local owners append a partition group as one storage run. Remote owners and runs
+    /// that cannot be batched use the shared ordered single-event route. Outcomes retain input order.
     private Promise<List<PublishOutcome>> publishGroupInOrder(int partition,
                                                               List<Integer> indices,
                                                               List<T> events,
                                                               long timestamp) {
-        var chain = Promise.success(List.<PublishOutcome> of());
+        var payloads = indices.stream().map(index -> serializer.encode(events.get(index))).toList();
 
-        for (var index : indices) {
-            var event = events.get(index);
-
-            chain = chain.flatMap(outcomes -> publishNextInGroup(outcomes, partition, event, timestamp));
-        }
-
-        return chain;
-    }
-
-    private Promise<List<PublishOutcome>> publishNextInGroup(List<PublishOutcome> outcomes,
-                                                             int partition,
-                                                             T event,
-                                                             long timestamp) {
-        return precedingFailure(outcomes).map(cause -> Promise.success(appended(outcomes,
-                                                                                new PublishOutcome.NotAttempted(precedingEventFailed(partition,
-                                                                                                                                     cause)))))
-                               .or(() -> publishEventual(partition,
-                                                         serializer.encode(event),
-                                                         timestamp).fold(result -> Promise.success(appended(outcomes,
-                                                                                                            PublishOutcome.attempted(result)))));
-    }
-
-    /// The cause that stopped this group, if any: the group appends in order, so only the LAST outcome can be
-    /// the failure — every outcome before it is [PublishOutcome.Published].
-    private static Option<Cause> precedingFailure(List<PublishOutcome> outcomes) {
-        if (outcomes.isEmpty()) {
-            return Option.none();
-        }
-
-        return switch (outcomes.getLast()) {
-            case PublishOutcome.Published _ -> Option.none();
-            case PublishOutcome.OutcomeUnknown(var cause) -> Option.some(cause);
-            case PublishOutcome.NotAttempted(var cause) -> Option.some(cause);
-        };
-    }
-
-    private static Cause precedingEventFailed(int partition, Cause cause) {
-        return cause instanceof StreamPublisherError.PrecedingEventFailed
-               ? cause
-               : StreamPublisherError.PrecedingEventFailed.precedingEventFailed(partition, cause);
-    }
-
-    private static List<PublishOutcome> appended(List<PublishOutcome> outcomes, PublishOutcome outcome) {
-        var next = new ArrayList<>(outcomes);
-
-        next.add(outcome);
-
-        return List.copyOf(next);
+        return writeRouter.publishBatch(streamName, partition, payloads, timestamp);
     }
 
     /// Put each group's outcomes back at the input indices of its events. Every index belongs to exactly one

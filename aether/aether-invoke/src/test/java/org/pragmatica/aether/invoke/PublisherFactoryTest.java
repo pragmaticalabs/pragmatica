@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.ArrayList;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -30,6 +31,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -204,7 +208,7 @@ class PublisherFactoryTest {
                                                  Artifact subscriberArtifact,
                                                  String bareTopic) {
             var address = TopicAddressResolver.resolve(owningBlueprint, subscriberArtifact, bareTopic).unwrap();
-            var key = TopicSubscriptionKey.topicSubscriptionKey(address, subscriberArtifact, METHOD);
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, subscriberArtifact, METHOD, NODE);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
             var put = new KVCommand.Put<>(key, value);
 
@@ -300,6 +304,67 @@ class PublisherFactoryTest {
             assertTrue(invocations.isEmpty());
         }
 
+        /// #1216: the undelivered publish above is the ticket's exact shape, and it used to leave no
+        /// trace. Through the REAL factory, the WARN must carry what the factory alone knows — the
+        /// bare topic name from the config and the publishing slice from the provisioning context —
+        /// plus the address the factory resolved, so an operator can set it against `topic-sub/`.
+        @Test
+        void provision_undeliveredPublish_warnsNamingTopicResolvedAddressAndPublishingSlice() {
+            var expectedAddress = TopicAddressResolver.resolve(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders")
+                                                      .unwrap()
+                                                      .asString();
+            registerBareSubscriptionFor(Option.some(OTHER_BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+            var warnings = new ArrayList<String>();
+            var detach = LogCapture.warningsOf(TopicPublisher.class, warnings);
+
+            try {
+                publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            } finally {
+                detach.run();
+            }
+
+            assertEquals(1, warnings.size(), "one WARN for the one undelivered publish: " + warnings);
+            var line = warnings.getFirst();
+            assertTrue(line.contains("'orders'"), "names the bare topic: " + line);
+            assertTrue(line.contains(expectedAddress), "names the resolved address: " + line);
+            assertTrue(line.contains(PUBLISHER_SLICE.asString()), "names the publishing slice: " + line);
+            assertTrue(!line.contains(PublisherFactory.UNSCOPED_PUBLISHER), "the slice id was in the context, so no placeholder: " + line);
+        }
+
+        /// rev1421 MEDIUM-2: the factory hands the node's `MeterRegistry` (a provisioning-context
+        /// extension, #278) to the publisher, so undelivered publishes are counted per topic,
+        /// address and publishing slice — the surface that survives a flood the WARN rate-limits.
+        @Test
+        void provision_undeliveredPublish_countsOnTheContextsMeterRegistry() {
+            var meters = new SimpleMeterRegistry();
+            var expectedAddress = TopicAddressResolver.resolve(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders")
+                                                      .unwrap()
+                                                      .asString();
+            registerBareSubscriptionFor(Option.some(OTHER_BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var context = ProvisioningContext.provisioningContext()
+                                             .withExtension(TopicSubscriptionRegistry.class, registry)
+                                             .withExtension(SliceInvoker.class, new MinimalStubSliceInvoker(invocations))
+                                             .withExtension(String.class, PUBLISHER_SLICE.asString())
+                                             .withExtension(OwningBlueprintResolver.class, _ -> Option.some(BLUEPRINT))
+                                             .withExtension(MeterRegistry.class, meters);
+            @SuppressWarnings("unchecked")
+            var publisher = (Publisher<Object>) factory.provision(new TopicConfig("orders"), context)
+                                                       .await()
+                                                       .onFailure(_ -> fail("Provisioning should succeed"))
+                                                       .unwrap();
+
+            publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            publisher.publish("order-2").await().onFailure(_ -> fail("Publish should succeed"));
+
+            var counter = meters.find(TopicPublisher.UNDELIVERED_COUNTER)
+                                .tags("topic", "orders", "address", expectedAddress, "slice", PUBLISHER_SLICE.asString())
+                                .counter();
+            assertTrue(counter != null, "counter registered on the context's MeterRegistry with the factory's tags");
+            assertEquals(2.0, counter.count());
+            assertTrue(invocations.isEmpty());
+        }
+
         /// A runtime with no resolver registered (unit test, minimal runtime): both ends scope to the
         /// slice's own coordinates. A SINGLE slice therefore still reaches itself — the behaviour
         /// that existed before #1216 and must not regress — while two distinct slices do not, because
@@ -385,7 +450,7 @@ class PublisherFactoryTest {
 
         private void registerSubscriber(TopicSubscriptionRegistry registry, Artifact artifact) {
             var address = TopicAddressResolver.resolve(artifact, CLICK_EVENTS).unwrap();
-            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, METHOD);
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, METHOD, NODE);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
 
             registry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));

@@ -4066,12 +4066,14 @@ public interface AetherNode extends ManageableNode {
         metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
         leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
         leaderReconciler.setInstalledVotersSupplier(() -> installedVoterIds(clusterNode));
-        // Drain-victim slice-owner exclusion (Approach 3): wire the authoritative KV-Store-backed
-        // active-slice-ownership predicate so the reconciler never drains a node currently serving /
-        // hosting slices as scale-down or over-provision surplus. KV-derived (leader-agnostic,
-        // reconstructible from cluster state) and consulted through a narrow Predicate<NodeId> so
-        // the membership-layer reconciler keeps no hard dependency on the deployment FSM.
+        // Drain-victim slice-owner demotion (Approach 3, #1488): wire the authoritative KV-Store-backed
+        // active-slice-ownership predicate so the reconciler drains a node currently serving / hosting
+        // slices only after every eligible non-owner, and the minAvailable guard so it never drains an
+        // owner whose removal would drop a hosted slice below minAvailable. KV-derived (leader-agnostic,
+        // reconstructible from cluster state) and consulted through narrow JDK functional seams so the
+        // membership-layer reconciler keeps no hard dependency on the deployment FSM.
         leaderReconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
+        leaderReconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
         swimHealthDetector.addObservationListener(presenceSampler::onSwimObservation);
         // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
         // signals a peer became reachable; if the leader is in surplus the reconcile
@@ -4956,7 +4958,8 @@ public interface AetherNode extends ManageableNode {
                                                                              streamForwardTransport,
                                                                              streamingConfig.maxReadResponseBytes(),
                                                                              streamReadForwardMetrics,
-                                                                             Option.some(linearizableOwnerServe));
+                                                                             Option.some(linearizableOwnerServe),
+                                                                             Option.some(streamTieredReader));
         var streamReadRouter = StreamReadRouter.streamReadRouter(streamPartitionManager,
                                                                  Option.some(streamReplicaRegistry),
                                                                  Option.some(streamForwardClient),

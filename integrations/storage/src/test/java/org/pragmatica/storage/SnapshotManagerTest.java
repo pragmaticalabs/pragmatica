@@ -265,7 +265,7 @@ class SnapshotManagerTest {
 
             manager.forceSnapshot();
 
-            var restored = manager.restoreFromLatest();
+            var restored = manager.restoreFromLatest().unwrap();
 
             var snap = restored.unwrap();
             assertThat(snap.lifecycles()).hasSize(1);
@@ -278,7 +278,7 @@ class SnapshotManagerTest {
             var config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
             var manager = snapshotManager(store, config);
 
-            var restored = manager.restoreFromLatest();
+            var restored = manager.restoreFromLatest().unwrap();
 
             assertThat(restored.isEmpty()).isTrue();
         }
@@ -333,7 +333,7 @@ class SnapshotManagerTest {
             var freshStore = inMemoryMetadataStore("restored");
             var freshManager = snapshotManager(freshStore, config);
 
-            var restored = freshManager.restoreFromLatest();
+            var restored = freshManager.restoreFromLatest().unwrap();
 
             var snap = restored.unwrap();
             assertThat(snap.lifecycles()).hasSize(3);
@@ -372,7 +372,7 @@ class SnapshotManagerTest {
 
             var freshStore = inMemoryMetadataStore("restored-orphaned-at");
             var freshManager = snapshotManager(freshStore, config);
-            var snap = freshManager.restoreFromLatest().unwrap();
+            var snap = freshManager.restoreFromLatest().unwrap().unwrap();
 
             freshStore.restoreLifecycles(snap.lifecycles());
 
@@ -404,7 +404,7 @@ class SnapshotManagerTest {
             afterRestart.forceSnapshot();
 
             assertThat(latestTarget(tempDir)).exists();
-            assertThat(afterRestart.restoreFromLatest().isPresent()).isTrue();
+            assertThat(afterRestart.restoreFromLatest().unwrap().isPresent()).isTrue();
         }
 
         /// #1012: prune order must come from the epoch the file name ENCODES, not from the name

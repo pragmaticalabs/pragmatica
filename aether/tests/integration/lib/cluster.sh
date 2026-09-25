@@ -1313,9 +1313,33 @@ first_seed_host_app_port() {
 # Newline-separated stdout rather than a global array: bash 3.2 (macOS) errors on `"${arr[@]}"`
 # for an EMPTY array under `set -u`, so a string keeps callers free of that trap.
 # Returns non-zero and prints nothing when no endpoint resolves.
+# Cloud: every VM exposes the SAME logical app port on its own public IP, so an endpoint is
+# `http://<public-ip>:<app port>` per live core member. Members come from the generation snapshot
+# (cloud_running_cores, which includes CTM replacements) and are resolved by cloud_public_ip
+# (bootstrap-state, then /api/v1/nodes/endpoint for replacements). Until 2026-09-24 this branch did
+# not exist: cloud returned 1 unconditionally, so 02y/02w sent no app traffic at all and their
+# durability assertions failed in 0s against nothing.
+#
+# A member that does not resolve is SKIPPED, not failed: cloud_public_ip reports a miss through
+# log_fail on STDOUT, which a capture would otherwise read as the address (and would add a counted
+# [FAIL] to whatever test happens to be enumerating). Only a bare host is accepted.
+_cloud_node_app_endpoints() {
+    local inport="$1" id ip out=""
+    for id in $(cloud_running_cores); do
+        ip=$(cloud_public_ip "$id" 2>/dev/null) || continue
+        printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+        out="${out}http://${ip}:${inport}"$'\n'
+    done
+    [ -n "$out" ] || return 1
+    printf '%s' "$out"
+}
+
 node_app_endpoints() {
     local inport="${APP_PORT:-8070}"
-    [ "${CLOUD_MODE:-false}" = "true" ] && return 1
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        _cloud_node_app_endpoints "$inport"
+        return $?
+    fi
 
     local prefix="${CLUSTER_NAME:-aether-${CLUSTER_ID:-b}-node-}"
     local names name hp out="" saved_ifs
@@ -1423,7 +1447,10 @@ retarget_app_endpoint_to_active_slice() {
     if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
         # Cloud: each node has its own public IP at the same logical app port.
         local owner_ip
-        owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
+        # `|| owner_ip=""`, not `|| true`: on a miss cloud_public_ip prints its [FAIL] diagnostic on
+        # stdout, which `|| true` kept as the "address" and turned into APP_ENDPOINT=http://[FAIL]...
+        owner_ip=$(cloud_public_ip "$owner" 2>/dev/null) || owner_ip=""
+        printf '%s' "$owner_ip" | grep -Eq '^[A-Za-z0-9.-]+$' || owner_ip=""
         if [ -z "$owner_ip" ]; then
             log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged. (Owner reported by /api/v1/slices is not in bootstrap-state.json — node may have been replaced by CTM and not re-recorded.)"
             return 1
@@ -2207,11 +2234,24 @@ cloud_partition_node() {
             #    the name already exists — treat "already exists" as success and
             #    resolve the existing id. Rules are set explicitly below (an empty
             #    rule set would deny-all inbound, also cutting mgmt+ssh).
+            # Labelled with the cluster so cloud-reaper.sh (which selects by `aether-cluster`)
+            # finds it: unlabelled, a partition firewall left behind by a failed or killed
+            # heal was invisible to every reaper mode (2 leaked on 2026-09-23).
             local out rc fw_id
-            out=$(hcloud firewall create --name "$fw_name" 2>&1); rc=$?
+            out=$(hcloud firewall create --name "$fw_name" \
+                --label "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                --label "aether-role=partition" 2>&1); rc=$?
             if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'already exists|uniqueness'; then
                 log_fail "cloud_partition_node: hcloud firewall create '${fw_name}' failed (rc=${rc}): ${out}"
                 return "$rc"
+            fi
+            if [ "$rc" -ne 0 ]; then
+                # Reused under its deterministic name: a firewall left by an earlier run may
+                # predate the labels, so apply them here too (idempotent with --overwrite).
+                hcloud firewall add-label --overwrite "$fw_name" \
+                    "aether-cluster=${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}" \
+                    "aether-role=partition" >/dev/null 2>&1 \
+                    || log_warn "cloud_partition_node: could not label existing firewall '${fw_name}' — reapers will not see it"
             fi
             fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null)
             if [ -z "$fw_id" ]; then
@@ -2502,7 +2542,10 @@ _cloud_running_vm_ips() {
     # Interim fix: query by label KEY presence (`-l aether-node-id`, matches
     # regardless of whether `aether-cluster` is ever stamped) and post-filter
     # each row against two independent, cluster-unambiguous membership tests:
-    #   - CTM auto-heal replacements are named `aether-cloud-<cluster>-node-*`
+    #   - CTM auto-heal replacements are named `aether-<cluster>-node-*` — the cluster's
+    #     persisted name, which is the harness name since #1487 (before it, the TOML
+    #     `[cluster] name`, `cloud-test-b`, so the old pattern `aether-cloud-<cluster>-`
+    #     only matched because that TOML name happened to be `cloud-` + the harness name)
     #     (the cluster name is embedded in the `aether-node-id` VALUE itself,
     #     so this match can never fold in a sibling cluster's replacement).
     #   - Original bootstrap seeds are named `<CLOUD_SOURCE_NAME>-core-N`,
@@ -2557,7 +2600,7 @@ _cloud_running_vm_ips() {
         node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
         [ -z "$node_id" ] && continue
         case "$node_id" in
-            "aether-cloud-${cluster_name}-node-"*)
+            "aether-${cluster_name}-node-"*)
                 printf '%s\n' "$ip"
                 ;;
             *)
@@ -2621,7 +2664,7 @@ _cloud_seed_ips() {
 # every 03-scaling scale-up failed with 403 resource_limit_exceeded).
 # Per-row membership tests (any one admits the row):
 #   1. `aether-node-id` label VALUE matches the CTM replacement pattern
-#      `aether-cloud-<cluster>-node-*` (cluster name embedded — unambiguous).
+#      `aether-<cluster>-node-*` (cluster name embedded — unambiguous; #1487).
 #   2. exact `aether-cluster=<cluster>` label match (stamped reliably
 #      post-#442 v2b; exact match can never fold in the PG VM — its value is
 #      `test-pg`, never a test cluster's name — nor a sibling cluster).
@@ -2673,7 +2716,7 @@ reap_cloud_cluster() {
             node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
             member=false
             case "$node_id" in
-                "aether-cloud-${cluster_name}-node-"*) member=true ;;
+                "aether-${cluster_name}-node-"*) member=true ;;
             esac
             # Exact-boundary label match; cluster names are [a-z0-9-] so the
             # interpolation is ERE-safe.
@@ -3707,9 +3750,17 @@ seed_cluster_config() {
         if [ -n "$toml_max" ] && [ -n "$stored_max" ] \
            && [ "$stored_max" -lt "$toml_max" ] 2>/dev/null; then
             log_info "Reconciling cluster config: stored coreMax=${stored_max} < TOML max=${toml_max} (configVersion=${stored_version:-?})"
+            # #1086 (rev1412 NIT-5): never substitute 0 for an unreadable configVersion. Against a
+            # stored config the server refuses 0 as an unfenced overwrite (#289), so the fallback
+            # could only ever hide WHY the reconcile failed. The 200 body that yielded coreMax
+            # carries configVersion in the same record; an empty read here is a parser defect.
+            if [ -z "$stored_version" ]; then
+                log_warn "Cluster config reconcile NOT attempted: coreMax=${stored_max} was read but configVersion was not (body: $(printf '%s' "$body" | head -c 300))"
+                return 1
+            fi
             local escaped_toml json_body
             escaped_toml=$(escape_json "$toml_content")
-            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version:-0}}"
+            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version}}"
             local apply_out
             apply_out=$(leader_api_post "/api/v1/cluster/config" "$json_body" 2>&1) || true
             # Surface VersionConflict / ImmutableFieldChange rather than masking them:
@@ -3782,16 +3833,30 @@ provisioning_snapshot() {
 }
 
 # cluster_no_deficit — returns 0 iff the LEADER's provisioning view reports a WHOLE
-# cluster: no missing cores (deficit==0) AND full membership reached. This is the
-# lag-free authority for "all N cores present". The harness's own counts
+# cluster: no missing cores (deficit==0) AND the leader COUNTS all N core members
+# (countedCoreMembers >= N). This is the lag-free authority for "all N cores present".
+#
+# deficit==0 alone is NOT that: the product computes deficit = configured - effective, and
+# `effective` counts a dispatched-but-not-yet-joined replacement as present
+# (LeaderReconciler: "A dispatched replacement stays in-flight (counted toward effective
+# capacity)"), until a backstop expires it. So a 4-member cluster with one replacement in
+# flight reads deficit=0 — and did on 2026-09-23, where this gate passed and logged "5 cores
+# present" while every following suite measured 4. `reachedFullMembership` is a LATCH (set
+# once, even pre-latched on re-election) and says nothing about current membership; it is
+# kept only as a non-leader guard.
+#
+# Still NOT a liveness check: countedCoreMembers is MEMBER + SUSPECT (LeaderReconciler
+# coreCountedMembers), so a dead core the leader still holds as SUSPECT counts. Which of the
+# two shapes passed on 2026-09-23 was never recorded — this gate logged nothing measured on
+# success — so restore now logs the measured counts it passed on. The harness's own counts
 # (cluster_active_core_count, ready_core_count) are fed by the SWIM-projection /
 # per-node lifecycle query, which can lag the leader's membership view by 10s-100s of
 # seconds on a genuinely-whole cluster — a present, counted core routinely reads
 # not-yet-READY for a while (see restore step 5b). Gating terminal convergence on the
 # leader's deficit (the #336 provisioning surface) instead of ready_core_count avoids
 # falsely DEGRADING a healthy cluster, and is exactly the signal that matters for the
-# next test's "N running cores" precondition (a killed-not-replaced node shows
-# deficit>0, so the gate correctly waits for CTM auto-heal to bring deficit→0).
+# next test's "N running cores" precondition (a killed node lowers countedCoreMembers
+# until its replacement actually JOINS, so the gate waits for the join, not the dispatch).
 # Quiet (no logging) — called in a wait_for poll loop; provisioning_snapshot is the
 # loud diagnostic for the failure path.
 cluster_no_deficit() {
@@ -3799,8 +3864,11 @@ cluster_no_deficit() {
     ep=$(_resolve_live_endpoint) || return 1
     snap=$(curl -sk -m 10 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/cluster/provisioning" 2>/dev/null) || return 1
     [ -n "$snap" ] || return 1
-    printf '%s' "$snap" | grep -q '"deficit"[[:space:]]*:[[:space:]]*0' \
-        && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true'
+    local counted
+    counted=$(printf '%s' "$snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    printf '%s' "$snap" | grep -qE '"deficit"[[:space:]]*:[[:space:]]*0([^0-9.]|$)' \
+        && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true' \
+        && [ "${counted:-0}" -ge "${NODE_COUNT:-5}" ]
 }
 
 # Operator-controlled toggle of CTM auto-heal (deficit-driven replacement
@@ -4182,7 +4250,7 @@ restore_cluster_baseline() {
     # AETHER_RESTORE_RECOVERY_TIMEOUT (shared with the step-4b active-recovery budget).
     local converge_base="${AETHER_RESTORE_RECOVERY_TIMEOUT:-240}"
     [ "$converge_base" -lt 300 ] 2>/dev/null && converge_base=300
-    if ! wait_for "cluster WHOLE (leader deficit=0, all ${target} cores present) — terminal convergence" \
+    if ! wait_for "cluster WHOLE (leader deficit=0 and counts all ${target} core members) — terminal convergence" \
         "cluster_no_deficit" \
         "$converge_base"; then
         # DEGRADED return (matches steps 4b/5/6's contract): the runner's post-suite
@@ -4191,11 +4259,18 @@ restore_cluster_baseline() {
         # diagnosable in minutes, not hours — #336 observability surface.
         local snap
         snap=$(provisioning_snapshot)
-        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader-deficit). provisioning: ${snap}"
+        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader deficit==0 + reachedFullMembership + countedCoreMembers>=${target}). provisioning: ${snap}"
         return 1
     fi
 
-    log_info "restore_cluster_baseline: cluster at baseline (${target} cores present, leader deficit=0, generation quiesced)"
+    # Log what was MEASURED, not the target: the previous line printed ${target} whatever the
+    # leader reported, so a run could not tell which snapshot shape the gate passed on.
+    local _passed_snap _pc _pe _pd
+    _passed_snap=$(provisioning_snapshot 2>/dev/null)
+    _pc=$(printf '%s' "$_passed_snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    _pe=$(printf '%s' "$_passed_snap" | grep -oE '"effective"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    _pd=$(printf '%s' "$_passed_snap" | grep -oE '"deficit"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    log_info "restore_cluster_baseline: cluster at baseline (target=${target}; leader counted=${_pc:-?} effective=${_pe:-?} deficit=${_pd:-?}; active=$(cluster_active_core_count) READY=$(ready_core_count); generation quiesced)"
     return 0
 }
 
@@ -4248,10 +4323,24 @@ scale_cluster() {
     # already works for docker/remote.
     local scale_ep
     scale_ep=$(_resolve_live_endpoint)
+    # #1086: `expectedVersion:0` is no longer a bypass on the scale route — against a populated
+    # config the server refuses it with 409 UnfencedOverwrite, the same #289 fence apply-config has.
+    # Read the committed configVersion and fence with it (what `aether cluster scale` does). An
+    # unreadable version is a failure here, never a silent 0: a 0 would now be refused anyway, and
+    # substituting it would hide WHY the scale did not happen behind the fence's message.
+    local stored_version
+    stored_version=$(curl -sk -m 30 -H "X-API-Key: ${API_KEY}" "${scale_ep}/api/v1/cluster/config" 2>/dev/null \
+        | grep -oE '"configVersion"[[:space:]]*:[[:space:]]*[0-9]+' \
+        | head -1 | grep -oE '[0-9]+$')
+    if [ -z "$stored_version" ]; then
+        rm -f "$body_file"
+        log_warn "scale_cluster: could not read configVersion from GET ${scale_ep}/api/v1/cluster/config — the cluster was NOT rescaled (a scale needs the committed version to fence with, #1086)"
+        return 1
+    fi
     url="${scale_ep}/api/v1/cluster/scale"
     http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
                       -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":0}" "$url")
+                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":${stored_version}}" "$url")
     rc=$?
     local body
     body=$(head -c 500 "$body_file" 2>/dev/null)
@@ -4417,15 +4506,32 @@ stream_create() {
              "{\"partitions\":${partitions}}"
 }
 
+# Both failure paths WARN on stderr, and they are deliberately distinguished.
+#
+# This returned 1 silently for both, and that silence is what made the 2026-09-23 baseline
+# undiagnosable: a stream missing from the catalog is the dominant failure mode there, and every
+# caller — stream_publish, stream_info, stream_identity, stream_replicas — inherited the silence and
+# reported only `expected NOT '', got ''`. Surfacing the HTTP body at the api layer does not help,
+# because on this path NO REQUEST IS EVER MADE.
+#
+# "catalog unreachable" and "stream absent from an otherwise healthy catalog" call for different
+# actions (fix the cluster vs create the stream), so they must not read alike. stdout stays
+# coordinate-only: the assert call sites capture it with `$(...)` and redirect stderr away.
 stream_coordinate() {
     local name="$1" body coord
-    body=$(api_get "/api/v1/streams" 2>/dev/null) || return 1
+    body=$(api_get "/api/v1/streams" 2>/dev/null) || {
+        log_warn "stream_coordinate ${name}: GET /api/v1/streams failed — catalog unreachable" >&2
+        return 1
+    }
     coord=$(printf '%s' "$body" \
         | tr '}' '\n' \
         | grep -F "\"stream\":\"${name}\"" \
         | sed -E 's/.*"namespace":"([^"]*)".*"stream":"([^"]*)".*"version":"([^"]*)".*/\1\/\2\/\3/' \
         | head -1)
-    [ -n "$coord" ] || return 1
+    [ -n "$coord" ] || {
+        log_warn "stream_coordinate ${name}: not in the catalog (create it with stream_create); catalog holds: $(printf '%s' "$body" | grep -oE '"stream":"[^"]*"' | tr '\n' ' ' | head -c 300)" >&2
+        return 1
+    }
     printf '%s' "$coord"
 }
 
@@ -4456,6 +4562,35 @@ stream_identity() {
     local coord
     coord=$(stream_coordinate "$1") || return 1
     printf '%s' "${coord//\//:}"
+}
+
+# Best-effort teardown/pre-clean delete for a stream that may or may not exist.
+#
+# The four call sites are hygiene, not assertions: two pre-clean a stale stream before pushing a
+# blueprint (so the partition under test starts at offset 0) and two are cleanup traps. They were
+# written as `aether_failover streams delete "$STREAM_NAME" ... || true`, which since #1044 is a
+# bare-name hard error on EVERY invocation — so the pre-clean silently stopped pre-cleaning and the
+# cleanup silently stopped cleaning, both while looking like they still worked. `|| true` is what
+# made it invisible.
+#
+# Absent-from-catalog is a legitimate outcome here (the pre-clean runs before anything creates the
+# stream), so it returns 0 without invoking the CLI. It is NOT a silent catch-all: a delete that is
+# attempted and fails warns, because at that point the stream demonstrably existed.
+stream_delete_if_present() {
+    local name="$1" identity
+    identity=$(stream_identity "$name" 2>/dev/null) || {
+        log_info "stream_delete_if_present: ${name} not in catalog — nothing to delete"
+        return 0
+    }
+    # `--force` is REQUIRED, not hygiene: `streams delete` prompts "Are you sure…? (y/N)" and the
+    # suite gives it no tty, so without it the command blocks on the prompt and exits non-zero even
+    # for a perfectly-addressed stream. The original `|| true` was concealing TWO stacked defects —
+    # the bare name AND this — so fixing only the address would have produced a delete that still
+    # silently did nothing. Measured against a live cluster: without --force the stream is still in
+    # the catalog afterwards; with it, it is gone.
+    aether_failover streams delete "$identity" --force >/dev/null 2>&1 \
+        || log_warn "stream_delete_if_present: 'streams delete ${identity} --force' failed (stream is in the catalog)"
+    return 0
 }
 
 # Replica-set view for a partition (STREAM_REPLICAS). Partition defaults to 0.

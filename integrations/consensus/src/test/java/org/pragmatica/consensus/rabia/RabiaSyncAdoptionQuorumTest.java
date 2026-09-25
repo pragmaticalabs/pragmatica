@@ -185,14 +185,19 @@ class RabiaSyncAdoptionQuorumTest {
         /// Here self holds phase 42 while both responders are at phase 0: adopting a response would
         /// silently discard a committed phase this node may be the sole surviving witness of.
         ///
-        /// Boot restores self's durable checkpoint before collecting responses. Self remains a
-        /// floor: no older peer snapshot may overwrite that recovered committed prefix.
+        /// Self is a FLOOR, not an adopted candidate — so the assertion is that the RESPONDERS' snapshot
+        /// was not installed. What IS installed is self's own durable checkpoint: #1390 restores it at
+        /// boot before collecting responses, and #1020 installs it when a cold process activates on its
+        /// own state over an EMPTY live store. Either way no older peer snapshot may overwrite that
+        /// recovered committed prefix. (Before #1020 this asserted that NOTHING was installed, which
+        /// holds for a resync from ACTIVE — where the live phase is at or past the persisted one — and
+        /// not for a fresh process whose committed history sat on disk.)
         ///
         /// The responders carry a NON-EMPTY snapshot on purpose. `restoreState` skips `restoreSnapshot`
         /// entirely when the adopted state's snapshot is empty, so stale-but-EMPTY responders would leave
-        /// nothing installed whether the floor held or not, and this assertion would pass against an
-        /// engine with no floor at all. A mutation run caught exactly that: with the floor deleted, this
-        /// test stayed green until the responders were given real bytes to install.
+        /// the own-snapshot install as the last one whether the floor held or not, and this assertion
+        /// would pass against an engine with no floor at all. A mutation run caught exactly that: with
+        /// the floor deleted, this test stayed green until the responders were given real bytes to install.
         @Test
         void ownMoreAdvancedState_isNotRegressed_byStalerResponses() {
             var stateMachine = new RecordingStateMachine();
@@ -206,7 +211,7 @@ class RabiaSyncAdoptionQuorumTest {
                 .as("the node must still ACTIVATE — refusing to regress is not a reason to stay dead")
                 .isTrue();
             assertThat(stateMachine.lastRestored())
-                .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed")
+                .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed — self's own is")
                 .isEqualTo(SELF_SNAPSHOT);
             assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(42));
         }
@@ -305,7 +310,8 @@ class RabiaSyncAdoptionQuorumTest {
                 .isEqualTo("42/10");
 
             // HALF TWO — CHANGED by #660. D9 previously restored anyway, discarding the node's own
-            // committed history. It now restores its own checkpoint and holds that history.
+            // committed history. It now holds that history: the cluster's older snapshot is not
+            // installed, and its own checkpoint is (restored at boot, #1390; own-state install, #1020).
             assertThat(stateMachine.lastRestored())
                 .as("the node must NOT regress onto the cluster's older state — that is the ratified behaviour #660 supersedes")
                 .isEqualTo(SELF_SNAPSHOT);

@@ -819,19 +819,25 @@ public record Main(String[] args) {
     /// parsed list is returned UNCHANGED and no resolution runs — `selfInfo` was discarded there
     /// anyway. The CTM-provisioned-replacement case (self ABSENT) is the one that previously
     /// appended a poisoned hostname-based entry; it now appends a resolved one.
-    private List<NodeInfo> parsePeers(NodeId self,
-                                      int selfPort,
-                                      Map<String, String> labels,
-                                      Option<AetherConfig> aetherConfig,
-                                      Option<EnvironmentIntegration> environment) {
+    ///
+    /// #1475: every fallback arm is passed as a SUPPLIER. `Option.orElse(Option)` evaluates its
+    /// argument before `orElse` runs, so the discovery arm used to execute even when `--peers=` had
+    /// already won: a CTM replacement (which always carries `--peers=`) blocked up to 300s polling the
+    /// provider for a full core set it cannot find while drained or killed nodes are dead, then either
+    /// joined late or — below a quorum — threw and exited, leaving the leader counting it in flight.
+    List<NodeInfo> parsePeers(NodeId self,
+                              int selfPort,
+                              Map<String, String> labels,
+                              Option<AetherConfig> aetherConfig,
+                              Option<EnvironmentIntegration> environment) {
         return findArg("--peers=").map(peersStr -> resolvePeersFromString(peersStr, self, selfPort, labels, aetherConfig))
-                      .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> resolvePeersFromString(peersStr,
-                                                                                              self,
-                                                                                              selfPort,
-                                                                                              labels,
-                                                                                              aetherConfig)))
-                      .orElse(discoverCloudCorePeers(self, selfPort, labels, aetherConfig, environment))
-                      .orElse(aetherConfig.map(cfg -> generatePeersFromConfig(cfg, self)))
+                      .orElse(() -> findEnv("CLUSTER_PEERS").map(peersStr -> resolvePeersFromString(peersStr,
+                                                                                                    self,
+                                                                                                    selfPort,
+                                                                                                    labels,
+                                                                                                    aetherConfig)))
+                      .orElse(() -> discoverCloudCorePeers(self, selfPort, labels, aetherConfig, environment))
+                      .orElse(() -> aetherConfig.map(cfg -> generatePeersFromConfig(cfg, self)))
                       .or(() -> List.of(bootstrapSelfInfo(self, selfPort, labels)));
     }
 
@@ -840,8 +846,8 @@ public record Main(String[] args) {
     /// discovers its core peers from the provider API instead of having them pushed over SSH.
     ///
     /// Placement in the chain is deliberate: AFTER the explicit arms — an operator's list always
-    /// wins, and CTM-provisioned replacements keep their user-data `CLUSTER_PEERS` path
-    /// byte-identical — but BEFORE `generatePeersFromConfig`, whose hostname-indexed synthesis is
+    /// wins, and a CTM-provisioned replacement is launched with `--peers=` (its user-data `PEERS`,
+    /// turned into the argument by the image entrypoint), so it never reaches this arm — but BEFORE `generatePeersFromConfig`, whose hostname-indexed synthesis is
     /// meaningless on cloud and is exactly why the SSH push existed. Forge/compose/bare-metal nodes
     /// configure no `[cloud]` section, so no provider materializes and their resolution is
     /// unchanged.

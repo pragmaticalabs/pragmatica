@@ -10,6 +10,7 @@ import java.util.List;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -31,9 +32,10 @@ import org.pragmatica.lang.utils.Causes;
 /// Two deliberate divergences from that older adapter, both in the direction of working rather than
 /// failing:
 ///
-///   - `requireLong`/`requireDouble` parse through [org.pragmatica.config.ConfigSource]'s own safe
-///     parsers, so a non-numeric value yields a named missing-key failure instead of throwing
-///     `NumberFormatException` out of the factory.
+///   - the typed `require*`/`get*` parse through [org.pragmatica.config.ConfigSource]'s own
+///     readers, so a non-numeric value is a named failure carrying the key, the value and the
+///     slice — never a `NumberFormatException` out of the factory, and (since #1098) never
+///     "not found" or `none()` for a key that is there.
 ///   - `requireStringList` is implemented rather than refused, and accepts BOTH spellings. The
 ///     idiomatic one is a native TOML array, `tags = ["a", "b"]`, which reaches every provider as
 ///     Java's `List.toString()` — `[a, b]` — because `TomlDocument#getSection` stringifies each
@@ -57,13 +59,18 @@ record ConfigProviderFacade(String sliceId, ConfigurationProvider provider) impl
 
     private static final Fn1<Cause, String> NESTED_ARRAY = Causes.forOneValue("Config %s holds a nested array, which is not a string list");
 
+    private static final Fn2<Cause, String, String> MALFORMED_VALUE = Causes.forTwoValues("%s for slice %s");
+
     static ConfigProviderFacade configProviderFacade(String sliceId, ConfigurationProvider provider) {
         return new ConfigProviderFacade(sliceId, provider);
     }
 
     @Override
     public Result<String> requireString(String section, String key) {
-        return require(section, key, provider::getString);
+        var fullKey = fullKey(section, key);
+
+        return provider.getString(fullKey)
+                       .toResult(MISSING_KEY.apply(describe(fullKey)));
     }
 
     @Override
@@ -102,30 +109,38 @@ record ConfigProviderFacade(String sliceId, ConfigurationProvider provider) impl
     }
 
     @Override
-    public Option<Integer> getInt(String section, String key) {
-        return provider.getInt(fullKey(section, key));
+    public Result<Option<Integer>> getInt(String section, String key) {
+        return optional(section, key, provider::getInt);
     }
 
     @Override
-    public Option<Long> getLong(String section, String key) {
-        return provider.getLong(fullKey(section, key));
+    public Result<Option<Long>> getLong(String section, String key) {
+        return optional(section, key, provider::getLong);
     }
 
     @Override
-    public Option<Double> getDouble(String section, String key) {
-        return provider.getDouble(fullKey(section, key));
+    public Result<Option<Double>> getDouble(String section, String key) {
+        return optional(section, key, provider::getDouble);
     }
 
     @Override
-    public Option<Boolean> getBoolean(String section, String key) {
-        return provider.getBoolean(fullKey(section, key));
+    public Result<Option<Boolean>> getBoolean(String section, String key) {
+        return optional(section, key, provider::getBoolean);
     }
 
-    private <T> Result<T> require(String section, String key, Fn1<Option<T>, String> reader) {
+    /// The provider's typed readers already refuse a malformed value with a cause naming the key
+    /// and the raw value (#1098); `require` only adds the missing-key arm on top, so a malformed
+    /// required value is reported as malformed, never as "not found".
+    private <T> Result<T> require(String section, String key, Fn1<Result<Option<T>>, String> reader) {
         var fullKey = fullKey(section, key);
 
-        return reader.apply(fullKey)
-                     .toResult(MISSING_KEY.apply(describe(fullKey)));
+        return optional(section, key, reader).flatMap(value -> value.toResult(MISSING_KEY.apply(describe(fullKey))));
+    }
+
+    private <T> Result<Option<T>> optional(String section, String key, Fn1<Result<Option<T>>, String> reader) {
+        return reader.apply(fullKey(section, key))
+                     .mapError(cause -> MALFORMED_VALUE.apply(cause.message(),
+                                                              sliceId));
     }
 
     private static String fullKey(String section, String key) {

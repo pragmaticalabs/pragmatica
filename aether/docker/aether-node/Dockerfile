@@ -76,7 +76,7 @@ USER aether
 ENTRYPOINT ["sh", "-c", "\
     CORES=$(nproc 2>/dev/null || echo 2); \
     VTHREAD_PARALLELISM=$(( CORES > 8 ? CORES : 8 )); \
-    java $JAVA_OPTS \
+    java -XX:+ExitOnOutOfMemoryError $JAVA_OPTS \
     -Djdk.virtualThreadScheduler.parallelism=$VTHREAD_PARALLELISM \
     -jar /app/aether-node.jar \
     --config=/app/aether.toml \
