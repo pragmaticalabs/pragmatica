@@ -26,8 +26,9 @@
   [verified: `GovernorFailoverHandlerTest$OffsetAlignedReplay.handleFailover_replayOverlapsHeldRing_keepsEveryEventAtItsOwnOffset`
   (the reviewer's S3: before the fix, event 10 landed at 13), and `StreamPartitionManagerAlignedAppendTest`
   (two writers race the same 2,000 events). The race test reddened 20/20 in every measured run with the offset
-  ignored. With the head read outside the lock, mine went 80/80 over four runs, with a `Thread.yield`
-  widening the window; the reviewer's variant went 19/20. It is a probabilistic pin.]
+  ignored. With the head read outside the lock and a `Thread.yield` widening the window, it went 80/80 over four
+  full runs (20 in the first round, then 3 × 20). Two reviewer variants went 19/20 and 17/20. It is a
+  probabilistic pin.]
 - **An already-held offset is skipped only after its payload and timestamp are compared.** A response that
   starts past the local head is refused as `StreamError.ReplicaOffsetGap`. An overlapping re-delivery whose
   prefix the ring has already evicted still applies its new tail, because an evicted offset is passed over
@@ -60,6 +61,22 @@
   added, see below); `…quarantine_caughtUpReplicaMeetsDivergence_isDemotedBelowIt_sendsNoCompletionAck`;
   `…quarantine_recordedWhileRunInFlight_blocksTheAtOwnerTailPromotion`, which pins the terminal gate alone.
   Removing the entry gate reddens the first two; removing the terminal gate reddens only the third.]
+- **The terminal check, the promotion and its completion ack are atomic with recording a divergence (re-review
+  R3).**
+  - `QuarantineView.unlessQuarantined` runs the check and then the registry write plus the ack under the
+    partition manager's quarantine lock. `recordDivergence` takes the same lock.
+  - A divergence is therefore recorded either before the check, which refuses, or after the ack has left.
+  - That closes the window where one completion ack could leave after a divergence was recorded.
+  - The lock order is always ring section → quarantine lock, because a promotion never appends to a ring.
+
+  [verified: `…quarantine_divergenceRecordedDuringCompletionAck_waitsForThePromotionToFinish`. Inside the ack it
+  meets a divergence on another thread, then waits 300 ms for the quarantine to appear. It reddens when the lock
+  is removed from the guard (in 2 of 2 full runs); with the lock the wait always times out.]
+- **The fence is READ inside the ordered section, not only recorded there (re-review R2).**
+  [verified: `OffHeapRingBufferAppendAtTest.appendOrderedAt_fenceReadAndAppend_shareOneSection_nothingAppendsAfterARecordedDivergence`.
+  Writer B's fence read keeps the value it saw, then parks until writer A records a divergence. It is
+  deterministic: with the read inside the section, A cannot record while B parks. It reddens when the read is
+  hoisted outside the lock (mutation M11, verified by content), which the first round's suite could not catch.]
 - **The ack reflects the batch's verified prefix, and it can lower the owner's view (review F4, kept and
   documented).** The owner stores the last ack it receives. After a divergence at `N`, a lower ack is
   deliberate: the old ack for `N` covered an entry now known to differ. For an old duplicate it is
@@ -80,11 +97,12 @@
   managers, rings, WALs and the production receive-handler, backfill and failover factories. Only the
   network is stubbed.
 - **[unverified: quarantine has no repair and no persistence]** Clearing a quarantine needs a
-  truncate-and-refetch repair, which does not exist and is out of scope. The record lives in memory for the
+  truncate-and-refetch repair, which does not exist and is out of scope: **#1514**. The record lives in memory for the
   life of the partition manager: it survives a ring release, but not a process restart, because persisting
   it would be a new persisted-state format. After a restart, the entry is caught again only when an offer
-  meets it.
+  meets it. Persisting it is **#1513**.
 - **[unverified: quarantine is node-local]** It stops THIS node from promoting itself, acking past `N` or
   re-acking. It cannot remove the node from HRW owner election or from other nodes' source choice: they
   learn nothing of it without a wire change, and none was made. A quarantined node that is elected owner
-  stays SYNCING in its own registry, but its owner publish path is not gated.
+  stays SYNCING in its own registry, but its owner publish path is not gated. Excluding it from owner election
+  is **#1513**.

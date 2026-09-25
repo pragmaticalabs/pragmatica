@@ -187,7 +187,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1505 F2: per partition, the lowest offset at which this replica was found to hold a DIVERGENT entry. Read
     /// and written only inside the partition's ordered append section ([OffHeapRingBuffer#appendOrderedAt]).
     /// Kept for the life of this manager, so it survives a ring release and rebuild. It does NOT survive a
-    /// process restart: persisting it would be a new persisted-state format, which is out of scope. Cleared
+    /// process restart: persisting it would be a new persisted-state format, tracked as #1513. Cleared
     /// only when the stream is destroyed.
     private final ConcurrentHashMap<PartitionRef, Long> divergedAt = new ConcurrentHashMap<>();
     /// #1505 R3: serialises RECORDING a divergence ([PartitionQuarantine#recordDivergence], called inside a ring's
@@ -2027,7 +2027,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                 quarantinedPartitionsSinceBoot.incrementAndGet();
                 log.error("Replica partition {}[{}] QUARANTINED: offset {} holds an event that differs from the one its sender "
                          + "offered. Nothing at or past it is acked, and this node never promotes the partition CAUGHT_UP. "
-                         + "Clearing it needs a truncate-and-refetch repair that does not exist yet (#1505)",
+                         + "Clearing it needs a truncate-and-refetch repair that does not exist yet (#1514)",
                           ref.streamName(),
                           ref.partition(),
                           offset);

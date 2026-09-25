@@ -71,7 +71,8 @@ import static org.pragmatica.lang.Option.none;
 /// self-promotion of a quarantined partition and demotes a CAUGHT_UP one to SYNCING ({@link PartitionBackfill}).
 /// That is how a replica that was already CAUGHT_UP stops being one. No catch-up can repair the entry: a
 /// backfill pulls only from the local head + 1, and the ring has no overwrite. The quarantine is logged at
-/// ERROR once, by the partition manager, and lasts until the manager is gone. Repair is out of scope.
+/// ERROR once, by the partition manager, and lasts until the manager is gone. Repair is #1514; persistence and
+/// owner-election exclusion are #1513.
 ///
 /// ## Sender validation (#1230)
 /// Before anything else, a batch whose sender cannot be the committed owner of the partition at the batch's

@@ -19,7 +19,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 /// #1244 backfill-commit ruling, applied to this failover path on 2026-09-20 (CTO ruling, #1235 × #1244):
 /// replica WAL frames carry no per-record fsync and a WAL-backed record becomes visible on this replica
 /// only at the barrier, so each recovered partition commits through the replica WAL barrier
-/// (`StreamPartitionManager::syncReplicated`) ONCE, after its last `appendRecoveredEvent` and before it
+/// (`StreamPartitionManager::syncReplicated`) ONCE, after its last `appendRecovered` and before it
 /// counts as recovered — one fsync per partition per run, and the recovered records are visible here when
 /// the run completes instead of when the next live batch's barrier happens to cover them. A failed
 /// barrier fails the run: the events landed in RAM but were never made durable or visible here.
