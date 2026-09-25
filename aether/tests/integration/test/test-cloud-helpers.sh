@@ -615,6 +615,9 @@ y_run() {  # <test-fn> -> "rc=<rc>"; stderr (the log) -> $Y_WORK/err
       ACKED_PRE="${Y_WORK}/pre"; ACKED_DURING="${Y_WORK}/during"
       [ -n "${Y_DEADLINE:-}" ] && SETTLED_READ_DEADLINE_S="$Y_DEADLINE"
       refresh_stream_endpoints() { :; }
+      # Elapsed time is pinned: starting at 1000 (not the few seconds this script has run) means any
+      # window arithmetic that leaks an uninitialised zero shows up as an early settle.
+      SECONDS=1000
       sleep() { SECONDS=$((SECONDS + ${1:-0})); }
       log_warn() { echo "WARN $*" >&2; }; log_info() { echo "INFO $*" >&2; }; log_fail() { echo "FAIL $*" >&2; }
       assert_eq() { if [ "$1" = "$2" ]; then echo "PASS $3" >&2; else echo "FAIL $3: expected '$2', got '$1'" >&2; fi; }
@@ -713,6 +716,18 @@ y_run test_every_acked_event_survives_the_crash >/dev/null
 if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 3" && ! y_has "MISSING"; then
     ok "Y10 headless: two agreeing short reads do not settle — no false loss in a leaderless window"
 else fail "Y10 headless false loss: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y13 — the headless window RESTARTS when the reads change. p0 is empty for reads 1-10 (~18s,
+# under the window), then short-by-one for reads 11-20 (~18s), complete from read 21. Neither
+# plateau lasts 30s, so nothing may settle before read 21. Timing the window from the FIRST read
+# instead of from the last change would settle the second plateau at ~30s total, a false loss.
+y_reset; y_full 1
+for k in 1 2 3 4 5 6 7 8 9 10; do y_body 0 > "${Y_WORK}/p0.$k"; done
+for k in 11 12 13 14 15 16 17 18 19 20; do y_body 0 0 > "${Y_WORK}/p0.$k"; done
+y_body 0 0 4 > "${Y_WORK}/p0.21"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 21" && ! y_has "MISSING"; then
+    ok "Y13 headless: the 30s window restarts when the reads change — two short plateaus under 30s each do not settle"
+else fail "Y13 window restart: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
 # Y5 — a partition no endpoint can read is UNMEASURABLE, never an empty partition scored as loss;
 # a marker absent from the readable partitions is named as NOT FOUND, not as LOST.
 y_reset; y_full 1; echo __DOWN__ > "${Y_WORK}/p3.1"; y_body 1 1 > "${Y_WORK}/p1.1"
