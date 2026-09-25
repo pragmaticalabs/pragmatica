@@ -34,7 +34,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |
 | MultiPartitionCrashDurabilityTest | 17500 | 17600          | 0          | 5 nodes (shared cluster, app-http 17700; #431 multi-partition WAL crash-durability, per-partition replay) |
 | DeclarativeStreamConsumerTest | 18000     | 18100          | 0          | 5 nodes (shared cluster, app-http 18200; #488 declarative consumer delivery + #526 app-typed round trip) |
-| DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
+| DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 7 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice; 3 instances since #1495) |
 | CoordinationSlopeInstrumentTest | 20000  | 20100          | 0          | 3 nodes (shared cluster, app-http 20200; #591 validates the coordination-load sampler against live endpoints) |
 | MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
 | CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |

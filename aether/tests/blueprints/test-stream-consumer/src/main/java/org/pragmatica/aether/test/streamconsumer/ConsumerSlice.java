@@ -41,8 +41,8 @@ import static org.pragmatica.lang.Result.success;
 ///     stream blueprint in the corpus is `String`-typed, which is exactly why nothing caught it;
 ///     this stream is the control's counterpart.
 ///   - `streams.spread-events` has FIVE partitions and proves placement independence (#535). Deployed
-///     with `instances = 1`, its single host can own at most one of the five, so the rest must be
-///     consumed by reading through their owners. Before #535 those partitions were consumed by
+///     with `instances = 3` on seven nodes (`DeclarativeConsumerPlacementTest`), every partition whose
+///     owner is not one of the three hosts must be consumed by reading through its owner. Before #535 those partitions were consumed by
 ///     nobody: delivery required the owner to host the slice, and at default placement it does not.
 ///
 /// Keeping them separate means a regression in any one mechanism cannot mask the others.
