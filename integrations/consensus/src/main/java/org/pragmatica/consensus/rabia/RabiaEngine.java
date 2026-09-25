@@ -2259,6 +2259,19 @@ public class RabiaEngine<C extends Command> {
                   cause.message());
     }
 
+    /// #1020 (rc4) — this re-persist is what makes the restored state durable for the NEXT restart, and
+    /// its failure used to be silent end to end. #1390 routes the save through the authority snapshot;
+    /// rc4's ERROR is kept alongside (union, merge of #1390 into rc4).
+    ///
+    /// FER (degrade forward): the failure is absorbed here, not propagated — the restored state stays
+    /// in memory, [#recordRestoredStateSaveFailure] fences this node's voting through
+    /// `authorityFailure` (#1390) and names the stale-disk consequence at ERROR (#1020). The
+    /// `Unit` fallback only supplies the return value; the refusal itself is routed by `onFailure`.
+    private Unit persistRestoredState() {
+        return saveAuthority().onFailure(this::recordRestoredStateSaveFailure)
+                              .or(Unit.unit());
+    }
+
     /// #1020 — a failed re-persist after a restore. #1390's `authorityFailure` fences voting on it;
     /// rc4's ERROR names the consequence, because `GitBackedPersistence` carries no logger of its own
     /// and this is the only place the failure is heard. Pinned by
@@ -2424,11 +2437,7 @@ public class RabiaEngine<C extends Command> {
                                                           authorityFailure = Option.some(ReconfigurationError.INCOMPATIBLE_EPOCH);
                                                       }
                                                       }));
-        // #1020 (rc4) — this re-persist is what makes the restored state durable for the NEXT restart,
-        // and its failure used to be silent end to end. #1390 routes the save through the authority
-        // snapshot and fences voting on failure; rc4's ERROR is kept alongside so the failure is also
-        // heard (union, merge of #1390 into rc4).
-        saveAuthority().onFailure(this::recordRestoredStateSaveFailure);
+        persistRestoredState();
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
 
