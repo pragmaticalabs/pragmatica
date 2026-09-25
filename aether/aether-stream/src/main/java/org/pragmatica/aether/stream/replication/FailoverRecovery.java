@@ -24,7 +24,7 @@ public interface FailoverRecovery {
     /// is applied (#1244 × #1235); production wires `StreamPartitionManager::syncReplicated`, WAL-less
     /// callers pass [ReplicationReceiveHandler#NO_DURABILITY_BARRIER].
     static FailoverRecovery failoverRecovery(ReplicaRegistry registry,
-                                             StreamPartitionRecovery partitionRecovery,
+                                             AlignedRecovery partitionRecovery,
                                              CatchupTransport transport,
                                              ReplicationReceiveHandler.ReplicaDurability durability) {
         return new DefaultFailoverRecovery(registry, partitionRecovery, transport, durability);

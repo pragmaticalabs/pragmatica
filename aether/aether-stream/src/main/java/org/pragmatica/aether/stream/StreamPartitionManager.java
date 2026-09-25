@@ -23,6 +23,7 @@ import java.util.function.IntPredicate;
 import java.util.function.IntSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -41,6 +42,7 @@ import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
+import org.pragmatica.aether.stream.replication.QuarantineView;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
@@ -67,7 +69,9 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -180,6 +184,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// commits, and the offset it then makes visible (#1235). Updated inside the partition's ordered append
     /// section, so it always holds the highest offset written.
     private final ConcurrentHashMap<String, ReplicatedWrite> lastReplicatedWalWrite = new ConcurrentHashMap<>();
+    /// #1505 F2: per partition, the lowest offset at which this replica was found to hold a DIVERGENT entry. Read
+    /// and written only inside the partition's ordered append section ([OffHeapRingBuffer#appendOrderedAt]).
+    /// Kept for the life of this manager, so it survives a ring release and rebuild. It does NOT survive a
+    /// process restart: persisting it would be a new persisted-state format, tracked as #1513. Cleared
+    /// only when the stream is destroyed.
+    private final ConcurrentHashMap<PartitionRef, Long> divergedAt = new ConcurrentHashMap<>();
+    /// #1505 R3: serialises RECORDING a divergence ([PartitionQuarantine#recordDivergence], called inside a ring's
+    /// ordered section) against a self-promotion and its completion ack ([#quarantineView]). A promotion that runs
+    /// under it either completes before the divergence is recorded, or sees the record and refuses; no ack can
+    /// leave in between. Lock order is always ring section → this lock, never the reverse, because a promotion
+    /// never appends to a ring.
+    private final Object quarantineLock = new Object();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -310,6 +326,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final AtomicLong refusedPublishDropsSinceBoot = new AtomicLong(0);
     /// Replicated appends refused because this replica's frozen ring dropped the event (#1233).
     private final AtomicLong refusedReplicaDropsSinceBoot = new AtomicLong(0);
+    /// Replica partitions quarantined since boot because a divergent held entry was found (#1505 F2).
+    private final AtomicLong quarantinedPartitionsSinceBoot = new AtomicLong(0);
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -915,7 +933,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     public Result<Unit> destroyStream(String streamName) {
         return option(streams.remove(streamName)).toResult(new StreamError.StreamNotFound(streamName))
                      .flatMap(this::closeAndRelease)
+                     .onSuccess(_ -> forgetQuarantine(streamName))
                      .onSuccess(_ -> publishStreamConfigRemoval(streamName));
+    }
+
+    /// A destroyed stream takes its partitions' quarantine with it (#1505 F2): a stream later created under the
+    /// same name starts with fresh rings and must not inherit a divergence it never had.
+    @Contract
+    private void forgetQuarantine(String streamName) {
+        divergedAt.keySet().removeIf(ref -> ref.streamName()
+                                               .equals(streamName));
     }
 
     @Contract
@@ -1548,6 +1575,39 @@ public final class StreamPartitionManager implements AutoCloseable {
         return refusedReplicaDropsSinceBoot.get();
     }
 
+    /// Replica partitions quarantined since boot (#1505 F2): each one held an entry that differs from the event its
+    /// sender offered for that offset. A quarantined partition acks nothing at or past the divergent offset and is
+    /// never promoted CAUGHT_UP on this node (see [#quarantinedAt]).
+    public long quarantinedPartitionsSinceBoot() {
+        return quarantinedPartitionsSinceBoot.get();
+    }
+
+    /// The lowest offset at which `(streamName, partition)` holds a divergent entry on this replica (#1505 F2), or
+    /// [Option#none] when the partition is not quarantined.
+    public Option<Long> quarantinedAt(String streamName, int partition) {
+        return option(divergedAt.get(new PartitionRef(streamName, partition)));
+    }
+
+    /// This manager's quarantine record as the backfill orchestrator consumes it (#1505 F2/R3). Its promotion guard
+    /// runs under [#quarantineLock], the same lock that records a divergence.
+    public QuarantineView quarantineView() {
+        return new ManagerQuarantineView();
+    }
+
+    private final class ManagerQuarantineView implements QuarantineView {
+        @Override
+        public Option<Long> quarantinedAt(String streamName, int partition) {
+            return StreamPartitionManager.this.quarantinedAt(streamName, partition);
+        }
+
+        @Override
+        public <T> Option<T> unlessQuarantined(String streamName, int partition, Supplier<T> promotion) {
+            synchronized (quarantineLock) {
+                return quarantinedAt(streamName, partition).fold(() -> some(promotion.get()), _ -> none());
+            }
+        }
+    }
+
     /// Owner admission first, then the replica floor: the floor is evaluated only for an admitted write.
     private Result<Unit> admitOwnerWrite(String streamName, int partition, int minAcks) {
         return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
@@ -1804,11 +1864,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .or(0);
     }
 
-    /// Append a backfilled event into the local partition ring WITHOUT re-triggering replication.
-    /// Used by the A4 catch-up path: a freshly-assigned replica receiving events from an up-to-date
-    /// source must land them locally but must NOT re-emit them onto the replication stream (it is the
-    /// receiver, not an owner). Offsets are preserved because the ring assigns sequential offsets and
-    /// catch-up replays the source's events in order into an empty partition.
+    /// Append a recovered event at the local ring TAIL WITHOUT re-triggering replication. The ring assigns
+    /// the next offset, so offsets are preserved only when nothing else appends to the partition between
+    /// the caller's choice of position and this append. NO production replica or recovery path calls it
+    /// (#1505 F1): the live receive, the catch-up apply and both failover recoveries land at their owner
+    /// offsets through the offset-addressed overloads below. It remains for tests that seed a ring. A new
+    /// replica-side caller would reopen #1505.
     public Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp) {
         return appendRecovered(streamName, partition, payload, timestamp, Epoch.ZERO);
     }
@@ -1831,6 +1892,40 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                          timestamp,
                                                                                          ownerEpoch))
                                  .onSuccess(offset -> visibleAtOnceWithoutWal(streamName, partition, offset))
+                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+    }
+
+    /// Offset-addressed replica append (#1505) stamped with the no-epoch floor ([Epoch#ZERO]), for callers that
+    /// carry no owner epoch. See the fenced overload below.
+    public Result<Long> appendRecovered(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+        return appendRecovered(streamName, partition, offset, payload, timestamp, Epoch.ZERO);
+    }
+
+    /// Offset-addressed replica append (#1505): the single offset authority shared by the replica's catch-up
+    /// apply and its live receive. The event lands at owner offset `offset` and nowhere else, decided against
+    /// the ring head inside the partition's ordered append section ([OffHeapRingBuffer#appendOrderedAt]), so a
+    /// live batch and a catch-up response racing for the same offsets cannot shift one another. Succeeds with
+    /// `offset` exactly when this replica now holds the offered event there — appended now, or already held
+    /// with identical payload and timestamp (nothing written, no WAL frame). Refusals append nothing:
+    /// [StreamError.ReplicaOffsetGap] (offsets below `offset` are missing), [StreamError.ReplicaEntryConflict]
+    /// (a DIFFERENT event is held at `offset`; the partition is then quarantined, see [#quarantinedAt]),
+    /// [StreamError.ReplicaQuarantined] (`offset` is at or past a known divergence), [StreamError.CursorExpired]
+    /// (held once, evicted, unverifiable).
+    /// The epoch fence and size check run first, exactly as for [#appendRecovered(String, int, byte[], long, Epoch)].
+    public Result<Long> appendRecovered(String streamName,
+                                        int partition,
+                                        long offset,
+                                        byte[] payload,
+                                        long timestamp,
+                                        Epoch ownerEpoch) {
+        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedAt(entry,
+                                                                                  streamName,
+                                                                                  partition,
+                                                                                  offset,
+                                                                                  payload,
+                                                                                  timestamp,
+                                                                                  ownerEpoch))
+                                 .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
                                  .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
 
@@ -1879,6 +1974,69 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  ownerEpoch,
                                  RECEIPT_NEEDS_NO_ADMISSION,
                                  offset -> success(logReplicated(streamName, partition, offset, payload, timestamp)));
+    }
+
+    /// Offset-addressed sibling of [#appendReplicatedInSection] (#1505): the same fence, admission and size
+    /// checks, then [OffHeapRingBuffer#appendOrderedAt], which writes the WAL frame only when it appends.
+    private Result<Long> appendReplicatedAt(StreamEntry entry,
+                                            String streamName,
+                                            int partition,
+                                            long offset,
+                                            byte[] payload,
+                                            long timestamp,
+                                            Epoch ownerEpoch) {
+        return appendTarget(entry, streamName, partition, payload, ownerEpoch, RECEIPT_NEEDS_NO_ADMISSION).flatMap(buffer -> buffer.appendOrderedAt(offset,
+                                                                                                                                                    payload,
+                                                                                                                                                    timestamp,
+                                                                                                                                                    new PartitionQuarantine(streamName,
+                                                                                                                                                                            partition),
+                                                                                                                                                    assigned -> success(logReplicated(streamName,
+                                                                                                                                                                                      partition,
+                                                                                                                                                                                      assigned,
+                                                                                                                                                                                      payload,
+                                                                                                                                                                                      timestamp))))
+                           .onSuccess(_ -> entry.updateActivity());
+    }
+
+    /// The [OffHeapRingBuffer.DivergenceFence] of one partition, backed by [#divergedAt]. The ring calls it inside
+    /// the ordered section, so recording a divergence and refusing the next offer cannot race.
+    private final class PartitionQuarantine implements OffHeapRingBuffer.DivergenceFence {
+        private final PartitionRef ref;
+
+        private PartitionQuarantine(String streamName, int partition) {
+            this.ref = new PartitionRef(streamName, partition);
+        }
+
+        @Override
+        public long divergedAt() {
+            return divergedAt.getOrDefault(ref, -1L);
+        }
+
+        /// Logged at ERROR once per partition: the first divergence quarantines it, a lower one only lowers the
+        /// ceiling.
+        @Contract
+        @Override
+        public void recordDivergence(long offset) {
+            synchronized (quarantineLock) {
+                recordLocked(offset);
+            }
+        }
+
+        private void recordLocked(long offset) {
+            if (divergedAt.putIfAbsent(ref, offset) == null) {
+                quarantinedPartitionsSinceBoot.incrementAndGet();
+                log.error("Replica partition {}[{}] QUARANTINED: offset {} holds an event that differs from the one its sender "
+                         + "offered. Nothing at or past it is acked, and this node never promotes the partition CAUGHT_UP. "
+                         + "Clearing it needs a truncate-and-refetch repair that does not exist yet (#1514)",
+                          ref.streamName(),
+                          ref.partition(),
+                          offset);
+
+                return;
+            }
+
+            divergedAt.merge(ref, offset, Math::min);
+        }
     }
 
     /// #1233: a replicated event this replica's frozen ring cannot store fails the append (never applied,
@@ -2033,11 +2191,22 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             Epoch ownerEpoch,
                                             Result<Unit> admission,
                                             Fn1<Result<T>, Long> inOrder) {
+        return appendTarget(entry, streamName, partition, payload, ownerEpoch, admission).flatMap(buffer -> buffer.appendOrdered(payload,
+                                                                                                                                 timestamp,
+                                                                                                                                 inOrder))
+                           .onSuccess(_ -> entry.updateActivity());
+    }
+
+    /// The ring an append may enter, after the epoch fence, `admission` and the size check, in that order.
+    private Result<OffHeapRingBuffer> appendTarget(StreamEntry entry,
+                                                   String streamName,
+                                                   int partition,
+                                                   byte[] payload,
+                                                   Epoch ownerEpoch,
+                                                   Result<Unit> admission) {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
                              .flatMap(_ -> checkEventSize(entry, payload))
-                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
-                             .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, inOrder))
-                             .onSuccess(_ -> entry.updateActivity());
+                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry));
     }
 
     /// Resolve the ring to append into, materializing it lazily on the OWNER/REPLICA path (#265 increment

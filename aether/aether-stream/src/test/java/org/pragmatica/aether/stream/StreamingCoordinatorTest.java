@@ -15,7 +15,7 @@ import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
-import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
+import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SealedSegment;
@@ -205,8 +205,8 @@ class StreamingCoordinatorTest {
         segmentSink.seal(segment).await();
     }
 
-    private StreamPartitionRecovery recordingRecovery() {
-        return (streamName, partition, payload, timestamp) -> {
+    private AlignedRecovery recordingRecovery() {
+        return (streamName, partition, _, payload, timestamp) -> {
             recoveredEvents.add(new RecoveredEvent(streamName, partition, payload.clone(), timestamp));
             return Result.success(eventCounter.incrementAndGet());
         };

@@ -12,7 +12,9 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -79,8 +81,8 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 ///   2. issue a single {@link CatchupTransport#requestCatchup} from `confirmedOffset + 1`; the
 ///      production transport ({@link ForwardCatchupTransport}) pages internally until the source is
 ///      drained,
-///   3. apply every returned event into the local ring via {@link StreamPartitionRecovery}
-///      (offset-preserving, non-replicating),
+///   3. apply every returned event into the local ring AT ITS OWN SOURCE OFFSET via {@link AlignedRecovery}
+///      (non-replicating; an offset already held is verified, never re-appended — #1505),
 ///   4. on full success flip self to `CAUGHT_UP` at the source watermark
 ///      ({@link ReplicaRegistry#updateWatermark}).
 ///
@@ -93,7 +95,7 @@ public final class PartitionBackfill {
     private static final Logger log = LoggerFactory.getLogger(PartitionBackfill.class);
 
     private final ReplicaRegistry registry;
-    private final StreamPartitionRecovery partitionRecovery;
+    private final AlignedRecovery partitionRecovery;
     private final CatchupTransport transport;
     private final ReplicationTransport replicationTransport;
     private final ReplicaWatermarkProbe probe;
@@ -117,12 +119,17 @@ public final class PartitionBackfill {
     /// ANOTHER node blocks self-election. Strict equality would starve a just-promoted owner by one commit.
     /// Defaults to {@link CommittedStreamOwnerSource#none} in the legacy/test factories (behavior unchanged).
     private final CommittedStreamOwnerSource committedOwnerSource;
+
     /// #1244 (ruling know 801a8b54e): the replica WAL durability barrier. Replica frames are written with
     /// no per-record fsync, so a backfill run commits what it applied through this barrier before it
     /// promotes self to CAUGHT_UP and acks the owner. Production wires
     /// `StreamPartitionManager::syncReplicated`; the legacy/test factories pass
     /// [ReplicationReceiveHandler#NO_DURABILITY_BARRIER] (no WAL behind them).
     private final ReplicationReceiveHandler.ReplicaDurability durability;
+
+    /// #1505 F2: this node's quarantine record. A quarantined partition holds a divergent entry, so every path
+    /// that would mark self CAUGHT_UP or ack the owner refuses instead ({@link #promoteUnlessQuarantined}).
+    private final QuarantineView quarantine;
 
     /// First wall-clock instant (ms) at which each partition was observed to have NO caught-up source.
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
@@ -149,7 +156,7 @@ public final class PartitionBackfill {
     private final ConcurrentHashMap<PartitionKey, Long> lastReverifyMs = new ConcurrentHashMap<>();
 
     private PartitionBackfill(ReplicaRegistry registry,
-                              StreamPartitionRecovery partitionRecovery,
+                              AlignedRecovery partitionRecovery,
                               CatchupTransport transport,
                               ReplicationTransport replicationTransport,
                               ReplicaWatermarkProbe probe,
@@ -159,7 +166,8 @@ public final class PartitionBackfill {
                               LongSupplier clock,
                               Supplier<List<NodeId>> membersSupplier,
                               CommittedStreamOwnerSource committedOwnerSource,
-                              ReplicationReceiveHandler.ReplicaDurability durability) {
+                              ReplicationReceiveHandler.ReplicaDurability durability,
+                              QuarantineView quarantine) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
@@ -172,13 +180,14 @@ public final class PartitionBackfill {
         this.membersSupplier = membersSupplier;
         this.committedOwnerSource = committedOwnerSource;
         this.durability = durability;
+        this.quarantine = quarantine;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
     /// reachable peer, so the deadlock-break never fires and behavior is byte-identical to the original
     /// orchestrator). Used where the deadlock-break is not wired.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                                      StreamPartitionRecovery partitionRecovery,
+                                                      AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
                                                       NodeId self) {
         return new PartitionBackfill(registry,
@@ -192,7 +201,8 @@ public final class PartitionBackfill {
                                      System::currentTimeMillis,
                                      List::of,
                                      CommittedStreamOwnerSource.none(),
-                                     ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
+                                     ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                     QuarantineView.NONE);
     }
 
     /// Cold-start-aware factory: after `sourceWaitBound` elapses with no caught-up source, the
@@ -204,7 +214,7 @@ public final class PartitionBackfill {
     /// back to the current HRW owner (#336), so the owner's replicas-view shows the replica CAUGHT_UP at the
     /// backfilled tail before the next live write.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                                      StreamPartitionRecovery partitionRecovery,
+                                                      AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
                                                       ReplicationTransport replicationTransport,
                                                       ReplicaWatermarkProbe probe,
@@ -223,13 +233,15 @@ public final class PartitionBackfill {
                                  sourceWaitBound,
                                  membersSupplier,
                                  committedOwnerSource,
-                                 ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
+                                 ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                 QuarantineView.NONE);
     }
 
     /// Production factory (#1244): the cold-start-aware factory above plus the replica WAL `durability`
-    /// barrier a completed backfill run commits through before promoting self (see [#durability]).
+    /// barrier a completed backfill run commits through before promoting self (see [#durability]), and the
+    /// `quarantine` record that refuses every self-promotion of a partition holding a divergent entry (#1505 F2).
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                                      StreamPartitionRecovery partitionRecovery,
+                                                      AlignedRecovery partitionRecovery,
                                                       CatchupTransport transport,
                                                       ReplicationTransport replicationTransport,
                                                       ReplicaWatermarkProbe probe,
@@ -238,7 +250,8 @@ public final class PartitionBackfill {
                                                       TimeSpan sourceWaitBound,
                                                       Supplier<List<NodeId>> membersSupplier,
                                                       CommittedStreamOwnerSource committedOwnerSource,
-                                                      ReplicationReceiveHandler.ReplicaDurability durability) {
+                                                      ReplicationReceiveHandler.ReplicaDurability durability,
+                                                      QuarantineView quarantine) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
@@ -250,14 +263,15 @@ public final class PartitionBackfill {
                                      System::currentTimeMillis,
                                      membersSupplier,
                                      committedOwnerSource,
-                                     durability);
+                                     durability,
+                                     quarantine);
     }
 
     /// Test factory: injects a deterministic clock so the bounded wait can be exercised without sleeping.
     /// Defaults the member view to {@link List#of()} so existing tests exercise the non-owner bounded-wait
     /// path unchanged (empty members ⇒ owner check is false).
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                               StreamPartitionRecovery partitionRecovery,
+                                               AlignedRecovery partitionRecovery,
                                                CatchupTransport transport,
                                                ReplicaWatermarkProbe probe,
                                                SelfWatermark selfWatermark,
@@ -279,7 +293,7 @@ public final class PartitionBackfill {
     /// with a deterministic clock. Uses a no-op replication transport (the backfill-completion ack to the
     /// owner is exercised through the production factory / a capturing transport).
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                               StreamPartitionRecovery partitionRecovery,
+                                               AlignedRecovery partitionRecovery,
                                                CatchupTransport transport,
                                                ReplicaWatermarkProbe probe,
                                                SelfWatermark selfWatermark,
@@ -303,7 +317,7 @@ public final class PartitionBackfill {
     /// ranks self owner while the committed record names ANOTHER node — self must NOT self-promote). Uses a
     /// no-op replication transport like the sibling member-view factory.
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                               StreamPartitionRecovery partitionRecovery,
+                                               AlignedRecovery partitionRecovery,
                                                CatchupTransport transport,
                                                ReplicaWatermarkProbe probe,
                                                SelfWatermark selfWatermark,
@@ -323,7 +337,8 @@ public final class PartitionBackfill {
                                      clock,
                                      membersSupplier,
                                      committedOwnerSource,
-                                     ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
+                                     ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                     QuarantineView.NONE);
     }
 
     /// Backfill `(streamName, partition)` onto self. Resolves with the number of events applied on
@@ -348,6 +363,10 @@ public final class PartitionBackfill {
     public Promise<Long> backfill(String streamName, int partition) {
         var replicas = registry.replicasFor(streamName, partition);
 
+        if (isQuarantined(streamName, partition)) {
+            return refuseQuarantined(streamName, partition);
+        }
+
         if (isSelfOwner(streamName, partition)) {
             return promoteOwner(streamName, partition, replicas);
         }
@@ -355,6 +374,58 @@ public final class PartitionBackfill {
         return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
                        .fold(() -> backfillViaRegistryOrColdStart(streamName, partition, replicas),
                              owner -> backfillOrReverify(streamName, partition, owner, replicas));
+    }
+
+    /// #1505 F2: a quarantined partition holds a divergent entry at `N`, so self must never be CAUGHT_UP for it,
+    /// must never ack the owner for it, and must never run a promotion path. A self row already CAUGHT_UP is
+    /// demoted to SYNCING at `min(confirmedOffset, N - 1)`, so the read path stops serving it and the redrive
+    /// keeps it a candidate. Nothing is pulled. No catch-up can repair a held entry, and pulling past it is how
+    /// a divergent replica used to get promoted. The quarantine itself is logged at ERROR once by the partition
+    /// manager, so this refusal is DEBUG only.
+    private Promise<Long> refuseQuarantined(String streamName, int partition) {
+        var divergedAt = quarantine.quarantinedAt(streamName, partition).or(0L);
+
+        holdSyncingBelow(streamName, partition, divergedAt);
+
+        return quarantineRefusal(streamName, partition, divergedAt);
+    }
+
+    @Contract
+    private void holdSyncingBelow(String streamName, int partition, long divergedAt) {
+        var replicas = registry.replicasFor(streamName, partition);
+
+        registry.updateWatermark(streamName,
+                                 partition,
+                                 self,
+                                 Math.min(selfConfirmedOffset(replicas), divergedAt - 1),
+                                 ReplicationState.SYNCING);
+        log.debug("Backfill {}[{}]: quarantined at offset {} — self held SYNCING, no pull, no promotion",
+                  streamName,
+                  partition,
+                  divergedAt);
+    }
+
+    private boolean isQuarantined(String streamName, int partition) {
+        return quarantine.quarantinedAt(streamName, partition)
+                         .isPresent();
+    }
+
+    /// The last gate before a self-promotion, and before the completion ack a non-owner sends with it. Every
+    /// promotion path reaches its terminal step asynchronously, after a probe or a pull, so a quarantine recorded
+    /// while that step was in flight is caught here rather than at [#backfill]'s entry. The check and `promotion`
+    /// (registry write plus ack) run under the SAME lock that records a divergence (#1505 R3,
+    /// [QuarantineView#unlessQuarantined]): no ack can leave after a divergence is recorded and before it is seen.
+    private Promise<Long> promoteUnlessQuarantined(String streamName,
+                                                   int partition,
+                                                   Supplier<Promise<Long>> promotion) {
+        return quarantine.unlessQuarantined(streamName, partition, promotion)
+                         .or(() -> quarantineRefusal(streamName,
+                                                     partition,
+                                                     quarantine.quarantinedAt(streamName, partition).or(0L)));
+    }
+
+    private static Promise<Long> quarantineRefusal(String streamName, int partition, long divergedAt) {
+        return new StreamError.ReplicaQuarantined(streamName, partition, divergedAt, divergedAt).promise();
     }
 
     /// Dispatch a NON-owner replica with a known HRW owner on self's current replication state (#333
@@ -532,6 +603,13 @@ public final class PartitionBackfill {
                : reverifyNoOp(streamName, partition, selfConfirmed, ownerHead);
     }
 
+    /// #1505 F2: a quarantined partition sends no completion re-ack ([#promoteUnlessQuarantined]).
+    private Promise<Long> reverifyNoOp(String streamName, int partition, long selfConfirmed, long ownerHead) {
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> reverifyNoOpUnquarantined(streamName, partition, selfConfirmed, ownerHead));
+    }
+
     /// No-op arm of the probe-first re-verify: the HRW owner's head is not ahead of self, so the CAUGHT_UP
     /// replica is already complete. Nothing is pulled and self stays CAUGHT_UP. Stamps {@link #reverifiedAtOffset}
     /// at `selfConfirmed` (alongside the dispatch-time {@link #lastReverifyMs}): a replica that reached CAUGHT_UP
@@ -550,7 +628,10 @@ public final class PartitionBackfill {
     /// reads as converged. Re-acking here is quiesced to once per re-verify interval, resolves the
     /// CURRENT (now-populated) owner, and is idempotent on the owner (`handleAck` re-applying the same
     /// tail is a no-op) — a lost one-shot ack self-heals instead of freezing the operator view.
-    private Promise<Long> reverifyNoOp(String streamName, int partition, long selfConfirmed, long ownerHead) {
+    private Promise<Long> reverifyNoOpUnquarantined(String streamName,
+                                                    int partition,
+                                                    long selfConfirmed,
+                                                    long ownerHead) {
         log.debug("Reverify {}[{}]: HRW owner head {} not ahead of self {} — already complete, no-op",
                   streamName,
                   partition,
@@ -563,10 +644,10 @@ public final class PartitionBackfill {
     }
 
     /// Non-owner catch-up from the authoritative HRW owner (#333). `fromOffset` is the LOCAL ring head + 1
-    /// ({@link SelfWatermark#localWatermark} + 1) so the owner-frame offsets land CONTIGUOUSLY in the
-    /// local ring — {@link StreamPartitionRecovery#appendRecoveredEvent} assigns sequential offsets, so a
-    /// `fromOffset` below the local head would shift every subsequent offset. The promotion watermark is
-    /// the owner's true tail (`response.toOffset()`); no local descriptor watermark is held for the owner,
+    /// ({@link SelfWatermark#localWatermark} + 1): the first offset this replica lacks when the request leaves.
+    /// It is only the REQUEST's position. The live receive path can land the same offsets before the response
+    /// arrives, so the apply never trusts it: each event lands at its own offset ({@link #applyEvents}, #1505).
+    /// The promotion watermark is the owner's true tail (`response.toOffset()`); no local descriptor watermark is held for the owner,
     /// so `sourceConfirmedOffset` is `-1` (it must not inflate the watermark past what the owner returned).
     ///
     /// The owner's completeness assumption (#333) HOLDS only when the owner actually returned history. A
@@ -640,10 +721,11 @@ public final class PartitionBackfill {
     }
 
     /// `selfTail` is the LOCAL RING HEAD, never the registry self-descriptor's `confirmedOffset` (#567).
-    /// {@link StreamPartitionRecovery#appendRecoveredEvent} assigns SEQUENTIAL offsets at the tail, so a
-    /// `fromOffset` below the local head does not overwrite the overlap — it re-appends it as brand-new
-    /// offsets and duplicates the partition's history. The self-descriptor reads `-1` after a failover or
-    /// restart while the ring holds real recovered events ({@link SelfWatermark}'s own contract says so),
+    /// Before #1505 the apply appended at the ring tail, so a `fromOffset` below the local head re-appended
+    /// the overlap as brand-new offsets and duplicated the partition's history. The apply now verifies an
+    /// overlap instead, but the floor still avoids re-pulling what is already held. The self-descriptor
+    /// reads `-1` after a failover or restart while the ring holds real recovered events
+    /// ({@link SelfWatermark}'s own contract says so),
     /// which turned this into a full re-pull from offset 0: 25 held events became 50 entries / 25 distinct
     /// markers, and the replica then self-promoted owner at the doubled tail. The sibling owner-source path
     /// ({@link #backfillFromOwner}) already derives its floor this way — both pulls now share one authority.
@@ -699,6 +781,13 @@ public final class PartitionBackfill {
                          .flatMap(_ -> promote(streamName, partition, fromOffset, watermark, applied));
     }
 
+    /// #1505 F2: a quarantined partition is never promoted after a pull ([#promoteUnlessQuarantined]).
+    private Promise<Long> promote(String streamName, int partition, long fromOffset, long watermark, long applied) {
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> promoteUnquarantined(streamName, partition, fromOffset, watermark, applied));
+    }
+
     /// Promote self to CAUGHT_UP only when the highest applied offset actually reaches the source
     /// watermark. `fromOffset + applied - 1` is the highest offset landed locally; if that is below
     /// the watermark a gap remains (short/truncated page, source still ahead) → fail and stay SYNCING
@@ -707,7 +796,11 @@ public final class PartitionBackfill {
     /// routes it to the probe-gated no-source path (#445) rather than through this offset gate. On a genuine
     /// promotion a NON-owner acks the current HRW owner ({@link #ackBackfillToOwner}) so the owner's
     /// replicas-view reflects the completed backfill before the next live write (#336).
-    private Promise<Long> promote(String streamName, int partition, long fromOffset, long watermark, long applied) {
+    private Promise<Long> promoteUnquarantined(String streamName,
+                                               int partition,
+                                               long fromOffset,
+                                               long watermark,
+                                               long applied) {
         var highestApplied = fromOffset + applied - 1;
 
         if (highestApplied < watermark) {
@@ -758,8 +851,16 @@ public final class PartitionBackfill {
     /// Apply every recovered event in order via a sequential fail-fast fold. A truncated response
     /// (`payloads.size() != timestamps.size()`) is treated as a parse failure so the replica stays
     /// SYNCING instead of applying only the shorter prefix (B2). The fold is an explicit loop — never
-    /// parallelized — so it cannot silently drop events on a parallel reduce (M4). Returns the number
-    /// of events applied, short-circuiting to the first local append failure.
+    /// parallelized — so it cannot silently drop events on a parallel reduce (M4).
+    ///
+    /// #1505: event `i` is offered at ITS OWN source offset `response.fromOffset() + i`, never at the local
+    /// tail. `fromOffset` was read from the local head BEFORE the request, and a live batch can land the same
+    /// offsets while the request is in flight. The tail append then put the catch-up copy one offset too high,
+    /// and the receiver acked the next live event as a duplicate it did not hold. Now an offset the live path
+    /// already landed is verified identical and skipped, and a divergent held event or a missing prefix
+    /// refuses the whole run. The replica stays SYNCING and the redrive retries from the moved head. Returns
+    /// the number of events this run holds at their source offsets, so `fromOffset + applied - 1` is a
+    /// true highest-held offset for the {@link #promote} gate. It short-circuits to the first refusal.
     private Result<Long> applyEvents(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
         var payloads = response.payloads();
         var timestamps = response.timestamps();
@@ -777,10 +878,11 @@ public final class PartitionBackfill {
         var applied = 0L;
 
         for (var i = 0; i < payloads.size(); i++) {
-            var result = partitionRecovery.appendRecoveredEvent(streamName,
-                                                                partition,
-                                                                payloads.get(i),
-                                                                timestamps.get(i));
+            var result = partitionRecovery.appendRecovered(streamName,
+                                                           partition,
+                                                           response.fromOffset() + i,
+                                                           payloads.get(i),
+                                                           timestamps.get(i));
 
             if (result.isFailure()) {
                 // Propagate the append failure cause; the value channel is empty on a failed Result.
@@ -793,7 +895,32 @@ public final class PartitionBackfill {
         return Result.success(applied);
     }
 
+    /// A divergent held event (#1505) quarantines the partition. The partition manager logs that at ERROR once,
+    /// in the section that found it. The run then holds self SYNCING at once ([#holdSyncingBelow]) rather than
+    /// waiting for the next [#backfill] entry, because a pull by a CAUGHT_UP replica's re-verify can be what
+    /// found it.
     private Promise<Long> failApply(String streamName, int partition, Cause cause) {
+        return divergentOffset(cause).fold(() -> failApplyWarn(streamName, partition, cause),
+                                           offset -> failApplyDivergent(streamName, partition, offset, cause));
+    }
+
+    private Promise<Long> failApplyDivergent(String streamName, int partition, long offset, Cause cause) {
+        holdSyncingBelow(streamName,
+                         partition,
+                         quarantine.quarantinedAt(streamName, partition).or(offset));
+
+        return cause.promise();
+    }
+
+    private static Option<Long> divergentOffset(Cause cause) {
+        return switch (cause) {
+            case StreamError.ReplicaEntryConflict conflict -> Option.some(conflict.offset());
+            case StreamError.ReplicaQuarantined quarantined -> Option.some(quarantined.divergedAt());
+            default -> Option.none();
+        };
+    }
+
+    private Promise<Long> failApplyWarn(String streamName, int partition, Cause cause) {
         log.warn("Backfill {}[{}] failed applying events: {} — staying SYNCING", streamName, partition, cause.message());
 
         return cause.promise();
@@ -1093,13 +1220,20 @@ public final class PartitionBackfill {
         return ownerSelfPromote(streamName, partition);
     }
 
+    /// #1505 F2: a quarantined partition is never owner-self-promoted ([#promoteUnlessQuarantined]).
+    private Promise<Long> ownerSelfPromote(String streamName, int partition) {
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> ownerSelfPromoteUnquarantined(streamName, partition));
+    }
+
     /// Owner self-promotion: self IS the HRW owner and no REACHABLE source proves more history exists ahead
     /// of self's local watermark, so promote to CAUGHT_UP at that watermark. Reached on the genuine
     /// cold-start (no peer source at all), when every probed peer is reachable and none is ahead, AND — via
     /// the bounded {@link #escapeOwnerCatchup} liveness escape — once the wait elapses with a blind peer
     /// still unreachable (a logged degraded recovery). The owner is authoritative for its own partition, so
     /// promoting at the local watermark is data-safe whenever no reachable source is proven ahead.
-    private Promise<Long> ownerSelfPromote(String streamName, int partition) {
+    private Promise<Long> ownerSelfPromoteUnquarantined(String streamName, int partition) {
         var watermark = selfWatermark.localWatermark(streamName, partition);
 
         log.warn("Backfill {}[{}]: owner self-promoting to CAUGHT_UP at watermark {} (no reachable source ahead) "
@@ -1257,16 +1391,33 @@ public final class PartitionBackfill {
         NOT_APPLICABLE
     }
 
-    /// Promotion predicate. Promote self iff (a) EVERY peer probe succeeded (all reachable) AND (b)
-    /// self's watermark wins the highest-watermark contest with the deterministic lowest-NodeId
-    /// tie-break. Any unreachable peer, or a peer with a strictly higher watermark, or a tie lost to a
-    /// lower NodeId, leaves self SYNCING.
+    /// #1505 F2: a quarantined partition never enters the cold-start promotion contest ([#promoteUnlessQuarantined]).
     private Promise<Long> decidePromotion(String streamName,
                                           int partition,
                                           List<NodeId> peers,
                                           long selfWm,
                                           List<Result<Long>> results,
                                           TieBreak tieBreak) {
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> decidePromotionUnquarantined(streamName,
+                                                                           partition,
+                                                                           peers,
+                                                                           selfWm,
+                                                                           results,
+                                                                           tieBreak));
+    }
+
+    /// Promotion predicate. Promote self iff (a) EVERY peer probe succeeded (all reachable) AND (b)
+    /// self's watermark wins the highest-watermark contest with the deterministic lowest-NodeId
+    /// tie-break. Any unreachable peer, or a peer with a strictly higher watermark, or a tie lost to a
+    /// lower NodeId, leaves self SYNCING.
+    private Promise<Long> decidePromotionUnquarantined(String streamName,
+                                                       int partition,
+                                                       List<NodeId> peers,
+                                                       long selfWm,
+                                                       List<Result<Long>> results,
+                                                       TieBreak tieBreak) {
         if (results.stream().anyMatch(Result::isFailure)) {
             log.warn("Backfill {}[{}]: cold-start self-promotion BLOCKED — a co-replica is unreachable "
                     + "(self watermark {}, peers {}) — staying SYNCING to avoid serving stale state",
@@ -1363,10 +1514,23 @@ public final class PartitionBackfill {
         return ownerWatermark >= 0 && selfConfirmed >= ownerWatermark;
     }
 
+    /// #1505 F2: a quarantined partition is never promoted at the owner's tail (#559 path, [#promoteUnlessQuarantined]).
     private Promise<Long> promoteAtOwnerTail(String streamName,
                                              int partition,
                                              long selfConfirmed,
                                              long ownerWatermark) {
+        return promoteUnlessQuarantined(streamName,
+                                        partition,
+                                        () -> promoteAtOwnerTailUnquarantined(streamName,
+                                                                              partition,
+                                                                              selfConfirmed,
+                                                                              ownerWatermark));
+    }
+
+    private Promise<Long> promoteAtOwnerTailUnquarantined(String streamName,
+                                                          int partition,
+                                                          long selfConfirmed,
+                                                          long ownerWatermark) {
         log.debug("Backfill {}[{}]: CAUGHT_UP at owner tail — owner watermark {}, self {} — empty response "
                  + "means nothing to fetch, not an empty owner; skipping the cold-start contest",
                   streamName,

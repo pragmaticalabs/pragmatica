@@ -93,7 +93,8 @@ class PartitionBackfillDurabilityTest {
                                  TimeSpan.timeSpan(3600).seconds(),
                                  List::of,
                                  CommittedStreamOwnerSource.none(),
-                                 durability);
+                                 durability,
+                                 manager.quarantineView());
     }
 
     private static Promise<Unit> recordSync(ConcurrentLinkedQueue<String> calls,

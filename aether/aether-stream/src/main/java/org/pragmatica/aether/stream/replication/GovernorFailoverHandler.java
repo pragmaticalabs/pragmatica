@@ -7,11 +7,13 @@ package org.pragmatica.aether.stream.replication;
 import java.util.List;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentIndex.SegmentRef;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
@@ -29,7 +31,7 @@ public sealed interface GovernorFailoverHandler {
     /// event (#1244 × #1235); production wires `StreamPartitionManager::syncReplicated`, WAL-less callers
     /// pass [ReplicationReceiveHandler#NO_DURABILITY_BARRIER].
     static GovernorFailoverHandler governorFailoverHandler(ReplicaRegistry registry,
-                                                           StreamPartitionRecovery partitionRecovery,
+                                                           AlignedRecovery partitionRecovery,
                                                            ReplicationReceiveHandler.ReplicaDurability durability) {
         return new DefaultGovernorFailoverHandler(registry, partitionRecovery, durability);
     }
@@ -49,20 +51,27 @@ public sealed interface GovernorFailoverHandler {
 /// #1244 backfill-commit ruling, applied to this failover path on 2026-09-20 (CTO ruling, #1235 × #1244):
 /// replica WAL frames carry no per-record fsync and a WAL-backed record becomes visible on this replica
 /// only at the barrier, so a replay run commits through the replica WAL barrier
-/// (`StreamPartitionManager::syncReplicated`) ONCE, after its last `appendRecoveredEvent` — one fsync per
+/// (`StreamPartitionManager::syncReplicated`) ONCE, after its last `appendRecovered` — one fsync per
 /// run, and the replayed records are visible here when the run completes instead of when the next live
 /// batch's barrier happens to cover them. The segments it reads are already durable elsewhere; the barrier
 /// is what makes them durable and visible HERE.
+///
+/// #1505 F1: each replayed event lands at ITS OWN segment offset through {@link AlignedRecovery}, the same
+/// ordered section the live receive and the catch-up apply use. Sealed segments hold events this node's ring
+/// has already evicted or still holds, and the replay floor comes from a registry watermark that can lag the
+/// ring. So a replayed offset is usually already held: it is verified and skipped, never re-appended at the
+/// tail. An offset the ring has evicted is passed over. The first other refusal stops the replay and fails
+/// the run: a gap, or a divergent held entry, which quarantines the partition.
 final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
     private static final Logger log = LoggerFactory.getLogger(DefaultGovernorFailoverHandler.class);
     private static final int MAX_EVENTS_PER_SEGMENT_READ = 10_000;
 
     private final ReplicaRegistry registry;
-    private final StreamPartitionRecovery partitionRecovery;
+    private final AlignedRecovery partitionRecovery;
     private final ReplicationReceiveHandler.ReplicaDurability durability;
 
     DefaultGovernorFailoverHandler(ReplicaRegistry registry,
-                                   StreamPartitionRecovery partitionRecovery,
+                                   AlignedRecovery partitionRecovery,
                                    ReplicationReceiveHandler.ReplicaDurability durability) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
@@ -127,18 +136,32 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
                  segments.size());
 
         return segmentReader.readEvents(streamName, partition, fromOffset, MAX_EVENTS_PER_SEGMENT_READ)
-                            .map(events -> applyEvents(streamName, partition, events))
+                            .flatMap(events -> applyEvents(streamName, partition, events).async())
                             .flatMap(_ -> durability.sync(streamName, partition));
     }
 
-    private long applyEvents(String streamName, int partition, List<RawEvent> events) {
+    /// Sequential fail-fast fold: each event at its own offset. An evicted offset ([StreamError.CursorExpired])
+    /// was held here once and is passed over; any other refusal stops the replay and fails the run.
+    private Result<Long> applyEvents(String streamName, int partition, List<RawEvent> events) {
         for (var event : events) {
-            partitionRecovery.appendRecoveredEvent(streamName, partition, event.data(), event.timestamp());
+            var result = partitionRecovery.appendRecovered(streamName,
+                                                           partition,
+                                                           event.offset(),
+                                                           event.data(),
+                                                           event.timestamp());
+
+            if (result.isFailure() && !isEvicted(result)) {
+                return result;
+            }
         }
 
-        log.info("Failover {}/{} replayed {} event(s)", streamName, partition, events.size());
+        log.info("Failover {}/{} replayed {} event(s) at their own offsets", streamName, partition, events.size());
 
-        return events.size();
+        return Result.success((long) events.size());
+    }
+
+    private static boolean isEvicted(Result<Long> result) {
+        return result.fold(cause -> cause instanceof StreamError.CursorExpired, _ -> false);
     }
 
     private Option<Long> determineCatchupOffset(String streamName, int partition, WatermarkTracker localWatermarks) {
