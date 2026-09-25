@@ -52,12 +52,12 @@ id = "org.example:commerce:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 1
+instances = 3
 # transitive dependency
 
 [[slices]]
 artifact = "org.example:commerce-payment-service:1.0.0"
-instances = 2
+instances = 3
 timeout_ms = 30000
 load_balancing = "round_robin"
 
@@ -85,7 +85,7 @@ affinity_key = "customerId"
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `instances` | int | `1` | Number of slice instances |
+| `instances` | int | `3` | Number of slice instances. At least 3; fewer is refused when the blueprint is parsed (#1495), so one drain or node failure leaves a slice at two or more instances `[mechanism: placement puts at most one instance of a slice on a node]` |
 | `timeout_ms` | int | - | Request timeout in milliseconds |
 | `memory_mb` | int | - | Memory allocation per instance |
 | `load_balancing` | string | - | Load balancing strategy (`round_robin`, `least_connections`) |
@@ -495,11 +495,11 @@ id = "org.example:commerce-system:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 2
+instances = 3
 
 [[slices]]
 artifact = "org.example:payment-service:1.0.0"
-instances = 1
+instances = 3
 
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
@@ -515,7 +515,7 @@ Modify `instances` in blueprint for different environments:
 # Development
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
-instances = 1
+instances = 3
 
 # Production
 [[slices]]
@@ -563,7 +563,7 @@ Response:
     {
       "artifact": "org.example:order-service:1.0.0",
       "status": "running",
-      "instances": 1
+      "instances": 3
     }
   ]
 }

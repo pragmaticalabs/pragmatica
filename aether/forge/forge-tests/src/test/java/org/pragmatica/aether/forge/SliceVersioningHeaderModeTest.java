@@ -193,7 +193,7 @@ class SliceVersioningHeaderModeTest {
 
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(blueprintId, artifact);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         return postBlueprintWithRetry(leaderPort, blueprint);

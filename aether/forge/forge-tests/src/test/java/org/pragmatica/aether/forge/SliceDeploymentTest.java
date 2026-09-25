@@ -93,7 +93,7 @@ class SliceDeploymentTest {
     void deploySlice_becomesActive() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
 
-        var response = deploy(leaderPort, TEST_ARTIFACT, 1);
+        var response = deploy(leaderPort, TEST_ARTIFACT, 3);
         assertThat(response).doesNotContain("\"error\"");
 
         await().atMost(DEPLOY_TIMEOUT)
@@ -127,14 +127,15 @@ class SliceDeploymentTest {
     void scaleSlice_adjustsInstanceCount() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
 
-        // Deploy with 1 instance
-        deploy(leaderPort, TEST_ARTIFACT, 1);
+        // Deploy at the blueprint floor of 3 instances (#1495), one per node of this 3-node cluster
+        deploy(leaderPort, TEST_ARTIFACT, 3);
         await().atMost(DEPLOY_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> sliceIsActive(TEST_ARTIFACT));
 
-        // Scale to 3 instances
-        var scaleResponse = scale(leaderPort, TEST_ARTIFACT, 3);
+        // Scale down to 2 instances: the blueprint floor bounds `instances`, runtime scaling is bounded by
+        // minAvailable (ceil(3/2) = 2), and a 3-node cluster leaves no room to scale above 3
+        var scaleResponse = scale(leaderPort, TEST_ARTIFACT, 2);
         assertThat(scaleResponse).doesNotContain("\"error\"");
 
         // Wait for scale operation to complete
@@ -151,7 +152,7 @@ class SliceDeploymentTest {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
 
         // Deploy
-        deploy(leaderPort, TEST_ARTIFACT, 1);
+        deploy(leaderPort, TEST_ARTIFACT, 3);
         await().atMost(DEPLOY_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> sliceIsActive(TEST_ARTIFACT));
@@ -178,7 +179,7 @@ class SliceDeploymentTest {
 
             [[slices]]
             artifact = "%s"
-            instances = 2
+            instances = 3
             """.formatted(TEST_ARTIFACT);
 
         var response = applyBlueprint(leaderPort, blueprint);

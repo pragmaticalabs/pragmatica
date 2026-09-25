@@ -626,15 +626,15 @@ class BlueprintSecurityOverrideClusterWideTest {
     /// non-`registerOnly` blueprint regardless of which slices it deploys, so this governs `GET
     /// /echo/*` while deploying the unrelated versioned-echo slice under `/api/orders`. Deleting it
     /// withdraws the override WITHOUT withdrawing the route it governs, which is the only way the
-    /// withdrawal hook can be observed at all. One instance is enough — the derivation is over
-    /// blueprint state, not over where the carrier's slices happen to run.
+    /// withdrawal hook can be observed at all. The instance count is incidental (3 is the #1495 floor) —
+    /// the derivation is over blueprint state, not over where the carrier's slices happen to run.
     private static String overrideCarrierBlueprint() {
         return """
             id = "%s"
 
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
 
             [security]
             override_policy = "strengthen_only"

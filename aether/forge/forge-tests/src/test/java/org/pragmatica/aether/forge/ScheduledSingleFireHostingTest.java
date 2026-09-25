@@ -8,17 +8,23 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.aether.worker.metrics.PerMethodMetrics;
@@ -50,31 +56,37 @@ import static org.awaitility.Awaitility.await;
 /// SENDER_BRIDGE_NOT_FOUND on a leader hosting nothing that knows `Unit`, writing a failure state
 /// every interval while the hosting node never saw a call.
 ///
-/// Placement is made deterministic rather than hoped for: the allocation engine places a new
-/// single-instance blueprint on a "truly empty" node first, so a filler blueprint (`echo`) is deployed
-/// to occupy nodes until the scheduled slice (`test-full`, `[scheduling.heartbeat]` SINGLE, 10s) lands
-/// on a NON-leader. Both observables are read in-JVM: the leader's committed
-/// `ScheduledTaskStateValue` for the task, and the host's per-method invocation count (recorded by the
-/// callee's `InvocationHandler.onInvokeRequest`), so "fired" means the host executed it, not merely that
-/// the leader believes it sent something.
+/// Placement is made deterministic by placement POLICY, not by occupancy tricks (#1495 raised every
+/// blueprint slice to at least three instances, so on a three-core cluster the leader always hosted
+/// one): three cores plus three workers, the scheduled slice deployed at three instances (CORE_ONLY by
+/// default) and then scaled to `WORKERS_ONLY` through the operator's scale route. #1390's
+/// `SliceAllocationEngine.reconcilePlacement` migrates the existing instances onto the workers and
+/// retires the core ones. The leader is always a core, so once no core hosts the slice the leader
+/// provably does not — asserted as a precondition, never assumed.
+///
+/// Both observables are read in-JVM: the leader's committed `ScheduledTaskStateValue` for the task, and
+/// the hosts' per-method invocation counts (recorded by the callee's `InvocationHandler.onInvokeRequest`),
+/// so "fired" means a worker host executed it, not merely that the leader believes it sent something.
+/// Both are baselined AFTER the migration so fires taken while the cores still hosted cannot count.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ScheduledSingleFireHostingTest {
     private static final Logger log = LoggerFactory.getLogger(ScheduledSingleFireHostingTest.class);
-    private static final int NODES = 3;
+    private static final int CORES = 3;
+    private static final int WORKERS = 3;
+    private static final int INSTANCES = 3;
     private static final int BASE_PORT = 25500;
     private static final int BASE_MGMT_PORT = 25600;
     private static final int BASE_APP_HTTP_PORT = 25700;
     private static final String SCHEDULED_SLICE = "org.pragmatica.aether.test:test-full-full-slice:1.0.0";
     private static final String SCHEDULED_BLUEPRINT = "forge.test:scheduled-single-fire:1.0.0";
-    private static final String FILLER_SLICE = TestArtifacts.ECHO_SLICE;
-    private static final String FILLER_BLUEPRINT = "forge.test:scheduled-single-fire-filler:1.0.0";
+    private static final String WORKERS_ONLY = "WORKERS_ONLY";
     private static final String SECTION = "scheduling.heartbeat";
     private static final MethodName METHOD = MethodName.methodName("heartbeat").unwrap();
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(120);
-    private static final Duration PLACEMENT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration PLACEMENT_TIMEOUT = Duration.ofSeconds(180);
     /// Three 10s intervals plus slack: two fires (or two failure states) must have landed.
     private static final Duration FIRE_WINDOW = Duration.ofSeconds(45);
     private static final Duration POLL = Duration.ofMillis(500);
@@ -83,6 +95,7 @@ class ScheduledSingleFireHostingTest {
     private final HttpOperations http = jdkHttpOperations();
     private final Artifact scheduledArtifact = Artifact.artifact(SCHEDULED_SLICE).unwrap();
     private EmberCluster cluster;
+    private List<NodeId> workers;
 
     @BeforeAll
     void setUp(@TempDir Path baseDir) {
@@ -94,7 +107,7 @@ class ScheduledSingleFireHostingTest {
                                                   .withEnvironment("AETHER_")
                                                   .build();
 
-        cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "sched", some(configProvider));
+        cluster = emberCluster(CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "sched", some(configProvider));
         cluster.withDataBaseDir(baseDir);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
@@ -103,7 +116,16 @@ class ScheduledSingleFireHostingTest {
              .pollInterval(POLL)
              .until(() -> leader().membershipFsm()
                                 .coreCountedMembers()
-                                .size() == NODES);
+                                .size() == CORES);
+        workers = IntStream.range(0, WORKERS)
+                           .mapToObj(_ -> LifecycleAwait.nodeSettled("admit worker in setUp()", cluster, cluster.addWorkerNode()))
+                           .toList();
+        await().atMost(FORM_TIMEOUT)
+             .pollInterval(POLL)
+             .until(() -> workers.stream()
+                                 .allMatch(id -> cluster.getNode(id.id())
+                                                        .filter(AetherNode::isReady)
+                                                        .isPresent()));
     }
 
     @AfterAll
@@ -113,75 +135,116 @@ class ScheduledSingleFireHostingTest {
 
     @Test
     void singleModeTask_firesOnTheHostingNode_whenTheLeaderDoesNotHostIt() {
-        var host = placeScheduledSliceOffLeader();
+        var hosts = placeScheduledSliceOnWorkersOnly();
         var leaderId = cluster.currentLeader().or("");
+        var executionsBefore = taskState().map(ScheduledTaskStateValue::totalExecutions).or(0);
+        var callsBefore = heartbeatCallsOn(hosts);
 
-        log.info("SSF: leader={} host={} — watching {} fires over {}s",
+        log.info("SSF: leader={} workerHosts={} — watching {} fires over {}s (baseline executions={} calls={})",
                  leaderId,
-                 host,
+                 hosts,
                  EXPECTED_FIRES,
-                 FIRE_WINDOW.toSeconds());
-        awaitFiresOrFailures(host);
+                 FIRE_WINDOW.toSeconds(),
+                 executionsBefore,
+                 callsBefore);
+        awaitFiresOrFailures(hosts, callsBefore, executionsBefore);
         var state = taskState();
-        var hostCalls = heartbeatCallsOn(host);
+        var hostCalls = heartbeatCallsOn(hosts) - callsBefore;
         // Logged before the assertions so a red run carries its own picture.
-        log.info("SSF RESULT: leader={} host={} hostHeartbeatCalls={} state={} taskRegistered={}",
+        log.info("SSF RESULT: leader={} workerHosts={} hostHeartbeatCalls={} state={} taskRegistered={}",
                  leaderId,
-                 host,
+                 hosts,
                  hostCalls,
                  state,
                  taskRegisteredOnEveryNode());
-        assertThat(hostCalls).as("#272 R12: the SINGLE-mode fire must reach the hosting node's slice (%d intervals elapsed)",
+        assertThat(hostCalls).as("#272 R12: the SINGLE-mode fire must reach a hosting worker's slice (%d intervals elapsed)",
                                  EXPECTED_FIRES)
                   .isGreaterThanOrEqualTo(EXPECTED_FIRES);
         assertThat(state.map(ScheduledTaskStateValue::consecutiveFailures).or(-1)).as("#272 R12: the leader must not record failures for a task it does not host (last failure: %s)",
                                                                                       state.map(ScheduledTaskStateValue::lastFailureMessage)
                                                                                            .or("<none>"))
                   .isZero();
-        assertThat(state.map(ScheduledTaskStateValue::totalExecutions).or(0)).as("#272 R12: the leader's task state must count the fires")
+        assertThat(state.map(ScheduledTaskStateValue::totalExecutions).or(0) - executionsBefore).as("#272 R12: the leader's task state must count the fires taken after the migration")
                   .isGreaterThanOrEqualTo(EXPECTED_FIRES);
     }
 
-    /// Deploys the filler first so the scheduled slice lands on the next truly-empty node; if that is
-    /// still the leader, redeploys with the filler widened to two instances so the only empty node left
-    /// is a non-leader. The precondition is asserted, never assumed.
-    private String placeScheduledSliceOffLeader() {
-        deploy(FILLER_BLUEPRINT, FILLER_SLICE, 1);
-        awaitHosts(fillerArtifact(), 1);
-        deploy(SCHEDULED_BLUEPRINT, SCHEDULED_SLICE, 1);
-        var host = awaitHosts(scheduledArtifact, 1).iterator().next();
+    /// Deploys the scheduled slice at [#INSTANCES] (CORE_ONLY by default), then scales it to
+    /// `WORKERS_ONLY` through the scale route and waits for the migration. The preconditions are
+    /// asserted, never assumed: exactly [#INSTANCES] ACTIVE hosts, every one a worker, and NO core —
+    /// the leader included — hosting the slice. Without the placement change the cores keep their
+    /// instances and the precondition fails loudly rather than letting the R12 assertions run on a
+    /// leader that hosts the slice.
+    private Set<NodeId> placeScheduledSliceOnWorkersOnly() {
+        deploy(SCHEDULED_BLUEPRINT, SCHEDULED_SLICE, INSTANCES);
+        await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL).until(() -> activeHosts().size() == INSTANCES);
+        log.info("SSF: deployed on {} (cores={})", activeHosts(), coreMembers());
 
-        if (host.equals(cluster.currentLeader().or(""))) {
-            log.info("SSF: first placement landed on the leader {} — widening the filler and re-placing", host);
-            undeploy(SCHEDULED_BLUEPRINT);
-            awaitHosts(scheduledArtifact, 0);
-            undeploy(FILLER_BLUEPRINT);
-            awaitHosts(fillerArtifact(), 0);
-            deploy(FILLER_BLUEPRINT, FILLER_SLICE, 2);
-            awaitHosts(fillerArtifact(), 2);
-            deploy(SCHEDULED_BLUEPRINT, SCHEDULED_SLICE, 1);
-            host = awaitHosts(scheduledArtifact, 1).iterator().next();
-        }
+        var scaled = scaleToWorkersOnly();
 
-        assertThat(host).as("precondition: the scheduled slice must be hosted on a NON-leader node (leader=%s)",
-                            cluster.currentLeader().or(""))
-                  .isNotEqualTo(cluster.currentLeader().or(""));
+        assertThat(scaled).as("scale of %s to %s", SCHEDULED_SLICE, WORKERS_ONLY)
+                  .doesNotContain("\"error\"");
+        awaitNoCoreHosts();
 
-        return host;
+        var hosts = activeHosts();
+        var cores = coreMembers();
+        var leaderId = cluster.currentLeader().or("");
+
+        assertThat(hosts).as("precondition: exactly %d ACTIVE hosts after the WORKERS_ONLY migration", INSTANCES)
+                  .hasSize(INSTANCES);
+        assertThat(hosts).as("precondition: every host must be a worker (workers=%s)", workers)
+                  .allMatch(workers::contains);
+        assertThat(hosts).as("precondition: no core node may host the slice (cores=%s)", cores)
+                  .doesNotContainAnyElementsOf(cores);
+        assertThat(hosts.stream()
+                        .map(NodeId::id)
+                        .toList()).as("precondition: the leader must not host the slice (leader=%s)", leaderId)
+                  .doesNotContain(leaderId);
+
+        return hosts;
     }
 
-    private void awaitFiresOrFailures(String host) {
+    private void awaitNoCoreHosts() {
+        try {
+            await().atMost(PLACEMENT_TIMEOUT)
+                 .pollInterval(POLL)
+                 .until(() -> {
+                     var hosts = activeHosts();
+
+                     return hosts.size() == INSTANCES && hosts.stream()
+                                                             .noneMatch(coreMembers()::contains);
+                 });
+        } catch (ConditionTimeoutException timeout) {
+            // Fall through to the precondition assertions, which name the offending hosts.
+            log.warn("SSF: placement did not converge to workers-only within {}s: hosts={} cores={}",
+                     PLACEMENT_TIMEOUT.toSeconds(),
+                     activeHosts(),
+                     coreMembers());
+        }
+    }
+
+    /// Waits for BOTH observables to reach the expected fires (or for the failure count to), because the
+    /// host records a call the moment it executes while the leader's `ScheduledTaskStateValue` lands only
+    /// after its consensus commit: gating on the host count alone let a run read the state one fire
+    /// behind (host +2, executions +1) and fail on commit latency rather than on R12.
+    private void awaitFiresOrFailures(Set<NodeId> hosts, long callsBefore, int executionsBefore) {
         try {
             await().atMost(FIRE_WINDOW)
                  .pollInterval(POLL)
-                 .until(() -> heartbeatCallsOn(host) >= EXPECTED_FIRES || taskState().map(ScheduledTaskStateValue::consecutiveFailures)
-                                                                                   .or(0) >= EXPECTED_FIRES);
+                 .until(() -> firesObserved(hosts, callsBefore, executionsBefore) || taskState().map(ScheduledTaskStateValue::consecutiveFailures)
+                                                                                                .or(0) >= EXPECTED_FIRES);
         } catch (ConditionTimeoutException timeout) {
             log.warn("SSF: neither {} fires nor {} failures within {}s",
                      EXPECTED_FIRES,
                      EXPECTED_FIRES,
                      FIRE_WINDOW.toSeconds());
         }
+    }
+
+    private boolean firesObserved(Set<NodeId> hosts, long callsBefore, int executionsBefore) {
+        var executions = taskState().map(ScheduledTaskStateValue::totalExecutions)
+                                    .or(0) - executionsBefore;
+
+        return heartbeatCallsOn(hosts) - callsBefore >= EXPECTED_FIRES && executions >= EXPECTED_FIRES;
     }
 
     /// The cluster-scoped task key the hosting node publishes at activation, as seen by every node.
@@ -202,8 +265,14 @@ class ScheduledSingleFireHostingTest {
                      .map(ScheduledTaskStateValue.class::cast);
     }
 
-    private long heartbeatCallsOn(String nodeId) {
-        return cluster.getNode(nodeId)
+    private long heartbeatCallsOn(Set<NodeId> hosts) {
+        return hosts.stream()
+                    .mapToLong(this::heartbeatCallsOn)
+                    .sum();
+    }
+
+    private long heartbeatCallsOn(NodeId nodeId) {
+        return cluster.getNode(nodeId.id())
                       .map(node -> node.invocationMetrics()
                                        .collectPerSliceMetrics()
                                        .stream()
@@ -218,26 +287,29 @@ class ScheduledSingleFireHostingTest {
                       .or(0L);
     }
 
-    private Set<String> awaitHosts(Artifact artifact, int expected) {
-        await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL).until(() -> activeHosts(artifact).size() == expected);
-
-        return activeHosts(artifact);
-    }
-
-    private Set<String> activeHosts(Artifact artifact) {
-        return cluster.slicesStatus()
+    /// Nodes with an ACTIVE instance of the scheduled slice, from the leader's committed KV.
+    private Set<NodeId> activeHosts() {
+        return cluster.allNodes()
                       .stream()
-                      .filter(slice -> slice.artifact()
-                                            .equals(artifact.asString()))
-                      .flatMap(slice -> slice.instances()
-                                             .stream())
-                      .filter(instance -> "ACTIVE".equals(instance.state()))
-                      .map(EmberCluster.SliceInstanceStatus::nodeId)
+                      .map(AetherNode::self)
+                      .filter(node -> leader().kvStore()
+                                            .getTyped(new NodeArtifactKey(node, scheduledArtifact), NodeArtifactValue.class)
+                                            .filter(value -> value.state() == SliceState.ACTIVE)
+                                            .isPresent())
                       .collect(Collectors.toSet());
     }
 
-    private Artifact fillerArtifact() {
-        return Artifact.artifact(FILLER_SLICE).unwrap();
+    private Set<NodeId> coreMembers() {
+        return Set.copyOf(leader().membershipFsm()
+                                  .coreCountedMembers());
+    }
+
+    private String scaleToWorkersOnly() {
+        var body = "{\"artifact\":\"%s\",\"instances\":%d,\"placement\":\"%s\"}".formatted(SCHEDULED_SLICE,
+                                                                                            INSTANCES,
+                                                                                            WORKERS_ONLY);
+
+        return post(leaderMgmtPort(), "/api/v1/scale", body, "application/json");
     }
 
     private void deploy(String blueprintId, String artifact, int instances) {
@@ -248,17 +320,11 @@ class ScheduledSingleFireHostingTest {
             artifact = "%s"
             instances = %d
             """.formatted(blueprintId, artifact, instances);
-        var response = postToml(leaderMgmtPort(), "/api/v1/blueprints", blueprint);
+        var response = post(leaderMgmtPort(), "/api/v1/blueprints", blueprint, "application/toml");
 
         assertThat(response).as("deploy of %s", blueprintId)
                   .doesNotContain("\"error\"")
                   .contains("\"status\":\"applied\"");
-    }
-
-    private void undeploy(String blueprintId) {
-        var response = delete(leaderMgmtPort(), "/api/v1/blueprints/" + blueprintId);
-
-        assertThat(response).as("undeploy of %s", blueprintId).doesNotContain("\"error\"");
     }
 
     private int leaderMgmtPort() {
@@ -276,24 +342,11 @@ class ScheduledSingleFireHostingTest {
                                        .getFirst());
     }
 
-    private String postToml(int port, String path, String body) {
+    private String post(int port, String path, String body, String contentType) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/toml")
+                                 .header("Content-Type", contentType)
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
-                                 .timeout(Duration.ofSeconds(10))
-                                 .build();
-
-        return http.sendString(request)
-                   .await()
-                   .map(HttpResult::body)
-                   .or(ERROR_FALLBACK);
-    }
-
-    private String delete(int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
 

@@ -30,7 +30,7 @@ test_rolling_start() {
     publish_blueprint_or_fail "$BLUEPRINT_V2" >/dev/null || return 1
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
     local result
-    result=$(deploy_start "$BLUEPRINT_V2" rolling --instances 2)
+    result=$(deploy_start "$BLUEPRINT_V2" rolling --instances 3)
     assert_contains "$result" "deploymentId" "Rolling deployment started with deployment ID"
 }
 

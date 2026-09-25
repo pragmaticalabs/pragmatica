@@ -120,7 +120,7 @@ id = "org.example:test-blueprint:1.0.0"
 
 [[slices]]
 artifact = "org.example:test-slice:1.0.0"
-instances = 1
+instances = 3
 TOML
 
 curl -s -X POST http://localhost:5150/api/v1/blueprints \
@@ -277,7 +277,7 @@ id = "org.example:test-blueprint:1.0.0"
 
 [[slices]]
 artifact = "org.example:test-slice:1.0.0"
-instances = 1
+instances = 3
 TOML
 
 java -jar aether/cli/target/aether.jar --connect localhost:5150 \

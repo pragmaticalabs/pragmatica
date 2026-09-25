@@ -58,7 +58,7 @@ class HierarchicalLoadedMovementTest {
         var originals = membersInSource("east");
         var artifact = org.pragmatica.aether.artifact.Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
         deployWorkersOnlyEcho(artifact);
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> activeWorkers(artifact).size() == 1 && noActiveCore(artifact));
+        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> activeWorkers(artifact).size() == 3 && noActiveCore(artifact));
         assertEcho();
         changeDestination("west");
         var samples = new java.util.concurrent.atomic.AtomicInteger();
@@ -107,11 +107,16 @@ class HierarchicalLoadedMovementTest {
     private void deployWorkersOnlyEcho(org.pragmatica.aether.artifact.Artifact artifact) {
         var node = leader();
         var port = cluster.status().nodes().stream().filter(status -> status.id().equals(node.self().id())).findFirst().orElseThrow().mgmtPort();
+        // maxInstances = 3 stops the autoscaler raising this WORKERS_ONLY slice's target above its
+        // 3-worker audience. Without it the target goes 3 -> 5, `hasDrainReplacement` waits for 5 ACTIVE
+        // on 3 workers forever and the movement stalls after one move — defect #1520. Remove this pin
+        // when #1520 is fixed.
         var blueprint = """
             id = "forge.test:loaded-movement:1.0.0"
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
+            maxInstances = 3
             """.formatted(TestArtifacts.ECHO_SLICE);
         var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://localhost:" + port + "/api/v1/blueprints"))
             .header("Content-Type", "application/toml").timeout(TimeSpan.timeSpan(10).seconds().duration())

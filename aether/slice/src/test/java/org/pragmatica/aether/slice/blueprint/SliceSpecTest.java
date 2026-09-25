@@ -75,22 +75,33 @@ class SliceSpecTest {
         Artifact.artifact("org.example:slice:1.0.0")
                 .flatMap(SliceSpec::sliceSpec)
                 .onFailureRun(Assertions::fail)
-                .onSuccess(spec -> assertThat(spec.instances()).isEqualTo(1));
+                .onSuccess(spec -> {
+                    assertThat(spec.instances()).isEqualTo(3);
+                    assertThat(spec.minAvailable()).isEqualTo(2);
+                });
+    }
+
+    @Test
+    void sliceSpec_fails_withTwoInstances() {
+        assertBelowMinimum(2);
     }
 
     @Test
     void sliceSpec_fails_withZeroInstances() {
-        Artifact.artifact("org.example:slice:1.0.0")
-                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 0))
-                .onSuccessRun(Assertions::fail)
-                .onFailure(cause -> assertThat(cause.message()).contains("must be positive"));
+        assertBelowMinimum(0);
     }
 
     @Test
     void sliceSpec_fails_withNegativeInstances() {
+        assertBelowMinimum(-1);
+    }
+
+    private static void assertBelowMinimum(int instances) {
         Artifact.artifact("org.example:slice:1.0.0")
-                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, -1))
+                .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instances))
                 .onSuccessRun(Assertions::fail)
-                .onFailure(cause -> assertThat(cause.message()).contains("must be positive"));
+                .onFailure(cause -> assertThat(cause)
+                        .isInstanceOfSatisfying(SliceSpecError.InstancesBelowMinimum.class,
+                                                error -> assertThat(error.instances()).isEqualTo(instances)));
     }
 }

@@ -46,7 +46,8 @@ public class DeployCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--traffic", description = "Initial canary traffic percentage (0-100)", defaultValue = "5")
     private int trafficPercent;
 
-    @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of instances", defaultValue = "1")
+    // Default mirrors SliceSpec.DEFAULT_INSTANCES (#1495); the server refuses fewer than 3.
+    @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of instances (at least 3)", defaultValue = "3")
     private int instances;
 
     @CommandLine.Option(names = "--error-rate", description = "Max error rate threshold (0.0-1.0)", defaultValue = "0.01")

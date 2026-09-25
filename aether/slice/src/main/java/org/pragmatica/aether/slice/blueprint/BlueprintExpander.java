@@ -187,7 +187,10 @@ public interface BlueprintExpander {
                                                              Map<Artifact, Set<Artifact>> allDeps) {
         var deps = allDeps.getOrDefault(artifact, Set.of());
 
-        return option(explicitSlices.get(artifact)).fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true, deps),
+        return option(explicitSlices.get(artifact)).fold(() -> ResolvedSlice.resolvedSlice(artifact,
+                                                                                           SliceSpec.DEFAULT_INSTANCES,
+                                                                                           true,
+                                                                                           deps),
                                                          spec -> ResolvedSlice.resolvedSlice(artifact,
                                                                                              spec.instances(),
                                                                                              spec.minAvailable(),

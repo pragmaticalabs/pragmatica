@@ -12,6 +12,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.update.CanaryAnalysisConfig;
 import org.pragmatica.aether.update.CanaryStage;
 import org.pragmatica.aether.update.CleanupPolicy;
@@ -29,6 +30,7 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.lang.Option.option;
@@ -44,6 +46,7 @@ public final class DeployRoutes implements RouteSource {
     private static final Cause MISSING_STRATEGY = DeployRouteError.MISSING_STRATEGY;
     private static final Cause INVALID_STRATEGY = DeployRouteError.INVALID_STRATEGY;
     private static final Cause MISSING_CANARY_STAGES = DeployRouteError.MISSING_CANARY_STAGES;
+    private static final Cause INSTANCES_BELOW_MINIMUM = DeployRouteError.INSTANCES_BELOW_MINIMUM;
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -159,14 +162,16 @@ public final class DeployRoutes implements RouteSource {
     /// the correct status. `CompositeCause` cannot simply be made status-aware — it lives in `core`,
     /// which is deliberately HTTP-free.
     private Result<ParsedDeployRequest> buildParsedRequest(String[] blueprintParts, DeployRequest request) {
-        return parseVersion(blueprintParts[2]).flatMap(version -> parseStrategy(request.strategy()).flatMap(strategy -> completeParsedRequest(request,
-                                                                                                                                              version,
-                                                                                                                                              strategy)));
+        return parseVersion(blueprintParts[2]).flatMap(version -> parseStrategy(request.strategy()).flatMap(strategy -> parseInstances(request.instances()).flatMap(instances -> completeParsedRequest(request,
+                                                                                                                                                                                                       version,
+                                                                                                                                                                                                       strategy,
+                                                                                                                                                                                                       instances))));
     }
 
     private Result<ParsedDeployRequest> completeParsedRequest(DeployRequest request,
                                                               Version version,
-                                                              DeploymentStrategy strategy) {
+                                                              DeploymentStrategy strategy,
+                                                              int instances) {
         return parseThresholds(request.thresholds()).flatMap(thresholds -> parseCleanupPolicy(request.cleanupPolicy()).flatMap(cleanupPolicy -> parseStrategyConfig(strategy,
                                                                                                                                                                     request).map(config -> new ParsedDeployRequest(request.blueprint(),
                                                                                                                                                                                                                    version,
@@ -174,7 +179,7 @@ public final class DeployRoutes implements RouteSource {
                                                                                                                                                                                                                    config,
                                                                                                                                                                                                                    thresholds,
                                                                                                                                                                                                                    cleanupPolicy,
-                                                                                                                                                                                                                   parseInstances(request.instances())))));
+                                                                                                                                                                                                                   instances))));
     }
 
     private static Result<String[]> parseBlueprint(DeployRequest request) {
@@ -233,12 +238,14 @@ public final class DeployRoutes implements RouteSource {
         };
     }
 
-    // RET-06: `raw` is a nullable boxed Integer from a deserialized request; the coalesce is wire-input handling.
-    @SuppressWarnings("JBCT-RET-06")
-    private static int parseInstances(Integer raw) {
-        return raw != null
-               ? raw
-               : 1;
+    /// A rollout writes `instances` onto every slice target of the blueprint, so it carries the same floor
+    /// and default as the blueprint's own `instances` (#1495): absent means [SliceSpec#DEFAULT_INSTANCES],
+    /// below [SliceSpec#MIN_INSTANCES] is refused.
+    private static Result<Integer> parseInstances(Integer raw) {
+        return Verify.ensure(option(raw).or(SliceSpec.DEFAULT_INSTANCES),
+                             Verify.Is::greaterThanOrEqualTo,
+                             SliceSpec.MIN_INSTANCES,
+                             INSTANCES_BELOW_MINIMUM);
     }
 
     private static Result<StrategyConfig> parseStrategyConfig(DeploymentStrategy strategy, DeployRequest request) {

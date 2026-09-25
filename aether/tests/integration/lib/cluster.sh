@@ -4698,7 +4698,8 @@ deploy_start() {
     log_info "Starting ${strategy} deployment: ${coords}" >&2
     # Compose the strategy body that DeployCommand would build (extra args ignored — CLI
     # only passes them through HTTP body, the bash test layer just composes JSON itself).
-    local strategy_upper instances=2 traffic=10 manual=false
+    # instances defaults to the server-side floor/default of 3 (#1495); fewer is refused with 400.
+    local strategy_upper instances=3 traffic=10 manual=false
     case "$strategy" in
         blue-green) strategy_upper="BLUE_GREEN" ;;
         canary) strategy_upper="CANARY" ;;

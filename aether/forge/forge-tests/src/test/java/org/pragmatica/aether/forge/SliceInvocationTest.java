@@ -141,7 +141,7 @@ class SliceInvocationTest {
 
         @Test
         void afterSliceDeployment_routesAreAvailable() {
-            var deployResponse = deploy(TEST_ARTIFACT, 1);
+            var deployResponse = deploy(TEST_ARTIFACT, 3);
             assertDeploymentSucceeded(deployResponse);
 
             awaitEchoSliceDeployed();
@@ -171,7 +171,7 @@ class SliceInvocationTest {
 
         @Test
         void invokeAfterSliceUndeploy_returnsNotFound() {
-            var deployResponse = deploy(TEST_ARTIFACT, 1);
+            var deployResponse = deploy(TEST_ARTIFACT, 3);
             assertDeploymentSucceeded(deployResponse);
 
             awaitEchoSliceDeployed();

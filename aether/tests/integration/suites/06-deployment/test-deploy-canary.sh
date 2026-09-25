@@ -40,7 +40,7 @@ test_canary_start() {
     publish_blueprint_or_fail "$BLUEPRINT_V2" >/dev/null || return 1
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
     local result
-    result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 1)
+    result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 3)
     assert_contains "$result" "deploymentId" "Canary started with deployment ID"
     DEPLOYMENT_ID=$(deploy_extract_id "$result")
     assert_ne "$DEPLOYMENT_ID" "" "Captured deployment ID from start response"

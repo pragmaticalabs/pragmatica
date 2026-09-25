@@ -234,7 +234,7 @@ instances = 3
 
 [[slices]]
 artifact = "com.example:inventory-service:1.0.0"
-instances = 2
+instances = 3
 ```
 
 ### Load Configuration (load-config.toml)
