@@ -110,19 +110,28 @@ class RabiaSyncAdoptionOwnSnapshotTest {
         assertThat(engine.currentPhaseForTesting()).isEqualTo(OWN_PHASE);
     }
 
-    /// CONTROL — the adoption rule is untouched: a responder AHEAD of self is the source, and self's
-    /// snapshot is not installed over it.
+    /// CONTROL — the adoption rule is untouched: a responder AHEAD of self is the source, and the
+    /// state the node activates on is the responder's.
+    ///
+    /// Under #1390 the node's own checkpoint is installed at BOOT (`ensureRecovered`) before any sync
+    /// round, so self's snapshot is installed first and the responder's replaces it on adoption. rc4
+    /// (#1020) pinned "exactly one install" because it installed nothing at boot; the property that
+    /// matters is which state the node ACTIVATES on, so that is what is asserted: the last install is
+    /// the responder's, nothing is installed after it, and the phase is the responder's. In the window
+    /// before adoption the node is not active and casts no votes; its store holds its own committed
+    /// history (phase 5), which it also offers to peers' sync requests — committed, merely older.
     @Test
-    void responderAhead_adoptsTheResponder_notOwnSnapshot() {
+    void responderAhead_adoptsTheResponder_finalStateIsTheResponders() {
         var stateMachine = new RecordingStateMachine();
         var engine = coldStarted(3, stateMachine, durableAt(OWN_PHASE, OWN_SNAPSHOT));
 
         engine.processSyncResponse(cold(NODE_2, Phase.phase(10), PEER_SNAPSHOT));
         assertThat(awaitActive(engine)).isTrue();
-        assertThat(stateMachine.lastRestored()).as("a response ahead of self remains the source")
+        assertThat(stateMachine.restores()).as("the responder's snapshot is the LAST install — the node activates on it, not on its own")
+                  .isNotEmpty()
+                  .last()
                   .isEqualTo(PEER_SNAPSHOT);
-        assertThat(stateMachine.restoreCount()).as("exactly one install — the peer's").isEqualTo(1);
-        assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(10));
+        assertThat(engine.currentPhaseForTesting()).as("the adopted phase is the responder's").isEqualTo(Phase.phase(10));
     }
 
     /// CONTROL — a persisted phase with an EMPTY snapshot (the shape `reconfigure` saves) installs
@@ -289,13 +298,13 @@ class RabiaSyncAdoptionOwnSnapshotTest {
     }
 
     private static final class RecordingStateMachine extends TestStateMachine {
+        private final List<byte[]> restores = new CopyOnWriteArrayList<>();
         private volatile byte[] lastRestored;
-        private volatile int restoreCount;
 
         @Override
         public Result<Unit> restoreSnapshot(byte[] snapshot) {
+            restores.add(snapshot);
             lastRestored = snapshot;
-            restoreCount++;
 
             return super.restoreSnapshot(snapshot);
         }
@@ -308,8 +317,9 @@ class RabiaSyncAdoptionOwnSnapshotTest {
             lastRestored = null;
         }
 
-        int restoreCount() {
-            return restoreCount;
+        /// Every install in order; the last one is the state the machine holds.
+        List<byte[]> restores() {
+            return List.copyOf(restores);
         }
     }
 

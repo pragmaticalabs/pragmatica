@@ -59,27 +59,23 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #1020 — the re-persist that follows a restore is the one `persistence.save` whose failure nobody
-/// used to hear, and its silence re-arms this very ticket.
+/// #1020 → #1468 — the re-persist that follows restoring a node's own durable history.
 ///
-/// `applyRestoredState` discarded the `Result<Unit>` outright. The other three save sites (pause,
-/// reconfigure, stop) all attach `.onFailure(log::error)`, and `GitBackedPersistence` carries no
-/// logger of its own — so this path was silent from end to end, while the next line announced
-/// `"restored state from persistence"` at INFO regardless. That save is what makes the restored
-/// state durable for the NEXT restart: when it fails the node is correct in memory and stale on
-/// disk, comes up ACTIVE, answers for the operator's key, and loses it again one restart later with
-/// no diagnostic anywhere.
+/// **Decided (owner ruling, session 27): fail closed.** rc4 (#1020) let the node ACTIVATE after that
+/// save failed, on the restore it held in memory, and pinned only that the failure was logged. That is
+/// a durability risk: the node serves and votes on state its disk does not hold, and loses it one
+/// restart later. Under #1390's boot recovery the save is the checkpoint that publishes the recovered
+/// prefix (`RabiaEngine.recoverLocalState` → `saveAuthority`), and its failure stops consensus
+/// participation — the node never activates and says so at ERROR. #1468 stays OPEN for bounded wedge
+/// vs termination and for the start promise.
 ///
-/// **This test is an instrument, and its assertions are deliberately positive.** A renamed logger, a
-/// detached appender or a swallowed setup failure leaves the capture EMPTY, which fails
-/// `isNotEmpty()` — the safe direction. The control below is what distinguishes "the engine logged
-/// nothing because the save succeeded" from "the appender never worked": it runs the identical
-/// restore with a SUCCEEDING save and asserts the capture holds no failure line, and it is
-/// meaningful only because the sibling test proves the same wiring can capture one.
+/// **This test is an instrument, and its assertions are deliberately positive.** A renamed logger or a
+/// detached appender leaves the capture EMPTY, which fails `isNotEmpty()`. The control runs the
+/// identical restore with a SUCCEEDING save and asserts the node activates and logs no failure — it is
+/// what makes the failing arm's inactivity a genuine refusal rather than a fixture that never ran.
 class RabiaRestoredStateSaveFailureLogTest {
     private static final String LOGGER_NAME = RabiaEngine.class.getName();
-    private static final String FAILURE_FRAGMENT = "FAILED to persist";
-    private static final String CONSEQUENCE_FRAGMENT = "in memory ONLY";
+    private static final String FAILURE_FRAGMENT = "stopped consensus participation because durable history failed";
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
     private static final long ACTIVATION_TIMEOUT_MILLIS = 5_000;
@@ -122,23 +118,28 @@ class RabiaRestoredStateSaveFailureLogTest {
     }
 
     /// A restart from disk restores its own snapshot, and the re-persist that should make the restore
-    /// durable fails. The node still activates — the restore held in memory — so the ONLY thing that
-    /// can tell an operator the disk is now stale is this ERROR.
+    /// durable fails. The node must fail closed — never activate on history its disk does not hold —
+    /// and the ERROR must name that consensus participation stopped, with the cause.
     @Test
-    void restoredStateSaveFails_logsAtErrorNamingTheConsequence() {
+    void restoredStateSaveFails_failsClosedAndLogsAtError() {
         var stateMachine = new RecordingStateMachine();
-        var engine = coldStarted(3, stateMachine, failingSaveAt(OWN_PHASE, OWN_SNAPSHOT));
+        var started = started(3, stateMachine, failingSaveAt(OWN_PHASE, OWN_SNAPSHOT));
 
-        engine.processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
+        started.engine().processSyncResponse(cold(NODE_2, Phase.phase(4), PEER_SNAPSHOT));
 
-        assertThat(awaitActive(engine)).as("a failed re-persist must not stop the node activating on the restore it did make")
-                  .isTrue();
-        assertThat(stateMachine.lastRestored()).as("precondition: the restore path must actually have run")
+        assertThat(awaitActive(started.engine())).as("""
+                                                    a failed re-persist of restored own history must FAIL CLOSED (owner ruling, \
+                                                    session 27, #1468): rc4 activated here on in-memory state its disk did not hold\
+                                                    """)
+                  .isFalse();
+        assertThat(stateMachine.lastRestored()).as("precondition: the restore itself must have run — only the save failed")
                   .isEqualTo(OWN_SNAPSHOT);
-        assertThat(appender.capturedErrors()).as("a failed re-persist after a restore must be logged at ERROR, not discarded")
+        assertThat(started.network().getMessages())
+            .as("fail-closed never enters synchronization")
+            .noneMatch(SyncRequest.class::isInstance);
+        assertThat(appender.capturedErrors()).as("the failed re-persist must be logged at ERROR, naming the consequence and the cause")
                   .isNotEmpty()
                   .anyMatch(message -> message.contains(FAILURE_FRAGMENT)
-                                       && message.contains(CONSEQUENCE_FRAGMENT)
                                        && message.contains(DISK_FULL.message()));
     }
 
@@ -207,6 +208,24 @@ class RabiaRestoredStateSaveFailureLogTest {
     private RabiaEngine<TestCommand> coldStarted(int clusterSize,
                                                  StateMachine<TestCommand> stateMachine,
                                                  RabiaPersistence<TestCommand> persistence) {
+        var started = started(clusterSize, stateMachine, persistence);
+
+        assertThat(awaitCondition(() -> started.network()
+                                               .getMessages()
+                                               .stream()
+                                               .anyMatch(SyncRequest.class::isInstance))).as("engine must have started its sync round before responses are delivered")
+                  .isTrue();
+
+        return started.engine();
+    }
+
+    private record Started(RabiaEngine<TestCommand> engine, TestClusterNetwork network) {}
+
+    /// Constructs and notifies the engine without waiting for a sync round — the fail-closed arm never
+    /// starts one.
+    private Started started(int clusterSize,
+                            StateMachine<TestCommand> stateMachine,
+                            RabiaPersistence<TestCommand> persistence) {
         var network = new TestClusterNetwork();
         var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, clusterSize),
                                        network,
@@ -219,12 +238,8 @@ class RabiaRestoredStateSaveFailureLogTest {
 
         engines.add(engine);
         engine.clusterState(ClusterStateNotification.active());
-        assertThat(awaitCondition(() -> network.getMessages()
-                                               .stream()
-                                               .anyMatch(SyncRequest.class::isInstance))).as("engine must have started its sync round before responses are delivered")
-                  .isTrue();
 
-        return engine;
+        return new Started(engine, network);
     }
 
     private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
