@@ -285,6 +285,8 @@ class PartitionBackfillLiveInterleaveTest {
         backfillAcks.clear();
 
         handler.onReplicateEvents(replicateEvents(owner, STREAM, PARTITION, 13, List.of("forged-13".getBytes(UTF_8)), List.of(1013L), Epoch.ZERO));
+        // The owner is not ahead, so a re-verify that got past the gate would take the no-op re-ack path.
+        probeAnswer.resolve(Result.success(13L));
         var reverify = backfill.backfill(STREAM, PARTITION);
 
         assertThat(reverify.await().isFailure()).isTrue();
