@@ -543,8 +543,9 @@ public interface AetherNode extends ManageableNode {
                                                config.activationGated(),
                                                config.clusterFormation());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
-        var leaderTerm = new AtomicLong(0L);
-        Supplier<Long> rabiaTermSupplier = leaderTerm::get;
+        var leaderTerm = LeaderTerm.leaderTerm(config.self(),
+                                               () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class));
+        Supplier<Long> rabiaTermSupplier = leaderTerm::current;
         // Membership v2: decommission is NTT/membership-driven, not a KV atom. A decommissioned
         // node's process is gone; a restart is a fresh NTT-gated join, so there is no stale KV
         // STOPPED record to refuse rejoin against.
@@ -1535,7 +1536,7 @@ public interface AetherNode extends ManageableNode {
                                                    SliceCodec nodeCodec,
                                                    DHTNode dhtNode,
                                                    OwnershipEpochHighWater ownershipEpochHighWater,
-                                                   AtomicLong leaderTerm,
+                                                   LeaderTerm leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
                                                    AtomicReference<MembershipFsm> membershipFsmRef,
@@ -2653,7 +2654,7 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> pongSignalFan.sweepStale(readinessSweepMaxAgeNanos),
                                                                       config.timeouts().cluster().pingInterval(),
                                                                       config.timeouts().cluster().pingInterval()));
-        Supplier<Long> rabiaTermSupplier = leaderTerm::get;
+        Supplier<Long> rabiaTermSupplier = leaderTerm::current;
         // #114 W1: the cluster-sync ping carries a monotonic generation counter. Each node bumps its
         // OWN counter only while it is leader — ONCE PER pingInterval (1s default), so the counter is
         // a LEADERSHIP-TENURE TICK, not an event count: "1:4254" means rabiaTerm 1 with ~71 minutes of
@@ -2664,7 +2665,7 @@ public interface AetherNode extends ManageableNode {
         // leaderTerm increments and a new leader's lower local counter still orders strictly after
         // the prior epoch via the term.
         var generationCounter = new AtomicLong(0L);
-        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), generationCounter.get());
+        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.current(), generationCounter.get());
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier,
                                                                                                    generationCounter),
@@ -4051,7 +4052,7 @@ public interface AetherNode extends ManageableNode {
                                                                  presenceSampler,
                                                                  membershipFsm,
                                                                  configuredCoreCountSupplier,
-                                                                 leaderTerm::get,
+                                                                 leaderTerm::current,
                                                                  clusterTopologyManager,
                                                                  clusterNameSupplier,
                                                                  TimeSource.system(),
@@ -4430,7 +4431,7 @@ public interface AetherNode extends ManageableNode {
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
                                                               rabiaTermSupplier,
                                                               () -> isLeaderSupplier.getAsBoolean()
-                                                                    ? Option.some(leaderTerm.get())
+                                                                    ? Option.some(leaderTerm.current())
                                                                     : Option.<Long> none(),
                                                               hlcClock,
                                                               membershipFsm::coreCountedMembers,
@@ -6525,10 +6526,10 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,
-                                                   AtomicLong leaderTerm,
+                                                   LeaderTerm leaderTerm,
                                                    BootstrapModule bootstrap) {
         if (change.localNodeIsLeader()) {
-            leaderTerm.incrementAndGet();
+            leaderTerm.onLeaderGained();
             bootstrap.onLeaderGained();
         } else {
             bootstrap.onLeaderLost();
