@@ -112,7 +112,11 @@ class CommunityHealthIndexTest {
         assertThat(index.accept(governor, report(request, 100))).isTrue();
         assertThat(index.isReachable(worker)).isFalse();
     }
-    @Test void regressedMemberEpochExcludesOnlyThatMemberAndRecoversOnNewEpoch() {
+    /// `MemberHealth.incarnation` is the member's boot token — equality only, never ordered (owner
+    /// ruling, session 28). The index no longer ranks tokens: it reports the governor's direct view, and
+    /// the membership FSM owns the token gate for the positive evidence derived from it. This replaced
+    /// #1390's "a regressed epoch excludes the member" ordering.
+    @Test void memberTokenChange_isReportedAsObserved_tokenGateBelongsToMembership() {
         var first = index.request("community").unwrap();
         assertThat(index.accept(governor, report(first, 0))).isTrue();
         var next = index.request("community").unwrap();
@@ -120,13 +124,9 @@ class CommunityHealthIndexTest {
         assertThat(index.accept(governor, new Report(governor, "community", next.governorTerm(),
             next.incarnation(), next.sequence(), List.of(new MemberHealth(worker, 1, true, true, zero),
                 new MemberHealth(governor, 4, true, true, zero))))).isTrue();
-        assertThat(index.isReady(worker)).isFalse();
+        assertThat(index.isReady(worker)).isTrue();
         assertThat(index.isReady(governor)).isTrue();
         assertThat(index.hasFreshReport("community")).isTrue();
-        var recovered = index.request("community").unwrap();
-        assertThat(index.accept(governor, new Report(governor, "community", recovered.governorTerm(),
-            recovered.incarnation(), recovered.sequence(), List.of(new MemberHealth(worker, 3, true, true, zero))))).isTrue();
-        assertThat(index.isReady(worker)).isTrue();
     }
 
     private static GovernorAnnouncementValue announcement(NodeId governor, long term) {

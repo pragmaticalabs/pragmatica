@@ -26,17 +26,26 @@ class CommunityHealthReporterTest {
         var request = new Request(core, "c", authority.communityTerm(), "challenge", 1);
         reporter.recordPong(new NodeId("other"), "READY", 42L, observation(1));
         assertThat(reporter.respond(core, request).unwrap().members()).isEmpty();
-        reporter.recordPong(worker, "READY", 42L, observation(2));
-        reporter.recordPong(worker, "DRAINING", 42L, observation(1));
-        assertThat(reporter.respond(core, request).unwrap().members().getFirst().ready()).isTrue();
+        reporter.recordPong(worker, "READY", 42L, observation(1, 2));
+        reporter.recordPong(worker, "DRAINING", 42L, observation(1, 1));
+        assertThat(reporter.respond(core, request).unwrap().members().getFirst().ready())
+            .as("same boot token, lower sequence: a stale replay").isTrue();
         assertThat(reporter.respond(core, request).unwrap().members().getFirst().incarnation()).isEqualTo(42L);
+        reporter.recordPong(worker, "DRAINING", 43L, observation(7, 1));
+        assertThat(reporter.respond(core, request).unwrap().members().getFirst().ready())
+            .as("a different boot token is a new process and supersedes (equality only)").isFalse();
+        assertThat(reporter.respond(core, request).unwrap().members().getFirst().incarnation()).isEqualTo(43L);
         clock.addAndGet(100_000_000);
         assertThat(reporter.respond(core, request).unwrap().members().getFirst().alive()).isFalse();
         assertThat(reporter.respond(worker, request).isEmpty()).isTrue();
         assertThat(reporter.respond(core, new Request(core, "c", authority.communityTerm() + 1, "challenge", 2)).isEmpty()).isTrue();
     }
     private static org.pragmatica.cluster.metrics.MetricObservation observation(long incarnation) {
-        return new org.pragmatica.cluster.metrics.MetricObservation(incarnation, 1, System.currentTimeMillis(), Map.of());
+        return observation(incarnation, 1);
+    }
+
+    private static org.pragmatica.cluster.metrics.MetricObservation observation(long incarnation, long sequence) {
+        return new org.pragmatica.cluster.metrics.MetricObservation(incarnation, sequence, System.currentTimeMillis(), Map.of());
     }
 
 }
