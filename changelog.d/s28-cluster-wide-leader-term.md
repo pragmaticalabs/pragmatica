@@ -4,16 +4,23 @@
   `KVStore.staleEpochWrite` refuses an `EpochBearing` write whose epoch is strictly older than the
   committed one. After a failover to a node that had led fewer times than the previous leader (or had
   restarted since), the new leader's consumer-assignment and stream-partition-ownership rewrites were
-  refused: the assignment stayed pinned to the dead node, so the live consumer's cursor checkpoints were
-  refused by the assignment guard too. [verified: `aether/node/src/test/java/org/pragmatica/aether/node/LeaderTermTest.java`]
+  refused. The assignment then stayed pinned to the dead node, and the assignment guard refused the live
+  consumer's cursor checkpoints as well. A successor on its first tenure minted the SAME term as a
+  predecessor also on its first tenure, so its epochs were never strictly after the prior leader's.
+  [mechanism: `KVStore.staleEpochWrite` over writers minting `Epoch(leaderTerm, n)`; reproduced through
+  the real applier in `aether/node/src/test/java/org/pragmatica/aether/node/LeaderTermTest.java`]
 - The term is now the committed `LeaderValue.viewSequence` of the election that named this node. The
   applier accepts a `LeaderKey` write only when its sequence is strictly greater than the committed one,
-  so every new leader orders strictly after every earlier committed leader, across nodes and across
+  so a new leader orders strictly after every earlier committed leader, across nodes and across
   process restarts. [mechanism: `LeaderTerm.onLeaderGained`; `KVStore.staleLeaderWrite`]
-- The same term fences the cluster-sync ping (`ClusterSyncCollector.acceptPingFencing` drops a ping
-  whose term is below the highest seen), so a lower-term leader's pings were also dropped by followers
-  until it had led enough times. The fix covers this path through the same supplier; no test pins it
-  directly. [mechanism: `AetherNode` `leaderEpochSupplier`] [unverified: no test drives the ping path
-  across a failover]
-- Not covered: a whole-cluster cold start with an empty store restarts the sequence at 1.
-  [unverified: cold-restart ordering is left to the planned cluster-incarnation epoch component]
+- The same term gates the cluster-sync ping: `ClusterSyncCollector.acceptPingFencing` drops a ping whose
+  term is below the highest one seen. So a lower-term leader's pings were dropped by followers, and their
+  observed generation epoch did not advance. The fix reaches this path through the same supplier, but no
+  test drives the ping across a failover. [design intent — unverified]
+- Not covered: a whole-cluster cold start with an empty store restarts the sequence at 1. The planned
+  cluster-incarnation epoch component addresses that case. [design intent — unverified]
+- Unchanged on purpose: `LeaderReconciler`'s re-election pre-latch still reads this process's own
+  leader-gain count (`LeaderTerm.localGainCount`), not the new term. Moving it to the cluster-wide
+  sequence would pre-latch the first leader after a whole-cluster restart, because the durable consensus
+  store's sequence is already above 1. [mechanism: `AetherNode` wires `leaderTerm::localGainCount` into
+  `LeaderReconciler`]

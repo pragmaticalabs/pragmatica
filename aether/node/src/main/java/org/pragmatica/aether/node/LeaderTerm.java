@@ -39,6 +39,7 @@ public final class LeaderTerm {
     private final NodeId self;
     private final Supplier<Option<LeaderValue>> committedLeader;
     private final AtomicLong term = new AtomicLong(0L);
+    private final AtomicLong localGains = new AtomicLong(0L);
 
     private LeaderTerm(NodeId self, Supplier<Option<LeaderValue>> committedLeader) {
         this.self = self;
@@ -54,9 +55,20 @@ public final class LeaderTerm {
         return term.get();
     }
 
+    /// How many times THIS process has gained leadership — NOT a term, and never an epoch component.
+    /// It exists only for `LeaderReconciler`'s re-election pre-latch, which read the old per-process
+    /// counter as "leader term". Switching that reader to the cluster-wide term would pre-latch the
+    /// first leader after a whole-cluster restart (the consensus store is durable, so its sequence is
+    /// already above 1) during a genuine slow re-formation; the switch is left to a deliberate ruling.
+    public long localGainCount() {
+        return localGains.get();
+    }
+
     /// Adopts the committed `viewSequence` of the election that named this node and returns the term
     /// now held. Max-merge: a replayed or out-of-order edge never regresses the term.
     public long onLeaderGained() {
+        localGains.incrementAndGet();
+
         return committedLeader.get()
                               .filter(this::namesSelf)
                               .map(LeaderValue::viewSequence)

@@ -4053,7 +4053,7 @@ public interface AetherNode extends ManageableNode {
                                                                  presenceSampler,
                                                                  membershipFsm,
                                                                  configuredCoreCountSupplier,
-                                                                 leaderTerm::current,
+                                                                 leaderTerm::localGainCount,
                                                                  clusterTopologyManager,
                                                                  clusterNameSupplier,
                                                                  TimeSource.system(),

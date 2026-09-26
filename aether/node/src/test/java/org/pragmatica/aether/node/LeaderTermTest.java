@@ -90,6 +90,18 @@ class LeaderTermTest {
         assertThat(terms.get(NODE_A).onLeaderGained()).isEqualTo(termA);
     }
 
+    /// `LeaderReconciler`'s re-election pre-latch keeps its per-process meaning: it counts THIS node's
+    /// gains, independent of the cluster-wide term the epochs are minted from.
+    @Test
+    void localGainCount_countsThisProcessesGains_independentOfTheClusterWideTerm() {
+        electThenLead(NODE_A, NODE_B, NODE_A);
+        var termC = elect(NODE_C);
+
+        assertThat(terms.get(NODE_A).localGainCount()).isEqualTo(2L);
+        assertThat(terms.get(NODE_C).localGainCount()).isEqualTo(1L);
+        assertThat(termC).isEqualTo(4L);
+    }
+
     /// The consumer-group consequence: A assigned the partition to itself; after A dies, C must move the
     /// assignment. A refused rewrite leaves the record pinned to the dead node, and every cursor
     /// checkpoint from the live consumer is then refused by the assignment guard.
