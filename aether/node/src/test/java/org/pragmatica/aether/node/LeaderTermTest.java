@@ -9,12 +9,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import io.netty.buffer.ByteBuf;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
-import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -28,12 +24,19 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.pragmatica.lang.Option.some;
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// S28: the leader term every leader-authored `Epoch(rabiaTerm, counter)` is minted from must order a
 /// new leader strictly after EVERY prior leader, cluster-wide — not merely after this node's own earlier
@@ -67,8 +70,7 @@ class LeaderTermTest {
         var termA = electThenLead(NODE_A, NODE_B, NODE_A);
         var termC = elect(NODE_C);
 
-        assertThat(termC).as("C (first tenure) must out-rank A (second tenure, term %d)", termA)
-                         .isGreaterThan(termA);
+        assertThat(termC).as("C (first tenure) must out-rank A (second tenure, term %d)", termA).isGreaterThan(termA);
     }
 
     @Test
@@ -77,7 +79,6 @@ class LeaderTermTest {
         var restarted = termOf(NODE_A);
 
         commitLeader(NODE_A);
-
         assertThat(restarted.onLeaderGained()).isGreaterThan(priorTerm);
     }
 
@@ -86,7 +87,6 @@ class LeaderTermTest {
         var termA = elect(NODE_A);
 
         commitLeader(NODE_B);
-
         assertThat(terms.get(NODE_A).onLeaderGained()).isEqualTo(termA);
     }
 
@@ -108,24 +108,20 @@ class LeaderTermTest {
     @Test
     void consumerAssignment_movesToTheNewLeadersAssignee_afterFailoverToANodeThatLedLessOften() {
         electThenLead(NODE_A, NODE_B, NODE_A);
-        apply(assignmentWriter(NODE_A).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(NODE_A))));
+        commit(assignmentWriter(NODE_A).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(NODE_A))));
         elect(NODE_C);
-
-        apply(assignmentWriter(NODE_C).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(NODE_C))));
-
-        assertThat(committedAssignment().map(ConsumerAssignmentValue::assignee)).isEqualTo(Option.some(NODE_C));
+        commit(assignmentWriter(NODE_C).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(NODE_C))));
+        assertThat(committedAssignment().map(ConsumerAssignmentValue::assignee)).isEqualTo(some(NODE_C));
     }
 
     /// The stream-ownership consequence, through the same applier fence.
     @Test
     void streamOwnership_movesToTheNewLeadersOwner_afterFailoverToANodeThatLedLessOften() {
         electThenLead(NODE_A, NODE_B, NODE_A);
-        apply(ownershipWriter(NODE_A, NODE_A).writeOwnershipChange(STREAM, PARTITION).stream().toList());
+        commit(ownershipWriter(NODE_A, NODE_A).writeOwnershipChange(STREAM, PARTITION).stream().toList());
         elect(NODE_C);
-
-        apply(ownershipWriter(NODE_C, NODE_C).writeOwnershipChange(STREAM, PARTITION).stream().toList());
-
-        assertThat(committedOwnership().map(StreamPartitionOwnershipValue::owner)).isEqualTo(Option.some(NODE_C));
+        commit(ownershipWriter(NODE_C, NODE_C).writeOwnershipChange(STREAM, PARTITION).stream().toList());
+        assertThat(committedOwnership().map(StreamPartitionOwnershipValue::owner)).isEqualTo(some(NODE_C));
     }
 
     /// Control inside the scenario: the writers DO emit, and the store DOES apply, when leadership never
@@ -133,11 +129,9 @@ class LeaderTermTest {
     @Test
     void consumerAssignment_moves_whenTheSameLeaderReassigns() {
         elect(NODE_A);
-        apply(assignmentWriter(NODE_A).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(NODE_A))));
-
-        apply(assignmentWriter(NODE_A).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(NODE_C))));
-
-        assertThat(committedAssignment().map(ConsumerAssignmentValue::assignee)).isEqualTo(Option.some(NODE_C));
+        commit(assignmentWriter(NODE_A).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(NODE_A))));
+        commit(assignmentWriter(NODE_A).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(NODE_C))));
+        assertThat(committedAssignment().map(ConsumerAssignmentValue::assignee)).isEqualTo(some(NODE_C));
     }
 
     private long electThenLead(NodeId... history) {
@@ -156,21 +150,22 @@ class LeaderTermTest {
         commitLeader(node);
         leader.set(node);
 
-        return terms.get(node).onLeaderGained();
+        return terms.get(node)
+                    .onLeaderGained();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void commitLeader(NodeId node) {
         kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE,
-                                                                                LeaderValue.leaderValue(node,
-                                                                                                        viewSequence.incrementAndGet())))));
+                                                                               LeaderValue.leaderValue(node,
+                                                                                                       viewSequence.incrementAndGet())))));
     }
 
     private LeaderTerm termOf(NodeId node) {
         return LeaderTerm.leaderTerm(node, () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class));
     }
 
-    private void apply(List<KVCommand<AetherKey>> commands) {
+    private void commit(List<KVCommand<AetherKey>> commands) {
         assertThat(commands).as("the leader's writer emitted nothing to apply").isNotEmpty();
         kvStore.process(kvStore.createBatch(commands));
     }
@@ -192,7 +187,7 @@ class LeaderTermTest {
                                                                              (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                              partition),
                                                                                                                      StreamPartitionOwnershipValue.class),
-                                                                             (_, _) -> Option.some(owner));
+                                                                             (_, _) -> some(owner));
     }
 
     private Option<ConsumerAssignmentValue> committedAssignment() {
@@ -206,7 +201,7 @@ class LeaderTermTest {
     }
 
     private static PartitionAssignment assigned(NodeId consumer) {
-        return new PartitionAssignment(PARTITION, Option.some(consumer), Option.some(consumer));
+        return new PartitionAssignment(PARTITION, some(consumer), some(consumer));
     }
 
     private static Serializer stubSerializer() {
@@ -219,6 +214,7 @@ class LeaderTermTest {
     private static Deserializer stubDeserializer() {
         return new Deserializer() {
             @Override
+            @NullReturn
             public <T> T read(ByteBuf byteBuf) {
                 return null;
             }

@@ -13,6 +13,11 @@
   applier accepts a `LeaderKey` write only when its sequence is strictly greater than the committed one,
   so a new leader orders strictly after every earlier committed leader, across nodes and across
   process restarts. [mechanism: `LeaderTerm.onLeaderGained`; `KVStore.staleLeaderWrite`]
+- Across two real leader kills in a five-node in-JVM cluster, each successor's minted term equals its
+  committed `viewSequence` and is strictly above its predecessor's. With the old counter the first
+  successor minted term 1 against a committed sequence of 2.
+  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/LeaderTermFailoverTest.java`,
+  `@Tag("Heavy")` — runs in the heavy-forge workflow, not the default CI forge job]
 - The same term gates the cluster-sync ping: `ClusterSyncCollector.acceptPingFencing` drops a ping whose
   term is below the highest one seen. So a lower-term leader's pings were dropped by followers, and their
   observed generation epoch did not advance. The fix reaches this path through the same supplier, but no
