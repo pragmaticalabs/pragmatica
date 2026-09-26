@@ -125,12 +125,9 @@ public final class CommunityHealthIndex {
         var request = pending.remove(report.communityId());
         long now = clock.nanoTime();
         var members = new HashMap<NodeId, MemberHealth>();
-
         // MemberHealth.incarnation is the member's boot token (equality only, never ordered). The
         // membership FSM owns the token gate for the positive evidence derived from this report.
-        report.members()
-              .forEach(value -> members.put(value.node(),
-                                            value));
+        report.members().forEach(value -> members.put(value.node(), value));
         observations.put(report.communityId(),
                          new Observation(report,
                                          now,

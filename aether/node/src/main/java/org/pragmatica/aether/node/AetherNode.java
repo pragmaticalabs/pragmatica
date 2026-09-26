@@ -735,7 +735,8 @@ public interface AetherNode extends ManageableNode {
     /// and then the phase header. Remove exactly that envelope; malformed headers and payloads remain
     /// typed decode failures.
     static Result<byte[]> base64ToSnapshot(String encoded) {
-        var payload = encoded.replaceFirst("\\A(?:# (?:Voter|Handoff)[A-Za-z-]*: [^\\r\\n]*\\R)*(?:# Phase: [0-9]+\\R)?", "")
+        var payload = encoded.replaceFirst("\\A(?:# (?:Voter|Handoff)[A-Za-z-]*: [^\\r\\n]*\\R)*(?:# Phase: [0-9]+\\R)?",
+                                           "")
                              .trim();
 
         return Result.lift(Causes::fromThrowable,

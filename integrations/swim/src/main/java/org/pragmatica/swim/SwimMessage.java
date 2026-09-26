@@ -83,7 +83,11 @@ public sealed interface SwimMessage {
     /// A single membership update disseminated via piggyback. `bootToken` is the subject's
     /// per-process random boot token as known to the sender (`0` = unknown; equality only).
     @Codec
-    record MembershipUpdate(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address, long bootToken) {
+    record MembershipUpdate(NodeId nodeId,
+                            MemberState state,
+                            long incarnation,
+                            InetSocketAddress address,
+                            long bootToken) {
         /// An update carrying no process token (`0`): never token-gated.
         public static MembershipUpdate membershipUpdate(NodeId nodeId,
                                                         MemberState state,

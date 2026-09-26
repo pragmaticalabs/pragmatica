@@ -115,9 +115,11 @@ import org.slf4j.LoggerFactory;
 /// monitor so the streak / co-confirmation flags stay internally consistent.
 public final class MembershipFsm {
     private static final Logger log = LoggerFactory.getLogger(MembershipFsm.class);
+
     /// Process evidence (governor report / worker admission) refused because it came from a
     /// different process (boot token) or reached a DEAD/DEPARTING identity. Read by tests/diagnostics.
     private final AtomicLong refusedProcessEvidence = new AtomicLong();
+
     /// FSM kind tag — groups all per-member FSMs under one name for observer dashboards.
     private static final String FSM_KIND = "membership";
     /// Up-hysteresis promotion threshold for this **edge-driven** manager (= 1). SWIM emits
@@ -2114,16 +2116,16 @@ public final class MembershipFsm {
         /// hysteresis.
         synchronized Option<String> processEvidenceRefusal(long bootToken) {
             if (isDead() || isDeparting()) {
-                return Option.some("identity is " + stateName() + " (terminal removal: a new process needs a fresh NodeId)");
+                return Option.some("identity is " + stateName()
+                                  + " (terminal removal: a new process needs a fresh NodeId)");
             }
 
-            var context = fsm.current()
-                             .ctx();
+            var context = fsm.current().ctx();
 
             return context.acceptBootToken(bootToken)
                    ? Option.none()
-                   : Option.some("boot token " + bootToken + " differs from this identity's process token "
-                                 + context.bootToken());
+                   : Option.some("boot token " + bootToken
+                                + " differs from this identity's process token " + context.bootToken());
         }
 
         /// FSM-state → quiescence health-hint projection. DEAD → FAULTY (unconditional); SUSPECT →

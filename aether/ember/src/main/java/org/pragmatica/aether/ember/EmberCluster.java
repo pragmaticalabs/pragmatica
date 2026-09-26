@@ -124,7 +124,6 @@ public final class EmberCluster {
     private final int initialClusterSize;
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
-
     private final int basePort;
     private final int baseMgmtPort;
     private final int baseAppHttpPort;

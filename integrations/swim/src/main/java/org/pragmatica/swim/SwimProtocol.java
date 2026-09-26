@@ -1618,7 +1618,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         // Boot-token gate (owner ruling, session 28): an ANNOUNCE from a different process for a
         // known identity retires it — the old process is treated as dead, the new one refused. It
         // runs BEFORE the tombstone clear so a refused process can never reopen the identity.
-        if (!admitsBootToken(announce.nodeInfo().id(), announce.bootToken())) {
+        if (!admitsBootToken(announce.nodeInfo().id(),
+                             announce.bootToken())) {
             return;
         }
 
@@ -1884,7 +1885,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// A self-update about a previous process of this NodeId: it carries a token that is neither
     /// unknown nor this process's own.
     private boolean isAboutAnotherProcess(MembershipUpdate update) {
-        return update.bootToken() != 0L && selfBootToken.get() != 0L && update.bootToken() != selfBootToken.get();
+        return update.bootToken() != 0L
+               && selfBootToken.get() != 0L
+               && update.bootToken() != selfBootToken.get();
     }
 
     /// Count of evidence refused by the boot-token gate — observability for the terminal-removal rule.
@@ -1941,7 +1944,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         seeds.stream()
              .takeWhile(_ -> !announceStopped.get())
              .forEach(seed -> transport.send(seed,
-                                             Announce.announce(self, clusterName, incarnation, selfBootToken.get())));
+                                             Announce.announce(self,
+                                                               clusterName,
+                                                               incarnation,
+                                                               selfBootToken.get())));
         if (attempt >= 60) {
             cancelAnnounce(future, self, "max attempts reached");
         }
@@ -2095,7 +2101,11 @@ public final class SwimProtocol implements SwimMessageHandler {
         // means this node's liveness traffic was too slow to pre-empt it — local
         // trouble, LHM rises once per suspicion event.
         lhmIncrement("self suspected/faulted by a remote node (missed refutation traffic)");
-        addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, bumped, selfAddress, selfBootToken.get()));
+        addMemberUpdate(MembershipUpdate.membershipUpdate(selfId,
+                                                          MemberState.ALIVE,
+                                                          bumped,
+                                                          selfAddress,
+                                                          selfBootToken.get()));
     }
 
     private void applyNewMember(MembershipUpdate update) {
