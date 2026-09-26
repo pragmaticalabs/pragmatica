@@ -112,7 +112,8 @@ public final class CommunityHealthReporter {
 
         var previous = Option.option(direct.get(sender));
 
-        if (previous.filter(value -> value.incarnation() > incarnation || value.incarnation() == incarnation && value.sequence() >= sequence)
+        // Boot token, equality only: a different token is a new process and supersedes.
+        if (previous.filter(value -> value.incarnation() == incarnation && value.sequence() >= sequence)
                     .isPresent()) {
             return;
         }

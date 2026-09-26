@@ -31,7 +31,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.config.ConfigService;
-import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.dht.DHTConfig;
@@ -140,8 +139,7 @@ class SliceDrainGuardWiringBootTest {
                                .tls(Option.none())
                                .quicTls(TlsConfig.selfSignedMutual())
                                .certificateProvider(Option.none())
-                               .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
-                                                                                                ConfigurationProvider.builder().build())))
+                               .configProvider(Option.none())
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))

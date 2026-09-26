@@ -158,11 +158,7 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                                 tempDir.resolve("snapshots").toString(),
                                                 1000, "60s", 5, "", true);
 
-        var config = minimalConfig(environment, encryption, artifactsConfig, tempDir);
-        assertThat(AetherNode.defaultConsensusDirectory(config).toAbsolutePath().normalize()
-            .startsWith(Path.of(artifactsConfig.diskPath()).toAbsolutePath().normalize()))
-            .as("consensus WAL must not create apparent plaintext blocks in encrypted artifact storage").isFalse();
-        node = AetherNode.aetherNode(config, () -> {})
+        node = AetherNode.aetherNode(minimalConfig(environment, encryption, artifactsConfig), () -> {})
                           .onFailure(cause -> fail("construction must not touch the DHT any more (#858), even with "
                                                   + "a keyring configured - " + cause.message()))
                           .unwrap();
@@ -424,13 +420,12 @@ class AetherNodeDhtMarkerPostFormationBootTest {
         return minimalConfig(environment,
                              storageEncryption,
                              HermeticStorage.storageConfigAt(HermeticStorage.uncreatableRootIn(storageRoot),
-                                                             storageEncryption.isPresent()), storageRoot);
+                                                             storageEncryption.isPresent()));
     }
 
     private static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
                                                   Option<StorageEncryptionConfig> storageEncryption,
-                                                  StorageConfig artifactsConfig,
-                                                  Path controlRoot) {
+                                                  StorageConfig artifactsConfig) {
         var self = NodeId.nodeId("dht-marker-post-formation-" + UUID.randomUUID()).unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -438,10 +433,7 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                 .self(self).coreNodes(List.of(selfInfo)).managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
                                 .sliceConfig(SliceConfig.sliceConfig()).artifactRepo(DHTConfig.FULL).coreMax(1)
                                 .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none()).quicTls(TlsConfig.selfSignedMutual())
-                                .certificateProvider(Option.none())
-                                .configProvider(Option.some(HermeticStorage.withControlStorageIn(controlRoot.resolve(self.id()),
-                                    org.pragmatica.config.ConfigurationProvider.builder().build())))
-                                .environment(environment)
+                                .certificateProvider(Option.none()).configProvider(Option.none()).environment(environment)
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(Map.of("artifacts", artifactsConfig))
                                 .build().withStorageEncryption(storageEncryption);

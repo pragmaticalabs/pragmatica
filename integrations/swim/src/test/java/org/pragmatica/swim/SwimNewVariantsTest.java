@@ -135,7 +135,7 @@ class SwimNewVariantsTest {
 
         @Test
         void constructor_allFields_roundTripPreservesAllFields() {
-            var msg = new Announce(NODE_INFO, CLUSTER, INCARNATION);
+            var msg = Announce.announce(NODE_INFO, CLUSTER, INCARNATION);
 
             assertThat(msg.nodeInfo()).isEqualTo(NODE_INFO);
             assertThat(msg.clusterName()).isEqualTo(CLUSTER);

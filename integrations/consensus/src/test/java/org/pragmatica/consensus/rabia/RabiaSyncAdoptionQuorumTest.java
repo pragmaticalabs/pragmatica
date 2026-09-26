@@ -186,10 +186,9 @@ class RabiaSyncAdoptionQuorumTest {
         /// silently discard a committed phase this node may be the sole surviving witness of.
         ///
         /// Self is a FLOOR, not an adopted candidate — so the assertion is that the RESPONDERS' snapshot
-        /// was not installed. What IS installed is self's own durable checkpoint: #1390 restores it at
-        /// boot before collecting responses, and #1020 installs it when a cold process activates on its
-        /// own state over an EMPTY live store. Either way no older peer snapshot may overwrite that
-        /// recovered committed prefix. (Before #1020 this asserted that NOTHING was installed, which
+        /// was not installed. What IS installed is self's own durable checkpoint: #1020 installs it
+        /// when a cold process activates on its own state over an EMPTY live store, and no older peer
+        /// snapshot may overwrite that recovered committed prefix. (Before #1020 this asserted that NOTHING was installed, which
         /// holds for a resync from ACTIVE — where the live phase is at or past the persisted one — and
         /// not for a fresh process whose committed history sat on disk.)
         ///
@@ -366,10 +365,6 @@ class RabiaSyncAdoptionQuorumTest {
 
     private static RabiaPersistence<TestCommand> persistedAt(Phase phase, byte[] snapshot) {
         record fixed(Phase phase, byte[] snapshot) implements RabiaPersistence<TestCommand> {
-            @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> append(RabiaProtocolMessage message) {
-                return org.pragmatica.lang.Result.success(org.pragmatica.lang.Unit.unit());
-            }
-
             @Override
             public Result<Unit> save(StateMachine<TestCommand> stateMachine,
                                      Phase lastCommittedPhase,

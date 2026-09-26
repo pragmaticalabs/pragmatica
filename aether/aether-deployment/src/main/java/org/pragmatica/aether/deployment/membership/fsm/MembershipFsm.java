@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -114,6 +115,9 @@ import org.slf4j.LoggerFactory;
 /// monitor so the streak / co-confirmation flags stay internally consistent.
 public final class MembershipFsm {
     private static final Logger log = LoggerFactory.getLogger(MembershipFsm.class);
+    /// Process evidence (governor report / worker admission) refused because it came from a
+    /// different process (boot token) or reached a DEAD/DEPARTING identity. Read by tests/diagnostics.
+    private final AtomicLong refusedProcessEvidence = new AtomicLong();
     /// FSM kind tag — groups all per-member FSMs under one name for observer dashboards.
     private static final String FSM_KIND = "membership";
     /// Up-hysteresis promotion threshold for this **edge-driven** manager (= 1). SWIM emits
@@ -553,9 +557,9 @@ public final class MembershipFsm {
                                   String community,
                                   NodeId governor,
                                   long governorTerm,
-                                  long processEpoch,
+                                  long bootToken,
                                   MemberDescriptor admittedDescriptor) {
-        if (community.isBlank() || governorTerm < 0 || processEpoch < 0 || !("worker".equalsIgnoreCase(admittedDescriptor.role()) || "spot".equalsIgnoreCase(admittedDescriptor.role()))) {
+        if (community.isBlank() || governorTerm < 0 || bootToken == 0 || !("worker".equalsIgnoreCase(admittedDescriptor.role()) || "spot".equalsIgnoreCase(admittedDescriptor.role()))) {
             return;
         }
 
@@ -563,11 +567,11 @@ public final class MembershipFsm {
                    tracking -> tracking.inTransition(() -> {
                        tracking.updateDescriptor(admittedDescriptor);
                        if (tracking.descriptor()
-                                   .isCore() || !tracking.acceptsProcessEpoch(processEpoch)) {
+                                   .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "governor report")) {
                        return;
                    }
 
-                       tracking.dispatch(new MembershipEvent.GovernorHealthy(processEpoch,
+                       tracking.dispatch(new MembershipEvent.GovernorHealthy(bootToken,
                                                                              community,
                                                                              governor,
                                                                              governorTerm));
@@ -580,8 +584,8 @@ public final class MembershipFsm {
 
     /// Admission evidence is explicitly distinct from SWIM and committed-governor reports.
     @Contract
-    public void onWorkerAdmissionHealthy(NodeId id, long processEpoch, MemberDescriptor descriptor) {
-        if (processEpoch < 0 || !("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))) {
+    public void onWorkerAdmissionHealthy(NodeId id, long bootToken, MemberDescriptor descriptor) {
+        if (bootToken == 0 || !("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))) {
             return;
         }
 
@@ -589,16 +593,38 @@ public final class MembershipFsm {
                    tracking -> tracking.inTransition(() -> {
                        tracking.updateDescriptor(descriptor);
                        if (tracking.descriptor()
-                                   .isCore() || !tracking.acceptsProcessEpoch(processEpoch)) {
+                                   .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "worker admission")) {
                        return;
                    }
 
-                       tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(processEpoch));
+                       tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(bootToken));
                        tracking.clearConfirmedDeath();
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
                        tracking.dispatch(new UpHysteresisMet());
                    }
                    }));
+    }
+
+    /// Boot-token gate for process evidence (owner ruling, session 28). DEAD and DEPARTING refuse it
+    /// unconditionally — terminal removal, a dead identity never returns. Other states accept the
+    /// first token seen or an EQUAL one; a different token is a different process and is refused.
+    /// Every refusal is counted and logged, never silently dropped.
+    private boolean admitsProcessEvidence(NodeId id, MemberTracking tracking, long bootToken, String kind) {
+        var refusal = tracking.processEvidenceRefusal(bootToken);
+
+        refusal.onPresent(reason -> recordProcessEvidenceRefusal(id, kind, reason));
+
+        return refusal.isEmpty();
+    }
+
+    private void recordProcessEvidenceRefusal(NodeId id, String kind, String reason) {
+        refusedProcessEvidence.incrementAndGet();
+        log.warn("MembershipFsm refused {} for {}: {}", kind, id, reason);
+    }
+
+    /// Count of refused process-evidence events (boot-token mismatch or DEAD/DEPARTING identity).
+    public long refusedProcessEvidenceCount() {
+        return refusedProcessEvidence.get();
     }
 
     /// SWIM reported `id` SUSPECT at `incarnation`. Moves MEMBER→SUSPECT (which still counts toward
@@ -2083,17 +2109,21 @@ public final class MembershipFsm {
                       .lastSeenIncarnation();
         }
 
-        /// Rejected terminal evidence must not retract death confirmation or advance hysteresis.
-        synchronized boolean acceptsProcessEpoch(long processEpoch) {
-            return isDead() || isDeparting()
-                   ? processEpoch > processEpoch()
-                   : processEpoch >= processEpoch();
-        }
+        /// Why process evidence carrying `bootToken` is refused, or empty when it is admitted (the
+        /// first token is recorded). Refused evidence must not retract death confirmation or advance
+        /// hysteresis.
+        synchronized Option<String> processEvidenceRefusal(long bootToken) {
+            if (isDead() || isDeparting()) {
+                return Option.some("identity is " + stateName() + " (terminal removal: a new process needs a fresh NodeId)");
+            }
 
-        synchronized long processEpoch() {
-            return fsm.current()
-                      .ctx()
-                      .lastSeenProcessEpoch();
+            var context = fsm.current()
+                             .ctx();
+
+            return context.acceptBootToken(bootToken)
+                   ? Option.none()
+                   : Option.some("boot token " + bootToken + " differs from this identity's process token "
+                                 + context.bootToken());
         }
 
         /// FSM-state → quiescence health-hint projection. DEAD → FAULTY (unconditional); SUSPECT →

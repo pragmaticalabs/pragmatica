@@ -125,9 +125,6 @@ public final class EmberCluster {
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    private final Path consensusBase = Path.of(System.getProperty("java.io.tmpdir"),
-                                               "aether-ember-" + java.util.UUID.randomUUID());
-
     private final int basePort;
     private final int baseMgmtPort;
     private final int baseAppHttpPort;
@@ -1425,17 +1422,15 @@ public final class EmberCluster {
         }
     }
 
-    /// Genesis identity and consensus storage survive all in-process restarts of this cluster.
+    /// Genesis identity survives all in-process restarts of this cluster. Consensus state is
+    /// in-memory (owner ruling, session 28), so no consensus storage path is injected.
     private ConfigurationProvider nodeConfiguration(NodeId nodeId) {
         var genesis = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
                                                 .mapToObj(index -> nodeIdPrefix + "-" + index)
                                                 .collect(java.util.stream.Collectors.joining(","));
-        var directory = dataBaseDir.get().or(consensusBase).resolve(nodeId.id()).resolve("consensus");
         var builder = ConfigurationProvider.builder().withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
                                                                                                                   Map.of("cluster.genesis_voters",
-                                                                                                                         genesis,
-                                                                                                                         "cluster.consensus_path",
-                                                                                                                         directory.toString()),
+                                                                                                                         genesis),
                                                                                                                   Integer.MAX_VALUE));
 
         configProvider.onPresent(builder::withSource);

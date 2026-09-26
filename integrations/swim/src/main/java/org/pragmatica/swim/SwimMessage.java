@@ -50,10 +50,16 @@ public sealed interface SwimMessage {
 
     /// UDP datagram broadcast by a joining node so existing members can register it
     /// without waiting for the next Ping/Ack cycle. Carries the full `NodeInfo`
-    /// (id, address, role, labels) and cluster name for membership gating.
-    record Announce(NodeInfo nodeInfo, String clusterName, long incarnation) implements SwimMessage {
+    /// (id, address, role, labels), cluster name for membership gating, and the sender's
+    /// per-process random `bootToken` (`0` = none; compared by equality only).
+    record Announce(NodeInfo nodeInfo, String clusterName, long incarnation, long bootToken) implements SwimMessage {
+        /// An ANNOUNCE carrying no process token (`0`): never token-gated.
         public static Announce announce(NodeInfo nodeInfo, String clusterName, long incarnation) {
-            return new Announce(nodeInfo, clusterName, incarnation);
+            return new Announce(nodeInfo, clusterName, incarnation, 0L);
+        }
+
+        public static Announce announce(NodeInfo nodeInfo, String clusterName, long incarnation, long bootToken) {
+            return new Announce(nodeInfo, clusterName, incarnation, bootToken);
         }
     }
 
@@ -74,14 +80,24 @@ public sealed interface SwimMessage {
         }
     }
 
-    /// A single membership update disseminated via piggyback.
+    /// A single membership update disseminated via piggyback. `bootToken` is the subject's
+    /// per-process random boot token as known to the sender (`0` = unknown; equality only).
     @Codec
-    record MembershipUpdate(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address) {
+    record MembershipUpdate(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address, long bootToken) {
+        /// An update carrying no process token (`0`): never token-gated.
         public static MembershipUpdate membershipUpdate(NodeId nodeId,
                                                         MemberState state,
                                                         long incarnation,
                                                         InetSocketAddress address) {
-            return new MembershipUpdate(nodeId, state, incarnation, address);
+            return new MembershipUpdate(nodeId, state, incarnation, address, 0L);
+        }
+
+        public static MembershipUpdate membershipUpdate(NodeId nodeId,
+                                                        MemberState state,
+                                                        long incarnation,
+                                                        InetSocketAddress address,
+                                                        long bootToken) {
+            return new MembershipUpdate(nodeId, state, incarnation, address, bootToken);
         }
     }
 }

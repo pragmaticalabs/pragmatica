@@ -84,7 +84,7 @@ class SwimAnnounceClusterGateTest {
         try {
             var nodeInfoA = NodeInfo.nodeInfo(NODE_A, new NodeAddress("127.0.0.1", 9001));
 
-            protocol.onMessage(ADDR_A, new Announce(nodeInfoA, announcedName, 0));
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoA, announcedName, 0));
 
             assertThat(protocol.members().containsKey(NODE_A)).as(because).isEqualTo(admitted);
         } finally {

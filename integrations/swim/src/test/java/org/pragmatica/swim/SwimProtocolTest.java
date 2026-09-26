@@ -113,7 +113,7 @@ class SwimProtocolTest {
             // NOT sticky.
             protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
 
-            var sameIncAlive = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var sameIncAlive = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(sameIncAlive)));
 
             assertThat(protocol.members().get(NODE_A).state())
@@ -132,13 +132,13 @@ class SwimProtocolTest {
             protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
 
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L,
-                                                List.of(new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A))));
+                                                List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A))));
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a gossiped SUSPECT must NOT dislodge a local OBSERVED member")
                 .isEqualTo(MemberState.OBSERVED);
 
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L,
-                                                List.of(new MembershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A))));
+                                                List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A))));
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a gossiped FAULTY must NOT dislodge a local OBSERVED member either")
                 .isEqualTo(MemberState.OBSERVED);
@@ -159,7 +159,7 @@ class SwimProtocolTest {
             // A gossiped SUSPECT for a member we have NEVER seen is hearsay, not confirmation
             // (#336/#241): introduce it OBSERVED — no armed death-timer, probe-eligible — so our OWN
             // probe cycle decides. The wire SUSPECT is NOT re-broadcast (OBSERVED never disseminated).
-            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
 
             assertThat(protocol.members().get(NODE_A).state())
@@ -245,7 +245,7 @@ class SwimProtocolTest {
 
         @Test
         void onMessage_pingWithPiggyback_processesUpdates() {
-            var update = new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B);
+            var update = MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B);
             var ping = new Ping(NODE_A, 1L, List.of(update));
 
             protocol.onMessage(ADDR_A, ping);
@@ -384,7 +384,7 @@ class SwimProtocolTest {
             // member is hearsay. Neither makes the member ALIVE, and a gossiped SUSPECT-of-unknown is
             // now ALSO born OBSERVED (#336/#241) — no armed death-timer, not yet proven-healthy — so
             // our own probing decides rather than third-party rumour.
-            var gossip = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var gossip = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossip)));
 
             assertThat(protocol.members().get(NODE_A).state())
@@ -511,7 +511,7 @@ class SwimProtocolTest {
         @Test
         void addUpdate_withinCapacity_allRetained() {
             var buffer = PiggybackBuffer.piggybackBuffer(5);
-            var update = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var update = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
 
             buffer.addUpdate(update);
 
@@ -521,8 +521,8 @@ class SwimProtocolTest {
         @Test
         void peekUpdates_returnsUpdatesWithoutRemoving() {
             var buffer = PiggybackBuffer.piggybackBuffer(10);
-            buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
-            buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
 
             var peeked = buffer.peekUpdates(1);
 
@@ -536,15 +536,15 @@ class SwimProtocolTest {
         void addUpdate_exceedsDoubleCapacity_evictsOldest() {
             var buffer = PiggybackBuffer.piggybackBuffer(2);
             // Buffer allows up to maxSize*2=4 entries for dissemination headroom
-            buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
-            buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
-            buffer.addUpdate(new MembershipUpdate(NODE_C, MemberState.ALIVE, 0, ADDR_C));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_C, MemberState.ALIVE, 0, ADDR_C));
 
             assertThat(buffer.size()).isEqualTo(3); // under 2*2=4 threshold
 
             // Add 2 more to exceed threshold
-            buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A));
-            buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
 
             assertThat(buffer.size()).isEqualTo(4); // trimmed to 4 (maxSize*2)
         }
@@ -579,7 +579,7 @@ class SwimProtocolTest {
             // A seeded member is OBSERVED — LOCAL-ONLY and never disseminated (#336/#241); only a
             // member in a disseminable state (ALIVE/SUSPECT/FAULTY) rides the piggyback. Introduce
             // NODE_A via gossip ALIVE so it is buffered for dissemination.
-            var aliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
+            var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
             transport.sentMessages.clear();
 
@@ -617,12 +617,12 @@ class SwimProtocolTest {
             // Seed introduces NODE_A as OBSERVED (#336/#241). Drive it to ALIVE via positive
             // gossip first so the subsequent SUSPECT gossip is a genuine ALIVE->SUSPECT edge
             // (not a no-op against the seeded OBSERVED state).
-            var aliveGossip = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
+            var aliveGossip = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
             localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 0L, List.of(aliveGossip)));
             assertThat(localProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
 
             // Drive ALIVE -> SUSPECT (incarnation=2) via a piggybacked update from a peer.
-            var initialSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
+            var initialSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
             localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(initialSuspect)));
 
             assertThat(localListener.suspected).hasSize(1);
@@ -637,7 +637,7 @@ class SwimProtocolTest {
             // each of these would replace members.get(NODE_A) and (in the original
             // diagnosis) reset the suspect timer. With the fix they are no-ops.
             for (var i = 0; i < 14; i++) {
-                var rebroadcast = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
+                var rebroadcast = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
                 localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 100L + i, List.of(rebroadcast)));
             }
 
@@ -1071,7 +1071,7 @@ class SwimProtocolTest {
             // strictly greater than 5 (durable). Replays of the SAME stale suspicion
             // (incarnation now below our refutation) are ignored entirely — no further
             // incarnation bumps (pre-gate every replay re-bumped, feeding gossip churn).
-            var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
+            var selfSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
             var afterFirst = protocol.selfIncarnation();
@@ -1086,7 +1086,7 @@ class SwimProtocolTest {
                 .isEqualTo(afterFirst);
 
             // A GENUINELY NEW suspicion at our current incarnation still strictly advances.
-            var newSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, afterFirst, SELF_ADDR);
+            var newSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, afterFirst, SELF_ADDR);
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 4L, List.of(newSuspect)));
             assertThat(protocol.selfIncarnation())
                 .as("a new suspicion challenging the current liveness claim strictly advances the stored incarnation")
@@ -1096,7 +1096,7 @@ class SwimProtocolTest {
         @Test
         void handleSelfUpdate_higherSuspicionIncarnation_refutationOutpacesIt() {
             // A suspicion raised at a high incarnation must still be strictly out-paced.
-            var highSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 42L, SELF_ADDR);
+            var highSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 42L, SELF_ADDR);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(highSuspect)));
 
@@ -1112,7 +1112,7 @@ class SwimProtocolTest {
             // each probe round must carry the ADVANCED incarnation.
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 7L, List.of(ADDR_A));
 
-            var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 7L, SELF_ADDR);
+            var selfSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 7L, SELF_ADDR);
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
             var advanced = protocol.selfIncarnation();
             assertThat(advanced).isGreaterThan(7L);
@@ -1213,7 +1213,7 @@ class SwimProtocolTest {
                     // reshuffled values() order under the old index.
                     ackPingsTo(localTransport, FLAPPER_ADDR, localProtocol);
                     var state = (pingedSeq % 2 == 0) ? MemberState.ALIVE : MemberState.SUSPECT;
-                    var gossip = new MembershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
+                    var gossip = MembershipUpdate.membershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
                     localProtocol.onMessage(FLAPPER_ADDR, new Ping(FLAPPER, 5_000L + pingedSeq, List.of(gossip)));
                     pingedSeq++;
                     Thread.sleep(15L);
@@ -1328,7 +1328,7 @@ class SwimProtocolTest {
                                                           SELF_ID, SELF_ADDR, () -> false)
                                             .fold(cause -> null, v -> v);
 
-            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             localProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
 
             assertThat(localProtocol.members().get(NODE_A).state())

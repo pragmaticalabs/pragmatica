@@ -225,8 +225,10 @@ class ClusterSyncPongSignalFanTest {
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.SYNCING);
         }
 
+        /// The pong's `incarnation` is the sender's boot token — equality only, never ordered (owner
+        /// ruling, session 28). A different token is a new process and installs a fresh entry.
         @Test
-        void fan_higherIncarnation_replacesEntry() {
+        void fan_differentBootToken_installsFreshEntry() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "READY", 1L));
@@ -243,13 +245,14 @@ class ClusterSyncPongSignalFanTest {
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
 
+        /// Tokens carry no order: a numerically LOWER token is just as much a different process.
         @Test
-        void fan_lowerIncarnation_ignoredAsStale() {
+        void fan_differentBootToken_numericallyLower_stillInstallsFreshEntry() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "READY", 5L));
             f.fan(pong(PEER_A, "DRAINING", 2L));
-            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.DRAINING);
         }
 
         @Test
@@ -399,19 +402,18 @@ class ClusterSyncPongSignalFanTest {
             assertThat(reported).isEmpty();
         }
 
-        /// A lower-incarnation pong is stale and leaves the newer entry in place; its `DRAINING` must not be
-        /// reported as an acknowledgement on behalf of the newer tenure.
+        /// A different boot token installs its own fresh entry, so its `DRAINING` is reported for the entry
+        /// it just installed — the report always speaks for the pong's own process.
         @Test
-        void fan_staleLowerIncarnationDrainingPong_doesNotReport() {
+        void fan_differentBootTokenDrainingPong_reportsForItsOwnEntry() {
             var reported = new ArrayList<NodeId>();
             var f = fan(new TestLeaderManager(true));
 
             f.onDrainingReported(reported::add);
             f.fan(pong(PEER_A, "READY", 5L));
             f.fan(pong(PEER_A, "DRAINING", 4L));
-            assertThat(f.readinessSnapshot()).as("arming: the stale pong was fenced out")
-                      .containsEntry(PEER_A, NodeReportedState.READY);
-            assertThat(reported).isEmpty();
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.DRAINING);
+            assertThat(reported).containsExactly(PEER_A);
         }
 
         @Test

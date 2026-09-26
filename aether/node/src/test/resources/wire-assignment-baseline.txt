@@ -315,8 +315,6 @@ SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Synchronous$VoteRound1
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Synchronous$VoteRound2 (sender:org.pragmatica.consensus.NodeId,epoch:long,phase:org.pragmatica.consensus.rabia.Phase,round:long,stateValue:org.pragmatica.consensus.rabia.StateValue)
 SHAPE org.pragmatica.consensus.rabia.VoterAuthority (configuration:org.pragmatica.consensus.rabia.VoterConfiguration,handoff:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.ConfigurationHandoff<C>>,history:java.util.List<org.pragmatica.consensus.rabia.ConfigurationCertificate>,installationWitnesses:java.util.List<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.consensus.rabia.VoterConfiguration (epoch:long,roster:org.pragmatica.consensus.rabia.ClusterConfig)
-SHAPE org.pragmatica.consensus.rabia.VotingJournalCheckpoint (sequence:long,state:org.pragmatica.consensus.rabia.RabiaPersistence$SavedState<C>,retained:java.util.List<org.pragmatica.consensus.rabia.RabiaProtocolMessage>)
-SHAPE org.pragmatica.consensus.rabia.VotingJournalRecord (sequence:long,message:M)
 SHAPE org.pragmatica.dht.DHTMessage$DigestRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,partitionStart:int,partitionEnd:int)
 SHAPE org.pragmatica.dht.DHTMessage$DigestResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,digest:byte[])
 SHAPE org.pragmatica.dht.DHTMessage$ExistsRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[])
@@ -345,8 +343,8 @@ SHAPE org.pragmatica.net.tcp.NodeAddress (host:java.lang.String,port:int)
 SHAPE org.pragmatica.swim.SwimConfig (period:org.pragmatica.lang.io.TimeSpan,probeTimeout:org.pragmatica.lang.io.TimeSpan,indirectProbes:int,suspectTimeout:org.pragmatica.lang.io.TimeSpan,maxPiggyback:int,startupDelay:org.pragmatica.lang.io.TimeSpan,clusterName:java.lang.String,swimPortOffset:int,joinGrace:org.pragmatica.lang.io.TimeSpan,lhmMaxScore:int,dogpileExpectedConfirmers:int)
 SHAPE org.pragmatica.swim.SwimMember (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,labels:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.swim.SwimMessage$Ack (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
-SHAPE org.pragmatica.swim.SwimMessage$Announce (nodeInfo:org.pragmatica.consensus.net.NodeInfo,clusterName:java.lang.String,incarnation:long)
-SHAPE org.pragmatica.swim.SwimMessage$MembershipUpdate (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress)
+SHAPE org.pragmatica.swim.SwimMessage$Announce (nodeInfo:org.pragmatica.consensus.net.NodeInfo,clusterName:java.lang.String,incarnation:long,bootToken:long)
+SHAPE org.pragmatica.swim.SwimMessage$MembershipUpdate (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,bootToken:long)
 SHAPE org.pragmatica.swim.SwimMessage$Ping (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
 SHAPE org.pragmatica.swim.SwimMessage$PingReq (from:org.pragmatica.consensus.NodeId,target:org.pragmatica.consensus.NodeId,sequence:long)
 SHAPE org.pragmatica.swim.SwimMessage$WhoAmI (from:org.pragmatica.consensus.NodeId)
@@ -667,8 +665,6 @@ TAG  org.pragmatica.consensus.rabia.ResponderState 112
 TAG  org.pragmatica.consensus.rabia.StateValue 35
 TAG  org.pragmatica.consensus.rabia.VoterAuthority 118
 TAG  org.pragmatica.consensus.rabia.VoterConfiguration 114
-TAG  org.pragmatica.consensus.rabia.VotingJournalCheckpoint 1693
-TAG  org.pragmatica.consensus.rabia.VotingJournalRecord 1694
 TAG  org.pragmatica.dht.DHTMessage$DigestRequest 54
 TAG  org.pragmatica.dht.DHTMessage$DigestResponse 55
 TAG  org.pragmatica.dht.DHTMessage$ExistsRequest 56

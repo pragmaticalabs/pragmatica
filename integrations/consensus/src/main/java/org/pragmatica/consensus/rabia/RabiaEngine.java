@@ -98,12 +98,10 @@ public class RabiaEngine<C extends Command> {
     private volatile boolean passiveClient;
     private boolean participationStarted;
     private volatile boolean passiveClientReady;
-    private boolean recoveryComplete;
-    private Option<Cause> recoveryFailure = Option.none();
 
     /// Configure immutable WORKER behavior before transport startup. Scoped projection is external.
     public synchronized Result<Unit> configurePassiveClient() {
-        if (participationStarted || recoveryComplete || stopping.get() || !(engineState.get() instanceof EngineState.Stopped)) {
+        if (participationStarted || stopping.get() || !(engineState.get() instanceof EngineState.Stopped)) {
             return ReconfigurationError.PARTICIPATION_ALREADY_STARTED.result();
         }
 
@@ -222,7 +220,7 @@ public class RabiaEngine<C extends Command> {
 
     /// Installs the complete bootstrap electorate, never a discovery seed subset.
     public Result<Unit> initializeVoters(VoterConfiguration initial) {
-        if (recoveryComplete || stopping.get() || !(engineState.get() instanceof EngineState.Stopped)) {
+        if (participationStarted || stopping.get() || !(engineState.get() instanceof EngineState.Stopped)) {
             return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
         }
 
@@ -342,11 +340,6 @@ public class RabiaEngine<C extends Command> {
 
     private boolean broadcastVoters(org.pragmatica.consensus.ProtocolMessage message) {
         if (passiveClient) {
-            return false;
-        }
-
-        if (message instanceof RabiaProtocolMessage protocol && VotingJournal.supported(protocol) && protocol.sender()
-                                                                                                             .equals(self) && !persistVotingMessage(protocol)) {
             return false;
         }
 
@@ -695,7 +688,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         if (awaitingHandoff()) {
-            persistence.loadVerified().apply(this::failVotingPersistence, saved -> saved.onPresent(this::restoreState));
+            persistence.loadVerified().apply(this::failAuthorityLoad, saved -> saved.onPresent(this::restoreState));
 
             return;
         }
@@ -1569,17 +1562,15 @@ public class RabiaEngine<C extends Command> {
         reconfigurationPromises.clear();
         var persisted = passiveClient
                         ? Result.success(Unit.unit())
-                        : ensureRecovered().flatMap(_ -> saveAuthority());
+                        : saveAuthority();
         var reset = Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
                                 () -> {
                                     shutdownAndReset();
 
                                     return Unit.unit();
                                 });
-        var closed = persistence.close();
-
         executor.shutdown();
-        promise.resolve(persisted.flatMap(_ -> reset).flatMap(_ -> closed));
+        promise.resolve(persisted.flatMap(_ -> reset));
     }
 
     /// Containment boundary for the single consensus apply worker (7c). Every task submitted to
@@ -1617,7 +1608,7 @@ public class RabiaEngine<C extends Command> {
 
             Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
                         () -> {
-                            ensureRecovered().onSuccess(_ -> task.run());
+                            task.run();
 
                             return Unit.unit();
                         })
@@ -1630,171 +1621,18 @@ public class RabiaEngine<C extends Command> {
         });
     }
 
-    private boolean persistVotingMessage(RabiaProtocolMessage message) {
-        if (authorityFailure.isPresent()) {
-            return false;
-        }
-
-        var checkpoint = persistence.checkpointRequired()
-                         ? saveAuthority()
-                         : Result.success(Unit.unit());
-
-        return checkpoint.flatMap(_ -> persistence.append(message))
-                         .onFailure(this::failVotingPersistence)
-                         .isSuccess();
-    }
-
-    private void failVotingPersistence(Cause cause) {
+    /// Fail closed when this node's voter authority cannot be loaded: it stops participating rather
+    /// than vote under an authority it cannot read.
+    private void failAuthorityLoad(Cause cause) {
         authorityFailure = Option.some(cause);
         var old = engineState.getAndSet(new EngineState.Observing());
 
         exitState(old);
         notifyConsensusStateTransition();
         startPromise.get().fail(cause);
-        log.error("Node {} stopped consensus participation because durable history failed: {}", self, cause);
-    }
-
-    private Result<Unit> ensureRecovered() {
-        if (recoveryComplete) {
-            return recoveryFailure.fold(() -> Result.success(Unit.unit()),
-                                        Cause::result);
-        }
-
-        recoveryComplete = true;
-
-        return Result.all(persistence.loadVerified(),
-                          persistence.loadJournal())
-                     .flatMap(this::recoverLocalState)
-                     .onFailure(cause -> {
-                         recoveryFailure = Option.some(cause);
-                         failVotingPersistence(cause);
-                     });
-    }
-
-    private Result<Unit> recoverLocalState(Option<SavedState<C>> saved, List<RabiaProtocolMessage> journal) {
-        if (journal.isEmpty() && saved.isEmpty()) {
-            return Result.success(Unit.unit());
-        }
-
-        var checkpoint = saved.or(SavedState.empty());
-        var restored = checkpoint.snapshot().length == 0
-                       ? Result.success(Unit.unit())
-                       : stateMachine.restoreCommittedSnapshot(checkpoint.snapshot(),
-                                                               checkpoint.lastCommittedPhase().value());
-
-        return restored.flatMap(_ -> {
-            currentPhase.set(checkpoint.lastCommittedPhase());
-            checkpoint.pendingBatches()
-                      .forEach(batch -> pendingBatches.put(batch.id(),
-                                                           batch));
-            for (var message : journal) {
-                var recovered = recoverJournalMessage(message);
-
-                if (recovered.isFailure()) {
-                    return recovered;
-                }
-            }
-            // Publish the recovered prefix to cold synchronization only after checkpointing it.
-            return saveAuthority();
-        });
-    }
-
-    @SuppressWarnings("unchecked")
-    private Result<Unit> recoverJournalMessage(RabiaProtocolMessage message) {
-        if (!VotingJournal.supported(message)) {
-            return VotingJournalError.CORRUPT.result();
-        }
-
-        if (VotingJournal.epoch(message) != voterEpoch()) {
-            return VotingJournalError.CORRUPT.result();
-        }
-
-        var comparison = VotingJournal.phase(message).compareTo(currentPhase.get());
-
-        if (comparison < 0) {
-            return Result.success(Unit.unit());
-        }
-
-        if (comparison > 0) {
-            return VotingJournalError.GAP.result();
-        }
-
-        if (message instanceof Decision<?> value) {
-            return recoverDecision((Decision<C>) value);
-        }
-
-        if (!message.sender().equals(self)) {
-            return VotingJournalError.WRONG_NODE.result();
-        }
-
-        var data = getOrCreatePhaseData(currentPhase.get());
-
-        switch (message) {
-            case Propose<?> proposal -> {
-                var own = (Propose<C>) proposal;
-
-                data.registerProposal(self, own.value(), own.reconfiguration());
-                requestedConfiguration = own.reconfiguration();
-                if (!own.value().commands().isEmpty()) {
-                    pendingBatches.put(own.value().id(),
-                                       own.value());
-                }
-            }
-            case VoteRound1 vote -> {
-                data.restoreOwnRound(vote.round());
-                data.registerRound1Vote(self, vote.round(), vote.stateValue());
-            }
-            case VoteRound2 vote -> {
-                data.restoreOwnRound(vote.round());
-                data.registerRound2Vote(self, vote.round(), vote.stateValue());
-            }
-            default -> {
-                return VotingJournalError.CORRUPT.result();
-            }
-        }
-
-        return Result.success(Unit.unit());
-    }
-
-    private Result<Unit> recoverDecision(Decision<C> decision) {
-        if ((decision.stateValue() != StateValue.V0 && decision.stateValue() != StateValue.V1) || (decision.stateValue() == StateValue.V0 && decision.reconfiguration()
-                                                                                                                                                     .isPresent()) || (decision.reconfiguration()
-                                                                                                                                                                               .isPresent() && !decision.value()
-                                                                                                                                                                                                        .commands()
-                                                                                                                                                                                                        .isEmpty())) {
-            return VotingJournalError.CORRUPT.result();
-        }
-
-        var applied = decision.stateValue() == StateValue.V1 && !decision.value().commands().isEmpty()
-                      ? stateMachine.recoverCommitted(decision.value(),
-                                                      decision.phase().successor().value())
-                      : Result.success(Unit.unit());
-
-        return applied.flatMap(_ -> {
-            currentPhase.set(decision.phase().successor());
-            pendingBatches.remove(decision.value().id());
-            if (decision.stateValue() != StateValue.V1 || decision.reconfiguration()
-                                                                  .isEmpty()) {
-                return Result.success(Unit.unit());
-            }
-
-            return voters.toResult(VotingJournalError.CORRUPT)
-                         .flatMap(state -> stateMachine.makeSnapshot()
-                                                       .flatMap(snapshot -> decision.reconfiguration()
-                                                                                    .toResult(VotingJournalError.CORRUPT)
-                                                                                    .flatMap(target -> HandoffPreparation.prepare(state.authority(),
-                                                                                                                                  target,
-                                                                                                                                  currentPhase.get(),
-                                                                                                                                  snapshot,
-                                                                                                                                  List.copyOf(pendingBatches.values()),
-                                                                                                                                  network::validateOutboundMessage)
-                                                                                                                         .flatMap(prepared -> state.barrier(target,
-                                                                                                                                                            currentPhase.get(),
-                                                                                                                                                            prepared.snapshot(),
-                                                                                                                                                            prepared.pendingBatches()))))
-                                                       .onSuccess(state::install)
-                                                       .mapToUnit());
-        });
+        log.error("Node {} stopped consensus participation because its voter authority could not be loaded: {}",
+                  self,
+                  cause);
     }
 
     /// Diagnostic helper: backlog of the single-thread apply executor. The executor is always a
@@ -2098,14 +1936,11 @@ public class RabiaEngine<C extends Command> {
     /// replay, notify). A live phase at or past the persisted one means the history is already in
     /// the process — a resync from ACTIVE — and installing the older snapshot would regress it.
     ///
-    /// **Since #1390 this own-restore arm is rarely reached.** Boot recovery ([#ensureRecovered])
-    /// restores the persisted checkpoint and sets the live phase BEFORE any sync round, so the
-    /// persisted phase is normally not ahead of the live one here. A node whose own history cannot be
-    /// restored or re-persisted FAILS CLOSED in that boot recovery and never starts a sync round —
-    /// #1468's decision for those arms (owner ruling, session 27), replacing the wedge-and-retry #1020
-    /// pinned here. #1468 stays open for bounded wedge vs termination and for the start promise.
-    /// Pinned by `RabiaOwnRestoreFailureTest#ownRestoreFails_failsClosed_neverActivates`. Should this
-    /// arm's [#restoreState] still fail, activation is skipped and [#logRestoreFailure] reports it.
+    /// **This arm is the only path by which a node installs its own persisted state.** Cores run
+    /// in-memory Rabia (owner ruling, session 28: #1390's vote WAL and boot recovery are removed), so
+    /// only a `[backup]` node reaches it. A failed [#restoreState] skips activation — the node stays
+    /// fail-closed in `Syncing` and never serves the empty store (#1468) — and [#logRestoreFailure]
+    /// reports it. Pinned by `RabiaOwnRestoreFailureTest`.
     private void activateWithoutAdoption(Option<SavedState<C>> persisted, String reason) {
         persisted.filter(state -> state.lastCommittedPhase()
                                        .compareTo(currentPhase.get()) > 0)
@@ -2244,10 +2079,8 @@ public class RabiaEngine<C extends Command> {
     /// unreachable outright (#1447). This line is therefore the whole operator surface for the state,
     /// which is why it spells out that the node is NOT active rather than logging a bare cause.
     ///
-    /// The own-history restore failure is decided by #1468 (owner ruling, session 27) and fails closed
-    /// in boot recovery, reported by `failVotingPersistence`; this line covers a failed restore that
-    /// still reaches [#restoreState] (a responder's snapshot, or the rare own-restore arm of
-    /// [#activateWithoutAdoption]).
+    /// It covers every failed restore that reaches [#restoreState]: a responder's snapshot, or the
+    /// own-restore arm of [#activateWithoutAdoption] (fail-closed per #1468).
     private void logRestoreFailure(Cause cause) {
         log.error("Node {} FAILED to restore state and is NOT active: {}. It stays in sync/retry and serves no "
                  + "requests; every retry re-enters this same branch until the snapshot can be read.",
@@ -3337,10 +3170,6 @@ public class RabiaEngine<C extends Command> {
         switch (outcome) {
             case Round2Outcome.AwaitingProposal<C> ignored -> rebroadcastProposalSet(phaseData.phase(), phaseData);
             case Round2Outcome.Decided<C> decided -> {
-                if (!persistVotingMessage(decided.decision())) {
-                    return;
-                }
-
                 broadcastCoreObservers(decided.decision());
                 processDecision(decided.decision());
             }
@@ -3357,10 +3186,6 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void commitDecision(PhaseData<C> phaseData, Decision<C> decision) {
-        if (!persistVotingMessage(decision)) {
-            return;
-        }
-
         if (phaseData.tryMarkDecided()) {
             metrics.recordDecision(self, phaseData.phase(), decision.stateValue(), 0L);
             // Apply commands to state machine ONLY if it was a V1 decision with a non-empty batch

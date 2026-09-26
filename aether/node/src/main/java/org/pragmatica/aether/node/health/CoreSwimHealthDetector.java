@@ -98,6 +98,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private record AnnounceJoinCall(NodeInfo self,
                                     String clusterName,
                                     long incarnation,
+                                    long bootToken,
                                     List<InetSocketAddress> seeds) {}
 
     private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {
@@ -385,10 +386,16 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         protocol().onPresent(p -> p.addObservationListener(consumer));
     }
 
+    /// `bootToken` is this process's random boot token, carried on every ANNOUNCE / self-ALIVE so peers
+    /// refuse a different process reusing this NodeId (terminal removal, owner ruling session 28).
     @Contract
-    public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
-        pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, seeds));
-        protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, seeds));
+    public void announceJoin(NodeInfo self,
+                             String clusterName,
+                             long incarnation,
+                             long bootToken,
+                             List<InetSocketAddress> seeds) {
+        pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, bootToken, seeds));
+        protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, bootToken, seeds));
     }
 
     public SwimHealth healthOf(NodeId nodeId) {
@@ -508,6 +515,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),
                                                                     call.clusterName(),
                                                                     call.incarnation(),
+                                                                    call.bootToken(),
                                                                     call.seeds()));
 
         return new SwimHealthEvents.ProtocolReady(protocol, transport, encryptor);

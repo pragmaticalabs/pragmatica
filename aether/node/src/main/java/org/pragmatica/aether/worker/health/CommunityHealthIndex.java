@@ -32,7 +32,6 @@ public final class CommunityHealthIndex {
     private final String incarnation = UUID.randomUUID().toString();
     private final Map<String, Pending> pending = new HashMap<>();
     private final Map<String, Observation> observations = new HashMap<>();
-    private final Map<NodeId, Long> incarnations = new HashMap<>();
     private long sequence;
 
     private record Pending(Request request, NodeId governor, long sentAt) {}
@@ -127,17 +126,11 @@ public final class CommunityHealthIndex {
         long now = clock.nanoTime();
         var members = new HashMap<NodeId, MemberHealth>();
 
+        // MemberHealth.incarnation is the member's boot token (equality only, never ordered). The
+        // membership FSM owns the token gate for the positive evidence derived from this report.
         report.members()
-              .stream()
-              .filter(value -> value.incarnation() >= incarnations.getOrDefault(value.node(),
-                                                                                0L))
-              .forEach(value -> {
-                           members.put(value.node(),
-                                       value);
-                           incarnations.merge(value.node(),
-                                              value.incarnation(),
-                                              Math::max);
-                       });
+              .forEach(value -> members.put(value.node(),
+                                            value));
         observations.put(report.communityId(),
                          new Observation(report,
                                          now,
@@ -264,9 +257,6 @@ public final class CommunityHealthIndex {
     public synchronized org.pragmatica.lang.Unit retainCommunities(java.util.Set<String> communities) {
         pending.keySet().retainAll(communities);
         observations.keySet().retainAll(communities);
-        incarnations.keySet().removeIf(node -> assignment.apply(node)
-                                                         .filter(communities::contains)
-                                                         .isEmpty());
 
         return org.pragmatica.lang.Unit.unit();
     }

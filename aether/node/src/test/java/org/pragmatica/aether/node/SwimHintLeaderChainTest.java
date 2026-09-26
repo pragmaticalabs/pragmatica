@@ -96,7 +96,7 @@ class SwimHintLeaderChainTest {
                                .unwrap();
         protocol.addObservationListener(observations::add);
         // VICTIM is an established, ever-HEALTHY core member with a CONNECTED link.
-        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, 1L, List.of(new MembershipUpdate(VICTIM, MemberState.ALIVE, 0, VICTIM_ADDR))));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(VICTIM, MemberState.ALIVE, 0, VICTIM_ADDR))));
         liveTransport.add(VICTIM);
         connected.add(VICTIM);
     }

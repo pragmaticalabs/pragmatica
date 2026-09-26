@@ -356,8 +356,10 @@ public final class ControlLoopContext {
                        .or(() -> recordSourceSnapshot(incoming));
     }
 
+    /// `incarnation` is the source's boot token (equality only): a different token is a new process
+    /// and supersedes; within one token the higher sequence wins.
     private boolean isNewerSource(CommunityMetricsSnapshot incoming, CommunityMetricsSnapshot previous) {
-        return incoming.incarnation() > previous.incarnation() || incoming.incarnation() == previous.incarnation() && incoming.sequence() > previous.sequence();
+        return incoming.incarnation() != previous.incarnation() || incoming.sequence() > previous.sequence();
     }
 
     private CommunityMetricsSnapshot recordSourceSnapshot(CommunityMetricsSnapshot incoming) {

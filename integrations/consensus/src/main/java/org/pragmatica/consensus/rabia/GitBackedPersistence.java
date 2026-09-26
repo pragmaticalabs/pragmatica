@@ -124,20 +124,6 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     @Override
-    public Result<Unit> saveSnapshot(SavedState<C> state) {
-        return snapshotToToml.apply(state.snapshot())
-                             .map(toml -> state.authority()
-                                               .map(VoterAuthoritySnapshotCodec::encode)
-                                               .or("") + addPhaseHeader(toml,
-                                                                        state.lastCommittedPhase()))
-                             .flatMap(this::writeTomlFile)
-                             .flatMap(_ -> ensureGitInitialized())
-                             .flatMap(_ -> gitAdd())
-                             .flatMap(_ -> gitCommit(state.lastCommittedPhase()))
-                             .flatMap(_ -> pushIfRemoteConfigured());
-    }
-
-    @Override
     public Result<Option<SavedState<C>>> loadVerified() {
         var file = backupDir.resolve(STATE_FILE);
 
