@@ -2661,9 +2661,10 @@ public interface AetherNode extends ManageableNode {
         // uninterrupted leadership, which is ordinary (#634 follow-up — this exact value was once
         // investigated as an anomaly because the per-interval semantics were written down nowhere).
         // The supplier merely READS it (it is consumed in four contexts; incrementing inside would
-        // over-count). No reset is needed: Epoch ordering is term-dominant, so on a leader change
-        // leaderTerm increments and a new leader's lower local counter still orders strictly after
-        // the prior epoch via the term.
+        // over-count). No reset is needed: Epoch ordering is term-dominant, and the term is the
+        // committed LeaderValue.viewSequence of this node's election (S28, see LeaderTerm) — strictly
+        // above every prior committed leadership cluster-wide — so a new leader's lower local counter
+        // still orders strictly after the prior leader's epoch via the term.
         var generationCounter = new AtomicLong(0L);
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.current(), generationCounter.get());
 
