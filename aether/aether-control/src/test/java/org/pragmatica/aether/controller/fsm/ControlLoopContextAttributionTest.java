@@ -140,14 +140,25 @@ class ControlLoopContextAttributionTest {
     /// cluster-size cap. A stub controller emits a fixed ScaleUp so the cap arithmetic is isolated
     /// from metric-window composite scoring.
     @Test
-    void sourceSnapshotsRejectDuplicatesOldIncarnationsAndOverlappingAggregates() {
+    void sourceSnapshotsRejectDuplicatesAndOverlappingAggregates() {
         var fresh = new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 10);
 
         ctx.storeCommunitySnapshot(fresh);
         ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 9));
-        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 99));
         ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 2, List.of(), ctx.nowMs(), 3, 1));
         assertThat(ctx.communitySnapshots().get(WORKER.id())).isEqualTo(fresh);
+    }
+
+    /// The snapshot `incarnation` is the source's boot token — equality only (owner ruling, session 28).
+    /// A different token is a new process and supersedes, even at a lower sequence or a numerically
+    /// lower token; this replaced #1390's "old incarnation is rejected" ordering.
+    @Test
+    void sourceSnapshotWithDifferentBootToken_supersedesRegardlessOfOrder() {
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 10));
+        var restarted = new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 1);
+
+        ctx.storeCommunitySnapshot(restarted);
+        assertThat(ctx.communitySnapshots().get(WORKER.id())).isEqualTo(restarted);
     }
 
     @Test
