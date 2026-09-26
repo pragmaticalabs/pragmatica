@@ -4,10 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
-import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -1542,63 +1540,6 @@ public sealed interface AetherValue {
         }
     }
 
-    record StorageBlockValue(String blockIdHex,
-                             Set<String> presentIn,
-                             int refCount,
-                             long lastAccessedAt,
-                             long createdAt,
-                             int accessCount) implements AetherValue {
-        public static StorageBlockValue storageBlockValue(String blockIdHex,
-                                                          Set<String> presentIn,
-                                                          int refCount,
-                                                          long lastAccessedAt,
-                                                          long createdAt,
-                                                          int accessCount) {
-            return new StorageBlockValue(blockIdHex,
-                                         Set.copyOf(presentIn),
-                                         refCount,
-                                         lastAccessedAt,
-                                         createdAt,
-                                         accessCount);
-        }
-
-        public StorageBlockValue withTierAdded(String tier) {
-            var tiers = new HashSet<>(presentIn);
-
-            tiers.add(tier);
-
-            return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt, accessCount);
-        }
-
-        public StorageBlockValue withRefCountIncremented() {
-            return new StorageBlockValue(blockIdHex, presentIn, refCount + 1, lastAccessedAt, createdAt, accessCount);
-        }
-
-        public StorageBlockValue withRefCountDecremented() {
-            return new StorageBlockValue(blockIdHex,
-                                         presentIn,
-                                         Math.max(0, refCount - 1),
-                                         lastAccessedAt,
-                                         createdAt,
-                                         accessCount);
-        }
-
-        public StorageBlockValue withAccessTimestamp() {
-            return new StorageBlockValue(blockIdHex,
-                                         presentIn,
-                                         refCount,
-                                         System.currentTimeMillis(),
-                                         createdAt,
-                                         accessCount + 1);
-        }
-    }
-
-    record StorageRefValue(String blockIdHex, long updatedAt) implements AetherValue {
-        public static StorageRefValue storageRefValue(String blockIdHex) {
-            return new StorageRefValue(blockIdHex, System.currentTimeMillis());
-        }
-    }
-
     /// `walBytes` (#634-3): live stream-WAL bytes on the reporting node — non-zero only for the
     /// `streams` instance, whose disk footprint was otherwise under-reported by the entire WAL (the
     /// WAL is a sibling directory of the segment store, not a tier).
@@ -1927,17 +1868,6 @@ public sealed interface AetherValue {
                                                         long timestamp,
                                                         String operatorHint) {
             return new ApiKeyAuditValue(keyId, action, timestamp, operatorHint);
-        }
-    }
-
-    record CloudCredentialsValue(byte[] encryptedToken, String provider, long storedAt) implements AetherValue {
-        public static CloudCredentialsValue cloudCredentialsValue(byte[] encryptedToken, String provider) {
-            return new CloudCredentialsValue(encryptedToken.clone(), provider, System.currentTimeMillis());
-        }
-
-        @Override
-        public byte[] encryptedToken() {
-            return encryptedToken.clone();
         }
     }
 

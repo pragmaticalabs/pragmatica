@@ -125,7 +125,6 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$AutoHealStateKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey (blueprintId:org.pragmatica.aether.slice.blueprint.BlueprintId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey (nodeId:org.pragmatica.consensus.NodeId)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CloudCredentialsKey (provider:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ClusterConfigKey (configVersion:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ClusterPhaseKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CommunityKey (communityId:java.lang.String)
@@ -159,8 +158,6 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SchemaVersionKey (datasource
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SliceNodeKey (artifact:org.pragmatica.aether.artifact.Artifact,nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SliceTargetKey (artifactBase:org.pragmatica.aether.artifact.ArtifactBase)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$SpokesmanKey (coreNodeId:org.pragmatica.consensus.NodeId)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StorageBlockKey (instanceName:java.lang.String,blockIdHex:java.lang.String)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StorageRefKey (instanceName:java.lang.String,referenceName:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StorageStatusKey (nodeId:org.pragmatica.consensus.NodeId,instanceName:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamConfigKey (streamName:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$StreamCursorCheckpointKey (streamName:java.lang.String,partitionIndex:int,consumerGroup:java.lang.String)
@@ -183,7 +180,6 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsVal
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress (alias:java.lang.String,address:org.pragmatica.aether.slice.resource.ResourceAddress)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue (allocated:int,version:long,inventoryComplete:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue (sourceName:java.lang.String,sourceBinding:java.lang.String,intendedRole:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CloudCredentialsValue (encryptedToken:byte[],provider:java.lang.String,storedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ClusterConfigValue (tomlContent:java.lang.String,clusterName:java.lang.String,version:java.lang.String,desiredTopology:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$TopologyEntry>,coreMin:int,coreMax:int,deploymentType:java.lang.String,configVersion:long,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhaseValue (phase:org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementAvailabilityValue (policyIdentity:java.lang.String,sourceBinding:java.lang.String,refusedNode:org.pragmatica.consensus.NodeId,refusedAt:long,attempts:int)
@@ -219,8 +215,6 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SchemaVersionValue (dataso
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SliceNodeValue (state:org.pragmatica.aether.slice.SliceState,failureReason:org.pragmatica.lang.Option<java.lang.String>,fatal:boolean,transitionedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SliceTargetValue (currentVersion:org.pragmatica.aether.artifact.Version,targetInstances:int,minInstances:int,owningBlueprint:org.pragmatica.lang.Option<org.pragmatica.aether.slice.blueprint.BlueprintId>,placement:java.lang.String,updatedAt:long,maxInstances:org.pragmatica.lang.Option<java.lang.Integer>,scaleUpThreshold:org.pragmatica.lang.Option<java.lang.Double>,scaleDownThreshold:org.pragmatica.lang.Option<java.lang.Double>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanValue (communities:java.util.List<java.lang.String>,assignedEpoch:org.pragmatica.aether.slice.generation.Epoch,assignedAt:org.pragmatica.hlc.HlcTimestamp,version:long,status:org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanStatus,failureReason:java.lang.String)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StorageBlockValue (blockIdHex:java.lang.String,presentIn:java.util.Set<java.lang.String>,refCount:int,lastAccessedAt:long,createdAt:long,accessCount:int)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StorageRefValue (blockIdHex:java.lang.String,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue (instanceName:java.lang.String,tiers:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStatus>,readinessState:java.lang.String,isReadReady:boolean,isWriteReady:boolean,lastSnapshotEpoch:long,lastSnapshotTimestamp:long,walBytes:long,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStatus (level:java.lang.String,usedBytes:long,maxBytes:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue (config:org.pragmatica.aether.slice.StreamConfig,createdAt:long)
@@ -464,7 +458,6 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AutoHealStateKey 1674
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey 1095
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey 1688
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey 1689
-TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CloudCredentialsKey 1096
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterConfigKey 1097
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterPhaseKey 1098
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityKey 1099
@@ -498,8 +491,6 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SchemaVersionKey 1121
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SliceNodeKey 1122
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SliceTargetKey 1123
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$SpokesmanKey 1124
-TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StorageBlockKey 1125
-TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StorageRefKey 1126
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StorageStatusKey 1127
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamConfigKey 1128
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$StreamCursorCheckpointKey 1129
@@ -523,7 +514,6 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValu
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue 1690
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase 1692
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue 1691
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CloudCredentialsValue 1609
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterConfigValue 1610
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase 1611
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhaseValue 1612
@@ -565,8 +555,6 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceNodeValue 1639
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceTargetValue 1640
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanStatus 1641
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanValue 1642
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageBlockValue 1643
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageRefValue 1644
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue 1645
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStatus 1646
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue 1647

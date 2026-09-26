@@ -30,10 +30,30 @@ import static org.pragmatica.lang.Result.success;
 @Codec
 @CodecFor(MethodName.class)
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01"})
-public sealed interface AetherKey extends StructuredKey {
+public sealed interface AetherKey extends StructuredKey permits AetherKey.ClusterStateKey, AetherKey.RuntimeKey {
     String asString();
 
-    record SliceTargetKey(ArtifactBase artifactBase) implements AetherKey {
+    /// State that belongs to the CLUSTER rather than to the nodes currently running it — operator
+    /// intent, desired configuration, and durable facts about storage that survives a restart. It is
+    /// what a whole-cluster cold restart restores from a KV backup, after consensus starts from zero.
+    ///
+    /// Every key declares itself either this or [RuntimeKey]: `AetherKey` permits nothing else, so a
+    /// new key that does neither does not compile. That is the point — classification used to be a
+    /// hand-maintained list that a new key could silently miss.
+    sealed interface ClusterStateKey extends AetherKey {
+        /// Whether this particular entry goes into a backup. True for every cluster-state key except
+        /// where the key type mixes cluster-wide and node-scoped rows (see [ConfigKey#isBackedUp]).
+        default boolean isBackedUp() {
+            return true;
+        }
+    }
+
+    /// State the running cluster rebuilds for itself — observations, leases, ownership, per-node
+    /// registrations, in-flight coordination. It is excluded from backups: restored into a fresh
+    /// cluster it would name nodes that no longer exist, or fence against epochs that restarted.
+    sealed interface RuntimeKey extends AetherKey {}
+
+    record SliceTargetKey(ArtifactBase artifactBase) implements ClusterStateKey {
         private static final String PREFIX = "slice-target/";
 
         @Override
@@ -61,7 +81,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record AppBlueprintKey(BlueprintId blueprintId) implements AetherKey {
+    record AppBlueprintKey(BlueprintId blueprintId) implements ClusterStateKey {
         private static final String PREFIX = "app-blueprint/";
 
         @Override
@@ -94,7 +114,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// the previous outcome, so the store holds exactly the latest outcome per blueprint id, never a
     /// history. Unlike {@link AppBlueprintKey}, this key is never removed on rollback: it is the
     /// record of what happened to the rollback, not part of the blueprint's active configuration.
-    record DeploymentOutcomeKey(BlueprintId blueprintId) implements AetherKey {
+    record DeploymentOutcomeKey(BlueprintId blueprintId) implements ClusterStateKey {
         private static final String PREFIX = "deployment-outcome/";
 
         @Override
@@ -122,7 +142,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record SliceNodeKey(Artifact artifact, NodeId nodeId) implements AetherKey {
+    record SliceNodeKey(Artifact artifact, NodeId nodeId) implements RuntimeKey {
         public boolean isForNode(NodeId nodeId) {
             return this.nodeId.equals(nodeId);
         }
@@ -162,7 +182,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record EndpointKey(Artifact artifact, MethodName methodName, int instanceNumber) implements AetherKey {
+    record EndpointKey(Artifact artifact, MethodName methodName, int instanceNumber) implements RuntimeKey {
         private static final String PREFIX = "endpoints/";
 
         @Override
@@ -205,7 +225,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record VersionRoutingKey(ArtifactBase artifactBase) implements AetherKey {
+    record VersionRoutingKey(ArtifactBase artifactBase) implements ClusterStateKey {
         private static final String PREFIX = "version-routing/";
 
         @Override
@@ -233,7 +253,10 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record DeploymentKey(String deploymentId) implements AetherKey {
+    /// Cluster state: an operator-started rollout. `DeploymentManagerImpl` resumes non-terminal rows from
+    /// KV, and the paired [VersionRoutingKey] weights are backed up too — restoring the weights without
+    /// the rollout that owns them would leave a traffic split nothing completes or rolls back.
+    record DeploymentKey(String deploymentId) implements ClusterStateKey {
         private static final String PREFIX = "deployment/";
 
         @Override
@@ -265,7 +288,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record PreviousVersionKey(ArtifactBase artifactBase) implements AetherKey {
+    record PreviousVersionKey(ArtifactBase artifactBase) implements ClusterStateKey {
         private static final String PREFIX = "previous-version/";
 
         @Override
@@ -293,7 +316,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record HttpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) implements AetherKey {
+    record HttpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) implements RuntimeKey {
         private static final String PREFIX = "http-node-routes/";
 
         @Override
@@ -357,7 +380,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record LogLevelKey(String loggerName) implements AetherKey {
+    record LogLevelKey(String loggerName) implements ClusterStateKey {
         private static final String PREFIX = "log-level/";
 
         @Override
@@ -389,7 +412,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ObservabilityConfigKey(String artifactBase, String methodName) implements AetherKey {
+    record ObservabilityConfigKey(String artifactBase, String methodName) implements ClusterStateKey {
         private static final String PREFIX = "obs-config/";
 
         @Override
@@ -425,7 +448,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record AlertThresholdKey(String metricName) implements AetherKey {
+    record AlertThresholdKey(String metricName) implements ClusterStateKey {
         private static final String PREFIX = "alert-threshold/";
 
         @Override
@@ -472,7 +495,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// The node component is LAST so the `topic-sub/{namespace}/{topic}/{version}` addressing prefix
     /// stays intact for prefix matching. Parsing splits it off at the final `/`, which requires a node
     /// id to contain no `/` — the same constraint [StorageStatusKey] already relies on.
-    record TopicSubscriptionKey(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) implements AetherKey {
+    record TopicSubscriptionKey(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) implements RuntimeKey {
         private static final String PREFIX = "topic-sub/";
 
         @Override
@@ -566,7 +589,10 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ScheduledTaskKey(String configSection, Artifact artifact, MethodName methodName) implements AetherKey {
+    /// Runtime: republished by slice activation, and its value names the registering node
+    /// (`ScheduledTaskValue.registeredBy`). Known gap: the operator's `paused` flag lives in the same value,
+    /// so a cold restart loses it — keeping it needs a separate cluster-state key.
+    record ScheduledTaskKey(String configSection, Artifact artifact, MethodName methodName) implements RuntimeKey {
         private static final String PREFIX = "scheduled-task/";
 
         @Override
@@ -631,7 +657,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// pre-upgrade global row (`node` absent) can never parse into the node-scoped shape, so the
     /// new per-node aggregation scan — which filters on `node().isPresent()` — can never misread
     /// it as a node's row.
-    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName, Option<NodeId> node) implements AetherKey {
+    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName, Option<NodeId> node) implements RuntimeKey {
         private static final String PREFIX = "scheduled-task-state/";
         private static final String NODE_PREFIX = PREFIX + "node/";
 
@@ -723,7 +749,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// KV state instead of relying on the prior leader's in-memory scheduler. The atom is
     /// pure observability — the scheduler is still the trigger; the KV `Remove` on
     /// JOINING-exit is what stops the new leader from re-arming a stale timer.
-    record JoinDeadlineKey(NodeId nodeId) implements AetherKey {
+    record JoinDeadlineKey(NodeId nodeId) implements RuntimeKey {
         private static final String PREFIX = "join-deadline/";
 
         @Override
@@ -760,7 +786,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// (DECOMMISSIONED, FAILED_DRAIN). The new leader inspects this atom on takeover to
     /// resume the drain hard-deadline countdown against wall-clock instead of the prior
     /// leader's elapsed timer.
-    record DrainDeadlineKey(NodeId nodeId) implements AetherKey {
+    record DrainDeadlineKey(NodeId nodeId) implements RuntimeKey {
         private static final String PREFIX = "drain-deadline/";
 
         @Override
@@ -792,7 +818,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ConfigKey(String key, Option<NodeId> nodeScope) implements AetherKey {
+    record ConfigKey(String key, Option<NodeId> nodeScope) implements ClusterStateKey {
         private static final String CLUSTER_PREFIX = "config/";
         private static final String NODE_PREFIX = "config/node/";
 
@@ -809,6 +835,13 @@ public sealed interface AetherKey extends StructuredKey {
 
         public boolean isClusterWide() {
             return nodeScope.isEmpty();
+        }
+
+        /// Only cluster-wide entries are cluster state. A node-scoped override names a node of the
+        /// cluster that wrote it, and means nothing to the cluster a backup is restored into.
+        @Override
+        public boolean isBackedUp() {
+            return isClusterWide();
         }
 
         public static ConfigKey forKey(String key) {
@@ -848,7 +881,8 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record WorkerSliceDirectiveKey(Artifact artifact, Option<String> communityId) implements AetherKey {
+    /// Runtime: derived by the allocation engine from [SliceTargetKey], which is what gets backed up.
+    record WorkerSliceDirectiveKey(Artifact artifact, Option<String> communityId) implements RuntimeKey {
         private static final String PREFIX = "worker-directive/";
 
         @Override
@@ -894,7 +928,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ActivationDirectiveKey(NodeId nodeId) implements AetherKey {
+    record ActivationDirectiveKey(NodeId nodeId) implements RuntimeKey {
         private static final String PREFIX = "activation/";
 
         @Override
@@ -926,7 +960,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record SchemaVersionKey(String datasourceName) implements AetherKey {
+    record SchemaVersionKey(String datasourceName) implements ClusterStateKey {
         private static final String PREFIX = "schema-version/";
 
         @Override
@@ -958,7 +992,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record SchemaMigrationLockKey(String datasourceName) implements AetherKey {
+    record SchemaMigrationLockKey(String datasourceName) implements RuntimeKey {
         private static final String PREFIX = "schema-lock/";
 
         @Override
@@ -990,7 +1024,8 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record GossipKeyRotationKey() implements AetherKey {
+    /// Runtime: gossip keys are regenerated after a restore rather than carried in a backup.
+    record GossipKeyRotationKey() implements RuntimeKey {
         private static final String KEY = "gossip-key-rotation";
 
         @Override
@@ -1016,7 +1051,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record GovernorAnnouncementKey(String communityId) implements AetherKey {
+    record GovernorAnnouncementKey(String communityId) implements RuntimeKey {
         private static final String PREFIX = "governor-announcement/";
 
         @Override
@@ -1051,7 +1086,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// Desired-state community identity (worker-membership-spec §2, D1): a leader-minted, stable,
     /// committed KV fact keyed on the immutable `communityId`. Mirrors [GovernorAnnouncementKey]
     /// (the governor-owned *observed* statement for the same community) at the key level.
-    record CapacityLedgerKey() implements AetherKey {
+    record CapacityLedgerKey() implements RuntimeKey {
         public static final CapacityLedgerKey INSTANCE = new CapacityLedgerKey();
 
         @Override
@@ -1060,35 +1095,35 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record CapacityReservationKey(NodeId nodeId) implements AetherKey {
+    record CapacityReservationKey(NodeId nodeId) implements RuntimeKey {
         @Override
         public String asString() {
             return "capacity-reservation/" + nodeId.id();
         }
     }
 
-    record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements AetherKey {
+    record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements RuntimeKey {
         @Override
         public String asString() {
             return "community-placement-availability/" + communityId + "/" + source + "/" + zone.or("");
         }
     }
 
-    record CommunityPlacementOperationKey(String communityId) implements AetherKey {
+    record CommunityPlacementOperationKey(String communityId) implements RuntimeKey {
         @Override
         public String asString() {
             return "community-placement-operation/" + communityId;
         }
     }
 
-    record NodePlacementKey(NodeId nodeId) implements AetherKey {
+    record NodePlacementKey(NodeId nodeId) implements RuntimeKey {
         @Override
         public String asString() {
             return "node-placement/" + nodeId.id();
         }
     }
 
-    record CommunityKey(String communityId) implements AetherKey {
+    record CommunityKey(String communityId) implements ClusterStateKey {
         private static final String PREFIX = "community/";
 
         @Override
@@ -1120,7 +1155,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record AbTestKey(String testId) implements AetherKey {
+    record AbTestKey(String testId) implements ClusterStateKey {
         private static final String PREFIX = "ab-test/";
 
         @Override
@@ -1148,7 +1183,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record AbTestRoutingKey(ArtifactBase artifactBase) implements AetherKey {
+    record AbTestRoutingKey(ArtifactBase artifactBase) implements ClusterStateKey {
         private static final String PREFIX = "ab-test-routing/";
 
         @Override
@@ -1176,7 +1211,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record NodeArtifactKey(NodeId nodeId, Artifact artifact) implements AetherKey {
+    record NodeArtifactKey(NodeId nodeId, Artifact artifact) implements RuntimeKey {
         private static final String PREFIX = "node-artifact/";
 
         public boolean isForNode(NodeId nodeId) {
@@ -1218,7 +1253,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record NodeRoutesKey(NodeId nodeId, Artifact artifact) implements AetherKey {
+    record NodeRoutesKey(NodeId nodeId, Artifact artifact) implements RuntimeKey {
         private static final String PREFIX = "node-routes/";
 
         public boolean isForNode(NodeId nodeId) {
@@ -1319,13 +1354,9 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> CLUSTER_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-config key format: %s");
 
-    Fn1<Cause, String> STORAGE_BLOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-block key format: %s");
-
     Fn1<Cause, String> ENTITY_KEYSPACE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-keyspace key format: %s");
 
     Fn1<Cause, String> ENTITY_CHECKPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-checkpoint key format: %s");
-
-    Fn1<Cause, String> STORAGE_REF_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-ref key format: %s");
 
     Fn1<Cause, String> STORAGE_STATUS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-status key format: %s");
 
@@ -1337,7 +1368,7 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> STREAM_REGISTRATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-reg key format: %s");
 
-    record StreamMetadataKey(String streamName) implements AetherKey {
+    record StreamMetadataKey(String streamName) implements ClusterStateKey {
         private static final String PREFIX = "stream-meta/";
 
         @Override
@@ -1372,7 +1403,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// The committed assignee of one consumer group's partition (#1271) — the authority a
     /// [StreamCursorCheckpointKey] write is guarded by. Replaces the never-used per-stream
     /// `StreamPartitionAssignmentKey`, which had no epoch and no reader.
-    record ConsumerAssignmentKey(String streamName, int partitionIndex, String consumerGroup) implements AetherKey {
+    record ConsumerAssignmentKey(String streamName, int partitionIndex, String consumerGroup) implements RuntimeKey {
         private static final String PREFIX = "consumer-assign/";
 
         @Override
@@ -1408,7 +1439,7 @@ public sealed interface AetherKey extends StructuredKey {
 
     /// Consensus-visible consumer cursor (#488), GUARDED by the group-partition's committed
     /// [ConsumerAssignmentKey] (#1271): the applier admits a checkpoint only from the committed assignee.
-    record StreamCursorCheckpointKey(String streamName, int partitionIndex, String consumerGroup) implements AetherKey, AssignmentGuarded {
+    record StreamCursorCheckpointKey(String streamName, int partitionIndex, String consumerGroup) implements RuntimeKey, AssignmentGuarded {
         private static final String PREFIX = "stream-cursor/";
 
         @Override
@@ -1450,7 +1481,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record StreamRegistrationKey(String streamName, String configSection, Artifact artifact, MethodName methodName) implements AetherKey {
+    record StreamRegistrationKey(String streamName, String configSection, Artifact artifact, MethodName methodName) implements RuntimeKey {
         private static final String PREFIX = "stream-reg/";
 
         @Override
@@ -1540,7 +1571,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// a keyspace must be declared and owned before — and independently of — its log's replica
     /// lifecycle, and deriving the hosting set from stream records would couple the declaration to
     /// whichever nodes happen to hold log replicas rather than to where the SLICE is provisioned.
-    record EntityKeyspaceRegistrationKey(String keyspace, NodeId node) implements AetherKey {
+    record EntityKeyspaceRegistrationKey(String keyspace, NodeId node) implements RuntimeKey {
         private static final String PREFIX = "entity-keyspace/";
         private static final String SEPARATOR = "/";
 
@@ -1574,73 +1605,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record StorageBlockKey(String instanceName, String blockIdHex) implements AetherKey {
-        private static final String PREFIX = "storage-block/";
-
-        @Override
-        public String asString() {
-            return PREFIX + instanceName + "/" + blockIdHex;
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static StorageBlockKey storageBlockKey(String instanceName, String blockIdHex) {
-            return new StorageBlockKey(instanceName, blockIdHex);
-        }
-
-        public static Result<StorageBlockKey> storageBlockKey(String key) {
-            if (!key.startsWith(PREFIX)) {
-                return STORAGE_BLOCK_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var content = key.substring(PREFIX.length());
-            var slashIndex = content.indexOf('/');
-
-            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
-                return STORAGE_BLOCK_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            return success(new StorageBlockKey(content.substring(0, slashIndex), content.substring(slashIndex + 1)));
-        }
-    }
-
-    record StorageRefKey(String instanceName, String referenceName) implements AetherKey {
-        private static final String PREFIX = "storage-ref/";
-
-        @Override
-        public String asString() {
-            return PREFIX + instanceName + "/" + referenceName;
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static StorageRefKey storageRefKey(String instanceName, String referenceName) {
-            return new StorageRefKey(instanceName, referenceName);
-        }
-
-        public static Result<StorageRefKey> storageRefKey(String key) {
-            if (!key.startsWith(PREFIX)) {
-                return STORAGE_REF_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var content = key.substring(PREFIX.length());
-            var slashIndex = content.indexOf('/');
-
-            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
-                return STORAGE_REF_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            return success(new StorageRefKey(content.substring(0, slashIndex), content.substring(slashIndex + 1)));
-        }
-    }
-
-    record StorageStatusKey(NodeId nodeId, String instanceName) implements AetherKey {
+    record StorageStatusKey(NodeId nodeId, String instanceName) implements RuntimeKey {
         private static final String PREFIX = "storage-status/";
 
         public boolean isForNode(NodeId nodeId) {
@@ -1680,7 +1645,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ClusterConfigKey(long configVersion) implements AetherKey {
+    record ClusterConfigKey(long configVersion) implements ClusterStateKey {
         private static final String PREFIX = "cluster-config/";
 
         @Override
@@ -1715,7 +1680,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record StreamConfigKey(String streamName) implements AetherKey {
+    record StreamConfigKey(String streamName) implements ClusterStateKey {
         private static final String PREFIX = "stream-config/";
 
         @Override
@@ -1749,14 +1714,12 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> STREAM_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-config key format: %s");
 
-    Fn1<Cause, String> CLOUD_CREDENTIALS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cloud-credentials key format: %s");
-
     Fn1<Cause, String> CONSUMER_GROUP_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid consumer-group key format: %s");
 
     Fn1<Cause, String> API_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid api-key key format: %s");
     Fn1<Cause, String> API_KEY_AUDIT_FORMAT_ERROR = Causes.forOneValue("Invalid api-key-audit key format: %s");
 
-    record ApiKeyKey(String keyId) implements AetherKey {
+    record ApiKeyKey(String keyId) implements ClusterStateKey {
         private static final String PREFIX = "api-key/";
 
         @Override
@@ -1788,7 +1751,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ApiKeyAuditKey(String entryId) implements AetherKey {
+    record ApiKeyAuditKey(String entryId) implements ClusterStateKey {
         private static final String PREFIX = "api-key-audit/";
 
         @Override
@@ -1820,39 +1783,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record CloudCredentialsKey(String provider) implements AetherKey {
-        private static final String PREFIX = "cloud-credentials/";
-
-        @Override
-        public String asString() {
-            return PREFIX + provider;
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static CloudCredentialsKey cloudCredentialsKey(String provider) {
-            return new CloudCredentialsKey(provider);
-        }
-
-        public static Result<CloudCredentialsKey> parseCloudCredentialsKey(String key) {
-            if (!key.startsWith(PREFIX)) {
-                return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var provider = key.substring(PREFIX.length());
-
-            if (provider.isEmpty()) {
-                return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            return success(new CloudCredentialsKey(provider));
-        }
-    }
-
-    record DhtPartitionOwnershipKey(String partitionId) implements AetherKey {
+    record DhtPartitionOwnershipKey(String partitionId) implements RuntimeKey {
         private static final String PREFIX = "dht-partition-ownership/";
 
         @Override
@@ -1887,7 +1818,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// Per-`(stream, partition)` ownership key (#345 item 1d-i) — the stream-side mirror of
     /// [DhtPartitionOwnershipKey]. The partition is the trailing path segment, so the stream name may
     /// itself contain `/` (`lastIndexOf('/')` splits it off); the partition is an `int`.
-    record StreamPartitionOwnershipKey(String stream, int partition) implements AetherKey {
+    record StreamPartitionOwnershipKey(String stream, int partition) implements RuntimeKey {
         private static final String PREFIX = "stream-partition-ownership/";
 
         @Override
@@ -1923,7 +1854,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record SpokesmanKey(NodeId coreNodeId) implements AetherKey {
+    record SpokesmanKey(NodeId coreNodeId) implements RuntimeKey {
         private static final String PREFIX = "spokesman/";
 
         @Override
@@ -1963,7 +1894,7 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> PROVISIONING_SLOT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid provisioning-slot key format: %s");
 
-    record ProvisioningSlotKey(String slotId) implements AetherKey {
+    record ProvisioningSlotKey(String slotId) implements RuntimeKey {
         private static final String PREFIX = "provisioning-slot/";
 
         @Override
@@ -1995,7 +1926,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ClusterPhaseKey() implements AetherKey {
+    record ClusterPhaseKey() implements RuntimeKey {
         private static final String KEY = "cluster-phase";
 
         @SuppressWarnings("JBCT-VO-02")
@@ -2032,7 +1963,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// reflects the log applied LOCALLY, so the flag becomes visible on a node when that node applies
     /// the committed Put — bounded by consensus latency, not zero; a node behind on apply answers the
     /// previous value until then. Absence of this key means auto-heal is enabled (the pre-#685 default).
-    record AutoHealStateKey() implements AetherKey {
+    record AutoHealStateKey() implements ClusterStateKey {
         private static final String KEY = "auto-heal-state";
 
         @SuppressWarnings("JBCT-VO-02")
@@ -2064,7 +1995,7 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> AUTO_HEAL_STATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid auto-heal-state key format: %s");
 
-    record ConsumerGroupKey(String groupId, String streamName, int partition) implements AetherKey {
+    record ConsumerGroupKey(String groupId, String streamName, int partition) implements RuntimeKey {
         private static final String PREFIX = "consumer-group/";
 
         @Override
@@ -2110,7 +2041,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// single key/value pair so each refcount mutation is a single consensus command instead of
     /// two — the spec separation is conceptual; the implementation collapses them for atomic
     /// piggyback on the SliceNodeValue update.
-    record StreamRegistryKey(ResourceAddress address) implements AetherKey {
+    record StreamRegistryKey(ResourceAddress address) implements RuntimeKey {
         private static final String PREFIX = "stream-registry/";
 
         @Override
@@ -2171,7 +2102,7 @@ public sealed interface AetherKey extends StructuredKey {
     ///
     /// Spec reference: event-stream-namespaces §8.5 (consensus-mediated refcount accounting requires
     /// the resolved address per slice declaration).
-    record BlueprintStreamBindingsKey(BlueprintId blueprintId) implements AetherKey {
+    record BlueprintStreamBindingsKey(BlueprintId blueprintId) implements ClusterStateKey {
         private static final String PREFIX = "blueprint-stream-bindings/";
 
         @Override
@@ -2215,7 +2146,7 @@ public sealed interface AetherKey extends StructuredKey {
     ///
     /// `keyspace` is the RAW name from `resources.toml`, matching [EntityKeyspaceRegistrationKey]; the
     /// `entity:` arc prefix belongs to `EntityPartitionArc` and is not stored here.
-    record EntityCheckpointKey(String keyspace, int partition) implements AetherKey {
+    record EntityCheckpointKey(String keyspace, int partition) implements ClusterStateKey {
         private static final String PREFIX = "entity-checkpoint/";
         private static final String SEP = "/";
 
@@ -2231,6 +2162,16 @@ public sealed interface AetherKey extends StructuredKey {
 
         public static EntityCheckpointKey entityCheckpointKey(String keyspace, int partition) {
             return new EntityCheckpointKey(keyspace, partition);
+        }
+
+        /// Rebuild from the full [#asString] form — the inverse a backup needs, since it records keys
+        /// by their canonical string.
+        public static Result<EntityCheckpointKey> entityCheckpointKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ENTITY_CHECKPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return fromIdentity(key.substring(PREFIX.length()));
         }
 
         /// Rebuild from the snapshot IDENTITY (the part after the section prefix), which is

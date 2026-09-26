@@ -342,6 +342,8 @@ public interface SystemTags {
         pin(table, 1093, "org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey");
         pin(table, 1094, "org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey");
         pin(table, 1095, "org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey");
+        // RETIRED 2026-09-26 (S28 backup classification): `CloudCredentialsKey` was deleted — no production writer
+        // or reader. The pin STAYS so the tag is never reused.
         pin(table, 1096, "org.pragmatica.aether.slice.kvstore.AetherKey.CloudCredentialsKey");
         pin(table, 1097, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey");
         pin(table, 1098, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterPhaseKey");
@@ -371,6 +373,8 @@ public interface SystemTags {
         pin(table, 1122, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey");
         pin(table, 1123, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey");
         pin(table, 1124, "org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey");
+        // RETIRED 2026-09-26 (S28 backup classification): `StorageBlockKey` and `StorageRefKey` were deleted — no
+        // production writer or reader. Both pins STAY so the tags are never reused.
         pin(table, 1125, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageBlockKey");
         pin(table, 1126, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageRefKey");
         pin(table, 1127, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageStatusKey");
@@ -394,6 +398,8 @@ public interface SystemTags {
         pin(table, 1606, "org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue");
         pin(table, 1607, "org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue");
         pin(table, 1608, "org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress");
+        // RETIRED 2026-09-26 (S28 backup classification): `CloudCredentialsValue` was deleted — no production writer
+        // or reader. The pin STAYS so the tag is never reused.
         pin(table, 1609, "org.pragmatica.aether.slice.kvstore.AetherValue.CloudCredentialsValue");
         pin(table, 1610, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue");
         pin(table, 1611, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase");
@@ -428,6 +434,8 @@ public interface SystemTags {
         pin(table, 1640, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue");
         pin(table, 1641, "org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus");
         pin(table, 1642, "org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue");
+        // RETIRED 2026-09-26 (S28 backup classification): `StorageBlockValue` and `StorageRefValue` were deleted — no
+        // production writer or reader. Both pins STAY so the tags are never reused.
         pin(table, 1643, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageBlockValue");
         pin(table, 1644, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageRefValue");
         pin(table, 1645, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue");
