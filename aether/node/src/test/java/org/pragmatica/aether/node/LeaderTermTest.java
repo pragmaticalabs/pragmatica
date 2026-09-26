@@ -90,8 +90,23 @@ class LeaderTermTest {
         assertThat(terms.get(NODE_A).onLeaderGained()).isEqualTo(termA);
     }
 
-    /// `LeaderReconciler`'s re-election pre-latch keeps its per-process meaning: it counts THIS node's
-    /// gains, independent of the cluster-wide term the epochs are minted from.
+    /// Max-merge: a leader-gain edge that reads a LOWER committed sequence than the term already held (a
+    /// replayed or out-of-order observation) keeps the higher term. The real applier never commits a lower
+    /// `LeaderKey` sequence, so the committed record is supplied directly here.
+    @Test
+    void onLeaderGained_keepsTheHigherHeldTerm_whenTheCommittedSequenceIsLower() {
+        var committed = new AtomicReference<>(some(LeaderValue.leaderValue(NODE_A, 5L)));
+        var term = LeaderTerm.leaderTerm(NODE_A, committed::get);
+
+        term.onLeaderGained();
+        committed.set(some(LeaderValue.leaderValue(NODE_A, 3L)));
+        assertThat(term.onLeaderGained()).isEqualTo(5L);
+        assertThat(term.current()).isEqualTo(5L);
+    }
+
+    /// The count `LeaderReconciler`'s re-election pre-latch reads: THIS process's gains, independent of the
+    /// cluster-wide term the epochs are minted from. It reproduces the pre-latch's earlier input, defects
+    /// included; it does not make the pre-latch correct.
     @Test
     void localGainCount_countsThisProcessesGains_independentOfTheClusterWideTerm() {
         electThenLead(NODE_A, NODE_B, NODE_A);

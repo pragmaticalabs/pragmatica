@@ -11,21 +11,34 @@
   the real applier in `aether/node/src/test/java/org/pragmatica/aether/node/LeaderTermTest.java`]
 - The term is now the committed `LeaderValue.viewSequence` of the election that named this node. The
   applier accepts a `LeaderKey` write only when its sequence is strictly greater than the committed one,
-  so a new leader orders strictly after every earlier committed leader, across nodes and across
-  process restarts. [mechanism: `LeaderTerm.onLeaderGained`; `KVStore.staleLeaderWrite`]
+  so a node that gains leadership through a NEW election holds a term strictly above every earlier
+  committed leadership, however often each node has led. [mechanism: `LeaderTerm.onLeaderGained`;
+  `KVStore.staleLeaderWrite`]
 - Across two real leader kills in a five-node in-JVM cluster, each successor's minted term equals its
   committed `viewSequence` and is strictly above its predecessor's. With the old counter the first
   successor minted term 1 against a committed sequence of 2.
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/LeaderTermFailoverTest.java`,
-  `@Tag("Heavy")` — runs in the heavy-forge workflow, not the default CI forge job]
+  in the default CI forge job]
+- Limitation — leadership re-adopted after a process restart. A restarted node whose restored store
+  still names ITSELF re-enters leadership by adopting that committed record
+  (`adoptLeaderUnconditionally`, no self check), with no new election. Its term then EQUALS its previous
+  tenure's while the generation counter restarts at 0, so its epochs order below the ones it minted
+  before the restart, and a write minted from the leader epoch (e.g. a governor announcement) can be
+  refused. Not a regression: the old counter restarted at 1. #1525 (in-memory consensus store, plus a
+  boot token refusing a same-id restart) closes both routes. Until then, forcing a new election (stopping
+  that leader so another node is elected) gives the successor a fresh, strictly higher term.
+  [design intent — unverified: found by reading `LeaderElectionState.adoptLeaderUnconditionally`; no test
+  drives it]
 - The same term gates the cluster-sync ping: `ClusterSyncCollector.acceptPingFencing` drops a ping whose
   term is below the highest one seen. So a lower-term leader's pings were dropped by followers, and their
   observed generation epoch did not advance. The fix reaches this path through the same supplier, but no
   test drives the ping across a failover. [design intent — unverified]
 - Not covered: a whole-cluster cold start with an empty store restarts the sequence at 1. The planned
   cluster-incarnation epoch component addresses that case. [design intent — unverified]
-- Unchanged on purpose: `LeaderReconciler`'s re-election pre-latch still reads this process's own
-  leader-gain count (`LeaderTerm.localGainCount`), not the new term. Moving it to the cluster-wide
-  sequence would pre-latch the first leader after a whole-cluster restart, because the durable consensus
-  store's sequence is already above 1. [mechanism: `AetherNode` wires `leaderTerm::localGainCount` into
-  `LeaderReconciler`]
+- Not changed here, and still defective: `LeaderReconciler`'s re-election pre-latch (`term > 1`) keeps
+  reading this process's own leader-gain count (`LeaderTerm.localGainCount`), which reproduces its
+  earlier behaviour, defects included. Its `LeaderChange` route runs before the route that counts the
+  gain, so the pre-latch fires only on a process's third gain, never for a first-tenure successor after
+  failover. Moving it to the committed term is a follow-up once #1525 makes the consensus store
+  in-memory (with today's durable store, the first leader after a whole-cluster restart would already
+  read a term above 1). [mechanism: route registration order in `AetherNode`; `LeaderReconciler.activate`]

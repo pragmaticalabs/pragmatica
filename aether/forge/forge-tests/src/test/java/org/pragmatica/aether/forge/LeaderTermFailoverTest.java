@@ -12,7 +12,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -23,14 +22,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 
-/// S28 live path: across real leader failovers, every new leader's minted term (the `rabiaTerm` of its
-/// generation epoch, the dominant component of every leader-authored ownership/assignment epoch) is
-/// strictly above its predecessor's, and equals the committed `LeaderValue.viewSequence` that named it.
-/// A per-process count of local leader gains fails the first assertion on the FIRST failover: each
-/// successor is on its first tenure, so it mints term 1, the same as the dead leader.
+/// #1527 live path: across real leader failovers (each a NEW election), every new leader's minted term
+/// (the `rabiaTerm` of its generation epoch, the dominant component of every leader-authored
+/// ownership/assignment epoch) equals the committed `LeaderValue.viewSequence` that named it and is
+/// strictly above its predecessor's. A per-process count of local leader gains fails on the FIRST
+/// failover: the successor is on its first tenure and mints term 1, which is both below its committed
+/// sequence 2 (the assertion that reports first) and equal to the dead leader's term.
+///
+/// This test is the only one that exercises `AetherNode`'s wiring of `LeaderTerm`, so it runs in the
+/// default forge job rather than behind the Heavy tag.
 ///
 /// Five cores so two successive kills keep a quorum of three.
-@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class LeaderTermFailoverTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
