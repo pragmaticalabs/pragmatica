@@ -1,4 +1,4 @@
-### Fixed (2026-09-26 — S28: a new leader that had led less often than its predecessor minted a lower leader term, and the epoch fence refused its writes)
+### Fixed (2026-09-26 — #1527: a new leader that had led less often than its predecessor minted a lower leader term, and the epoch fence refused its writes)
 - **The leader term was a per-process count of this node's own leader gains**, never seeded from
   committed state. Every leader-authored `Epoch(rabiaTerm, counter)` is minted from it, and
   `KVStore.staleEpochWrite` refuses an `EpochBearing` write whose epoch is strictly older than the
