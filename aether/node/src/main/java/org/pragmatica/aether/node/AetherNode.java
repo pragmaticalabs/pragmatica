@@ -1484,8 +1484,8 @@ public interface AetherNode extends ManageableNode {
                                                             NodeId target,
                                                             String streamName,
                                                             int partition) {
-        return pagePeerWatermark(forwardClient::readRemoteCatchup, target, streamName, partition, 0L)
-                                .fold(result -> result.fold(AetherNode::emptyWhenNotHeld, Promise::success));
+        return pagePeerWatermark(forwardClient::readRemoteCatchup, target, streamName, partition, 0L).fold(result -> result.fold(AetherNode::emptyWhenNotHeld,
+                                                                                                                                 Promise::success));
     }
 
     /// The remote read failure travels as its message only ([StreamForwardError.ReadForwardFailed]), so the
@@ -4911,7 +4911,7 @@ public interface AetherNode extends ManageableNode {
         // uses the catch-up read class, so a peer's own promotion state never blocks it.
         var ownerActivation = OwnerActivation.ownerActivation(config.self(),
                                                               (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
-                                                                                                                                                                partition),
+                                                                                                                                                              partition),
                                                                                                       StreamPartitionOwnershipValue.class),
                                                               (stream, partition) -> streamReplicaSetController.roleFor(stream,
                                                                                                                         partition) == ReplicaSetController.Role.OWNER,
@@ -4925,6 +4925,7 @@ public interface AetherNode extends ManageableNode {
                                                               streamSelfWatermark,
                                                               streamPartitionBackfill::catchUpOwnerFrom,
                                                               clusterNode::isActive);
+
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on

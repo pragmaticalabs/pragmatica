@@ -32,6 +32,7 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.dht.DHTConfig;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -95,6 +96,10 @@ class WalTruncationDurableBoundBootTest {
         // sealing phase below must stay well inside it.
         node.start().await(START_BOUND).onFailure(cause -> fail("start must succeed: " + cause.message()));
         var manager = node.streamPartitionManager();
+        // #1555: this single-node harness never forms consensus (see createStream), so the owner promotion gate —
+        // which requires an active consensus engine and a fresh ownership view — would refuse every append. The
+        // test pins WAL truncation, not ownership, so it admits the owner directly.
+        manager.ownerServeGate((_, _) -> Result.unitResult());
         var snapshots = streamsSnapshotManager();
 
         createStream(manager);

@@ -28,6 +28,7 @@ import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// #1555 owner promotion gate. A node may ACT as owner of `(stream, partition)` — accept application appends,
 /// report `servedByOwner`, serve reads as owner — only once it has been ACTIVATED for the ownership record it
 /// currently holds. Activation runs three steps:
@@ -87,13 +88,10 @@ public final class OwnerActivation {
         HOLDER_UNREACHABLE("A live placement member did not answer the watermark probe and may hold a higher watermark"),
         CATCH_UP_SHORT("The catch-up did not reach the highest live holder's watermark"),
         IN_PROGRESS("An activation of this partition is already running");
-
         private final String message;
-
         ActivationError(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
@@ -111,8 +109,10 @@ public final class OwnerActivation {
     private final SelfWatermark selfWatermark;
     private final OwnerCatchUp catchUp;
     private final BooleanSupplier consensusActive;
+
     /// The committed record each partition was activated for; [Option#none] marks a first-owner activation.
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
+
     private final Set<PartitionKey> inFlight = ConcurrentHashMap.newKeySet();
 
     private OwnerActivation(NodeId self,
@@ -161,7 +161,8 @@ public final class OwnerActivation {
     public boolean isActivated(String stream, int partition) {
         var current = records.committed(stream, partition);
 
-        return consensusActive.getAsBoolean() && claimsOwnership(stream, partition, current)
+        return consensusActive.getAsBoolean()
+               && claimsOwnership(stream, partition, current)
                && Option.option(activated.get(PartitionKey.partitionKey(stream, partition)))
                         .filter(current::equals)
                         .isPresent();
@@ -173,7 +174,6 @@ public final class OwnerActivation {
         if (isActivated(stream, partition)) {
             return Result.unitResult();
         }
-
         // FER: the refused action is retried by its caller, and every later demand re-runs the gate, so an
         // activation attempt that fails here is logged and superseded, never relied upon.
         activate(stream, partition).onFailure(cause -> log.debug("Owner activation of {}[{}] pending: {}",
@@ -207,7 +207,7 @@ public final class OwnerActivation {
 
     private Promise<Unit> runGate(String stream, int partition, PartitionKey key) {
         return freshView(stream, partition).flatMap(record -> catchUpToLiveHolders(stream, partition).map(_ -> record))
-                                           .map(record -> recordActivation(stream, partition, key, record));
+                        .map(record -> recordActivation(stream, partition, key, record));
     }
 
     private Unit recordActivation(String stream,
@@ -228,7 +228,8 @@ public final class OwnerActivation {
     /// node the owner. With no record (a first owner) the step is skipped.
     private Promise<Option<StreamPartitionOwnershipValue>> freshView(String stream, int partition) {
         return records.committed(stream, partition)
-                      .fold(() -> firstOwnerView(stream, partition), _ -> refreshedView(stream, partition));
+                      .fold(() -> firstOwnerView(stream, partition),
+                            _ -> refreshedView(stream, partition));
     }
 
     private Promise<Option<StreamPartitionOwnershipValue>> firstOwnerView(String stream, int partition) {
@@ -238,7 +239,8 @@ public final class OwnerActivation {
     }
 
     private Promise<Option<StreamPartitionOwnershipValue>> refreshedView(String stream, int partition) {
-        return barrier.fold(() -> Promise.success(Unit.unit()), round -> round.awaitRound(stream, partition))
+        return barrier.fold(() -> Promise.success(Unit.unit()),
+                            round -> round.awaitRound(stream, partition))
                       .flatMap(_ -> ownedRecord(stream, partition));
     }
 
@@ -260,10 +262,7 @@ public final class OwnerActivation {
     /// Step 2: probe every other live placement member; any unreachable member blocks, a higher watermark is
     /// pulled from its holder first.
     private Promise<Unit> catchUpToLiveHolders(String stream, int partition) {
-        var peers = liveMembers.get()
-                               .stream()
-                               .filter(member -> !member.equals(self))
-                               .toList();
+        var peers = liveMembers.get().stream().filter(member -> !member.equals(self)).toList();
 
         if (peers.isEmpty()) {
             return Promise.success(Unit.unit());
@@ -272,13 +271,11 @@ public final class OwnerActivation {
         return Promise.allOf(peers.stream()
                                   .map(peer -> probe.probe(peer, stream, partition)
                                                     .map(watermark -> new PeerWatermark(peer, watermark)))
-                                  .toList())
-                      .flatMap(results -> catchUpFromHighest(stream, partition, results));
+                                  .toList()).flatMap(results -> catchUpFromHighest(stream, partition, results));
     }
 
     private Promise<Unit> catchUpFromHighest(String stream, int partition, List<Result<PeerWatermark>> results) {
-        if (results.stream()
-                   .anyMatch(Result::isFailure)) {
+        if (results.stream().anyMatch(Result::isFailure)) {
             return ActivationError.HOLDER_UNREACHABLE.promise();
         }
 
@@ -287,8 +284,10 @@ public final class OwnerActivation {
         return Option.from(results.stream()
                                   .map(result -> result.or(new PeerWatermark(self, -1L)))
                                   .filter(peer -> peer.watermark() > local)
-                                  .max(Comparator.comparingLong(PeerWatermark::watermark)))
-                     .fold(() -> Promise.success(Unit.unit()), highest -> pullSuffix(stream, partition, highest));
+                                  .max(Comparator.comparingLong(PeerWatermark::watermark))).fold(() -> Promise.success(Unit.unit()),
+                                                                                                 highest -> pullSuffix(stream,
+                                                                                                                       partition,
+                                                                                                                       highest));
     }
 
     private Promise<Unit> pullSuffix(String stream, int partition, PeerWatermark highest) {
@@ -299,8 +298,13 @@ public final class OwnerActivation {
                  highest.watermark(),
                  selfWatermark.localWatermark(stream, partition));
 
-        return catchUp.catchUp(stream, partition, highest.node(), highest.watermark())
-                      .flatMap(_ -> verifyReached(stream, partition, highest.watermark()));
+        return catchUp.catchUp(stream,
+                               partition,
+                               highest.node(),
+                               highest.watermark())
+                      .flatMap(_ -> verifyReached(stream,
+                                                  partition,
+                                                  highest.watermark()));
     }
 
     private Promise<Unit> verifyReached(String stream, int partition, long target) {

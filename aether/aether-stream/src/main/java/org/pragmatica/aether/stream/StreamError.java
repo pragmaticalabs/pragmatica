@@ -331,7 +331,7 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stream partition %s[%d] is not yet promoted on this node (fresh ownership view and catch-up pending)".formatted(streamName,
-                                                                                                                                     partition);
+                                                                                                                                    partition);
         }
     }
 
