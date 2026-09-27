@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.parse.TimeSpan;
 
 
 /// Typed failures of topic-declaration parsing (durable-pubsub-spec §3).
@@ -50,6 +51,15 @@ public sealed interface TopicConfigError extends Cause {
         }
     }
 
+    /// The topic's stream holds retention in whole milliseconds and refuses a bound below 1 (#1549).
+    record RetentionBelowOneMillisecond(TimeSpan retention) implements TopicConfigError {
+        @Override
+        public String message() {
+            return "durable topic retention must be at least 1ms, got '" + retention
+                 + "'; declare a longer retention (durable-pubsub-spec §3)";
+        }
+    }
+
     static TopicConfigError missingTopicName() {
         return new MissingTopicName();
     }
@@ -60,6 +70,10 @@ public sealed interface TopicConfigError extends Cause {
 
     static TopicConfigError outsideProvenDurableConfig(int replicas, int minSyncReplicas) {
         return new OutsideProvenDurableConfig(replicas, minSyncReplicas);
+    }
+
+    static TopicConfigError retentionBelowOneMillisecond(TimeSpan retention) {
+        return new RetentionBelowOneMillisecond(retention);
     }
 
     static TopicConfigError inertEphemeralKeys(String declaredKeys) {

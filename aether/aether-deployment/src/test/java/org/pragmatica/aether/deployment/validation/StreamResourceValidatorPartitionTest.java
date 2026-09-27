@@ -140,6 +140,14 @@ class StreamResourceValidatorPartitionTest {
                                       version = "1.0.0"
                                       replicas = 0
 
+                                      [streams.snake-keys]
+                                      version = "1.0.0"
+                                      min_sync_replicas = 2
+
+                                      [streams.wordy-count]
+                                      version = "1.0.0"
+                                      partitions = "four"
+
                                       [streams.single-copy]
                                       version = "1.0.0"
                                       replicas = 1
@@ -160,10 +168,61 @@ class StreamResourceValidatorPartitionTest {
                                                "[streams.too-many]::" + StreamResourceValidator.RULE_PARTITIONS_OVER_CEILING,
                                                "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICAS_BELOW_MINIMUM,
                                                "[streams.single-copy]::" + StreamResourceValidator.RULE_REPLICAS_BELOW_MINIMUM,
-                                               "[streams.over-synced]::" + StreamResourceValidator.RULE_REPLICATION_INVALID);
+                                               "[streams.over-synced]::" + StreamResourceValidator.RULE_REPLICATION_INVALID,
+                                               "[streams.snake-keys]::" + StreamResourceValidator.RULE_UNKNOWN_STREAM_KEY,
+                                               "[streams.wordy-count]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID);
             assertThat(partition.rejected()).extracting(StreamValidationFailure::field)
                                             .as("no refusal may lose its alias")
                                             .doesNotContain("[streams]");
+        }
+
+        /// #1549: every value refusal the parser raises lands at DEPLOY validation, per section, under
+        /// `stream-key-invalid` — none of them waits for activation or stream creation to fail.
+        @Test
+        void everyValueRefusal_rejectsItsSectionAtDeploy_asStreamKeyInvalid() {
+            var partition = partition("""
+                                      [streams.orders]
+                                      version = "1.0.0"
+
+                                      [streams.zero-event-size]
+                                      version = "1.0.0"
+                                      max-event-size = "0"
+
+                                      [streams.zero-count]
+                                      version = "1.0.0"
+                                      retention = "count"
+                                      retention-value = "0"
+
+                                      [streams.fractional-size]
+                                      version = "1.0.0"
+                                      retention = "size"
+                                      retention-value = "1.5MB"
+
+                                      [streams.overflowing-age]
+                                      version = "1.0.0"
+                                      retention = "time"
+                                      retention-value = "999999999999999d"
+
+                                      [streams.zero-partitions]
+                                      version = "1.0.0"
+                                      partitions = 0
+
+                                      [streams.bad-checkpoint]
+                                      version = "1.0.0"
+
+                                      [streams.bad-checkpoint.consumers.billing]
+                                      checkpoint-interval = "5 min"
+                                      """,
+                                      APP_ARTIFACT);
+
+            assertThat(partition.accepted()).containsOnlyKeys("orders");
+            assertThat(fieldsAndRules(partition.rejected()))
+                    .containsExactlyInAnyOrder("[streams.zero-event-size]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.zero-count]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.fractional-size]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.overflowing-age]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.zero-partitions]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.bad-checkpoint]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID);
         }
 
         @Test
