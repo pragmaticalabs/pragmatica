@@ -452,8 +452,10 @@ Any failure raises an idempotent flag `DIVERGED_LATE_JOINER` (or `HISTORY_*`). E
 
 #### 7.6.1 `pick-source`
 
+*Planned CLI surface (AD14, #1594): not shipped yet, so the synopsis below names the subcommand without the `aether` binary.*
+
 ```
-aether stream pick-source <s> <p> --storage <id> --expect-digest <d>
+stream pick-source <s> <p> --storage <id> --expect-digest <d>
                           [--without-history --acknowledge-unknown-provenance]
                           [--start-offset <n>]
 ```
@@ -482,8 +484,10 @@ aether stream pick-source <s> <p> --storage <id> --expect-digest <d>
 
 #### 7.6.2 `accept-loss`
 
+*Planned CLI surface (AD14, #1594): not shipped yet, so the synopsis below names the subcommand without the `aether` binary.*
+
 ```
-aether stream accept-loss <s> <p> --expect-digest <d> [--empty [--override-carried-over]] [--start-offset <n>]
+stream accept-loss <s> <p> --expect-digest <d> [--empty [--override-carried-over]] [--start-offset <n>]
 ```
 
 **Without `--empty`:**
