@@ -16,6 +16,7 @@
 package org.pragmatica.utility.warning;
 
 import java.util.Arrays;
+import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -33,7 +34,7 @@ class OperatorWarningCodeTest {
         assertThat(byCode.entrySet()
                          .stream()
                          .filter(entry -> entry.getValue() > 1)
-                         .map(java.util.Map.Entry::getKey))
+                         .map(Map.Entry::getKey))
             .as("two constants sharing a code would merge their events under one operator filter")
             .isEmpty();
     }
@@ -61,7 +62,7 @@ class OperatorWarningCodeTest {
         assertThat(duplicated.entrySet()
                              .stream()
                              .filter(entry -> entry.getValue() > 1)
-                             .map(java.util.Map.Entry::getKey))
+                             .map(Map.Entry::getKey))
             .containsExactly("a-b");
     }
 }
