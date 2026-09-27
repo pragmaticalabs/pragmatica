@@ -109,6 +109,22 @@ public sealed interface QuicTransportError extends Cause {
         }
     }
 
+    /// The Hello carried a boot token the [org.pragmatica.consensus.net.BootTokens] registry refused:
+    /// a different process for a known NodeId (the NodeId is retired), or any process for an already
+    /// retired NodeId (terminal removal, owner ruling session 28). Terminal — no retry can change it.
+    ///
+    /// @param peer      the NodeId the Hello claimed
+    /// @param admission the registry's verdict (`CONFLICT` or `RETIRED`)
+    record BootTokenRefused(NodeId peer, String admission, String message) implements QuicTransportError {
+        static final Fn2<BootTokenRefused, NodeId, String> FACTORY = Causes.forTwoValues("QUIC Hello from %s refused by the boot-token gate: %s",
+                                                                                         BootTokenRefused::new);
+
+        @Override
+        public boolean isTerminal() {
+            return true;
+        }
+    }
+
     /// Failed to create a QUIC stream.
     record StreamCreationFailed(Cause origin, String message) implements QuicTransportError, Cause.Wrapped {
         static final Fn1<StreamCreationFailed, Cause> FACTORY = Causes.forOneValue("Failed to create QUIC stream: %s",

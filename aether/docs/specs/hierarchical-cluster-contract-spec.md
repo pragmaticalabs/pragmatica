@@ -272,9 +272,9 @@ not a claim that any requirement is already verified.
 - `cluster.genesis_voters` carries the original voter identities independently of discovery
   addresses, current membership health and desired capacity. Replacements inherit the verified
   genesis roster; certificate history establishes later electorates.
-- `cluster.consensus_path` identifies the local durable consensus journal/checkpoint directory.
-  It is unique per node. In-process test clusters provide isolated paths and retain them for
-  node restarts. Full loss of this evidence is not a normal same-identity restart.
+- Consensus state is in memory; there is no local consensus journal and no
+  `cluster.consensus_path` (owner ruling, session 28). A restarted process carries a new random
+  boot token and is refused under its old NodeId; recovery is a fresh node identity.
 - An installed successor roster is not permission to terminate its predecessors. Retirement
   additionally requires a persisted certificate of successor-quorum installation.
 - Node READY proves node readiness, not workload replacement. Planned retirement first removes

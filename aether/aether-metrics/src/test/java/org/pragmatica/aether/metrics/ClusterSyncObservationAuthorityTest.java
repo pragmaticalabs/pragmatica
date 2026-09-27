@@ -149,14 +149,13 @@ class ClusterSyncObservationAuthorityTest {
     }
 
     @Test
-    void expiredFutureAndOldIncarnationSamplesCannotReplaceCurrentObservation() {
+    void expiredAndFutureSamplesCannotReplaceCurrentObservation() {
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new NoopNetwork());
 
         collector.setMetricsProducerEligibility(_ -> true);
         var current = sample(7, 10);
 
         collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, current), false));
-        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, sample(6, 100)), false));
         collector.onClusterSyncPing(ping(CORE,
                                          1,
                                          Map.of(WORKER,
@@ -174,6 +173,36 @@ class ClusterSyncObservationAuthorityTest {
                                                                       Map.of())),
                                          false));
         assertThat(collector.allObservations().get(WORKER)).isEqualTo(current);
+    }
+
+    /// `incarnation` is the producer's boot token — equality only (owner ruling, session 28). Within
+    /// one token the higher sequence wins; a lower sequence is a stale replay.
+    @Test
+    void sameBootToken_lowerSequence_doesNotReplaceCurrentObservation() {
+        var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new NoopNetwork());
+
+        collector.setMetricsProducerEligibility(_ -> true);
+        var current = sample(7, 10);
+
+        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, current), false));
+        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, sample(7, 9)), false));
+        assertThat(collector.allObservations().get(WORKER)).isEqualTo(current);
+    }
+
+    /// The first boot token pins the producer. A sample from a different token is another process
+    /// claiming the NodeId (terminal removal) and never replaces the pinned one — whatever its
+    /// sequence, and however the two tokens compare numerically.
+    @Test
+    void differentBootToken_neverSupersedesThePinnedProducer() {
+        var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new NoopNetwork());
+
+        collector.setMetricsProducerEligibility(_ -> true);
+        var pinned = sample(7, 10);
+
+        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, pinned), false));
+        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, sample(6, 100)), false));
+        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, sample(8, 100)), false));
+        assertThat(collector.allObservations().get(WORKER)).isEqualTo(pinned);
     }
 
     @Test

@@ -128,6 +128,20 @@ class TopicConfigTest {
                    .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.OutsideProvenDurableConfig.class));
     }
 
+    /// #1547: 2 copies was the durable floor until the stream replication minimum became 3.
+    @Test
+    void topicConfig_rejectsTwoReplicaDurable_belowStreamMinimum() {
+        TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(2), none(), none())
+                   .onSuccess(_ -> fail("replicas=2 is below the stream replication minimum of 3"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.OutsideProvenDurableConfig.class))
+                   .onFailure(cause -> assertThat(cause.message()).contains("replicas >= 3"));
+    }
+
+    @Test
+    void topicConfig_defaultReplicas_isTheStreamMinimum() {
+        assertThat(DurableTopicSpec.DEFAULT_REPLICAS).isEqualTo(3);
+    }
+
     @Test
     void topicConfig_rejectsMinSyncBelowReplicas_until411() {
         TopicConfig.topicConfig("order-events", TopicDurability.DURABLE, none(), some(3), some(2), none())
@@ -173,8 +187,8 @@ class TopicConfigTest {
         var spec = config.durableSpec().unwrap().unwrap();
 
         assertThat(spec.partitions()).isEqualTo(1);
-        assertThat(spec.replicas()).isEqualTo(2);
-        assertThat(spec.minSyncReplicas()).isEqualTo(2);
+        assertThat(spec.replicas()).isEqualTo(3);
+        assertThat(spec.minSyncReplicas()).isEqualTo(3);
         assertThat(spec.retention().duration()).isEqualTo(TimeSpan.timeSpan("14d").unwrap().duration());
     }
 

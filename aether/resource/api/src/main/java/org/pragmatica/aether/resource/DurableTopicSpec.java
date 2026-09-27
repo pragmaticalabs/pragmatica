@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.TimeSpan;
 
@@ -13,12 +14,13 @@ import static org.pragmatica.lang.Result.success;
 /// Resolved stream parameters of a DURABLE topic (durable-pubsub-spec §3) — the durable tier's
 /// knobs with declaration defaults applied, valid by construction.
 ///
-/// The v1 durable-config constraint is enforced HERE, at parse (§3): `replicas >= 2` and
-/// `min-sync-replicas == replicas`. That is exactly the configuration whose lossless owner-kill
-/// failover is proven (streaming-spec §10.5 scoping); everything outside it is rejected with a
-/// pointer to the spec section rather than accepted and silently weaker. When #411 (multi-survivor
-/// union catch-up) lands, the constraint relaxes to `2 <= min-sync <= replicas` by amending this
-/// factory — not silently.
+/// The v1 durable-config constraint is enforced HERE, at parse (§3): `replicas >= 3` and
+/// `min-sync-replicas == replicas`. `min-sync == replicas` is the configuration whose lossless owner-kill
+/// failover holds by construction (streaming-spec §10.5 scoping); the floor of 3 is the stream
+/// replication minimum (#1547 — under terminal removal a dead owner never returns). Everything outside
+/// it is rejected with a pointer to the spec section rather than accepted and silently weaker. When #411
+/// (multi-survivor union catch-up) lands, the constraint relaxes to `2 <= min-sync <= replicas` by
+/// amending this factory — not silently.
 ///
 /// A retention under 1 ms (`0s`, `500us`) is refused here too (#1549): the topic's stream holds its
 /// retention in whole milliseconds and refuses a bound below 1 at creation, so accepting it would fail
@@ -28,7 +30,7 @@ import static org.pragmatica.lang.Result.success;
 /// [org.pragmatica.aether.slice.StreamConfig]).
 public record DurableTopicSpec(int partitions, int replicas, int minSyncReplicas, TimeSpan retention) {
     public static final int DEFAULT_PARTITIONS = 1;
-    public static final int DEFAULT_REPLICAS = 2;
+    public static final int DEFAULT_REPLICAS = StreamConfig.MIN_REPLICAS;
     public static final TimeSpan DEFAULT_RETENTION = TimeSpan.timeSpan("7d").unwrap();
 
     public static Result<DurableTopicSpec> durableTopicSpec(int partitions,
@@ -39,7 +41,7 @@ public record DurableTopicSpec(int partitions, int replicas, int minSyncReplicas
             return TopicConfigError.invalidPartitions(partitions).result();
         }
 
-        if (replicas < 2 || minSyncReplicas != replicas) {
+        if (replicas < StreamConfig.MIN_REPLICAS || minSyncReplicas != replicas) {
             return TopicConfigError.outsideProvenDurableConfig(replicas, minSyncReplicas).result();
         }
 

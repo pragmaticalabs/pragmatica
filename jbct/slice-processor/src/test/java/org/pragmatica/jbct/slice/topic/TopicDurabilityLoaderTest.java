@@ -60,8 +60,8 @@ class TopicDurabilityLoaderTest {
                 topic_name = "order-events"
                 durability = "durable"
                 partitions = 4
-                replicas = 2
-                min_sync_replicas = 2
+                replicas = 3
+                min_sync_replicas = 3
                 """);
 
             assertThat(loadIndex(path).isDurable("order-events")).isTrue();
@@ -108,8 +108,8 @@ class TopicDurabilityLoaderTest {
                 [messaging.order-events]
                 topic_name = "order-events"
                 durability = "durable"
-                replicas = 2
-                min_sync_replicas = 2
+                replicas = 3
+                min_sync_replicas = 3
                 """);
 
             assertThat(loadIndex(path).isDurable("messaging.order-events")).isTrue();
@@ -145,8 +145,8 @@ class TopicDurabilityLoaderTest {
             var path = writeResources("""
                 [order-events]
                 durability = "durable"
-                replicas = 2
-                min_sync_replicas = 2
+                replicas = 3
+                min_sync_replicas = 3
 
                 [click-events]
                 durability = "ephemeral"

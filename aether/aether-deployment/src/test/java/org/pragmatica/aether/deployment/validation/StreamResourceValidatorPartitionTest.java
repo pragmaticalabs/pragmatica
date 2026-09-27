@@ -147,6 +147,15 @@ class StreamResourceValidatorPartitionTest {
                                       [streams.wordy-count]
                                       version = "1.0.0"
                                       partitions = "four"
+
+                                      [streams.single-copy]
+                                      version = "1.0.0"
+                                      replicas = 1
+
+                                      [streams.over-synced]
+                                      version = "1.0.0"
+                                      replicas = 3
+                                      min-sync-replicas = 4
                                       """,
                                       APP_ARTIFACT);
 
@@ -157,7 +166,9 @@ class StreamResourceValidatorPartitionTest {
                                                "[streams.bad-source-version]::" + StreamResourceValidator.RULE_VERSION_FORMAT_INVALID,
                                                "[streams.bad-owned-version]::" + StreamResourceValidator.RULE_VERSION_FORMAT_INVALID,
                                                "[streams.too-many]::" + StreamResourceValidator.RULE_PARTITIONS_OVER_CEILING,
-                                               "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICATION_INVALID,
+                                               "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICAS_BELOW_MINIMUM,
+                                               "[streams.single-copy]::" + StreamResourceValidator.RULE_REPLICAS_BELOW_MINIMUM,
+                                               "[streams.over-synced]::" + StreamResourceValidator.RULE_REPLICATION_INVALID,
                                                "[streams.snake-keys]::" + StreamResourceValidator.RULE_UNKNOWN_STREAM_KEY,
                                                "[streams.wordy-count]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID);
             assertThat(partition.rejected()).extracting(StreamValidationFailure::field)

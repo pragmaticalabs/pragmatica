@@ -77,29 +77,15 @@ class KVStoreCommittedNotificationTest {
     }
 
     @Test
-    void committedRecoveryRemainsSilentUntilReplayAndKeepsRevision() {
-        var replayFlags = new ArrayList<Boolean>();
-        router.addRoute(KVStoreNotification.ValuePut.class,
-            (KVStoreNotification.ValuePut<Key, String> put) -> replayFlags.add(store.isReplaying()));
-
-        assertThat(store.recoverCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 21).isSuccess()).isTrue();
-        assertThat(store.committedRevision()).isEqualTo(21);
-        assertThat(replayFlags).isEmpty();
-        store.replayNotifications();
-        assertThat(replayFlags).containsExactly(true);
-        assertThat(store.isReplaying()).isFalse();
-        assertThat(store.committedRevision()).isEqualTo(21);
-    }
-    @Test
     void liveReentrantCommitDuringReplayDoesNotInheritReplayFlag() {
         var delivered = new ArrayList<String>();
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 21);
         router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<Key, String> put) -> {
             delivered.add(put.cause().key().id() + ":" + store.isReplaying());
             if (put.cause().key().equals(FIRST)) {
                 store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(REENTRANT, "nested"))), 22);
             }
         });
-        store.recoverCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 21).unwrap();
         store.replayNotifications();
         assertThat(delivered).containsExactly("first:true", "reentrant:false");
         assertThat(store.committedRevision()).isEqualTo(22);

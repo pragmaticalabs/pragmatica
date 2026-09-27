@@ -84,8 +84,7 @@ class CoreRuntimeActivationAndStatusTest {
             .artifactRepo(org.pragmatica.dht.DHTConfig.FULL).coreMax(1)
             .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none())
             .quicTls(TlsConfig.selfSignedMutual()).certificateProvider(Option.none())
-            .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
-                org.pragmatica.config.ConfigurationProvider.builder().build())))
+            .configProvider(Option.none())
             .environment(Option.none()).managementHttpProtocol(org.pragmatica.aether.config.HttpProtocol.H1).storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false)).build();
     }
 

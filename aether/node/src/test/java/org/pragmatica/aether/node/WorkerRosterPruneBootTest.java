@@ -145,8 +145,7 @@ class WorkerRosterPruneBootTest {
                                .tls(Option.none())
                                .quicTls(TlsConfig.selfSignedMutual())
                                .certificateProvider(Option.none())
-                               .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
-                                    org.pragmatica.config.ConfigurationProvider.builder().build())))
+                               .configProvider(Option.none())
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))

@@ -969,7 +969,7 @@ by one `[rule] field — message` line per failure (not the structured triples a
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
 exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
 the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
-`partitions-over-ceiling`, `replication-invalid`, `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
+`partitions-over-ceiling`, `replicas-below-minimum` (`replicas` under 3, #1547), `replication-invalid`, `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
 `stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
 names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
 derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
@@ -1337,6 +1337,17 @@ consumers difference them over their own window.
 boundary — the serialized frame handed to the channel on send, and the frame decoded from the
 buffer on receive — after the pipeline has already stripped QUIC framing, TLS encryption overhead,
 and retransmits. This is **not a wire-byte or bandwidth figure**; do not treat it as one.
+
+**Boot-token refusals (#1528, terminal removal).** Non-zero means a process tried to use a NodeId
+that belongs to a different (dead or retired) process:
+- `boot_token_refusals_total` — admissions the node's shared boot-token registry refused (SWIM
+  evidence and QUIC Hello together);
+- `quic_boot_token_drops_total` — inbound messages dropped because their connection peer or protocol
+  sender is a retired NodeId;
+- `membership_process_evidence_refusals_total` — governor/worker-admission evidence the membership
+  FSM refused (different token, or a DEAD/DEPARTING identity).
+
+Recovery: replace the node under a fresh NodeId; a restarted process under the old NodeId is refused.
 
 ### GET /api/v1/metrics/history
 

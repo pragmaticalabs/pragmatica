@@ -104,8 +104,8 @@ class DurableTopicPublisherTest {
                                              .withExtension(StreamPartitionManager.class, manager)
                                              .withExtension(Serializer.class, STRING_BYTES);
             var spec = DurableTopicSpec.durableTopicSpec(2,
-                                                         2,
-                                                         2,
+                                                         3,
+                                                         3,
                                                          TimeSpan.timeSpan("7d").unwrap()).unwrap();
 
             DurableTopicSubstrate.durablePublisher("org.example:orders:1.0.0", spec, context)

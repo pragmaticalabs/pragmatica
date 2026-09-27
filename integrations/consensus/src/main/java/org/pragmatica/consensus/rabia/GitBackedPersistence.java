@@ -124,20 +124,6 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     @Override
-    public Result<Unit> saveSnapshot(SavedState<C> state) {
-        return snapshotToToml.apply(state.snapshot())
-                             .map(toml -> state.authority()
-                                               .map(VoterAuthoritySnapshotCodec::encode)
-                                               .or("") + addPhaseHeader(toml,
-                                                                        state.lastCommittedPhase()))
-                             .flatMap(this::writeTomlFile)
-                             .flatMap(_ -> ensureGitInitialized())
-                             .flatMap(_ -> gitAdd())
-                             .flatMap(_ -> gitCommit(state.lastCommittedPhase()))
-                             .flatMap(_ -> pushIfRemoteConfigured());
-    }
-
-    @Override
     public Result<Option<SavedState<C>>> loadVerified() {
         var file = backupDir.resolve(STATE_FILE);
 
@@ -235,8 +221,13 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         return runGit("add", STATE_FILE).mapToUnit();
     }
 
+    /// `--allow-empty`: re-saving an unchanged snapshot is a successful save, not a failure. A node
+    /// that restores its OWN backup re-persists identical content (`RabiaEngine.persistRestoredState`),
+    /// and a plain `git commit` exits non-zero on "nothing to commit" — which fenced that node from
+    /// activating on every whole-cluster restart with `[backup]` enabled.
     private Result<Unit> gitCommit(Phase phase) {
         return runGit("commit",
+                      "--allow-empty",
                       "-m",
                       "Backup phase " + phase.value() + " at " + Instant.now()).mapToUnit();
     }

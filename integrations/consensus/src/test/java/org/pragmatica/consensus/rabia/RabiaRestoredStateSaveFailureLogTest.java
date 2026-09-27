@@ -65,10 +65,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// **Decided (owner ruling, session 27): fail closed.** rc4 (#1020) let the node ACTIVATE after that
 /// save failed, on the restore it held in memory, and pinned only that the failure was logged. That is
 /// a durability risk: the node serves and votes on state its disk does not hold, and loses it one
-/// restart later. Under #1390's boot recovery the save is the checkpoint that publishes the recovered
-/// prefix (`RabiaEngine.recoverLocalState` → `saveAuthority`), and its failure stops consensus
-/// participation — the node never activates and says so at ERROR. #1468 stays OPEN for bounded wedge
-/// vs termination and for the start promise.
+/// restart later. The re-persist runs in `RabiaEngine.persistRestoredState`; its failure is recorded as
+/// the authority failure that fences activation, and is logged at ERROR. (#1390's boot-recovery arm for
+/// this failure is removed with the vote WAL, owner ruling session 28.) #1468 stays OPEN for bounded
+/// wedge vs termination and for the start promise.
 ///
 /// **This test is an instrument, and its assertions are deliberately positive.** A renamed logger or a
 /// detached appender leaves the capture EMPTY, which fails `isNotEmpty()`. The control runs the
@@ -76,7 +76,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// what makes the failing arm's inactivity a genuine refusal rather than a fixture that never ran.
 class RabiaRestoredStateSaveFailureLogTest {
     private static final String LOGGER_NAME = RabiaEngine.class.getName();
-    private static final String FAILURE_FRAGMENT = "stopped consensus participation because durable history failed";
     private static final String ADOPTION_FAILURE_FRAGMENT = "restored state but FAILED to persist it";
     private static final String ADOPTION_CONSEQUENCE_FRAGMENT = "in memory ONLY";
     private static final Phase PEER_PHASE = Phase.phase(10);
@@ -123,7 +122,7 @@ class RabiaRestoredStateSaveFailureLogTest {
 
     /// A restart from disk restores its own snapshot, and the re-persist that should make the restore
     /// durable fails. The node must fail closed — never activate on history its disk does not hold —
-    /// and the ERROR must name that consensus participation stopped, with the cause.
+    /// and the ERROR must name the stale-disk consequence, with the cause.
     @Test
     void restoredStateSaveFails_failsClosedAndLogsAtError() {
         var stateMachine = new RecordingStateMachine();
@@ -138,12 +137,13 @@ class RabiaRestoredStateSaveFailureLogTest {
                   .isFalse();
         assertThat(stateMachine.lastRestored()).as("precondition: the restore itself must have run — only the save failed")
                   .isEqualTo(OWN_SNAPSHOT);
-        assertThat(started.network().getMessages())
-            .as("fail-closed never enters synchronization")
-            .noneMatch(SyncRequest.class::isInstance);
+        assertThat(started.engine().voterReconfigurationStatus().failure())
+            .as("the save failure is recorded as the authority failure that fences activation")
+            .contains(DISK_FULL.message());
         assertThat(appender.capturedErrors()).as("the failed re-persist must be logged at ERROR, naming the consequence and the cause")
                   .isNotEmpty()
-                  .anyMatch(message -> message.contains(FAILURE_FRAGMENT)
+                  .anyMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT)
+                                       && message.contains(ADOPTION_CONSEQUENCE_FRAGMENT)
                                        && message.contains(DISK_FULL.message()));
     }
 
@@ -161,7 +161,7 @@ class RabiaRestoredStateSaveFailureLogTest {
         assertThat(stateMachine.lastRestored()).as("precondition: the same restore path must have run")
                   .isEqualTo(OWN_SNAPSHOT);
         assertThat(appender.capturedErrors()).as("a save that succeeded must not report a persist failure")
-                  .noneMatch(message -> message.contains(FAILURE_FRAGMENT));
+                  .noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
     }
 
     /// SYNC-ADOPTION arm — a node with NO own history adopts a responder's snapshot, and the re-persist
@@ -225,7 +225,7 @@ class RabiaRestoredStateSaveFailureLogTest {
         assertThat(appender.capturedErrors()).noneMatch(message -> message.contains(ADOPTION_FAILURE_FRAGMENT));
     }
 
-    /// Persistence with NO own history — boot recovery installs and saves nothing — whose `save` fails
+    /// Persistence with NO own history — nothing to restore — whose `save` fails
     /// when `failSave` is set, so the first save attempted is the adoption re-persist.
     private static RabiaPersistence<TestCommand> emptyDisk(boolean failSave) {
         record emptyDisk(boolean failSave) implements RabiaPersistence<TestCommand> {

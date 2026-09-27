@@ -74,6 +74,12 @@ public interface ClusterNetwork {
         return Unit.unit();
     }
 
+    /// Install the node's [BootTokens] registry — shared with SWIM — through which every peer's
+    /// handshake is admitted (terminal removal). Must be set before the transport starts.
+    default Unit setBootTokens(BootTokens registry) {
+        return Unit.unit();
+    }
+
     /// Broadcast a message to all nodes in the cluster.
     ///
     /// Note that actual implementation may just send messages directly,

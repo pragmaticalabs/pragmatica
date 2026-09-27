@@ -113,13 +113,11 @@ class RabiaSyncAdoptionOwnSnapshotTest {
     /// CONTROL — the adoption rule is untouched: a responder AHEAD of self is the source, and the
     /// state the node activates on is the responder's.
     ///
-    /// Under #1390 the node's own checkpoint is installed at BOOT (`ensureRecovered`) before any sync
-    /// round, so self's snapshot is installed first and the responder's replaces it on adoption. rc4
-    /// (#1020) pinned "exactly one install" because it installed nothing at boot; the property that
-    /// matters is which state the node ACTIVATES on, so that is what is asserted: the last install is
-    /// the responder's, nothing is installed after it, and the phase is the responder's. In the window
-    /// before adoption the node is not active and casts no votes; its store holds its own committed
-    /// history (phase 5), which it also offers to peers' sync requests — committed, merely older.
+    /// The property that matters is which state the node ACTIVATES on, so that is what is asserted: the
+    /// last install is the responder's, nothing is installed after it, and the phase is the responder's.
+    /// (#1390's boot-time install of self's checkpoint is removed with the vote WAL, owner ruling
+    /// session 28, so today the responder's snapshot is the only install; asserting "last" keeps the
+    /// test about the activation state rather than the install count.)
     @Test
     void responderAhead_adoptsTheResponder_finalStateIsTheResponders() {
         var stateMachine = new RecordingStateMachine();
