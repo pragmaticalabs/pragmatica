@@ -512,6 +512,11 @@ public interface SystemTags {
         pin(table, 1690, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityLedgerValue");
         pin(table, 1691, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue");
         pin(table, 1692, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase");
+        // RETIRED 2026-09-27 (#1545): `VotingJournalCheckpoint` and `VotingJournalRecord` were deleted with
+        // the durable control storage. #1545 removed their pins outright; they are restored here (#1541) so
+        // the table keeps "never reuse" enforceable, as for DHTNotification under [base 640].
+        pin(table, 1693, "org.pragmatica.consensus.rabia.VotingJournalCheckpoint");
+        pin(table, 1694, "org.pragmatica.consensus.rabia.VotingJournalRecord");
         pin(table, 1701, "org.pragmatica.aether.worker.health.CommunityHealthMessage.Request");
         pin(table, 1702, "org.pragmatica.aether.worker.health.CommunityHealthMessage.Report");
         pin(table, 1704, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRejected");
