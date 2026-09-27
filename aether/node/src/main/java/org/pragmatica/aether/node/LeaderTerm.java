@@ -49,7 +49,6 @@ public final class LeaderTerm {
     private final NodeId self;
     private final Supplier<Option<LeaderValue>> committedLeader;
     private final AtomicLong term = new AtomicLong(0L);
-    private final AtomicLong localGains = new AtomicLong(0L);
 
     private LeaderTerm(NodeId self, Supplier<Option<LeaderValue>> committedLeader) {
         this.self = self;
@@ -65,23 +64,25 @@ public final class LeaderTerm {
         return term.get();
     }
 
-    /// How many times THIS process has gained leadership — NOT a term, and never an epoch component.
-    /// It exists only for `LeaderReconciler`'s re-election pre-latch (`> 1`), which read the old
-    /// per-process counter as "leader term", and it keeps that reader's existing behaviour, defects
-    /// included — it does NOT make the pre-latch correct. The reconciler's `LeaderChange` route is
-    /// registered before the route that calls [#onLeaderGained()], so `activate()` reads the count
-    /// BEFORE this gain is counted: the pre-latch fires only on a process's third gain, never for a
-    /// first-tenure successor after failover. Moving the pre-latch to the committed term is a
-    /// follow-up once #1525 makes the consensus store in-memory.
-    public long localGainCount() {
-        return localGains.get();
+    /// The term this node holds or is about to adopt: the committed `viewSequence` of the election that
+    /// named it, or the held term when the committed record names another node. A pure read — it never
+    /// advances [#current()]. This is `LeaderReconciler`'s re-election pre-latch input (#1559): that
+    /// reconciler's `LeaderChange` route is registered BEFORE the route that calls [#onLeaderGained()], so
+    /// at its `activate()` the held term is still the previous tenure's, while the committed record (the
+    /// gain edge follows the local commit) already carries this election's sequence. With in-memory
+    /// consensus (#1545) a fresh cluster's first election commits sequence 1 — no pre-latch — and every
+    /// later election, a failover to a never-led node included, commits a higher one.
+    public long committedTerm() {
+        return committedLeader.get()
+                              .filter(this::namesSelf)
+                              .map(LeaderValue::viewSequence)
+                              .map(sequence -> Math.max(sequence, term.get()))
+                              .or(term::get);
     }
 
     /// Adopts the committed `viewSequence` of the election that named this node and returns the term
     /// now held. Max-merge: a replayed or out-of-order edge never regresses the term.
     public long onLeaderGained() {
-        localGains.incrementAndGet();
-
         return committedLeader.get()
                               .filter(this::namesSelf)
                               .map(LeaderValue::viewSequence)

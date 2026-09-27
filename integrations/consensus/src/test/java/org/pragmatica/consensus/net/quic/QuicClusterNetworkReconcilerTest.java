@@ -31,6 +31,7 @@ import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
@@ -235,6 +236,57 @@ class QuicClusterNetworkReconcilerTest {
         assertThat(stub.lookups.getOrDefault(departedPeer, 0L))
             .as("SWIM-departed configured peer (absent from coreNodes) must not be re-dialed")
             .isEqualTo(0L);
+    }
+
+    /// #1558 — the missing-peer reconciler skips a NodeId retired by a boot-token conflict: no topology
+    /// lookup, so no dial. Paired with [#reconcileMissingPeersTick_swimPresentButDisconnectedPeer_isRedialed],
+    /// the identical fixture without the retirement, which dials.
+    @Test
+    void reconcileMissingPeersTick_retiredIdentity_isNotDialed() {
+        var self = new NodeId("aaa-self");
+        var retiredPeer = new NodeId("zzz-retired");
+        var peerInfo = NodeInfo.nodeInfo(retiredPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, retiredPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        network.overrideWallClockForTests(clock::get);
+        network.setBootTokens(retiredRegistry(retiredPeer));
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(retiredPeer, 0L))
+            .as("a retired identity must never be dialed by the reconciler")
+            .isZero();
+    }
+
+    /// #1558 — `connectPeer` never dials a retired identity, whatever asked for the connection. Control:
+    /// the same explicit connect to a live identity starts a dial (CONNECTING).
+    @Test
+    void connect_retiredIdentity_isNotDialed_liveIdentityIs() {
+        var self = new NodeId("aaa-self");
+        var retiredPeer = new NodeId("zzz-retired");
+        var livePeer = new NodeId("zzz-live");
+        var stub = countingTopology(self, List.of());
+        var network = createNetwork(self, List.of(), MessageRouter.mutable(), stub);
+
+        network.setBootTokens(retiredRegistry(retiredPeer));
+
+        network.connect(NodeInfo.nodeInfo(retiredPeer, addressOf("127.0.0.1", 1)));
+        network.connect(NodeInfo.nodeInfo(livePeer, addressOf("127.0.0.1", 1)));
+
+        assertThat(network.peerPhaseForTests(retiredPeer)).as("no dial state for a retired identity").isEqualTo(Option.none());
+        assertThat(network.peerPhaseForTests(livePeer)).as("control: a live identity is dialed")
+                                                       .isEqualTo(Option.some(PeerState.Phase.CONNECTING));
+    }
+
+    private static BootTokens retiredRegistry(NodeId peer) {
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        tokens.admit(peer, 0x0011L);
+        tokens.admit(peer, 0x0022L);
+
+        return tokens;
     }
 
     @Test

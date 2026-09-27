@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,9 +41,12 @@ class EmberSameIdentityRelaunchTest {
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Disjoint from every other Ember test's candidate range (25600, 25700-27500, 27700-29500, 29700-31500).
-    private static final int FIRST_CANDIDATE_BASE = 36100;
-    private static final int LAST_CANDIDATE_BASE = 37900;
+    /// Registered in forge-tests' `TEST_PORT_ALLOCATION.md`: 22000-23800 (step 200), BELOW the Linux
+    /// ephemeral range 32768-60999 — the former 36100-37900 lay inside it, and under load a kernel-assigned
+    /// port left no free block in 4 of 9 bigboy runs (#1558). Disjoint from the other Ember tests' ranges
+    /// (25600, 25700-27500, 27700-29500, 29700-31500) and from forge-tests' table (up to 21700).
+    private static final int FIRST_CANDIDATE_BASE = 22000;
+    private static final int LAST_CANDIDATE_BASE = 23800;
     private static final int CANDIDATE_STEP = 200;
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
@@ -142,6 +146,9 @@ class EmberSameIdentityRelaunchTest {
         assertThat(cluster.getNode("btk-3").isEmpty())
             .as("the refused process learns it was refused (explicit HelloRefused/IdentityRefused) and exits")
             .isTrue();
+        assertThat(cluster.exitCodeOf("btk-3"))
+            .as("#1558: a refused identity exits with its own code, distinct from a drain's")
+            .isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));
 
         assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
 

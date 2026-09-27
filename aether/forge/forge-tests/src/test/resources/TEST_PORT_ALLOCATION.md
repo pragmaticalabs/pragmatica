@@ -40,6 +40,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |
 | EmberAddNodeRoleLabelTest     | 21500     | 21600          | 0          | 3+2 nodes (shared cluster, app-http 21700; #590 addWorkerNode role-label guard, Heavy) |
 | LeaderTermFailoverTest        | 37400     | 37500          | 0          | 5 nodes (single method, app-http 37600; #1527 leader term strictly increases across two leader kills) |
+| EmberSameIdentityRelaunchTest (aether/ember) | 22000-23800 scan | base+40 | 5 | 3 nodes + relaunch, app-http base+80; scans 200-port blocks from 22000 to 23800 for a free one (#1528/#1558 — below the 32768 ephemeral floor) |
 
 ## Per-Method Offset Pattern
 
