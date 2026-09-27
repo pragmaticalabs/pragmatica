@@ -263,6 +263,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// refused on ownership grounds. Forge/unit/legacy managers keep this; `AetherNode` late-binds the real
     /// committed-`StreamPartitionOwnershipValue` check.
     private static final OwnerWriteAdmission ADMIT_ALL = (_, _) -> Option.none();
+    /// Default owner promotion gate (#1555): Forge/unit/legacy managers act as owner without promotion.
+    private static final OwnerServeGate ADMIT_OWNER = (_, _) -> Result.unitResult();
     /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
     /// owner-write admission (#1230) — only the epoch fence applies to them.
     private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
@@ -273,6 +275,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
     /// a replica. Default: [#ADMIT_ALL]. Volatile: set once at wiring, read on every owner-path append.
     private volatile OwnerWriteAdmission ownerWriteAdmission = ADMIT_ALL;
+
+    /// Owner promotion gate (#1555), consulted by every application append (after the committed-owner
+    /// admission) and by owner-role reads ([#readServing], [#mayServeAsOwner]). Default: [#ADMIT_OWNER].
+    /// Volatile: set once at wiring.
+    private volatile OwnerServeGate ownerServeGate = ADMIT_OWNER;
 
     /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
@@ -591,6 +598,14 @@ public final class StreamPartitionManager implements AutoCloseable {
         Option<NodeId> remoteCommittedOwner(String stream, int partition);
     }
 
+    /// Owner promotion gate (#1555): whether this node may ACT as owner of `(stream, partition)` — admitted, or
+    /// refused with a transient cause while promotion (fresh ownership view + catch-up) is pending.
+    /// `AetherNode` binds [OwnerActivation#admit]; the default admits everything.
+    @FunctionalInterface
+    public interface OwnerServeGate {
+        Result<Unit> admit(String stream, int partition);
+    }
+
     /// Committed-config source for the owner-side forwarded-publish race recovery (write-forward race fix).
     /// Reports the LOCALLY-VISIBLE committed `StreamConfig` for a stream, read straight from applied KV
     /// state, so the {@link #publishForwarded} path can lazily materialize a partition whose config commit
@@ -689,6 +704,35 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerWriteAdmission(OwnerWriteAdmission admission) {
         this.ownerWriteAdmission = admission;
+    }
+
+    /// Late-bind the owner promotion gate (#1555). Set once at wiring.
+    @Contract
+    public void ownerServeGate(OwnerServeGate gate) {
+        this.ownerServeGate = gate;
+    }
+
+    /// Whether this node may currently serve `(streamName, partition)` as its owner (#1555): the reported
+    /// `servedByOwner` is true only when placement names self AND this holds.
+    public boolean mayServeAsOwner(String streamName, int partition) {
+        return ownerServeGate.admit(streamName, partition)
+                             .isSuccess();
+    }
+
+    /// A client-facing local read (#1555). On the placement OWNER it passes the owner promotion gate first, so a
+    /// node that has not refreshed its ownership view and caught up never answers as owner from a stale or
+    /// short ring; a replica reads its ring as before.
+    public Result<List<OffHeapRingBuffer.RawEvent>> readServing(String streamName,
+                                                                int partition,
+                                                                long fromOffset,
+                                                                int maxEvents) {
+        return ownerRoleGate(streamName, partition).flatMap(_ -> readLocal(streamName, partition, fromOffset, maxEvents));
+    }
+
+    private Result<Unit> ownerRoleGate(String streamName, int partition) {
+        return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
+               ? ownerServeGate.admit(streamName, partition)
+               : Result.unitResult();
     }
 
     /// Late-bind the committed-config source for the owner-side forwarded-publish race recovery
@@ -1613,6 +1657,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
                                   .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
                                   .or(Result::unitResult)
+                                  .flatMap(_ -> ownerServeGate.admit(streamName, partition))
                                   .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks));
     }
 

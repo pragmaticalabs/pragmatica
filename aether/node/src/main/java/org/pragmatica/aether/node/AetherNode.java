@@ -169,6 +169,7 @@ import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
+import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.node.projection.PartitionBounds;
 import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
@@ -1470,24 +1471,38 @@ public interface AetherNode extends ManageableNode {
                                                     NodeId target,
                                                     String streamName,
                                                     int partition) {
-        return pagePeerWatermark(forwardClient, target, streamName, partition, 0L);
+        return pagePeerWatermark(forwardClient::readRemote, target, streamName, partition, 0L);
     }
 
-    private static Promise<Long> pagePeerWatermark(StreamForwardClient forwardClient,
+    /// #1555: the owner promotion gate's probe. Same paging as [#probePeerWatermark], but over the catch-up read
+    /// class — the class the gate's catch-up then pulls with — so the probed watermark is one the catch-up can
+    /// reach, and a peer's own owner-promotion state never refuses it.
+    private static Promise<Long> probePeerAppendedWatermark(StreamForwardClient forwardClient,
+                                                            NodeId target,
+                                                            String streamName,
+                                                            int partition) {
+        return pagePeerWatermark(forwardClient::readRemoteCatchup, target, streamName, partition, 0L);
+    }
+
+    @FunctionalInterface
+    private interface PeerPageRead {
+        Promise<StreamForwardClient.ReadForwardResult> read(NodeId target,
+                                                            String streamName,
+                                                            int partition,
+                                                            long fromOffset,
+                                                            int maxEvents);
+    }
+
+    private static Promise<Long> pagePeerWatermark(PeerPageRead pageRead,
                                                    NodeId target,
                                                    String streamName,
                                                    int partition,
                                                    long cursor) {
-        return forwardClient.readRemote(target, streamName, partition, cursor, STREAM_CATCHUP_BATCH_SIZE)
-                            .flatMap(result -> continuePeerWatermark(forwardClient,
-                                                                     target,
-                                                                     streamName,
-                                                                     partition,
-                                                                     cursor,
-                                                                     result));
+        return pageRead.read(target, streamName, partition, cursor, STREAM_CATCHUP_BATCH_SIZE)
+                       .flatMap(result -> continuePeerWatermark(pageRead, target, streamName, partition, cursor, result));
     }
 
-    private static Promise<Long> continuePeerWatermark(StreamForwardClient forwardClient,
+    private static Promise<Long> continuePeerWatermark(PeerPageRead pageRead,
                                                        NodeId target,
                                                        String streamName,
                                                        int partition,
@@ -1502,7 +1517,7 @@ public interface AetherNode extends ManageableNode {
         var lastOffset = events.getLast().offset();
 
         return events.size() >= STREAM_CATCHUP_BATCH_SIZE
-               ? pagePeerWatermark(forwardClient, target, streamName, partition, lastOffset + 1)
+               ? pagePeerWatermark(pageRead, target, streamName, partition, lastOffset + 1)
                : Promise.success(lastOffset);
     }
 
@@ -4875,6 +4890,29 @@ public interface AetherNode extends ManageableNode {
         // then writes fail retryable NotOwnerAppend (CTO ruling on #1230). No record admits (the cold-start
         // window, where the fence is inert and HRW routing alone picks the writer).
         streamPartitionManager.ownerWriteAdmission(streamOwnershipViews.writeAdmission(config.self()));
+        // #1555 owner promotion gate: this node acts as a partition's owner (appends, servedByOwner, owner reads)
+        // only after a no-op consensus round has refreshed its committed ownership view, the record still names
+        // it, and it has caught up to every live placement member's watermark. The round is ALWAYS ordered here,
+        // independent of the read-linearization knob, because the gate's correctness depends on it. The probe
+        // uses the catch-up read class, so a peer's own promotion state never blocks it.
+        var ownerActivation = OwnerActivation.ownerActivation(config.self(),
+                                                              (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                                partition),
+                                                                                                      StreamPartitionOwnershipValue.class),
+                                                              (stream, partition) -> streamReplicaSetController.roleFor(stream,
+                                                                                                                        partition) == ReplicaSetController.Role.OWNER,
+                                                              Option.some(LinearizableBarrier.noOpRound(clusterCommandApplier,
+                                                                                                        streamingConfig.readForwardTimeout())),
+                                                              placementMembers,
+                                                              (target, stream, partition) -> probePeerAppendedWatermark(streamForwardClient,
+                                                                                                                        target,
+                                                                                                                        stream,
+                                                                                                                        partition),
+                                                              streamSelfWatermark,
+                                                              streamPartitionBackfill::catchUpOwnerFrom,
+                                                              clusterNode::isActive);
+        streamPartitionManager.ownerServeGate(ownerActivation::admit);
+        allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);

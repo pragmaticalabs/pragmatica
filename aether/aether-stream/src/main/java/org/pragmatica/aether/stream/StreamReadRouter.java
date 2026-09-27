@@ -177,7 +177,7 @@ public final class StreamReadRouter {
                                                                 int partition,
                                                                 long fromOffset,
                                                                 int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+        return partitionManager.readServing(streamName, partition, fromOffset, maxEvents)
                                .async();
     }
 
@@ -224,7 +224,8 @@ public final class StreamReadRouter {
         return new ReplicaSetView(streamName,
                                   partition,
                                   owner.map(NodeId::id),
-                                  owner.map(selfNodeId::equals).or(false),
+                                  owner.map(selfNodeId::equals)
+                                       .or(false) && partitionManager.mayServeAsOwner(streamName, partition),
                                   partitionManager.nextExpectedOffset(streamName, partition),
                                   partitionManager.earliestRetainedOffset(streamName, partition),
                                   replicas);

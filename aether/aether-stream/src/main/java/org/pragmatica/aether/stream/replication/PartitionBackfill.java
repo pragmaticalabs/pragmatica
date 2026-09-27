@@ -1002,6 +1002,18 @@ public final class PartitionBackfill {
                                                                                                  localWatermark));
     }
 
+    /// #1555 owner promotion gate: pull `(local watermark + 1) .. sourceTail` of `(streamName, partition)` from
+    /// `source` — the highest live holder the gate probed — through the SAME hold-SYNCING, apply-aligned,
+    /// promote-on-reach path a promoted owner uses to catch up from a survivor ({@link #catchupOwnerFromSurvivor}).
+    /// A failure propagates and the gate stays un-activated; it never degrades to the local watermark.
+    public Promise<Long> catchUpOwnerFrom(String streamName, int partition, NodeId source, long sourceTail) {
+        return catchupOwnerFromSurvivor(streamName,
+                                        partition,
+                                        source,
+                                        sourceTail,
+                                        selfWatermark.localWatermark(streamName, partition));
+    }
+
     /// The surviving NON-SELF replica holding the highest `confirmedOffset`, but only when it is STRICTLY
     /// ahead of `localWatermark` — the offset the promoted owner must catch up to before it may serve as
     /// owner. {@link Option#none()} when self already covers every survivor (authoritative immediately) or

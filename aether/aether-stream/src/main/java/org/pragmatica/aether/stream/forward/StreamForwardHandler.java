@@ -220,13 +220,17 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
             return readAppended(request);
         }
 
+        if (request.catchup()) {
+            return readVisible(request);
+        }
+
         return request.linearizable()
                ? serveLinearizable(request)
-               : readLocal(request);
+               : readServing(request);
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> serveLinearizable(ReadForward request) {
-        return ownerServe.fold(() -> readLocal(request),
+        return ownerServe.fold(() -> readServing(request),
                                serve -> serve.serveForwarded(request.streamName(),
                                                              request.partition(),
                                                              request.fromOffset(),
@@ -346,7 +350,20 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                : cause.promise();
     }
 
-    private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(ReadForward request) {
+    /// A forwarded client read (#1555): an owner that has not completed promotion refuses rather than answering
+    /// from a stale or short ring ([StreamPartitionManager#readServing]).
+    private Promise<List<OffHeapRingBuffer.RawEvent>> readServing(ReadForward request) {
+        return partitionManager.readServing(request.streamName(),
+                                            request.partition(),
+                                            request.fromOffset(),
+                                            request.maxEvents())
+                               .async();
+    }
+
+    /// A catch-up or watermark-probe read from a node outside the replica set (#1555): replication traffic, not
+    /// an owner serve, so it is answered up to the visible position without the owner promotion gate — a new
+    /// owner catching up from, or probing, a peer must not be blocked by that peer's own promotion state.
+    private Promise<List<OffHeapRingBuffer.RawEvent>> readVisible(ReadForward request) {
         return partitionManager.readLocal(request.streamName(),
                                           request.partition(),
                                           request.fromOffset(),
@@ -410,7 +427,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     }
 
     private static boolean isRetryable(Cause cause) {
-        return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || ResourceCapacityExhausted.isTransientCapacity(cause);
+        return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || cause instanceof StreamError.OwnerNotActivated || ResourceCapacityExhausted.isTransientCapacity(cause);
     }
 
     @Contract
