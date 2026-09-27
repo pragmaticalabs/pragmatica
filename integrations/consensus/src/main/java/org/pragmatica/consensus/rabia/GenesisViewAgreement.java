@@ -29,8 +29,9 @@ import org.pragmatica.lang.Unit;
 /// configured size, so V = V'. Two started rosters can therefore only differ by being DISJOINT, which
 /// takes at least twice the configured count of authenticated cores, split by a partition into two
 /// groups of exactly that count. That case is outside what this rule can close — `cluster.genesis_voters`
-/// closes it. The two-round stability of rule 2/3 is kept as specified; the argument above does not
-/// rest on it.
+/// closes it. Safety rests on monotone views plus the size anchor alone. The two-round stability of
+/// rules 2 and 3 is a robustness margin, kept as specified, that no safety test pins: removing it
+/// leaves `GenesisViewAgreementSimulationTest` green, as the argument above predicts.
 ///
 /// **Liveness.** Because views only grow, each node's view changes at most as many times as there are
 /// cores, so flapping visibility cannot keep views churning forever: once every member of the final

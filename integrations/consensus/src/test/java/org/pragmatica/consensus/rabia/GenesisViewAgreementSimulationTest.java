@@ -24,6 +24,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// twice the count or more, a partition splitting two exactly-count groups can form two disjoint
 /// clusters, which this rule cannot close (see [GenesisViewAgreement]; `cluster.genesis_voters` closes it).
 ///
+/// What the safety assertion pins: monotone (union) views and the size anchor — removing either
+/// reddens it. The two-round stability rule is a robustness margin that nothing here pins for safety;
+/// removing it leaves this class green, which is the expected result, not a gap.
+///
 /// LIVENESS: on a stable connected network with exactly the configured count of cores, genesis
 /// completes on every node, including after flapping or late arrival once visibility stabilises.
 class GenesisViewAgreementSimulationTest {

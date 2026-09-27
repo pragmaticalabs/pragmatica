@@ -47,8 +47,9 @@ is installed at assembly.
   seeded simulation (2,000 schedules with message delay and loss, partitions opening and healing during
   genesis, flapping visibility and late nodes; universe below twice the configured count) asserts after
   every tick that at most one epoch-0 configuration exists. Removing the size anchor or the monotone
-  merge reddens it; removing two-round stability does not — safety does not rest on it, and it is kept
-  as specified. (pinned in-JVM by `GenesisViewAgreementSimulationTest.java`)
+  merge reddens it; removing two-round stability does not. Safety rests on monotone views plus the
+  size anchor; the two-round rule is a robustness margin, kept as specified, and nothing pins it for
+  safety. (pinned in-JVM by `GenesisViewAgreementSimulationTest.java`)
 - **Liveness.** A view changes at most as many times as there are cores, so flapping cannot churn views
   forever: once every member of the final view stays reachable for two consecutive rounds, genesis
   completes (pinned by the stable-network and flap-then-stabilise simulations). A core that was seen and
