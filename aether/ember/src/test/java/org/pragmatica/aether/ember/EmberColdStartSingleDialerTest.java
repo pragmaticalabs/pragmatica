@@ -29,8 +29,16 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// (MembershipBlackHoleSpikeTest setUp). A pair that connects once completes one handshake on each
 /// side, so a five-core cold start completes exactly 5 * 4 handshakes; without the fix this test read 29,
 /// and the Forge logs showed 40–42 Hello completions where the base showed 20.
+///
+/// The joiner arm pins the other side of the same rule. A core with a fresh id joining a formed
+/// cluster also starts with no configuration, and the formed cores keep it outside their SWIM scope, so
+/// they never dial it. The designated dialer of a pair is the LOWER NodeId
+/// (`ConnectionDirection.shouldInitiate`); the joiner is `jn-4` against `jn-1..3`, so every voter is
+/// the designated dialer of its pair with the joiner and the joiner is designated for none. It must
+/// still initiate once it is isolated, well before the transport's 60 s higher-id fallback.
 class EmberColdStartSingleDialerTest {
     private static final int CLUSTER_SIZE = 5;
+    private static final int JOIN_CLUSTER_SIZE = 3;
     private static final int SLOTS = CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
@@ -42,6 +50,10 @@ class EmberColdStartSingleDialerTest {
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     /// Past the genesis rounds and the first reconciler ticks, where a late second dial would land.
     private static final long SETTLE_MS = 5_000L;
+    /// Isolation grace (2 s) plus dial, Hello and one genesis round, far below the 60 s fallback.
+    private static final long JOIN_BOUND_MS = 20_000L;
+    /// Long enough to observe the fallback path, so a regression reads as a latency, not a hang.
+    private static final long WAIT_BOUND_MS = 120_000L;
 
     private EmberCluster cluster;
 
@@ -64,6 +76,37 @@ class EmberColdStartSingleDialerTest {
             .as("each pair connects once, so every core completes one handshake per peer; a genesis candidate "
                 + "that bypasses the single-dialer order adds a second connection per pair")
             .isEqualTo((long) CLUSTER_SIZE * (CLUSTER_SIZE - 1));
+    }
+
+    @Test
+    @Timeout(240)
+    void freshCoreJoiner_designatedForNoPair_initiatesOnceIsolated_andLearnsTheFormedConfiguration() {
+        var basePort = freeBasePort();
+        cluster = emberCluster(JOIN_CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "jn");
+        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+
+        // addNode resolves only once the joiner's start settles, which already includes its connection;
+        // the clock starts before it.
+        var started = System.currentTimeMillis();
+        var joinerId = cluster.addNode().await(START_BOUND).unwrap();
+        var joiner = cluster.getNode(joinerId.id()).unwrap();
+
+        assertThat(joinerId.id()).as("every voter id sorts below the joiner, so no pair designates the joiner")
+                                 .isEqualTo("jn-4");
+
+        while (EmberAmnesiacRestartTest.runtime(joiner).voterConfiguration().isEmpty()
+               && System.currentTimeMillis() - started < WAIT_BOUND_MS) {
+            sleep(250);
+        }
+
+        var joinedAfterMs = System.currentTimeMillis() - started;
+
+        assertThat(EmberAmnesiacRestartTest.runtime(joiner).voterConfiguration().isPresent())
+            .as("the joiner connects and installs the formed configuration")
+            .isTrue();
+        assertThat(joinedAfterMs)
+            .as("the joiner initiates once isolated instead of waiting for the 60 s higher-id fallback")
+            .isLessThanOrEqualTo(JOIN_BOUND_MS);
     }
 
     private long handshakes() {

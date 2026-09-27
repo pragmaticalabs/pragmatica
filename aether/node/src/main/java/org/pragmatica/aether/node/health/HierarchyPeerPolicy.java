@@ -55,12 +55,11 @@ public record HierarchyPeerPolicy(NodeId self, boolean worker, AtomicReference<V
 
     /// A staged core must contact its configured state-transfer seeds before those peers know it.
     /// This grants transport initiation only; admission and voter authority remain independent.
-    /// A staged core holds an installed configuration that does not include it. A core whose genesis
-    /// is still pending is not staged: its configured peers are genesis candidates like itself, and
-    /// letting every candidate bypass the single-dialer order made each pair dial both ways (#1554).
-    public boolean initiatesCoreBootstrap(boolean stagedCore, boolean configuredTransferPeer) {
+    /// The caller decides whether this core is bootstrapping (staged, or an isolated genesis-pending
+    /// core — see `AetherNode.bootstrapInitiator`).
+    public boolean initiatesCoreBootstrap(boolean bootstrapping, boolean configuredTransferPeer) {
         return ! worker
-               && stagedCore
+               && bootstrapping
                && configuredTransferPeer;
     }
 

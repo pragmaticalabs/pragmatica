@@ -898,6 +898,10 @@ public interface AetherNode extends ManageableNode {
     /// every storage setup; the manager self-gates on its mutation-count / time-interval trigger, so
     /// this tick only needs to be frequent enough to bound the post-trigger snapshot latency.
     TimeSpan METADATA_SNAPSHOT_INTERVAL = TimeSpan.timeSpan(10).seconds();
+    /// How long a genesis-pending core with no connection to any configured core waits before it dials
+    /// regardless of the single-dialer order (see `bootstrapInitiator`). Cold-start candidates connect
+    /// through designated dials well inside it.
+    TimeSpan PENDING_CORE_ISOLATION_GRACE = TimeSpan.timeSpan(2).seconds();
     /// Cadence for the WAL disk-reclamation driver (streaming-persistence W5). Periodically truncates
     /// every partition's write-ahead log up to its DURABLE last-sealed offset, dropping records already
     /// persisted in cold segments so the WAL does not grow unbounded. `truncate` is threshold-lazy
@@ -4025,6 +4029,7 @@ public interface AetherNode extends ManageableNode {
         metricsScheduler.setMetricsRecipient(node -> isCoreMember(membershipFsm, node));
         topologyObserver.setConsensusMembership(coreAdmission::isAllowed);
         var configuredTransferPeers = configuredVoters(config);
+        var bootNanos = System.nanoTime();
 
         topologyObserver.setStateTransferMembership(peer -> !peer.equals(config.self()) && (coreAdmission.isAllowed(peer) || configuredTransferPeers.contains(peer)));
         clusterNode.network()
@@ -4348,8 +4353,10 @@ public interface AetherNode extends ManageableNode {
                                                                           metricsScheduler.publishObservationsNow();
                                                                       },
                                                                       config.timeouts().cluster().pingInterval()));
-        clusterNetworkRef.setConnectionInitiator((_, peer) -> hierarchyPeerPolicy.initiatesCoreBootstrap(stagedCore(clusterNode,
-                                                                                                                    config.self()),
+        clusterNetworkRef.setConnectionInitiator((_, peer) -> hierarchyPeerPolicy.initiatesCoreBootstrap(bootstrapInitiator(clusterNode,
+                                                                                                                            config.self(),
+                                                                                                                            configuredTransferPeers,
+                                                                                                                            bootNanos),
                                                                                                          configuredTransferPeers.contains(peer)) || hierarchyPeerPolicy.isConnectionInitiator(peer,
                                                                                                                                                                                               configuredTransferPeers.contains(peer) || routingCoreIds.get()
                                                                                                                                                                                                                                                       .contains(peer) || membershipFsm.memberDescriptor(peer)
@@ -5826,18 +5833,41 @@ public interface AetherNode extends ManageableNode {
     /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
     /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
     /// holder is populated before any snapshot is taken).
-    /// Staged: an installed configuration that does not include this node. No configuration (genesis
-    /// pending) is not staged, so a genesis candidate keeps the single-dialer order.
-    private static boolean stagedCore(RabiaNode<KVCommand<AetherKey>> node, NodeId self) {
-        return node.voterConfiguration()
-                   .filter(configuration -> !configuration.contains(self))
-                   .isPresent();
-    }
-
     private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
                    .or(Set.of());
+    }
+
+    /// Whether this core must dial its configured transfer peers regardless of the single-dialer order.
+    ///
+    /// Staged (#1390): an installed configuration that does not include this node. Formed cores keep
+    /// an unadmitted core outside their SWIM scope and never dial it — core SWIM membership is bounded
+    /// to known cores plus governors, and a claimed CORE role alone must not widen it — so the staged
+    /// core has to initiate.
+    ///
+    /// Genesis pending (no configuration yet, #1554): a cold-start candidate and a core joining a formed
+    /// cluster look the same locally. Cold-start candidates reach each other through designated dials
+    /// within a fraction of a second; if they also bypassed the order, every pair dialed both ways and
+    /// the superseded duplicate could lose its FORWARD lane (#1578). So a pending core initiates only
+    /// once it is isolated: no connection to any configured core after the grace window. That is the
+    /// joiner the formed seeds cannot see.
+    private static boolean bootstrapInitiator(RabiaNode<KVCommand<AetherKey>> node,
+                                              NodeId self,
+                                              Set<NodeId> configuredPeers,
+                                              long bootNanos) {
+        return node.voterConfiguration()
+                   .map(configuration -> !configuration.contains(self))
+                   .or(() -> isolatedPendingCore(node, configuredPeers, bootNanos));
+    }
+
+    private static boolean isolatedPendingCore(RabiaNode<KVCommand<AetherKey>> node,
+                                               Set<NodeId> configuredPeers,
+                                               long bootNanos) {
+        return System.nanoTime() - bootNanos >= PENDING_CORE_ISOLATION_GRACE.nanos() && node.network()
+                                                                                            .connectedPeers()
+                                                                                            .stream()
+                                                                                            .noneMatch(configuredPeers::contains);
     }
 
     private static Set<NodeId> configuredVoters(AetherNodeConfig config) {
