@@ -6,12 +6,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>org.pragmatica.aether.test</groupId>
-    <artifactId>test-stream-repl</artifactId>
+    <artifactId>test-stream-acked</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
 
-    <name>Test Blueprint - Stream (Replicated)</name>
-    <description>RF=2 synchronously-replicated stream — for the 02-chaos replica-failover test</description>
+    <name>Test Blueprint - Stream (Acked, min-sync = replicas = 3)</name>
+    <description>replicas=3 / min-sync-replicas=3 stream — for the #1549 acked-record owner-kill Forge test</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -70,7 +70,7 @@
                     <proc>full</proc>
                     <compilerArgs>
                         <arg>-Aslice.groupId=org.pragmatica.aether.test</arg>
-                        <arg>-Aslice.artifactId=test-stream-repl</arg>
+                        <arg>-Aslice.artifactId=test-stream-acked</arg>
                     </compilerArgs>
                     <annotationProcessorPaths>
                         <path>

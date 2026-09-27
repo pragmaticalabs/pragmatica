@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.test.streamrepl;
+package org.pragmatica.aether.test.streamacked;
 
 import java.util.List;
 
@@ -16,16 +16,16 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Minimal stream-only slice (no database) for the 02-chaos replica-failover test.
+/// Minimal stream-only slice (no database) for the #1549 acked-record owner-kill Forge test.
 ///
-/// Injects a [StreamPublisher] and [StreamAccess] both qualified to the `streams.repl-failover-events`
-/// resource (declared in `resources.toml` with partitions=1, min-sync-replicas=2 and count-based
-/// retention so a slow consumer is never evicted). The RF=2 / synchronous-replication config makes
-/// each publish AWAIT a replica ack, so the log survives loss of the primary replica. Exposes two
+/// Injects a [StreamPublisher] and [StreamAccess] both qualified to the `streams.acked-events`
+/// resource (declared in `resources.toml` with partitions=1, replicas=3, min-sync-replicas=3 and
+/// count-based retention so a slow consumer is never evicted). A publish acks only after both replicas
+/// hold the event. Exposes two
 /// app-HTTP routes:
 ///
-///   - `POST /api/stream-repl/publish` — append one payload to the log (partition 0).
-///   - `POST /api/stream-repl/read`    — fetch events from a caller-supplied offset (log/Kafka fan-out:
+///   - `POST /api/stream-acked/publish` — append one payload to the log (partition 0).
+///   - `POST /api/stream-acked/read`    — fetch events from a caller-supplied offset (log/Kafka fan-out:
 ///     the server keeps NO per-consumer state; every consumer reads from its own offset).
 @Slice
 public interface StreamSlice {

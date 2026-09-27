@@ -44,7 +44,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 
 /// #1549 — every ACKED event survives the owner's terminal removal when `min-sync-replicas = replicas`.
 ///
-/// The fixture is the `test-stream-repl` blueprint: `[streams.repl-failover-events]` declares
+/// The fixture is the `test-stream-acked` blueprint: `[streams.acked-events]` declares
 /// `replicas = 3` and `min-sync-replicas = 3`, so a publish acks only after BOTH non-owner replicas hold
 /// the event. Until #1549 that declaration never reached the runtime — the record binder read
 /// `min_sync_replicas`, found nothing and committed `0`, so every publish acked on the owner alone. The
@@ -87,9 +87,9 @@ class StreamAckedRecordsOwnerKillTest {
     private static final Duration FAILOVER_TIMEOUT = Duration.ofSeconds(180);
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
-    private static final String STREAM_SLICE = TestArtifacts.STREAM_REPL_SLICE;
+    private static final String STREAM_SLICE = TestArtifacts.STREAM_ACKED_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:stream-acked-owner-kill:1.0.0";
-    private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "repl-failover-events");
+    private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "acked-events");
     private static final int DECLARED_REPLICAS = 3;
     private static final int DECLARED_MIN_SYNC = 3;
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
@@ -270,7 +270,7 @@ class StreamAckedRecordsOwnerKillTest {
     }
 
     private void publish(int port, String payload) {
-        var response = httpPost(port, "/api/stream-repl/publish", "{\"payload\":\"" + payload + "\"}");
+        var response = httpPost(port, "/api/stream-acked/publish", "{\"payload\":\"" + payload + "\"}");
 
         assertThat(response).describedAs("publish '%s' must succeed", payload)
                             .doesNotContain("\"error\"")
@@ -299,7 +299,7 @@ class StreamAckedRecordsOwnerKillTest {
     private List<Event> readEvents(int port, long fromOffset, int maxEvents) {
         var body = "{\"fromOffset\":" + fromOffset + ",\"maxEvents\":" + maxEvents + "}";
 
-        return parseEvents(httpPost(port, "/api/stream-repl/read", body));
+        return parseEvents(httpPost(port, "/api/stream-acked/read", body));
     }
 
     private static List<Event> parseEvents(String body) {
@@ -358,7 +358,7 @@ class StreamAckedRecordsOwnerKillTest {
             return false;
         }
 
-        var body = httpPost(ports.getFirst(), "/api/stream-repl/read", "{\"fromOffset\":0,\"maxEvents\":1}");
+        var body = httpPost(ports.getFirst(), "/api/stream-acked/read", "{\"fromOffset\":0,\"maxEvents\":1}");
 
         return !body.contains("\"error\"") && body.contains("events");
     }

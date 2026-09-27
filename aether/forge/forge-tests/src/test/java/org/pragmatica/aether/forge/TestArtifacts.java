@@ -25,14 +25,21 @@ final class TestArtifacts {
     /// (independent of the platform `project.version`), so the coordinate is hardcoded.
     static final String STREAM_SLICE = "org.pragmatica.aether.test:test-stream-stream-slice:1.0.0";
 
-    /// replicas=3 / min-sync-replicas=3 replicated stream blueprint (`test-stream-repl`), used by
-    /// `StreamOwnerFailoverTest` for the #457 in-JVM owner-kill failover proof and by
-    /// `StreamAckedRecordsOwnerKillTest` for the #1549 acked-record proof (every acked event is on every
-    /// replica; the declared min-sync reaches the runtime only since #1549). Mirrors the [#STREAM_SLICE]
+    /// RF=2 / min-sync-replicas=2 replicated stream blueprint (`test-stream-repl`), used by
+    /// `StreamOwnerFailoverTest` for the #457 in-JVM owner-kill failover proof. A synchronously
+    /// replicated stream (owner + 1 in-sync replica) is the ONLY topology with a promotable CAUGHT_UP
+    /// non-owner replica; `POST /api/v1/streams` can only mint RF=1 (owner-only), so the RF=2 config MUST
+    /// come from a blueprint that declares `min-sync-replicas=2`. Mirrors the RF=1 [#STREAM_SLICE]
     /// coordinate (the `-stream-slice` artifact, fixed `1.0.0` blueprint version, resolved from the
     /// local Maven repo) — the sibling `aether/tests/blueprints/test-stream-repl` module the cloud
     /// suite `02-chaos/test-stream-replica-failover.sh` deploys.
     static final String STREAM_REPL_SLICE = "org.pragmatica.aether.test:test-stream-repl-stream-slice:1.0.0";
+
+    /// replicas=3 / min-sync-replicas=3 stream blueprint (`test-stream-acked`), used by
+    /// `StreamAckedRecordsOwnerKillTest` for the #1549 acked-record proof: every acked event is on every
+    /// replica, and the declared min-sync reaches the runtime only since #1549. A dedicated fixture so no
+    /// other test's semantics move with it.
+    static final String STREAM_ACKED_SLICE = "org.pragmatica.aether.test:test-stream-acked-stream-slice:1.0.0";
 
     /// partitions=4 / RF=2 / min-sync-replicas=2 replicated stream blueprint (`test-stream-multipart`),
     /// used by `MultiPartitionStreamTest` for the #429 multi-partition e2e fixture (partition→owner

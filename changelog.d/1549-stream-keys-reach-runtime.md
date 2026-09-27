@@ -34,5 +34,6 @@
   them in order (3 of 3 runs on a 5-node Ember cluster). Ownership was observed to move only after the
   replacement joined; with no membership event after the kill it does not move (#1550).
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamAckedRecordsOwnerKillTest.java`]
-- `test-stream-repl` now declares `replicas = 3, min-sync-replicas = 3`. The unused
+- A dedicated `test-stream-acked` blueprint (`replicas = 3, min-sync-replicas = 3`) carries the Forge
+  test, so no existing fixture's semantics change for it. The unused
   `StreamConfigParser.parse(String)`, a second, unvalidated section parse with no caller, is removed.
