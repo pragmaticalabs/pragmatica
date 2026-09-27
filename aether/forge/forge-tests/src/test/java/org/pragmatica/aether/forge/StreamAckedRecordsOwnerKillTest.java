@@ -7,7 +7,6 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
@@ -88,7 +87,6 @@ class StreamAckedRecordsOwnerKillTest {
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration PLACEMENT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration FAILOVER_TIMEOUT = Duration.ofSeconds(180);
-    private static final Duration STALL_PROBE = Duration.ofSeconds(60);
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
     private static final String STREAM_SLICE = TestArtifacts.STREAM_REPL_SLICE;
@@ -105,6 +103,7 @@ class StreamAckedRecordsOwnerKillTest {
 
     private EmberCluster cluster;
     private String killedOwner = "";
+    private String replacementId = "";
     private final HttpOperations http = jdkHttpOperations();
 
     private record Event(long offset, String payload) {}
@@ -169,42 +168,28 @@ class StreamAckedRecordsOwnerKillTest {
             .describedAs("the declared min-sync-replicas reaches the committed runtime config (#1549: it was 0)")
             .isEqualTo(DECLARED_MIN_SYNC);
 
-        assertOwnershipStillStalledOnTheDeadOwner();
+        replacementId = replacement.id();
     }
 
-    /// The serving half, disabled while ownership stalls on the dead owner (see the class doc and the
-    /// tripwire at the end of the enabled test). Runs after it, on the same cluster, when enabled.
+    /// The serving half, on the same cluster after the replacement joined.
     @Test
     @Order(2)
-    @Disabled("#1550: stream ownership never leaves a killed owner (measured 2026-09-27 on rc4 83d515575); the tripwire in "
-              + "ownerKilledRightAfterTheLastAck_survivorsHoldEveryAckedEvent fails when that is fixed")
     void replacementJoined_newOwnerServesEveryAckedEvent() {
-        awaitOrDump("a surviving replica takes ownership", () -> ownerChanged(killedOwner));
+        awaitOrDump("ownership leaves the killed owner", () -> ownerChanged(killedOwner));
+        var newOwner = ownerView().flatMap(ReplicaSetView::ownerNodeId).or("<none>");
+        LOG.log(System.Logger.Level.INFO,
+                "#1549 new owner {0} (killed {1}, replacement {2}, survivors holding the data {3})",
+                newOwner,
+                killedOwner,
+                replacementId,
+                survivorsHoldingFullHistory());
         var served = drain(appPort(), 0L, N_EVENTS, deadline(FAILOVER_TIMEOUT));
         LOG.log(System.Logger.Level.INFO,
                 "#1549 after the replacement joined: owner={0} served={1}/{2}",
-                ownerView().flatMap(ReplicaSetView::ownerNodeId).or("<none>"),
+                newOwner,
                 served.size(),
                 N_EVENTS);
         assertContiguousBatch(served, "served by the new owner after the replacement joined");
-    }
-
-    /// TRIPWIRE, not a specification: asserts today's WRONG behaviour so that fixing it cannot go
-    /// unnoticed. Ownership should move to a surviving replica; today it stays on the killed node.
-    private void assertOwnershipStillStalledOnTheDeadOwner() {
-        var until = deadline(STALL_PROBE);
-        var moved = ownerChanged(killedOwner);
-
-        while (!moved && System.nanoTime() < until) {
-            LockSupport.parkNanos(POLL_INTERVAL.toNanos());
-            moved = ownerChanged(killedOwner);
-        }
-
-        assertThat(moved)
-            .describedAs("TRIPWIRE (#1550): stream ownership moved off the killed owner %s — the stall this asserts is fixed. "
-                         + "Delete this tripwire and enable replacementJoined_newOwnerServesEveryAckedEvent.",
-                         killedOwner)
-            .isFalse();
     }
 
     /// Live nodes whose LOCAL partition holds offsets `0..N-1` — read from each node's own ring, not from
