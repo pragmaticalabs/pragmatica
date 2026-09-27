@@ -6,9 +6,10 @@
 # slice loader resolves @ResourceQualifier(config = "streams.repl-failover-events")
 # lookups (see @EventStreamPublisher / @EventStreamReader) against it.
 #
-# RF=2 / synchronously-replicated config for the 02-chaos replica-failover test:
+# RF=3 / synchronously-replicated config for the 02-chaos replica-failover test:
 #   - partitions        = 1  -> one clean, globally-ordered log (monotonic offsets).
-#   - replicas          = 2  -> replication factor (RF): copies incl owner (owner + 1 replica).
+#   - replicas          = 3  -> replication factor (RF): copies incl owner (owner + 2 replicas).
+#     3 is the stream replication minimum (#1547); a value below it is refused at deploy.
 #   - min-sync-replicas = 2  -> owner + 1 in-sync per write: each publish AWAITs a replica
 #     ack before it returns, so the log survives loss of the primary replica (synchronous
 #     replication) and the single replica is always caught up -> lossless owner-kill failover.
@@ -18,7 +19,7 @@
 
 [streams.repl-failover-events]
 partitions = 1
-replicas = 2
+replicas = 3
 min-sync-replicas = 2
 retention = "count"
 retention-value = "100000"

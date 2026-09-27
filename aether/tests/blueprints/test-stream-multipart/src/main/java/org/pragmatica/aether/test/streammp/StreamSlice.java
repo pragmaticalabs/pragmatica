@@ -20,8 +20,8 @@ import static org.pragmatica.lang.Result.success;
 /// #430 publish-under-reshuffle chaos test.
 ///
 /// Injects a [StreamPublisher] and [StreamAccess] both qualified to the `streams.multipart-events`
-/// resource (declared in `resources.toml` with partitions=4, replicas=2, min-sync-replicas=2 and
-/// count-based retention so a slow consumer is never evicted). The RF=2 / synchronous-replication
+/// resource (declared in `resources.toml` with partitions=4, replicas=3, min-sync-replicas=2 and
+/// count-based retention so a slow consumer is never evicted). The RF=3 / synchronous-replication
 /// config makes each publish AWAIT a replica ack, so an ACKED write is on >=2 nodes and survives loss
 /// of one owner. Exposes two app-HTTP routes:
 ///

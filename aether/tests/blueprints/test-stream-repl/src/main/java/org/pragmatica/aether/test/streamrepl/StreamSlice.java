@@ -20,7 +20,7 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// Injects a [StreamPublisher] and [StreamAccess] both qualified to the `streams.repl-failover-events`
 /// resource (declared in `resources.toml` with partitions=1, min-sync-replicas=2 and count-based
-/// retention so a slow consumer is never evicted). The RF=2 / synchronous-replication config makes
+/// retention so a slow consumer is never evicted). The RF=3 / synchronous-replication config makes
 /// each publish AWAIT a replica ack, so the log survives loss of the primary replica. Exposes two
 /// app-HTTP routes:
 ///
