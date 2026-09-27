@@ -616,7 +616,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         /// whose self-refusal listener makes the node log ERROR and exit, and fail the dial.
         private void onHelloRefused(ChannelHandlerContext ctx, NetworkMessage.HelloRefused refused) {
             if (refused.refused().equals(selfId)) {
-                log.error("QUIC peer {} refused this process's identity {}: {}", refused.sender(), selfId, refused.reason());
+                log.error("QUIC peer {} refused this process's identity {}: {}",
+                          refused.sender(),
+                          selfId,
+                          refused.reason());
                 bootTokens.selfRefused(refused.reason());
             }
 

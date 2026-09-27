@@ -709,9 +709,7 @@ public interface AetherNode extends ManageableNode {
                  + " process; start with a fresh identity. Exiting.",
                   self.id(),
                   reason);
-        Thread.ofVirtual()
-              .name("refused-identity-exit")
-              .start(jvmExit);
+        Thread.ofVirtual().name("refused-identity-exit").start(jvmExit);
 
         return Unit.unit();
     }
@@ -2218,8 +2216,7 @@ public interface AetherNode extends ManageableNode {
             /// `membership_process_evidence_refusals_total` — governor/admission evidence the membership
             /// FSM refused under terminal removal (#1528).
             public Map<String, Number> transportMetrics() {
-                var metrics = new HashMap<String, Number>(clusterNode.network()
-                                                                     .transportMetrics());
+                var metrics = new HashMap<String, Number>(clusterNode.network().transportMetrics());
 
                 metrics.put("membership_process_evidence_refusals_total", membershipFsm.refusedProcessEvidenceCount());
 

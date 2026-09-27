@@ -601,10 +601,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             var refusal = serializer.encode(new NetworkMessage.HelloRefused(selfId,
                                                                             refused,
                                                                             "NodeId " + refused.id()
-                                                                            + " belongs to a retired process; start with a fresh identity"));
+                                                                           + " belongs to a retired process; start with a fresh identity"));
 
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(refusal))
-               .addListener(_ -> ctx.channel().parent().close());
+            ctx.writeAndFlush(Unpooled.wrappedBuffer(refusal)).addListener(_ -> ctx.channel()
+                                                                                   .parent()
+                                                                                   .close());
         }
 
         private Object decodeMessage(ByteBuf buf) {

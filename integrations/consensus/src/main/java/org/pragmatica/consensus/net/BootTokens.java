@@ -64,11 +64,9 @@ public interface BootTokens {
     /// layer (SWIM or the QUIC handshake) presented the conflicting token. Lets SWIM mark the known
     /// process dead even when the transport saw the new process first.
     Unit onRetired(Consumer<NodeId> listener);
-
     /// A peer told THIS process its own NodeId belongs to a retired (or different) process: this process
     /// can never be admitted. Notifies the self-refusal listeners exactly once, with the peer's reason.
     Unit selfRefused(String reason);
-
     /// Register a listener for [#selfRefused] — the node logs ERROR and exits (terminal removal).
     Unit onSelfRefused(Consumer<String> listener);
 

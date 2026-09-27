@@ -130,10 +130,7 @@ public final class CommunityHealthIndex {
         var members = new HashMap<NodeId, MemberHealth>();
         // MemberHealth.incarnation is the member's boot token (equality only, never ordered): the first
         // token pins the member, and evidence from a different token is dropped from this observation.
-        report.members()
-              .stream()
-              .filter(this::pinnedToken)
-              .forEach(value -> members.put(value.node(), value));
+        report.members().stream().filter(this::pinnedToken).forEach(value -> members.put(value.node(), value));
         observations.put(report.communityId(),
                          new Observation(report,
                                          now,

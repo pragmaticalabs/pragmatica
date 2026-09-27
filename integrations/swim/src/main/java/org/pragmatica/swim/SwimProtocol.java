@@ -1637,7 +1637,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         // runs BEFORE the tombstone clear so a refused process can never reopen the identity.
         if (!admitsBootToken(announce.nodeInfo().id(),
                              announce.bootToken())) {
-            refuseAnnounce(sender, announce.nodeInfo().id());
+            refuseAnnounce(sender,
+                           announce.nodeInfo().id());
 
             return;
         }
@@ -1867,7 +1868,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                        IdentityRefused.identityRefused(selfId,
                                                        refused,
                                                        "NodeId " + refused.id()
-                                                       + " belongs to a retired process; start with a fresh identity"));
+                                                      + " belongs to a retired process; start with a fresh identity"));
     }
 
     private boolean refuseRetired(NodeId peer, long token) {
