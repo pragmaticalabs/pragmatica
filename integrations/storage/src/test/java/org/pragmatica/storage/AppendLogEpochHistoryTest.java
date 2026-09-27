@@ -32,7 +32,7 @@ class AppendLogEpochHistoryTest {
         var logRef = new AtomicReference<AppendLog>();
         var visibleDuringWrite = new AtomicReference<List<EpochStart>>();
         Fn2<Result<Unit>, Path, byte[]> observing = (path, bytes) -> observeThenWrite(logRef, visibleDuringWrite, path, bytes);
-        var wal = AppendLog.open(file(), AppendLog.TornTailListener.NONE, observing).unwrap();
+        var wal = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), observing).unwrap();
 
         logRef.set(wal);
 
@@ -95,7 +95,7 @@ class AppendLogEpochHistoryTest {
         first.recordEpochStart(1, 0).onFailure(c -> fail(c.message()));
         first.close();
 
-        var crashing = AppendLog.open(file(), AppendLog.TornTailListener.NONE, tornWrite).unwrap();
+        var crashing = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), tornWrite).unwrap();
 
         crashing.recordEpochStart(2, 40).onSuccess(_ -> fail("the temp write was injected to fail"));
         assertThat(crashing.epochHistory()).containsExactly(new EpochStart(1, 0));

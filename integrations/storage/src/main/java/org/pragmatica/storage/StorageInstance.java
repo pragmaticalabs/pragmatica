@@ -245,17 +245,17 @@ public interface StorageInstance {
                                            MetadataStore metadataStore,
                                            WritePolicy writePolicy,
                                            Option<Path> logRoot) {
-        return storageInstance(name, tiers, metadataStore, writePolicy, logRoot, AppendLog.TornTailListener.NONE);
+        return storageInstance(name, tiers, metadataStore, writePolicy, logRoot, AppendLog.TornTailSink.logOnly());
     }
 
-    /// As above, with the listener every log this instance opens reports a torn tail to (#1569 A10).
+    /// As above, with the sink every log this instance opens reports a torn tail to (#1569 A10).
     static StorageInstance storageInstance(String name,
                                            List<StorageTier> tiers,
                                            MetadataStore metadataStore,
                                            WritePolicy writePolicy,
                                            Option<Path> logRoot,
-                                           AppendLog.TornTailListener tornTailListener) {
-        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy, logRoot, tornTailListener);
+                                           AppendLog.TornTailSink tornTailSink) {
+        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy, logRoot, tornTailSink);
     }
 }
 
@@ -278,7 +278,7 @@ final class DefaultStorageInstance implements StorageInstance {
     private final MetadataStore metadataStore;
     private final WritePolicy writePolicy;
     private final Option<Path> logRoot;
-    private final AppendLog.TornTailListener tornTailListener;
+    private final AppendLog.TornTailSink tornTailSink;
     private final Option<WriteBehindQueue> writeBehindQueue;
     /// Non-capacity promotion failures per cache tier, for the WARN-once-then-every-N policy (#910).
     private final Map<TierLevel, AtomicLong> promotionFailures = new ConcurrentHashMap<>();
@@ -302,7 +302,7 @@ final class DefaultStorageInstance implements StorageInstance {
                            MetadataStore metadataStore,
                            WritePolicy writePolicy,
                            Option<Path> logRoot,
-                           AppendLog.TornTailListener tornTailListener) {
+                           AppendLog.TornTailSink tornTailSink) {
         this.name = name;
         this.tiers = List.copyOf(tiers);
         this.requiredTiers = requiredTiersOf(this.tiers);
@@ -310,7 +310,7 @@ final class DefaultStorageInstance implements StorageInstance {
         this.metadataStore = metadataStore;
         this.writePolicy = writePolicy;
         this.logRoot = logRoot;
-        this.tornTailListener = tornTailListener;
+        this.tornTailSink = tornTailSink;
         this.writeBehindQueue = writePolicy == WritePolicy.WRITE_BEHIND
                                 ? some(WriteBehindQueue.writeBehindQueue())
                                 : none();
@@ -453,7 +453,7 @@ final class DefaultStorageInstance implements StorageInstance {
     public Result<AppendLog> openLog(String logName) {
         return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
                       .flatMap(root -> logFile(root, logName))
-                      .flatMap(file -> AppendLog.open(file, tornTailListener));
+                      .flatMap(file -> AppendLog.open(file, tornTailSink));
     }
 
     @Override

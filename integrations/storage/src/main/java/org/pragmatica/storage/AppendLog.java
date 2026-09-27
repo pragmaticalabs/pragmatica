@@ -191,23 +191,23 @@ public final class AppendLog implements AutoCloseable {
     /// entry for a reader of a known file (a verification or tool). Its truncation is seal-gated all
     /// the same.
     public static Result<AppendLog> open(Path file) {
-        return open(file, TornTailListener.NONE);
+        return open(file, TornTailSink.logOnly());
     }
 
-    /// [#open], reporting a torn tail the recovery cut off to `listener` as well as at WARN (#1569 A10).
+    /// [#open], reporting a torn tail the recovery cut off to `sink` as well as at WARN (#1569 A10).
     /// Recovery -- the only step of a log's life that rewrites bytes it did not append -- runs HERE, on
     /// an explicit open, and never on a read-only path ([#inspect], [StorageInstance#listLogs]).
-    public static Result<AppendLog> open(Path file, TornTailListener listener) {
-        return open(file, listener, FileOps::writeBytesForced);
+    public static Result<AppendLog> open(Path file, TornTailSink sink) {
+        return open(file, sink, FileOps::writeBytesForced);
     }
 
     /// Test seam: `sidecarWriter` writes (and forces) the epoch history's temp file ([EpochHistory]).
-    static Result<AppendLog> open(Path file, TornTailListener listener, Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+    static Result<AppendLog> open(Path file, TornTailSink sink, Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
         var absolute = file.toAbsolutePath();
 
         return FileOps.createDirectoriesDurable(absolute.getParent()).flatMap(_ -> openDurably(absolute,
                                                                                                Files.exists(absolute),
-                                                                                               listener,
+                                                                                               sink,
                                                                                                sidecarWriter));
     }
 
@@ -230,11 +230,11 @@ public final class AppendLog implements AutoCloseable {
 
     private static Result<AppendLog> openDurably(Path file,
                                                  boolean existed,
-                                                 TornTailListener listener,
+                                                 TornTailSink sink,
                                                  Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
         return existed
-               ? recover(file, listener, sidecarWriter)
-               : recover(file, listener, sidecarWriter).flatMap(AppendLog::forceCreatedEntry);
+               ? recover(file, sink, sidecarWriter)
+               : recover(file, sink, sidecarWriter).flatMap(AppendLog::forceCreatedEntry);
     }
 
     /// A failed force closes the log it just opened: its file may not survive a power loss, so it is
@@ -629,9 +629,9 @@ public final class AppendLog implements AutoCloseable {
 
     // === open / recovery ===
     private static Result<AppendLog> recover(Path file,
-                                             TornTailListener listener,
+                                             TornTailSink sink,
                                              Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
-        return openChannel(file).flatMap(channel -> recoverFrom(file, channel, listener, sidecarWriter));
+        return openChannel(file).flatMap(channel -> recoverFrom(file, channel, sink, sidecarWriter));
     }
 
     /// The epoch history is loaded before the torn tail is cut: a sidecar that cannot be read refuses the
@@ -639,20 +639,20 @@ public final class AppendLog implements AutoCloseable {
     /// an operator must look before anything is discarded.
     private static Result<AppendLog> recoverFrom(Path file,
                                                  FileChannel channel,
-                                                 TornTailListener listener,
+                                                 TornTailSink sink,
                                                  Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
         return EpochHistory.load(file, sidecarWriter)
                            .onFailure(_ -> closeQuietly(file, channel))
-                           .flatMap(history -> recoverWith(file, channel, listener, history));
+                           .flatMap(history -> recoverWith(file, channel, sink, history));
     }
 
     private static Result<AppendLog> recoverWith(Path file,
                                                  FileChannel channel,
-                                                 TornTailListener listener,
+                                                 TornTailSink sink,
                                                  EpochHistory history) {
         return FileOps.readBytes(file)
                       .map(AppendLog::extentOf)
-                      .onSuccess(extent -> reportTornTail(file, extent, listener))
+                      .onSuccess(extent -> reportTornTail(file, extent, sink))
                       .flatMap(extent -> truncateAndBuild(file,
                                                           channel,
                                                           new ScanResult(extent.validBytes(),
@@ -667,19 +667,14 @@ public final class AppendLog implements AutoCloseable {
     }
 
     /// #1569 A10: cutting a torn tail discards bytes, so it is never silent -- a WARN naming the log, the
-    /// byte range cut and the last valid offset, and the same fact to `listener`, which the node turns into
-    /// a cluster event.
-    private static void reportTornTail(Path file, LogExtent extent, TornTailListener listener) {
+    /// byte range cut and the last valid offset, and the same fact to `sink`, which the node turns into a
+    /// cluster event. The WARN is written here, first and unconditionally, so a sink only emits.
+    private static void reportTornTail(Path file, LogExtent extent, TornTailSink sink) {
         if (extent.fileBytes() > extent.validBytes()) {
             var torn = new TornTail(file, extent.validBytes(), extent.fileBytes(), extent.headOffset());
 
-            log.warn("Append log {} has a torn tail: truncating bytes [{}, {}) past the last valid record (offset {}); "
-                    + "a record in that range was never acknowledged",
-                     file,
-                     torn.validEnd(),
-                     torn.fileBytes(),
-                     torn.lastValidOffset());
-            listener.tornTail(torn);
+            log.warn("{}", torn.message());
+            sink.accept(torn);
         }
     }
 
@@ -832,14 +827,39 @@ public final class AppendLog implements AutoCloseable {
 
     /// A torn tail cut by recovery: bytes `[validEnd, fileBytes)` of `file` were discarded, and
     /// `lastValidOffset` (`-1` for none) is the last record kept.
-    public record TornTail(Path file, long validEnd, long fileBytes, long lastValidOffset) {}
+    public record TornTail(Path file, long validEnd, long fileBytes, long lastValidOffset) {
+        /// What the warning is about: the log file.
+        public String subject() {
+            return file.toString();
+        }
 
-    /// Receives every [TornTail] a recovery cuts (#1569 A10). The storage engine has no event plumbing of
-    /// its own; the node supplies a listener that raises the cluster event.
+        /// The operator-facing text, identical in the WARN and in whatever the sink emits.
+        public String message() {
+            return "Append log " + file
+                 + " has a torn tail: truncating bytes [" + validEnd
+                 + ", " + fileBytes
+                 + ") past the last valid record (offset " + lastValidOffset
+                 + "); a record in that range was never acknowledged";
+        }
+    }
+
+    /// Receives every [TornTail] a recovery cuts (#1569 A10). Shaped like #1574's `OperatorWarningSink` --
+    /// one `accept`, a [#logOnly] default, one sink per storage instance and never a static one -- so the
+    /// node wires it with a single adapter, `tail -> operatorSink.accept(OperatorWarning.operatorWarning(code,
+    /// tail.subject(), tail.message()))`, calling the sink directly because the WARN is already written here.
+    /// The storage engine has no event plumbing of its own.
     @FunctionalInterface
-    public interface TornTailListener {
-        TornTailListener NONE = _ -> Unit.unit();
-        Unit tornTail(TornTail tornTail);
+    public interface TornTailSink {
+        @Contract
+        void accept(TornTail tornTail);
+
+        /// Emits nothing: the WARN [AppendLog] writes is the whole report.
+        static TornTailSink logOnly() {
+            return TornTailSink::ignore;
+        }
+
+        @Contract
+        private static void ignore(TornTail tornTail) {}
     }
 
     /// Failures surfaced by the WAL surface. I/O faults carry the underlying detail message; the
