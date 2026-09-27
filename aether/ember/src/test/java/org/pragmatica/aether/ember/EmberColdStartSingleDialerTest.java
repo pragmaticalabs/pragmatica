@@ -11,11 +11,15 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.quic.PeerState;
+import org.pragmatica.consensus.net.quic.PeerTransitionRecord;
 import org.pragmatica.consensus.rabia.ClusterConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
@@ -47,7 +51,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// because its connected seeds answer its genesis announcement with the formed configuration: once
 /// installed, that configuration does not contain it, the #1390 staged rule applies, and it dials
 /// `pc-1`. The late-starter arm boots one cold-start core 10 s after the others, which wait for it in
-/// genesis, and requires one connection per pair once it starts.
+/// genesis, and requires that it dial only the peers it is the designated dialer for. It pins the dial
+/// DECISION rather than a handshake total: the designated side's own retries to a peer that was down
+/// can land more than once after the peer starts, a transport behaviour this rule does not govern.
 class EmberColdStartSingleDialerTest {
     private static final int CLUSTER_SIZE = 5;
     private static final int JOIN_CLUSTER_SIZE = 3;
@@ -171,10 +177,15 @@ class EmberColdStartSingleDialerTest {
 
     @Test
     @Timeout(300)
-    void lateStartingCore_connectsEachPairOnce() {
+    void lateStartingCore_dialsOnlyThePeersItIsDesignatedFor() {
         var basePort = freeBasePort();
         cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "ls");
         var starting = cluster.startWithLateGenesisMembers(Set.of("ls-3"));
+        var lateDials = new CopyOnWriteArrayList<NodeId>();
+
+        EmberAmnesiacRestartTest.runtime(cluster.heldBackNode("ls-3").unwrap())
+                                .network()
+                                .setPeerTransitionListener(record -> recordDial(record, lateDials));
         sleep(LATE_START_DELAY_MS);
         assertThat(cluster.startHeldBackNodes().await(START_BOUND).fold(Cause::message, _ -> "started"))
             .as("ls-3 starts 10 s after the others; ls-1/ls-2 are its designated dialers, it dials ls-4/ls-5")
@@ -183,9 +194,25 @@ class EmberColdStartSingleDialerTest {
         sleep(SETTLE_MS);
 
         assertThat(cluster.allNodes()).hasSize(CLUSTER_SIZE);
-        assertThat(handshakes())
-            .as("one connection per pair, including every pair with the late core")
-            .isEqualTo((long) CLUSTER_SIZE * (CLUSTER_SIZE - 1));
+        assertThat(lateDials).as("ls-3 dials only the peers it is the designated dialer for")
+                             .doesNotContain(node("ls-1").self(), node("ls-2").self())
+                             .contains(node("ls-4").self(), node("ls-5").self());
+        assertThat(connectedToAll(node("ls-3"))).as("the late core is connected to every other core").isTrue();
+    }
+
+    private static void recordDial(PeerTransitionRecord record, List<NodeId> dials) {
+        if (record.to() == PeerState.Phase.CONNECTING) {
+            dials.add(record.peerId());
+        }
+    }
+
+    private boolean connectedToAll(AetherNode core) {
+        var peers = EmberAmnesiacRestartTest.runtime(core).network().connectedPeers();
+
+        return cluster.allNodes()
+                      .stream()
+                      .filter(other -> !other.self().equals(core.self()))
+                      .allMatch(other -> peers.contains(other.self()));
     }
 
     private AetherNode node(String id) {
