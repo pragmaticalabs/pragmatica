@@ -14,7 +14,16 @@
   appends and owner reads are refused with the transient `OwnerNotActivated` (forwarded publishes retry it;
   local publishes retry it within a short bound).
 - **An unreachable live member blocks promotion** until the membership FSM declares it dead and it leaves the
-  live placement set; promotion never proceeds while a reachable member holds a higher watermark.
+  live placement set; promotion never proceeds while a reachable member holds a higher watermark. Each probe
+  times out on its own, but there is no bound independent of DEAD: a member that keeps handshaking while
+  answering nothing never reaches DEAD, and the partition then stays unpromoted until that member is removed
+  (#1563).
+- **Sticky ownership.** Every node now routes, and computes its role and `servedByOwner`, from the COMMITTED
+  ownership record (HRW placement only before a record exists), so nodes agree on the owner even while their
+  membership views disagree. Only the leader's ownership writer judges liveness, and it moves ownership only
+  when the committed owner leaves its live set — a higher-ranked node that joins becomes a replica instead of
+  taking ownership back, which removes the hand-back trigger. While a dead owner's record stands, its
+  partition answers retryable refusals until the leader rewrites it.
 - **Accepted residual:** at `min-sync-replicas` 0 an append acknowledged by the previous owner in the instant
   before the ownership flip reaches it can be lost — the acknowledgement is owner-local by definition there.
   `min-sync-replicas` >= 1 closes it.

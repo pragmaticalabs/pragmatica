@@ -52,6 +52,11 @@ import org.slf4j.LoggerFactory;
 /// member set is the live placement projection (`AetherNode.livePlacementMembers`), from which a member leaves
 /// once the membership FSM declares it DEAD, shrinking the probe set and unblocking activation within
 /// failure-detection time. Activation never proceeds while a reachable member holds a higher watermark.
+/// Each probe attempt itself times out (the forward-read timeout) and the next demand retries, but there is no
+/// bound independent of DEAD: **a member that keeps its transport handshaking while answering nothing never
+/// reaches DEAD, and promotion then blocks for as long as it stays in the live set — an outage of that partition
+/// with no recovery but removing the member (#1563: a black-holed peer that re-handshakes; the production form
+/// would be a wedged JVM whose network stack still completes handshakes).**
 ///
 /// **Quorum loss clears every activation** ([#onQuorumStateChange]) and a node without an active consensus engine is
 /// never activated, so an ex-owner that heals back re-runs the whole gate before it serves again.

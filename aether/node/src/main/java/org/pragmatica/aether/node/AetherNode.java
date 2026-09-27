@@ -4825,8 +4825,9 @@ public interface AetherNode extends ManageableNode {
         //   - isLeaderSupplier / rabiaTermSupplier / hlcClock are the same suppliers the DHT writer uses,
         //   - CommittedOwnership reads the committed StreamPartitionOwnershipValue exactly as
         //     KvStreamOwnerEpochSource does (getTyped on the StreamPartitionOwnershipKey),
-        //   - HrwOwner late-binds to streamReplicaSetController::ownerFor through clusterEventsControllerRef
-        //     (set to the same controller below, before the first reconcile fires the driver).
+        //   - HrwOwner late-binds to streamReplicaSetController::desiredOwner through clusterEventsControllerRef
+        //     (set to the same controller below, before the first reconcile fires the driver) — #1555 sticky
+        //     ownership: keep the committed owner while it is in the leader's live set, else HRW rank-0.
         // The writer self-limits: writeOwnershipChange returns none() on a follower (its isLeaderSupplier
         // gate short-circuits BEFORE any KV read) and none() for an unchanged owner, so the driver only
         // emits a consensus Put on the leader and only for genuinely-moved partitions. #265 increment 6:
@@ -4840,7 +4841,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                   (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                   partition),
                                                                                                                                           StreamPartitionOwnershipValue.class),
-                                                                                                  (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.ownerFor(stream,
+                                                                                                  (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
                                                                                                                                                                                                                                      partition)));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                    config.self(),
@@ -4859,6 +4860,14 @@ public interface AetherNode extends ManageableNode {
         // against the current topology, independent of reconcile, so it is correct as soon as members
         // are visible (and true for a steady-state single-node cluster).
         clusterEventsControllerRef.set(streamReplicaSetController);
+        // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
+        // exists); the leader's writer alone judges liveness (ReplicaSetController#desiredOwner). Backfill sources
+        // from, and self-elects against, the same owner.
+        streamReplicaSetController.committedOwnerSource((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                         partition),
+                                                                                               StreamPartitionOwnershipValue.class)
+                                                                                     .map(StreamPartitionOwnershipValue::owner));
+        streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);
         // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
         // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
         // is the same construction-order inversion the streamPartitionManagerRef seam resolves above —

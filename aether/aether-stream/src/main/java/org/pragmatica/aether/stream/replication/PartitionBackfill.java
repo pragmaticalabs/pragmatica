@@ -136,6 +136,9 @@ public final class PartitionBackfill {
     /// must persist across calls — this map is that cross-call memory.
     private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs = new ConcurrentHashMap<>();
 
+    /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
+    private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
+
     /// Per-partition `confirmedOffset` at which a CAUGHT_UP non-owner replica was last re-verified against
     /// the HRW owner (#333 write-idle residual). It quiesces {@link #redriveCandidates}: a stale CAUGHT_UP
     /// non-owner is re-included in the redrive only while its current `confirmedOffset` differs from the
@@ -969,7 +972,24 @@ public final class PartitionBackfill {
     /// routes to. {@link Option#none()} when the member view is empty (backward-compat factory / bootstrap
     /// window before members are visible), where the registry / cold-start source path takes over.
     private Option<NodeId> hrwOwner(String streamName, int partition) {
-        return Option.from(ReplicaPlacement.rank(streamName, partition, membersSupplier.get()).stream().findFirst());
+        return ownerResolver.ownerOf(streamName, partition)
+                            .orElse(() -> Option.from(ReplicaPlacement.rank(streamName, partition, membersSupplier.get())
+                                                                      .stream()
+                                                                      .findFirst()));
+    }
+
+    /// #1555 sticky ownership: the owner every other node routes to — the committed ownership record's owner — so
+    /// backfill sources from, and self-elects against, the same owner. [Option#none] (the default, and the
+    /// no-record case) falls back to the HRW rank-0 of the member view.
+    @FunctionalInterface
+    public interface OwnerResolver {
+        Option<NodeId> ownerOf(String streamName, int partition);
+    }
+
+    /// Late-bind the owner resolver (#1555). Set once at wiring.
+    @Contract
+    public void ownerResolver(OwnerResolver resolver) {
+        this.ownerResolver = resolver;
     }
 
     /// Owner promotion is LOSSLESS (#336 phase-2). A freshly HRW-elected owner can be BEHIND a surviving

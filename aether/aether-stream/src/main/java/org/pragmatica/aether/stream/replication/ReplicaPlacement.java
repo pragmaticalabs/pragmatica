@@ -71,6 +71,30 @@ public final class ReplicaPlacement {
         return Option.option(new Placement(ranked.getFirst(), replicas));
     }
 
+    /// #1555 sticky ownership: the placement of `(streamName, partition)` when its owner is already decided (the
+    /// committed ownership record). The owner leads the replica list whether or not it is in `members`; the other
+    /// `rf - 1` replicas are the HRW-top of the remaining members, so a higher-ranked node joining becomes a replica
+    /// and never displaces the owner.
+    public static Placement placeWithOwner(String streamName,
+                                           int partition,
+                                           NodeId owner,
+                                           Iterable<NodeId> members,
+                                           int requestedRf) {
+        var others = new ArrayList<NodeId>();
+
+        rank(streamName, partition, members).stream()
+                                            .filter(member -> !member.equals(owner))
+                                            .forEach(others::add);
+
+        var rf = clamp(requestedRf, 1, others.size() + 1);
+        var replicas = new ArrayList<NodeId>();
+
+        replicas.add(owner);
+        replicas.addAll(others.subList(0, rf - 1));
+
+        return new Placement(owner, replicas);
+    }
+
     /// Rank all members by HRW score descending, tie-broken by node-id string ascending.
     /// Package-visible to allow direct churn/ordering assertions in tests.
     static List<NodeId> rank(String streamName, int partition, Iterable<NodeId> members) {
