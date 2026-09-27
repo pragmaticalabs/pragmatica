@@ -50,10 +50,14 @@
 - **Append logs can be inspected without being changed**, and recovery is loud. Listing a storage
   instance's logs, inspecting a log's low/head offsets, and reading its owner-epoch history change no byte
   or timestamp on the volume; cutting a torn tail happens only on an explicit open, with a WARN naming the
-  log, the byte range and the last valid offset, and a listener hook for a cluster event (not yet wired:
-  the `OperatorWarning` event is #1574). Each log gains a durable owner-epoch history (`<log>.epochs`,
+  log, the byte range and the last valid offset, and a `TornTailSink` hook for a cluster event (not yet
+  wired: the `OperatorWarning` event is #1574). Constructing a `LocalDiskTier` now only reads its directory;
+  creating the directory and sweeping partial blocks left by a crashed write happen in an explicit `open()`,
+  which the node calls for the volumes it owns. Each log gains a durable owner-epoch history (`<log>.epochs`,
   written by temp, force, rename and directory force) for ranking replicas after an ownership move; the
   WAL record format is unchanged, and nothing records epochs yet.
 - `AppendLog` and its test were relicensed from BUSL-1.1 to Apache-2.0 per owner ruling as they moved
   into `integrations/storage`.
 - `FileOps` gains `writeBytesForced`, `forceDirectory` and `createDirectoriesDurable`.
+- `RemoteTierConfig` validates its inputs through `Option` rather than null checks, which reports every invalid
+  input at once instead of the first.
