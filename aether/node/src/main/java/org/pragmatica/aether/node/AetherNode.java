@@ -643,7 +643,7 @@ public interface AetherNode extends ManageableNode {
                                    syncHoldRegistry,
                                    syncHoldConfig,
                                    onSyncResponseReceived)
-                        .flatMap(clusterNode -> initializeVoterAuthority(clusterNode,
+                        .flatMap(clusterNode -> initializeVoterConfiguration(clusterNode,
                                                                          config,
                                                                          installedVoters,
                                                                          persistence))
@@ -5838,13 +5838,13 @@ public interface AetherNode extends ManageableNode {
                      .collect(Collectors.toUnmodifiableSet());
     }
 
-    private static Result<RabiaNode<KVCommand<AetherKey>>> initializeVoterAuthority(RabiaNode<KVCommand<AetherKey>> node,
+    private static Result<RabiaNode<KVCommand<AetherKey>>> initializeVoterConfiguration(RabiaNode<KVCommand<AetherKey>> node,
                                                                                     AetherNodeConfig config,
                                                                                     AtomicReference<Set<NodeId>> installedVoters,
                                                                                     RabiaPersistence<KVCommand<AetherKey>> persistence) {
         var initialRoster = configuredVoters(config);
 
-        node.onVoterConfiguration(configuration -> installVoterAuthority(node, installedVoters, configuration));
+        node.onVoterConfiguration(configuration -> installVoterConfiguration(node, installedVoters, configuration));
 
         return persistence.loadVerified()
                           .flatMap(saved -> resolveGenesis(config.configProvider()
@@ -5929,7 +5929,7 @@ public interface AetherNode extends ManageableNode {
                                                      ids.stream().map(NodeId::new).toList());
     }
 
-    private static void installVoterAuthority(RabiaNode<KVCommand<AetherKey>> node,
+    private static void installVoterConfiguration(RabiaNode<KVCommand<AetherKey>> node,
                                               AtomicReference<Set<NodeId>> installedVoters,
                                               VoterConfiguration configuration) {
         installedVoters.set(Set.copyOf(configuration.members()));

@@ -27,9 +27,9 @@ separate cluster-supervision-spec; this batch supplies its topology and observat
 ## 2. Invariants
 
 H01. Workers and unknown peers contribute zero votes or synchronization quorum evidence.
-[limit: crash-fault-certificates] This assumes crash-fault participants and genuine certificate
-history. Certificates contain identity lists, not Byzantine signatures; fabricated history is
-outside this model.
+[limit: crash-fault-configurations] This assumes crash-fault participants: a responder's voter
+configuration is one it applied from the log. Configurations carry identity lists, not Byzantine
+signatures; a fabricated configuration is outside this model.
 Workers may obtain state but never become voters through activation or a capacity deficit.
 
 H02. Applied consensus history is ordered and never applied twice, including after in-memory
@@ -251,7 +251,7 @@ Dependent branches contain their prerequisites and identify the incremental comm
 1. Contract/specification and acceptance plan.
 2. Additive canonical serialization and guarded KV mutation primitives, independently validated
    against the otherwise unchanged rc4 node and CLI callers.
-3. Integrated hierarchy runtime: consensus and voter handoff, role admission, community authority,
+3. Integrated hierarchy runtime: consensus and voter reconfiguration, role admission, community authority,
    worker execution, metrics, scoped metadata and source placement/movement, with runtime tests.
 
 The integrated runtime changes have mutual wire, persistence and assembly dependencies. They are
@@ -269,14 +269,18 @@ not a claim that any requirement is already verified.
 
 ## Additional integration requirements
 
-- `cluster.genesis_voters` carries the original voter identities independently of discovery
-  addresses, current membership health and desired capacity. Replacements inherit the verified
-  genesis roster; certificate history establishes later electorates.
+- `cluster.genesis_voters` is optional and, when present, carries the genesis voter identities
+  independently of discovery addresses, current membership health and desired capacity; a blank id
+  fails boot. Without it, genesis waits and retries until the discovered core membership names
+  exactly the configured core count — a late core never aborts assembly. Replacements are rendered
+  the leader's bootstrap roster; later electorates are learned from the log, where each Rabia §4
+  command agreed at slot R governs from R+1 ([voter-configuration-handoff-spec.md](voter-configuration-handoff-spec.md), #1526).
 - Consensus state is in memory; there is no local consensus journal and no
   `cluster.consensus_path` (owner ruling, session 28). A restarted process carries a new random
   boot token and is refused under its old NodeId; recovery is a fresh node identity.
 - An installed successor roster is not permission to terminate its predecessors. Retirement
-  additionally requires a persisted certificate of successor-quorum installation.
+  additionally requires that no reconfiguration is pending and that every member the last change
+  added has been observed voting past that change's slot R.
 - Node READY proves node readiness, not workload replacement. Planned retirement first removes
   the old node from allocation eligibility, keeps its instances until the required replacements
   are ACTIVE, and waits for its workload entries to be removed before closing node admission.
@@ -376,16 +380,14 @@ write measurements do not establish the latency or throughput of a 10K-worker de
 measure checkpoint size, serialization time, force latency and proposal queue delay under the
 intended state cardinality and storage hardware.
 
-[limit: core-snapshot-frame] After #1390, core catch-up and voter handoff transfer whole encoded messages under a 32 MiB
-transport frame limit. The usable application snapshot is smaller: framing, certified authority
-history and a retained handoff snapshot consume the same envelope. Reconfiguration must validate
-the exact barrier prefix and both handoff and post-install catch-up envelopes before proposing or
-voting for the barrier. Oversized transfer is a visible refusal, not permission to resume the old
-electorate after an agreed barrier. Uncommitted pending requests may be omitted from recovery
-hints without being acknowledged; callers retain their ordinary retry obligations. Chunked core
-snapshot transfer is future work. Bounded worker metadata chunks do not remove this core limit.
+[limit: core-snapshot-frame] Core catch-up, including an added voter's, transfers whole encoded sync
+responses under a 32 MiB transport frame limit. The usable application snapshot is smaller: framing
+and the carried voter configuration consume the same envelope. A reconfiguration that adds members is
+refused with `STATE_TRANSFER_TOO_LARGE` when the current state cannot be encoded in one sync response.
+Uncommitted pending requests may be omitted from recovery hints without being acknowledged; callers
+retain their ordinary retry obligations. Chunked core snapshot transfer is future work. Bounded worker
+metadata chunks do not remove this core limit.
 
-[limit: handoff-write-unavailability] Once barrier R commits, old epoch E cannot resume writes.
-Clients can observe delayed completion or their ordinary timeout/refusal until a successor majority
-durably installs E+1. Operators restore connectivity/storage and restart the same durable participants
-to retry the certified handoff; they must not roll back to E or manufacture a new electorate.
+A Rabia §4 reconfiguration has no write-unavailability window: slot R is an ordinary slot, and from
+R+1 the new roster decides as soon as a majority of it — which the retained voters already are — is
+live (#1526). [mechanism: an admitted change retains a majority of the target roster]

@@ -19,6 +19,8 @@ A process that stays alive through a network partition keeps its token and heals
 container or VM under the old NodeId produces a process the running cluster refuses. A
 whole-cluster restart is the exception, because no running peer remembers the old tokens.
 
-The node status `voterReconfiguration` field distinguishes stalled handoff stages and state-transfer
-failures. After a committed barrier, restoring connectivity to a successor quorum is required;
-there is no timeout rollback to the previous electorate.
+The node status `voterReconfiguration` field reports the installed voter epoch, a requested change,
+and added voters still catching up (#1526). A voter change agreed at slot R governs from R+1; the
+new roster decides as soon as a majority of it is live, so replacing a dead core has no write pause.
+`GENESIS_PENDING` means a node is still discovering the full configured core roster; it clears when
+every configured core is reachable.
