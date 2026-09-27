@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.awaitility.core.ConditionTimeoutException;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -26,6 +27,7 @@ import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -45,8 +47,9 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// `replicas` key — the replication factor under test is the DEFAULT, resolved by the provisioning config
 /// binder from `StreamConfig.DEFAULT`. The flow: 5-node Ember cluster → deploy → the committed config reads
 /// `replicas = 3` → publish N events → wait until every placed non-owner replica has confirmed the tail →
-/// kill the partition's HRW owner → a REPLACEMENT joins under a fresh node id (terminal removal: the dead
-/// identity is never reused) → the partition's new owner serves all N events, contiguous and in order.
+/// kill the partition's HRW owner → a surviving replica takes ownership and serves all N events → a
+/// REPLACEMENT joins under a fresh node id (terminal removal: the dead identity is never reused) → all N
+/// events are still served, contiguous and in order, whoever owns the partition after the join.
 ///
 /// What this proves, precisely: an event that reached the default replica set before the owner died
 /// survives the owner's terminal removal. It does NOT prove that every ACKED event survives: with the
@@ -144,18 +147,28 @@ class StreamDefaultRfOwnerReplacementTest {
         assertThat(owner).describedAs("HRW owner identified before the kill").isNotBlank();
 
         LifecycleAwait.nodeBestEffort("kill owner " + owner, cluster, cluster.killNode(owner));
+        awaitOrDump("a surviving replica takes ownership after the kill", () -> ownerChanged(owner));
+        var failedOver = drain(appPort(), 0L, N_EVENTS, deadline(FAILOVER_TIMEOUT));
+        LOG.log(System.Logger.Level.INFO,
+                "#1547 after the kill: newOwner={0} served={1}/{2}",
+                ownerView().flatMap(ReplicaSetView::ownerNodeId).or("<none>"),
+                failedOver.size(),
+                N_EVENTS);
+        assertContiguousBatch(failedOver, "served by the new owner after the kill");
+
         var replacement = cluster.addNode().await().unwrap();
         assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(owner);
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
-
-        await().atMost(FAILOVER_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> ownerChanged(owner));
+        awaitOrDump("an owner-authoritative view exists after the replacement joined", () -> ownerView().isPresent());
         var recovered = drain(appPort(), 0L, N_EVENTS, deadline(FAILOVER_TIMEOUT));
         LOG.log(System.Logger.Level.INFO,
-                "#1547 post-replacement: newOwner={0} recovered={1}/{2}",
+                "#1547 after the replacement {0} joined: owner={1} served={2}/{3} view={4}",
+                replacement.id(),
                 ownerView().flatMap(ReplicaSetView::ownerNodeId).or("<none>"),
                 recovered.size(),
-                N_EVENTS);
-        assertContiguousBatch(recovered, "served by the new owner after the replacement joined");
+                N_EVENTS,
+                ownerView().map(ReplicaSetView::toString).or("<none>"));
+        assertContiguousBatch(recovered, "served after the replacement joined");
 
         assertThat(committed.replicas())
             .describedAs("the stream declares no replicas, so the committed factor is the default")
@@ -177,6 +190,22 @@ class StreamDefaultRfOwnerReplacementTest {
         }
 
         return Option.none();
+    }
+
+    /// Failure-path observability, as in [AbstractStreamOwnerFailover]: on timeout every live node's
+    /// replica view is logged before the timeout propagates, so a stalled ownership move is diagnosable.
+    private void awaitOrDump(String what, Callable<Boolean> condition) {
+        try {
+            await().atMost(FAILOVER_TIMEOUT).pollInterval(POLL_INTERVAL).alias(what).until(condition);
+        } catch (ConditionTimeoutException timeout) {
+            cluster.allNodes()
+                   .forEach(node -> LOG.log(System.Logger.Level.WARNING,
+                                            "#1547 timeout ({0}) view self={1}: {2}",
+                                            what,
+                                            node.self(),
+                                            node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION)));
+            throw timeout;
+        }
     }
 
     private Option<StreamConfig> committedConfig() {
