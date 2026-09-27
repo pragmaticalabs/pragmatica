@@ -1338,6 +1338,17 @@ boundary — the serialized frame handed to the channel on send, and the frame d
 buffer on receive — after the pipeline has already stripped QUIC framing, TLS encryption overhead,
 and retransmits. This is **not a wire-byte or bandwidth figure**; do not treat it as one.
 
+**Boot-token refusals (#1528, terminal removal).** Non-zero means a process tried to use a NodeId
+that belongs to a different (dead or retired) process:
+- `boot_token_refusals_total` — admissions the node's shared boot-token registry refused (SWIM
+  evidence and QUIC Hello together);
+- `quic_boot_token_drops_total` — inbound messages dropped because their connection peer or protocol
+  sender is a retired NodeId;
+- `membership_process_evidence_refusals_total` — governor/worker-admission evidence the membership
+  FSM refused (different token, or a DEAD/DEPARTING identity).
+
+Recovery: replace the node under a fresh NodeId; a restarted process under the old NodeId is refused.
+
 ### GET /api/v1/metrics/history
 
 Get historical metrics for nodes over a time range.

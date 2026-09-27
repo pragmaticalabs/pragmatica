@@ -59,8 +59,7 @@ class AetherNodeStorageEncryptionBootTest {
                                 .tls(Option.none())
                                 .quicTls(TlsConfig.selfSignedServer())
                                 .certificateProvider(Option.none())
-                                .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
-                org.pragmatica.config.ConfigurationProvider.builder().build())))
+                                .configProvider(Option.none())
                                 .environment(environment).managementHttpProtocol(org.pragmatica.aether.config.HttpProtocol.H1).storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build()
                                 .withStorageEncryption(storageEncryption);

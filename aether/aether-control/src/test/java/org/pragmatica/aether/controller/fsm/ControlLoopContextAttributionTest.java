@@ -140,14 +140,26 @@ class ControlLoopContextAttributionTest {
     /// cluster-size cap. A stub controller emits a fixed ScaleUp so the cap arithmetic is isolated
     /// from metric-window composite scoring.
     @Test
-    void sourceSnapshotsRejectDuplicatesOldIncarnationsAndOverlappingAggregates() {
+    void sourceSnapshotsRejectDuplicatesAndOverlappingAggregates() {
         var fresh = new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 10);
 
         ctx.storeCommunitySnapshot(fresh);
         ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 9));
-        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 99));
         ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 2, List.of(), ctx.nowMs(), 3, 1));
         assertThat(ctx.communitySnapshots().get(WORKER.id())).isEqualTo(fresh);
+    }
+
+    /// The snapshot `incarnation` is the source's boot token — equality only (owner ruling, session 28).
+    /// The first token pins the source; a different token (lower or higher) is another process claiming
+    /// the NodeId and never supersedes. This replaced #1390's "old incarnation is rejected" ordering.
+    @Test
+    void sourceSnapshotWithDifferentBootToken_neverSupersedes() {
+        var pinned = new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 10);
+
+        ctx.storeCommunitySnapshot(pinned);
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 99));
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 3, 99));
+        assertThat(ctx.communitySnapshots().get(WORKER.id())).isEqualTo(pinned);
     }
 
     @Test

@@ -48,8 +48,8 @@ class PiggybackBufferConcurrencyTest {
         // maxSize 1_000_000 → eviction after 3_000_000 disseminations; the ticker never gets there,
         // so the FAULTY entry is present for the whole run and every 0 is a mid-peek observation.
         var buffer = PiggybackBuffer.piggybackBuffer(1_000_000);
-        buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A));
-        buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
+        buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A));
+        buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
 
         var stop = new AtomicBoolean();
         var peeks = new AtomicLong();
@@ -85,8 +85,8 @@ class PiggybackBufferConcurrencyTest {
 
         for (int round = 0; round < ROUNDS; round++) {
             var buffer = PiggybackBuffer.piggybackBuffer(8);
-            buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A));
-            buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.ALIVE, 1, ADDR_B));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 1, ADDR_B));
 
             // Spin-start rather than a latch: a latch wake-up is microseconds, the peek window is
             // nanoseconds, and the pin has to land inside it.

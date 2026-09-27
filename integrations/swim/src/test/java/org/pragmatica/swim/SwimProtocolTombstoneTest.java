@@ -142,7 +142,7 @@ class SwimProtocolTombstoneTest {
         protocol.start();
 
         // ALIVE gossip: marks NODE_A everSeenHealthy + HEALTHY.
-        var aliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+        var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
         assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
 
@@ -151,7 +151,7 @@ class SwimProtocolTombstoneTest {
         // second-hand (gossip) FAULTY needs local transport-down corroboration to drive
         // the death path (P1 death-path co-confirmation).
         protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
-        var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
+        var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
         await().atMost(Duration.ofSeconds(3))
@@ -164,7 +164,7 @@ class SwimProtocolTombstoneTest {
             driveProvenHealthyToTombstone();
 
             // (a) third-party GOSSIP re-add at the tombstoned incarnation: refused.
-            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
+            var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(gossipSuspect)));
 
             // (b) bare channel re-seed (no incarnation => 0): refused.
@@ -196,7 +196,7 @@ class SwimProtocolTombstoneTest {
             // gated introduction is admitted — as OBSERVED (#336/#241): re-admitted and
             // probe-eligible, but NOT counted ALIVE/HEALTHY until a probe-ack confirms it.
             var nodeInfoA = NodeInfo.nodeInfo(NODE_A, new NodeAddress("127.0.0.1", 9001));
-            protocol.onMessage(ADDR_A, new Announce(nodeInfoA, "", 0));
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoA, "", 0));
 
             assertThat(protocol.members().containsKey(NODE_A))
                 .as("Self-ANNOUNCE must re-admit a tombstoned id")
@@ -221,7 +221,7 @@ class SwimProtocolTombstoneTest {
             driveProvenHealthyToTombstone();
 
             // Genuine restart at a strictly-higher incarnation than the tombstone (1).
-            var restartSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 99, ADDR_A);
+            var restartSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 99, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 4L, List.of(restartSuspect)));
 
             assertThat(protocol.members().containsKey(NODE_A))
@@ -242,7 +242,7 @@ class SwimProtocolTombstoneTest {
             coldBoot.start();
 
             // NODE_A enters as SUSPECT via gossip and is NEVER observed HEALTHY.
-            var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var suspectA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
             assertThat(coldBoot.everSeenHealthyForTest(NODE_A)).isFalse();
 
@@ -257,7 +257,7 @@ class SwimProtocolTombstoneTest {
                 .isFalse();
 
             // A subsequent gossip re-add IS allowed (formation can still proceed).
-            var reAddSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var reAddSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 5L, List.of(reAddSuspect)));
             assertThat(coldBoot.members().containsKey(NODE_A))
                 .as("COLD_BOOT: never-tombstoned id must be re-addable via gossip (cold-boot formation)")
@@ -278,7 +278,7 @@ class SwimProtocolTombstoneTest {
             protocol.start();
 
             // NODE_A enters as SUSPECT via gossip and is NEVER observed HEALTHY.
-            var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var suspectA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
             assertThat(protocol.everSeenHealthyForTest(NODE_A)).isFalse();
 
@@ -298,7 +298,7 @@ class SwimProtocolTombstoneTest {
                 .isFalse();
 
             // (b) third-party gossip re-add at the tombstoned incarnation (0): refused.
-            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 5L, List.of(gossipSuspect)));
             assertThat(protocol.members().containsKey(NODE_A))
                 .as("Tombstoned never-HEALTHY id must NOT be re-created by gossip")
@@ -365,7 +365,7 @@ class SwimProtocolTombstoneTest {
         try {
             graced.start();
 
-            var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var suspectA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             graced.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
             assertThat(graced.everSeenHealthyForTest(NODE_A)).isFalse();
 
@@ -396,7 +396,7 @@ class SwimProtocolTombstoneTest {
             await().atMost(Duration.ofSeconds(3))
                    .until(() -> !protocol.tombstonedForTest(NODE_A));
 
-            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
+            var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 6L, List.of(gossipSuspect)));
 
             assertThat(protocol.members().containsKey(NODE_A))
@@ -418,14 +418,14 @@ class SwimProtocolTombstoneTest {
     /// protocol — so no cleanup tick fires and the FAULTY member stays resident. The
     /// FAULTY edge (`notifyFaulty`) sets the tombstone synchronously.
     private void driveProvenHealthyToFaultyResident() {
-        var aliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+        var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
         assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
 
         // Second-hand (gossip) FAULTY needs local transport-down corroboration to drive
         // the death path (P1 death-path co-confirmation).
         protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
-        var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
+        var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
         assertThat(protocol.members().get(NODE_A).state())
@@ -444,7 +444,7 @@ class SwimProtocolTombstoneTest {
         // Gossip ALIVE at the tombstoned incarnation (1) while the FAULTY member is still
         // resident: hits applyExistingMember regression-toward-ALIVE — must be refused and
         // the tombstone must survive (a same-incarnation re-add never supersedes it).
-        var reAliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1, ADDR_A);
+        var reAliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 1, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(reAliveA)));
 
         assertThat(protocol.members().get(NODE_A).state())
@@ -486,14 +486,14 @@ class SwimProtocolTombstoneTest {
         // higher-incarnation gossip then re-admits the member as SUSPECT. Authoritative
         // self-liveness wins via the clear.
         var nodeInfoA = NodeInfo.nodeInfo(NODE_A, new NodeAddress("127.0.0.1", 9001));
-        protocol.onMessage(ADDR_A, new Announce(nodeInfoA, "", 5));
+        protocol.onMessage(ADDR_A, Announce.announce(nodeInfoA, "", 5));
 
         assertThat(protocol.tombstonedForTest(NODE_A))
             .as("Self-ANNOUNCE must clear the tombstone (partition heal)")
             .isFalse();
 
         // Higher-incarnation SUSPECT gossip now re-admits the member (tombstone gone).
-        var reSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 5, ADDR_A);
+        var reSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 5, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 7L, List.of(reSuspect)));
         assertThat(protocol.members().get(NODE_A).state())
             .as("After partition-heal clear, higher-incarnation gossip re-admits as SUSPECT")
@@ -504,18 +504,18 @@ class SwimProtocolTombstoneTest {
     void liveFlap_suspectThenAliveRecovery_notBlocked() {
         // S04/S13 transient: a member goes SUSPECT (never FAULTY) then recovers to ALIVE.
         // It must NEVER be tombstoned (tombstone is FAULTY-edge only) and must recover.
-        var aliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+        var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
         assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
 
-        var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
+        var suspectA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectA)));
         assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
         assertThat(protocol.tombstonedForTest(NODE_A))
             .as("A SUSPECT flap (never FAULTY) must NOT be tombstoned")
             .isFalse();
 
-        var recoverA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 2, ADDR_A);
+        var recoverA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 2, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(recoverA)));
         assertThat(protocol.members().get(NODE_A).state())
             .as("SUSPECT->ALIVE recovery must be allowed (no tombstone block)")
@@ -532,7 +532,7 @@ class SwimProtocolTombstoneTest {
         // neverHealthyId_cleanedUp_inColdBoot_isNotTombstoned_gossipReAddAllowed, which start()s the
         // protocol so the probe cycle drives OBSERVED->SUSPECT->FAULTY.)
         var coldBoot = coldBootProtocol();
-        var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+        var suspectA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
         assertThat(coldBoot.everSeenHealthyForTest(NODE_A)).isFalse();
 
@@ -540,7 +540,7 @@ class SwimProtocolTombstoneTest {
         // OBSERVED guard (the member is a not-yet-confirmed OBSERVED placeholder), so no FAULTY edge
         // and no tombstone-gate evaluation occurs.
         coldBoot.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
-        var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
+        var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
         assertThat(coldBoot.tombstonedForTest(NODE_A))
@@ -550,7 +550,7 @@ class SwimProtocolTombstoneTest {
         // Gossip re-add toward ALIVE at a higher incarnation promotes the OBSERVED member (no tombstone
         // block). The point here is the ABSENCE of a tombstone refusal, which a proven-healthy-then-dead
         // id would suffer at incarnation <= 1.
-        var reAliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 2, ADDR_A);
+        var reAliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 2, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(reAliveA)));
         assertThat(coldBoot.members().get(NODE_A).state())
             .as("COLD_BOOT: never-tombstoned cold-boot id must be re-addable to ALIVE")

@@ -272,6 +272,7 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -483,26 +484,21 @@ public interface AetherNode extends ManageableNode {
                                                  MessageRouter.DelegateRouter delegateRouter,
                                                  SliceCodec nodeCodec,
                                                  Runnable jvmExit) {
-        return consensusDirectory(config).flatMap(ProducerIncarnation::next)
-                                 .flatMap(incarnation -> createNodeWithIncarnation(config,
-                                                                                   delegateRouter,
-                                                                                   nodeCodec,
-                                                                                   jvmExit,
-                                                                                   incarnation));
+        return createNodeWithBootToken(config, delegateRouter, nodeCodec, jvmExit, BootToken.bootToken());
     }
 
-    private static Result<AetherNode> createNodeWithIncarnation(AetherNodeConfig config,
-                                                                MessageRouter.DelegateRouter delegateRouter,
-                                                                SliceCodec nodeCodec,
-                                                                Runnable jvmExit,
-                                                                long producerIncarnation) {
-        return resolveStorageEncryptionKeyring(config).flatMap(keyring -> resolvePersistence(config, nodeCodec).flatMap(persistence -> createNodeWithStorage(config,
-                                                                                                                                                             delegateRouter,
-                                                                                                                                                             nodeCodec,
-                                                                                                                                                             jvmExit,
-                                                                                                                                                             keyring,
-                                                                                                                                                             persistence,
-                                                                                                                                                             producerIncarnation).onFailure(_ -> closeFailedPersistence(persistence))));
+    private static Result<AetherNode> createNodeWithBootToken(AetherNodeConfig config,
+                                                              MessageRouter.DelegateRouter delegateRouter,
+                                                              SliceCodec nodeCodec,
+                                                              Runnable jvmExit,
+                                                              long bootToken) {
+        return resolveStorageEncryptionKeyring(config).flatMap(keyring -> createNodeWithStorage(config,
+                                                                                                delegateRouter,
+                                                                                                nodeCodec,
+                                                                                                jvmExit,
+                                                                                                keyring,
+                                                                                                resolvePersistence(config),
+                                                                                                bootToken));
     }
 
     private static Result<AetherNode> createNodeWithStorage(AetherNodeConfig config,
@@ -511,7 +507,7 @@ public interface AetherNode extends ManageableNode {
                                                             Runnable jvmExit,
                                                             Option<EncryptionKeyring> storageKeyring,
                                                             RabiaPersistence<KVCommand<AetherKey>> persistence,
-                                                            long producerIncarnation) {
+                                                            long bootToken) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
@@ -675,7 +671,7 @@ public interface AetherNode extends ManageableNode {
                                                              syncHoldRegistry,
                                                              jvmExit,
                                                              storageKeyring,
-                                                             producerIncarnation));
+                                                             bootToken));
     }
 
     /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
@@ -703,6 +699,21 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// Terminal removal (#1528): a peer refused this process's identity — its NodeId belongs to a retired or
+    /// different process, so this process can never be admitted. Log ERROR naming the NodeId and exit
+    /// through the node's exit hook (production: `halt(2)`, a non-zero exit orchestration/CTM sees as a
+    /// failed node; Ember: stop and remove the node). Runs off the transport thread that delivered the
+    /// refusal, so stopping the node cannot block on its own event loop.
+    private static Unit exitRefusedIdentity(NodeId self, String reason, Runnable jvmExit) {
+        LOG.error("FATAL: this node's identity {} was refused by the cluster: {}. This NodeId belongs to a retired"
+                 + " process; start with a fresh identity. Exiting.",
+                  self.id(),
+                  reason);
+        Thread.ofVirtual().name("refused-identity-exit").start(jvmExit);
+
+        return Unit.unit();
+    }
+
     /// #957/#969 — the node's alert config, or the shipped defaults when no `[alerts]` section was
     /// loaded. Validation already happened at boot in `Main.resolveAlertConfig`, so anything arriving
     /// here has passed [org.pragmatica.aether.config.AlertConfig#check]; an absent section needs none.
@@ -711,70 +722,15 @@ public interface AetherNode extends ManageableNode {
                      .or(AlertConfig.alertConfig());
     }
 
-    private static Result<RabiaPersistence<KVCommand<AetherKey>>> resolvePersistence(AetherNodeConfig config,
-                                                                                     SliceCodec codec) {
-        if (configuredWorker(config)) {
-            return Result.success(RabiaPersistence.inMemory());
-        }
-
-        return consensusDirectory(config).flatMap(directory -> RabiaPersistence.<KVCommand<AetherKey>> durable(directory,
-                                                                                                               codec,
-                                                                                                               codec))
-                                 .flatMap(durable -> Result.lift(Causes::fromThrowable,
-                                                                 () -> withConfiguredBackup(config, durable)).onFailure(_ -> closeFailedPersistence(durable)));
-    }
-
-    private static RabiaPersistence<KVCommand<AetherKey>> withConfiguredBackup(AetherNodeConfig config,
-                                                                               RabiaPersistence<KVCommand<AetherKey>> durable) {
+    /// Cores AND workers run in-memory Rabia (owner ruling, session 28: #1390's durable control
+    /// storage is removed; a dead NodeId never returns). A configured `[backup]` path makes the
+    /// git-backed snapshot the persistence, as before #1390, so there is no window without a backup.
+    private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
         return config.backupConfig()
-                     .filter(backup -> !backup.path()
-                                              .isBlank())
-                     .map(backup -> RabiaPersistence.withBackup(durable,
-                                                                createGitBackedPersistence(backup)))
-                     .or(durable);
-    }
-
-    private static void closeFailedPersistence(RabiaPersistence<KVCommand<AetherKey>> persistence) {
-        persistence.close()
-                   .onFailure(cause -> LOG.warn("Failed to close consensus persistence after failed node assembly: {}",
-                                                cause.message()));
-    }
-
-    private static Result<Path> consensusDirectory(AetherNodeConfig config) {
-        if (config.configProvider().flatMap(provider -> provider.getString("cluster.consensus_path")).isEmpty() && !config.storageConfig()
-                                                                                                                          .containsKey("artifacts")) {
-            return Causes.cause("Durable control storage requires cluster.consensus_path or an explicit artifacts storage path").result();
-        }
-
-        return Result.lift(Causes::fromThrowable, () -> configuredConsensusDirectory(config)).flatMap(path -> path.isAbsolute()
-                                                                                                              ? Result.success(path)
-                                                                                                              : Causes.cause("Durable control storage path must be absolute").result());
-    }
-
-    private static Path configuredConsensusDirectory(AetherNodeConfig config) {
-        return config.configProvider()
-                     .flatMap(provider -> provider.getString("cluster.consensus_path"))
-                     .map(Path::of)
-                     .or(() -> defaultConsensusDirectory(config));
-    }
-
-    static Path defaultConsensusDirectory(AetherNodeConfig config) {
-        var root = Option.option(config.storageConfig().get("artifacts"))
-                         .map(storage -> Path.of(storage.diskPath()).resolveSibling("aether-control"))
-                         .or(Path.of(org.pragmatica.aether.config.StorageConfig.storageConfig().diskPath()).resolveSibling("aether-control"));
-        var identity = Base64.getUrlEncoder()
-                             .withoutPadding()
-                             .encodeToString(config.self().id().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        var cluster = config.clusterName()
-                            .map(ClusterName::value)
-                            .map(value -> Base64.getUrlEncoder()
-                                                .withoutPadding()
-                                                .encodeToString(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
-                            .or("unnamed");
-
-        return root.resolve("consensus")
-                   .resolve(cluster)
-                   .resolve(identity);
+                     .filter(b -> !b.path()
+                                    .isBlank())
+                     .map(AetherNode::createGitBackedPersistence)
+                     .or(RabiaPersistence::inMemory);
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> createGitBackedPersistence(BackupConfig backup) {
@@ -786,14 +742,18 @@ public interface AetherNode extends ManageableNode {
         return RabiaPersistence.gitBacked(backupDir, remote, AetherNode::snapshotToBase64, AetherNode::base64ToSnapshot);
     }
 
-    private static Result<String> snapshotToBase64(byte[] snapshot) {
+    static Result<String> snapshotToBase64(byte[] snapshot) {
         return Result.success(Base64.getEncoder().encodeToString(snapshot));
     }
 
-    /// Git-backed persistence prepends its phase header before invoking the snapshot decoder.
-    /// Remove exactly that envelope; malformed headers and payloads remain typed decode failures.
+    /// Git-backed persistence prepends its envelope before invoking the snapshot decoder: the voter
+    /// authority header lines (`# Voter…:` / `# Handoff…:`, written by the authority-carrying save)
+    /// and then the phase header. Remove exactly that envelope; malformed headers and payloads remain
+    /// typed decode failures.
     static Result<byte[]> base64ToSnapshot(String encoded) {
-        var payload = encoded.replaceFirst("^# Phase: [0-9]+\\R", "").trim();
+        var payload = encoded.replaceFirst("\\A(?:# (?:Voter|Handoff)[A-Za-z-]*: [^\\r\\n]*\\R)*(?:# Phase: [0-9]+\\R)?",
+                                           "")
+                             .trim();
 
         return Result.lift(Causes::fromThrowable,
                            () -> Base64.getDecoder().decode(payload));
@@ -1544,7 +1504,7 @@ public interface AetherNode extends ManageableNode {
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit,
                                                    Option<EncryptionKeyring> storageKeyring,
-                                                   long producerIncarnation) {
+                                                   long bootToken) {
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -2252,9 +2212,15 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            /// Transport counters (incl. `quic_boot_token_drops_total`, `boot_token_refusals_total`) plus
+            /// `membership_process_evidence_refusals_total` — governor/admission evidence the membership
+            /// FSM refused under terminal removal (#1528).
             public Map<String, Number> transportMetrics() {
-                return clusterNode.network()
-                                  .transportMetrics();
+                var metrics = new HashMap<String, Number>(clusterNode.network().transportMetrics());
+
+                metrics.put("membership_process_evidence_refusals_total", membershipFsm.refusedProcessEvidenceCount());
+
+                return Map.copyOf(metrics);
             }
 
             @Override
@@ -3563,12 +3529,20 @@ public interface AetherNode extends ManageableNode {
                                                                                swimTransportConnected);
 
         swimHealthDetectorHolder.set(swimHealthDetector);
-        // Metrics use a durable process epoch; SWIM retains its independent refutation counter.
+        // ONE boot-token registry per process, shared by SWIM and the QUIC transport: a process
+        // either layer refuses can never be admitted by the other (terminal removal, #1528).
+        var bootTokens = BootTokens.bootTokens(bootToken);
+
+        swimHealthDetector.setBootTokens(bootTokens);
+        clusterNode.network().setBootTokens(bootTokens);
+        bootTokens.onSelfRefused(reason -> exitRefusedIdentity(config.self(), reason, jvmExit));
+        // Process evidence carries the per-process random boot token (equality only); SWIM keeps its
+        // independent refutation counter, seeded from wall-clock time, and also carries the token.
         var bootIncarnation = System.currentTimeMillis();
 
-        metricsCollector.setIncarnationSupplier(() -> producerIncarnation);
-        metricsCollector.setMembershipIncarnationSupplier(() -> producerIncarnation);
-        workerMetricsAggregator.setIncarnationSupplier(() -> producerIncarnation);
+        metricsCollector.setIncarnationSupplier(() -> bootToken);
+        metricsCollector.setMembershipIncarnationSupplier(() -> bootToken);
+        workerMetricsAggregator.setIncarnationSupplier(() -> bootToken);
         // RC1 (S01 fix) — wire the SWIM-backed liveness check for owner-broadcast eviction
         // hints. Followers REFUSE to act on the owner's `ClusterSyncPing.evictionHints` for
         // peers SWIM observes as HEALTHY; the owner's hint is a SUGGESTION, not authority.
@@ -3606,6 +3580,7 @@ public interface AetherNode extends ManageableNode {
                                        : () -> swimHealthDetector.announceJoin(selfNodeInfo,
                                                                                swimConfig.clusterName(),
                                                                                bootIncarnation,
+                                                                               bootToken,
                                                                                swimSeeds);
         // SWIM start is deferred to transport-ready (invoked from the boot chain alongside
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
@@ -3912,7 +3887,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                     () -> installedVoterIds(clusterNode).contains(config.self()),
                                                                                                     () -> nodeReportedStateHolder.current()
                                                                                                                                  .name(),
-                                                                                                    () -> producerIncarnation,
+                                                                                                    () -> bootToken,
                                                                                                     (peer, message) -> clusterNode.network()
                                                                                                                                   .send(peer,
                                                                                                                                         message),

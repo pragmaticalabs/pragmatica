@@ -69,8 +69,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
-                case MembershipEvent.GovernorHealthy e -> tx.handle(() -> ctx.observeProcessEpoch(e.processEpoch()));
-                case MembershipEvent.WorkerAdmissionHealthy e -> tx.handle(() -> ctx.observeProcessEpoch(e.processEpoch()));
+                case MembershipEvent.GovernorHealthy _ -> tx.ignore();
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.ignore();
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.transitionTo(ctx.memberState());
                 case SwimSuspect e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
@@ -100,8 +100,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
-                case MembershipEvent.GovernorHealthy e -> tx.handle(() -> ctx.observeProcessEpoch(e.processEpoch()));
-                case MembershipEvent.WorkerAdmissionHealthy e -> tx.handle(() -> ctx.observeProcessEpoch(e.processEpoch()));
+                case MembershipEvent.GovernorHealthy _ -> tx.ignore();
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.ignore();
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.ignore();
                 case SwimSuspect e -> doubtToSuspect(ctx, e.incarnation(), tx);
@@ -133,8 +133,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> recoverToMember(ctx, e.incarnation(), tx);
-                case MembershipEvent.GovernorHealthy e -> recoverProcessToMember(ctx, e.processEpoch(), tx);
-                case MembershipEvent.WorkerAdmissionHealthy e -> recoverProcessToMember(ctx, e.processEpoch(), tx);
+                case MembershipEvent.GovernorHealthy _ -> tx.transitionTo(ctx.memberState());
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.transitionTo(ctx.memberState());
                 // Death-ward boundary rule (Wave 7, ratified): transport may report DEATH, never
                 // LIFE. A transport connection must not revive a SWIM-suspected member — recovery
                 // goes ONLY through SwimHealthy (SWIM probe-ack authority) or UpHysteresisMet
@@ -181,10 +181,9 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case DrainUnacknowledged _ -> tx.transitionTo(ctx.memberState());
                 case SwimDeparted e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
                 case SwimHealthy e -> recoverFromDepartingIfNewer(ctx, e.incarnation(), tx);
-                case MembershipEvent.GovernorHealthy e -> recoverProcessFromDepartingIfNewer(ctx, e.processEpoch(), tx);
-                case MembershipEvent.WorkerAdmissionHealthy e -> recoverProcessFromDepartingIfNewer(ctx,
-                                                                                                    e.processEpoch(),
-                                                                                                    tx);
+                // Process evidence never cancels a departure: a departing identity only goes forward.
+                case MembershipEvent.GovernorHealthy _ -> tx.ignore();
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.ignore();
                 case PeerConnected _, UpHysteresisMet _, SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _, DownHysteresisMet _, SwimUnknown _, DrainRequested _, JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
@@ -193,7 +192,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
     /// Confirmed gone; terminal for this identity. Carries the incarnation it died at. A
     /// higher-incarnation `SwimHealthy` reopens the identity (rejoin → OBSERVED); a same-or-lower
     /// incarnation is a stale echo and is ignored. Does not count toward the effective set.
-    record Dead(MembershipContext ctx, long terminalIncarnation, long terminalProcessEpoch) implements MembershipState {
+    record Dead(MembershipContext ctx, long terminalIncarnation) implements MembershipState {
         @Override
         public boolean countsTowardEffective() {
             return false;
@@ -204,8 +203,10 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> rejoinIfNewer(ctx, this, e.incarnation(), tx);
-                case MembershipEvent.GovernorHealthy e -> rejoinProcessIfNewer(ctx, this, e.processEpoch(), tx);
-                case MembershipEvent.WorkerAdmissionHealthy e -> rejoinProcessIfNewer(ctx, this, e.processEpoch(), tx);
+                // Terminal removal (owner ruling, session 28): process evidence never reopens a dead
+                // identity. A recovered worker is a new node with a fresh NodeId.
+                case MembershipEvent.GovernorHealthy _ -> tx.ignore();
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.ignore();
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.ignore();
                 case SwimSuspect _ -> tx.ignore();
@@ -240,39 +241,6 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                                         TransitionRequest<MembershipState, MembershipEvent> tx) {
         ctx.observeIncarnation(incarnation);
         tx.transitionTo(ctx.memberState());
-    }
-
-    private static void recoverProcessToMember(MembershipContext ctx,
-                                               long processEpoch,
-                                               TransitionRequest<MembershipState, MembershipEvent> tx) {
-        if (processEpoch >= ctx.lastSeenProcessEpoch()) {
-            ctx.observeProcessEpoch(processEpoch);
-            tx.transitionTo(ctx.memberState());
-        } else {
-            tx.ignore();
-        }
-    }
-
-    private static void recoverProcessFromDepartingIfNewer(MembershipContext ctx,
-                                                           long processEpoch,
-                                                           TransitionRequest<MembershipState, MembershipEvent> tx) {
-        if (processEpoch > ctx.lastSeenProcessEpoch()) {
-            ctx.observeProcessEpoch(processEpoch);
-            tx.transitionTo(ctx.memberState());
-        } else {
-            tx.ignore();
-        }
-    }
-
-    private static void rejoinProcessIfNewer(MembershipContext ctx,
-                                             Dead current,
-                                             long processEpoch,
-                                             TransitionRequest<MembershipState, MembershipEvent> tx) {
-        if (processEpoch > current.terminalProcessEpoch()) {
-            tx.transitionTo(ctx.observedProcessRejoin(processEpoch));
-        } else {
-            tx.ignore();
-        }
     }
 
     /// Graceful SWIM-driven leave (`SwimDeparted`): record the incarnation, then move to DEPARTING.

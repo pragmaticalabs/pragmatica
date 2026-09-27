@@ -104,8 +104,8 @@ public interface ClusterSyncPongSignalFan {
     void onStuckSyncing(Consumer<NodeId> callback);
 
     /// #1054 — wire the callback invoked on every pong that records its sender as `DRAINING` in the readiness
-    /// view: leader only, and incarnation-fenced, so a stale lower-incarnation pong is neither recorded nor
-    /// reported. This is the drain ACKNOWLEDGEMENT — a target reports `DRAINING` only after its local drain handler
+    /// view: leader only, and boot-token-fenced — a pong from a process other than the entry's pinned token is
+    /// neither recorded nor reported. This is the drain ACKNOWLEDGEMENT — a target reports `DRAINING` only after its local drain handler
     /// ran. Fired on every such pong rather than only on the edge, so the consumer must be idempotent. It fires as
     /// the pong lands, which is what lets the consumer latch an acknowledgement this view forgets within
     /// three pings of the target halting ([`#sweepStale`]). Default is a no-op; `null` resets to it.
@@ -235,14 +235,13 @@ public interface ClusterSyncPongSignalFan {
             maybeReportDraining(sender, merged, incarnation);
         }
 
-        /// Epoch-fenced reconciliation: a strictly-higher incarnation installs a fresh entry, an
-        /// equal incarnation updates state + countdown, a lower incarnation is ignored (stale).
+        /// Boot-token reconciliation (equality only, never ordered): the first token pins the entry and
+        /// an equal token updates state + countdown. A different token is another process claiming the
+        /// NodeId — refused under terminal removal — so it is ignored, never installed as a fresh entry.
         private static ReadinessEntry reconcile(ReadinessEntry existing, ReadinessEntry incoming, long now) {
-            return incoming.incarnation() > existing.incarnation()
-                   ? incoming
-                   : incoming.incarnation() < existing.incarnation()
-                     ? existing
-                     : updateSameEpoch(existing, incoming.state(), now);
+            return incoming.incarnation() == existing.incarnation()
+                   ? updateSameEpoch(existing, incoming.state(), now)
+                   : existing;
         }
 
         private static ReadinessEntry updateSameEpoch(ReadinessEntry existing, NodeReportedState state, long now) {
@@ -271,7 +270,7 @@ public interface ClusterSyncPongSignalFan {
         }
 
         /// Report a drain acknowledgement only when THIS pong is what the view now holds: the merged entry is
-        /// `DRAINING` at this pong's incarnation. A lower-incarnation pong leaves the existing entry in place and
+        /// `DRAINING` at this pong's boot token. A pong from a different token leaves the pinned entry in place and
         /// must not speak for it.
         private void maybeReportDraining(NodeId sender, ReadinessEntry entry, long incarnation) {
             if (entry.state() == NodeReportedState.DRAINING && entry.incarnation() == incarnation) {
