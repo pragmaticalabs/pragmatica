@@ -1021,7 +1021,7 @@ public interface AetherNode extends ManageableNode {
     private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
         var walDir = streamWalBaseDir(config);
 
-        return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+        return createStreamDirectory(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
     }
 
     /// The stream partition logs open through the `streams` storage instance (#1567), under its log root —
@@ -1044,9 +1044,7 @@ public interface AetherNode extends ManageableNode {
     public static Result<Unit> verifyWalBootable(AetherNodeConfig config) {
         var walDir = streamWalBaseDir(config);
 
-        return decideWalAvailability(walDir,
-                                     FileOps.createDirectories(walDir).mapToUnit(),
-                                     nonDurableStreamsAllowed()).mapToUnit();
+        return decideWalAvailability(walDir, createStreamDirectory(walDir), nonDurableStreamsAllowed()).mapToUnit();
     }
 
     /// #1567 F12/N2 — the durable-block counterpart of [#verifyWalBootable], at the same production entry
@@ -1059,9 +1057,14 @@ public interface AetherNode extends ManageableNode {
     public static Result<Unit> verifyStreamSegmentsBootable(AetherNodeConfig config) {
         var segmentsDir = streamDataDir(config).resolve("segments");
 
-        return decideSegmentsAvailability(segmentsDir,
-                                          FileOps.createDirectories(segmentsDir).mapToUnit(),
-                                          nonDurableStreamsAllowed());
+        return decideSegmentsAvailability(segmentsDir, createStreamDirectory(segmentsDir), nonDurableStreamsAllowed());
+    }
+
+    /// Every stream directory a node creates -- the WAL base and `segments/` -- is created with its entry
+    /// forced in its parent (#1602 N1): the files made durable inside it later are only as durable as the
+    /// directory entry that names it. The gates run first, so they are the ones that create them.
+    static Result<Unit> createStreamDirectory(Path dir) {
+        return FileOps.createDirectoriesDurable(dir).mapToUnit();
     }
 
     /// The pure decision, package-visible for [#verifyStreamSegmentsBootable]'s test.

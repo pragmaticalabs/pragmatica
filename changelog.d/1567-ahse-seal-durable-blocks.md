@@ -40,9 +40,16 @@
   entity checkpoint pointer committed to KV could name bytes that never landed. It now waits for the
   in-flight write; if that write fails, it claims and writes the block itself.
   [verified: integrations/storage/src/test/java/org/pragmatica/storage/StorageInstanceWriteRaceTest.java]
-- **A required write that fails part-way leaves no unreachable copy.** When the last (shared) tier fails
-  after the local disk took the block, the disk copy is removed before the claim is released, because
-  record-driven garbage collection would never find it; a removal that itself fails is logged at WARN.
+- **A required write that fails part-way leaves nothing behind that claims to be the block.** When the last
+  (shared) tier fails after the local disk took the block, the disk copy THIS write created is removed (a
+  copy that was already there is kept), and the claim record is released, so a retry writes the block again
+  instead of deduplicating onto a record for bytes no tier holds; a removal that itself fails is logged at
+  WARN. [verified: integrations/storage/src/test/java/org/pragmatica/storage/StorageInstanceFailedWriteTest.java]
+- **Demotion never takes a block off its last durable tier.** Above its high watermark a durable tier demotes
+  only to the next durable tier below it; with none (the `streams` instance's disk above the in-memory DHT
+  tier) it demotes nothing and WARNs, and writes that need it fail with `TierFull` once it is full. Before,
+  the disk copy of a sealed segment could be moved to the in-memory DHT tier after its WAL range was
+  truncated. Recovery: add disk capacity (or a durable tier below it) and restart.
 - **A production node refuses to boot when its streams block tier cannot be created**
   (`StreamDiskTierUnavailable`), as it already did for an unwritable WAL directory, unless non-durable
   streams are opted into with `-Daether.allowNonDurableStreams=true`. Recovery: fix the mount or

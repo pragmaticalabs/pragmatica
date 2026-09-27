@@ -548,10 +548,18 @@ final class DefaultStorageInstance implements StorageInstance {
                                           BlockLifecycle sentinel,
                                           Promise<Unit> mine,
                                           Result<BlockId> result) {
-        result.onFailure(_ -> metadataStore.releaseClaim(id, sentinel));
+        result.onFailure(_ -> releaseOwnClaim(id));
         finishWriting(id, mine, result.mapToUnit());
 
         return resolved(result);
+    }
+
+    /// Released by id, not by comparison with the sentinel (#1602 B1): a read of the id during the write can
+    /// add presence or an access to the claim record, and a compare-and-remove would then miss and leave a
+    /// record claiming a block no tier holds -- which a retry deduplicates onto and "succeeds". The record is
+    /// this writer's own: every other put of the id waits in [#writing] and adds nothing to it.
+    private void releaseOwnClaim(BlockId id) {
+        metadataStore.removeLifecycle(id);
     }
 
     private void finishWriting(BlockId id, Promise<Unit> mine, Result<Unit> outcome) {
@@ -624,38 +632,78 @@ final class DefaultStorageInstance implements StorageInstance {
     private Promise<BlockId> writeToAllTiers(BlockId id, byte[] content) {
         var lastLevel = tiers.getLast().level();
 
-        return writeRequiredTiers(id, content, 0).fold(result -> undoOnFailure(id, result))
+        return writeRequiredTiers(id,
+                                  content,
+                                  0,
+                                  List.of()).fold(result -> undoOnFailure(id, result))
+                                 .map(_ -> recordRequiredPresence(id))
                                  .flatMap(_ -> promoteToCacheTiers(id, content))
                                  .map(_ -> trackNewBlock(id, lastLevel));
     }
 
     /// Sequential and fail-fast: a required tier that fails ends the write with a [RequiredTierFailed]
-    /// naming how many required tiers had already succeeded. Presence is recorded as a dependent step of
-    /// each write.
-    private Promise<Unit> writeRequiredTiers(BlockId id, byte[] content, int index) {
+    /// listing the tiers on which THIS write created the copy. Presence is recorded only once every
+    /// required tier holds the block ([#recordRequiredPresence]), so a failed write leaves no record saying
+    /// a tier has it (#1602 B1).
+    private Promise<Unit> writeRequiredTiers(BlockId id, byte[] content, int index, List<StorageTier> created) {
         if (index >= requiredTiers.size()) {
             return Promise.success(unit());
         }
 
         var tier = requiredTiers.get(index);
 
-        return tier.put(id, content)
-                   .mapError(cause -> RequiredTierFailed.requiredTierFailed(index, cause))
-                   .map(_ -> recordRequiredPresence(id, tier))
-                   .flatMap(_ -> writeRequiredTiers(id, content, index + 1));
+        return createdByThisWrite(tier, id).flatMap(fresh -> putRequired(tier, id, content, created, fresh))
+                                 .flatMap(next -> writeRequiredTiers(id, content, index + 1, next));
     }
 
-    /// A required write that failed, and how many required tiers ([#requiredTiers], in order) had
-    /// already taken the block. Internal to the write path: the caller sees `origin`.
-    record RequiredTierFailed(int written, Cause origin, String message) implements Cause {
-        static RequiredTierFailed requiredTierFailed(int written, Cause origin) {
-            return new RequiredTierFailed(written, origin, origin.message());
+    private static Promise<List<StorageTier>> putRequired(StorageTier tier,
+                                                          BlockId id,
+                                                          byte[] content,
+                                                          List<StorageTier> created,
+                                                          boolean fresh) {
+        return tier.put(id, content)
+                   .mapError(cause -> RequiredTierFailed.requiredTierFailed(created, cause))
+                   .map(_ -> withCreated(created, tier, fresh));
+    }
+
+    private static List<StorageTier> withCreated(List<StorageTier> created, StorageTier tier, boolean fresh) {
+        return fresh
+               ? Stream.concat(created.stream(),
+                               Stream.of(tier))
+                       .toList()
+               : created;
+    }
+
+    /// Whether this write creates the tier's copy -- only such a copy may be undone (#1602 B2): a copy that
+    /// was there before (written after the last metadata snapshot, say, and named by a KV checkpoint) is
+    /// not this write's to delete. A shared tier is never undone, so it is not asked (its `exists` is a
+    /// network round trip). An `exists` that fails counts as "was there": FER toward keeping a copy this
+    /// write cannot prove it made.
+    private static Promise<Boolean> createdByThisWrite(StorageTier tier, BlockId id) {
+        return tier.isShared()
+               ? Promise.success(false)
+               : tier.exists(id)
+                     .map(existed -> !existed)
+                     .recover(_ -> false);
+    }
+
+    /// A required write that failed, and the tiers on which it had already CREATED the block. Internal to
+    /// the write path: the caller sees `origin`.
+    record RequiredTierFailed(List<StorageTier> created, Cause origin, String message) implements Cause {
+        static RequiredTierFailed requiredTierFailed(List<StorageTier> created, Cause origin) {
+            return new RequiredTierFailed(created, origin, origin.message());
         }
     }
 
-    /// #910's orphan, not reintroduced: a block a required tier took before a later required tier failed
-    /// would sit on that tier with no record once the claim is released, and GC -- driven by records --
-    /// never collects it. So the tiers already written are deleted from first, as a dependent step,
+    private static Cause originOf(Cause cause) {
+        return cause instanceof RequiredTierFailed failed
+               ? failed.origin()
+               : cause;
+    }
+
+    /// #910's orphan, not reintroduced: a copy this write created on a required tier before a later required
+    /// tier failed would sit there with no record once the claim is released, and GC -- driven by records --
+    /// never collects it. So those copies, and only those (#1602 B2), are deleted first, as a dependent step,
     /// before the failure (its original cause) reaches the caller and before the claim is released.
     /// BER, best effort: a failed delete is logged at WARN and absorbed -- the orphan it leaves is the
     /// pre-fix outcome, and failing the put for it would change nothing the caller can act on. A shared
@@ -665,25 +713,23 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private Promise<Unit> undoRequiredWrites(BlockId id, Cause cause) {
-        var failure = cause instanceof RequiredTierFailed failed
-                      ? failed
-                      : RequiredTierFailed.requiredTierFailed(0, cause);
+        var created = cause instanceof RequiredTierFailed failed
+                      ? failed.created()
+                      : List.<StorageTier> of();
 
-        return deleteWritten(id, failure.written() - 1).flatMap(_ -> failure.origin()
-                                                                            .<Unit> promise());
+        return deleteCreated(id, created, created.size() - 1).flatMap(_ -> originOf(cause).<Unit> promise());
     }
 
-    private Promise<Unit> deleteWritten(BlockId id, int index) {
+    private Promise<Unit> deleteCreated(BlockId id, List<StorageTier> created, int index) {
         if (index < 0) {
             return Promise.success(unit());
         }
 
-        var tier = requiredTiers.get(index);
+        var tier = created.get(index);
 
-        return (tier.isShared()
-                ? Promise.success(unit())
-                : tier.delete(id)
-                      .recover(cause -> undoFailed(tier, id, cause))).flatMap(_ -> deleteWritten(id, index - 1));
+        return tier.delete(id)
+                   .recover(cause -> undoFailed(tier, id, cause))
+                   .flatMap(_ -> deleteCreated(id, created, index - 1));
     }
 
     private static Unit undoFailed(StorageTier tier, BlockId id, Cause cause) {
@@ -696,11 +742,13 @@ final class DefaultStorageInstance implements StorageInstance {
         return unit();
     }
 
-    /// The last tier's presence is the claim record itself ([#trackNewBlock]); the others are added to it.
-    private Unit recordRequiredPresence(BlockId id, StorageTier tier) {
-        if (tier != tiers.getLast()) {
-            recordTierPresence(id, tier.level());
-        }
+    /// Every required tier now holds the block: record that on the block's record. The last tier's presence
+    /// is the claim record itself ([#trackNewBlock]); the others are added to it.
+    private Unit recordRequiredPresence(BlockId id) {
+        requiredTiers.stream()
+                     .filter(tier -> tier != tiers.getLast())
+                     .forEach(tier -> recordTierPresence(id,
+                                                         tier.level()));
 
         return unit();
     }
@@ -934,7 +982,12 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private Promise<BlockId> rewriteRequiredTiers(BlockId id, byte[] content) {
-        return writeRequiredTiers(id, content, 0).withFailure(_ -> giveBackCredit(id))
+        return writeRequiredTiers(id,
+                                  content,
+                                  0,
+                                  List.of()).mapError(DefaultStorageInstance::originOf)
+                                 .withFailure(_ -> giveBackCredit(id))
+                                 .map(_ -> recordRequiredPresence(id))
                                  .map(_ -> id);
     }
 
