@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -115,6 +116,30 @@ public sealed interface QuicClusterClient {
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> eventLoop,
                                                QuicClusterServer.MessageReceiver messageReceiver) {
+        return quicClusterClient(selfId,
+                                 selfAddress,
+                                 selfLabels,
+                                 serializer,
+                                 deserializer,
+                                 quicMetrics,
+                                 sslContext,
+                                 eventLoop,
+                                 messageReceiver,
+                                 BootTokens.bootTokens(0L));
+    }
+
+    /// As above, admitting every Hello response through `bootTokens` (shared with SWIM) and
+    /// carrying `bootTokens.self()` on this node's own Hello.
+    static QuicClusterClient quicClusterClient(NodeId selfId,
+                                               NodeAddress selfAddress,
+                                               Map<String, String> selfLabels,
+                                               Serializer serializer,
+                                               Deserializer deserializer,
+                                               QuicTransportMetrics quicMetrics,
+                                               QuicSslContext sslContext,
+                                               Option<EventLoopGroup> eventLoop,
+                                               QuicClusterServer.MessageReceiver messageReceiver,
+                                               BootTokens bootTokens) {
         return new QuicClusterClientInstance(selfId,
                                              selfAddress,
                                              selfLabels,
@@ -123,7 +148,8 @@ public sealed interface QuicClusterClient {
                                              quicMetrics,
                                              sslContext,
                                              eventLoop,
-                                             messageReceiver);
+                                             messageReceiver,
+                                             bootTokens);
     }
 
     record Unused() implements QuicClusterClient {
@@ -185,6 +211,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private final EventLoopGroup eventLoopGroup;
     private final boolean ownsEventLoop;
     private final QuicClusterServer.MessageReceiver messageReceiver;
+    private final BootTokens bootTokens;
     /// Non-blocking DNS resolver backed by the client's Netty event loop. Lazily built on first
     /// [#resolve] so construction stays cheap and tests that never dial never allocate it. The
     /// `DefaultNameResolver` performs the JDK lookup on the supplied [io.netty.util.concurrent.EventExecutor],
@@ -205,7 +232,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                               QuicTransportMetrics quicMetrics,
                               QuicSslContext sslContext,
                               Option<EventLoopGroup> eventLoop,
-                              QuicClusterServer.MessageReceiver messageReceiver) {
+                              QuicClusterServer.MessageReceiver messageReceiver,
+                              BootTokens bootTokens) {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
         this.selfLabels = Map.copyOf(selfLabels);
@@ -216,6 +244,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         this.ownsEventLoop = eventLoop.isEmpty();
         this.eventLoopGroup = eventLoop.or(QuicClusterClientInstance::createEventLoop);
         this.messageReceiver = messageReceiver;
+        this.bootTokens = bootTokens;
     }
 
     @Override
@@ -410,7 +439,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // #726: PAYLOAD bytes at the lane boundary — the handshake preamble is a real frame
         // handed to the channel, same honesty boundary as every other write.
         quicMetrics.onBytesSent(preamble.length);
-        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
+        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels, bootTokens.self()));
 
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         quicMetrics.onBytesSent(helloBytes.length);
@@ -610,6 +639,22 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                 promise.fail(QuicTransportError.IdentityMismatch.identityMismatch(peerId,
                                                                                   hello.sender(),
                                                                                   String.valueOf(quicChannel.remoteSocketAddress())));
+                quicChannel.close();
+
+                return;
+            }
+            // Boot-token gate (terminal removal): a different process answering for a known
+            // NodeId — or any process for a retired one — is refused before any attach, on the
+            // same connect-failure path as an identity mismatch.
+            var admission = bootTokens.admit(peerId, hello.bootToken());
+
+            if (!admission.admitted()) {
+                log.warn("QUIC dialer refused {} (token {}) by the boot-token gate: {} (refusals={})",
+                         peerId,
+                         hello.bootToken(),
+                         admission,
+                         bootTokens.refusals());
+                promise.fail(QuicTransportError.BootTokenRefused.FACTORY.apply(peerId, admission.name()));
                 quicChannel.close();
 
                 return;

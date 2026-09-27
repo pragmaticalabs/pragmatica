@@ -20,6 +20,7 @@ import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
 import org.pragmatica.aether.node.health.fsm.SwimHealthState;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Contract;
@@ -60,11 +61,21 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final SwimHealthContext context;
     private final SwimConfig swimConfig;
     private volatile Predicate<NodeId> membershipEligibility = _ -> true;
+    private volatile Option<BootTokens> bootTokens = Option.none();
     private volatile List<NodeInfo> peerDirectory = List.of();
 
     public Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
         membershipEligibility = eligibility;
         protocol().onPresent(protocol -> protocol.setMembershipEligibility(eligibility));
+
+        return Unit.unit();
+    }
+
+    /// Share the node's boot-token registry with SWIM — the SAME instance the QUIC transport admits
+    /// Hellos through, so a process SWIM refuses cannot re-enter through the transport (terminal removal).
+    public Unit setBootTokens(BootTokens registry) {
+        bootTokens = Option.some(registry);
+        protocol().onPresent(protocol -> protocol.setBootTokens(registry));
 
         return Unit.unit();
     }
@@ -508,6 +519,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         // from the static seed set, having missed peers' live ANNOUNCE window) then never populated its
         // dial set and, being the higher NodeId that must initiate, never dialed — wedging cold-start.
         protocol.setMembershipEligibility(membershipEligibility);
+        bootTokens.onPresent(protocol::setBootTokens);
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
         seedMembers(protocol);

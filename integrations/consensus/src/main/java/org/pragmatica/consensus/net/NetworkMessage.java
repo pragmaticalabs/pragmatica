@@ -36,8 +36,9 @@ public sealed interface NetworkMessage extends Message.Wired {
     /// Hello - connection handshake, sent by both sides on channel activation.
     /// Carries the sender's cluster address and metadata labels (including the CORE/WORKER/SPOT
     /// `role` label) so receiving nodes can add dynamically provisioned nodes to their topology
-    /// with full metadata.
-    record Hello(NodeId sender, NodeAddress address, Map<String, String> labels) implements NetworkMessage {}
+    /// with full metadata, and the sender's per-process random `bootToken` (`0` = none), which the
+    /// receiver admits through [BootTokens] before attaching the connection (terminal removal).
+    record Hello(NodeId sender, NodeAddress address, Map<String, String> labels, long bootToken) implements NetworkMessage {}
 
     /// Topology discovery request - asks recipient to share their known nodes
     record DiscoverNodes(NodeId self) implements NetworkMessage {}

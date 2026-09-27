@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.OutboundMessageLimit;
 import org.pragmatica.lang.Contract;
@@ -121,6 +122,32 @@ public sealed interface QuicClusterServer {
                                                Option<EventLoopGroup> sharedEventLoop,
                                                PeerConnectionHandler connectionHandler,
                                                MessageReceiver messageReceiver) {
+        return quicClusterServer(selfId,
+                                 selfAddress,
+                                 selfLabels,
+                                 serializer,
+                                 deserializer,
+                                 quicMetrics,
+                                 sslContext,
+                                 sharedEventLoop,
+                                 connectionHandler,
+                                 messageReceiver,
+                                 BootTokens.bootTokens(0L));
+    }
+
+    /// As above, admitting every inbound Hello through `bootTokens` (shared with SWIM) before the
+    /// connection is registered, and carrying `bootTokens.self()` on this node's Hello response.
+    static QuicClusterServer quicClusterServer(NodeId selfId,
+                                               NodeAddress selfAddress,
+                                               Map<String, String> selfLabels,
+                                               Serializer serializer,
+                                               Deserializer deserializer,
+                                               QuicTransportMetrics quicMetrics,
+                                               QuicSslContext sslContext,
+                                               Option<EventLoopGroup> sharedEventLoop,
+                                               PeerConnectionHandler connectionHandler,
+                                               MessageReceiver messageReceiver,
+                                               BootTokens bootTokens) {
         return new QuicClusterServerInstance(selfId,
                                              selfAddress,
                                              selfLabels,
@@ -130,7 +157,8 @@ public sealed interface QuicClusterServer {
                                              sslContext,
                                              sharedEventLoop,
                                              connectionHandler,
-                                             messageReceiver);
+                                             messageReceiver,
+                                             bootTokens);
     }
 
     record Unused() implements QuicClusterServer {
@@ -180,6 +208,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private final Option<EventLoopGroup> sharedEventLoop;
     private final PeerConnectionHandler connectionHandler;
     private final MessageReceiver messageReceiver;
+    private final BootTokens bootTokens;
     /// #1456: a publish slot, not a bare reference. `stop()` closes it, so a bind completing after
     /// stop had already read an empty field is handed back to `handleBind` to close, instead of
     /// leaving the cluster UDP port bound with nothing owning it for the life of the process.
@@ -202,7 +231,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                               QuicSslContext sslContext,
                               Option<EventLoopGroup> sharedEventLoop,
                               PeerConnectionHandler connectionHandler,
-                              MessageReceiver messageReceiver) {
+                              MessageReceiver messageReceiver,
+                              BootTokens bootTokens) {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
         this.selfLabels = Map.copyOf(selfLabels);
@@ -213,6 +243,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         this.sharedEventLoop = sharedEventLoop;
         this.connectionHandler = connectionHandler;
         this.messageReceiver = messageReceiver;
+        this.bootTokens = bootTokens;
     }
 
     @Override
@@ -534,13 +565,34 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             }
 
             if (message instanceof NetworkMessage.Hello hello) {
-                sendHelloResponse(ctx);
-                registerPeerConnection(ctx, hello);
+                admitHello(ctx, hello);
             } else {
                 log.warn("Expected Hello message but received: {}",
                          option(message).map(Object::getClass).map(Class::getSimpleName));
                 ctx.close();
             }
+        }
+
+        /// Boot-token gate (terminal removal): a different process for a known NodeId — or any
+        /// process for a retired one — is refused before any response or registration, so no
+        /// admission path downstream (fresh attach, RECONNECT of an EVICTED/SUSPECT peer, tombstone
+        /// re-admission) is ever reached by a refused process.
+        private void admitHello(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
+            var admission = bootTokens.admit(hello.sender(), hello.bootToken());
+
+            if (!admission.admitted()) {
+                log.warn("QUIC acceptor refused Hello from {} (token {}) by the boot-token gate: {} (refusals={})",
+                         hello.sender(),
+                         hello.bootToken(),
+                         admission,
+                         bootTokens.refusals());
+                ctx.channel().parent().close();
+
+                return;
+            }
+
+            sendHelloResponse(ctx);
+            registerPeerConnection(ctx, hello);
         }
 
         private Object decodeMessage(ByteBuf buf) {
@@ -553,7 +605,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         private void sendHelloResponse(ChannelHandlerContext ctx) {
             // Responses flowing back from the acceptor carry NO preamble.
-            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
+            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels, bootTokens.self()));
 
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
             // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.

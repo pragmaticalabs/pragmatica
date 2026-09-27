@@ -272,6 +272,7 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -3507,6 +3508,12 @@ public interface AetherNode extends ManageableNode {
                                                                                swimTransportConnected);
 
         swimHealthDetectorHolder.set(swimHealthDetector);
+        // ONE boot-token registry per process, shared by SWIM and the QUIC transport: a process
+        // either layer refuses can never be admitted by the other (terminal removal, #1528).
+        var bootTokens = BootTokens.bootTokens(bootToken);
+
+        swimHealthDetector.setBootTokens(bootTokens);
+        clusterNode.network().setBootTokens(bootTokens);
         // Process evidence carries the per-process random boot token (equality only); SWIM keeps its
         // independent refutation counter, seeded from wall-clock time, and also carries the token.
         var bootIncarnation = System.currentTimeMillis();

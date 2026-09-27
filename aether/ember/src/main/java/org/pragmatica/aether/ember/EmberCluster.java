@@ -121,6 +121,9 @@ public final class EmberCluster {
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
+    /// Slot each node last ran on, retained after the node is killed — lets [#relaunchNode] start a
+    /// new process at the SAME address as the killed one.
+    private final Map<String, Integer> lastSlotByNodeId = new ConcurrentHashMap<>();
     private final int initialClusterSize;
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -653,6 +656,7 @@ public final class EmberCluster {
             instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, Map.of()));
             nodeInfos.put(nodeId.id(), info);
             slotsByNodeId.put(nodeId.id(), slot);
+            lastSlotByNodeId.put(nodeId.id(), slot);
         }
 
         nodeCounter.set(initialClusterSize);
@@ -1041,12 +1045,33 @@ public final class EmberCluster {
                       node.id());
     }
 
+    /// TEST SEAM (#1528) — start a NEW process under the NodeId of a node this harness killed, as an
+    /// operator restarting a container would. Under terminal removal the running cluster must refuse
+    /// it: the new process carries a fresh boot token. `sameAddress` reuses the killed node's slot
+    /// (same ports); otherwise the next free slot is taken. Harness-scoped; production never calls this.
+    public Promise<NodeId> relaunchNode(String nodeIdStr, boolean sameAddress) {
+        var nodeId = nodeId(nodeIdStr).unwrap();
+        var slot = Option.option(lastSlotByNodeId.get(nodeIdStr))
+                         .filter(_ -> sameAddress)
+                         .filter(availableSlots::remove);
+
+        if (sameAddress && slot.isEmpty()) {
+            return EnvironmentError.operationNotSupported("Killed node's slot is not free: " + nodeIdStr).promise();
+        }
+
+        return addProvisionedNode(nodeId, Map.of(NodeInfo.LABEL_ROLE, "core"), slot);
+    }
+
     private Promise<NodeId> addProvisionedNode(NodeId nodeId, Map<String, String> labels) {
+        return addProvisionedNode(nodeId, labels, Option.none());
+    }
+
+    private Promise<NodeId> addProvisionedNode(NodeId nodeId, Map<String, String> labels, Option<Integer> chosenSlot) {
         if (nodes.containsKey(nodeId.id())) {
             return EnvironmentError.operationNotSupported("Node identity already exists: " + nodeId.id()).promise();
         }
 
-        var slotOpt = Option.option(availableSlots.poll());
+        var slotOpt = chosenSlot.orElse(() -> Option.option(availableSlots.poll()));
 
         if (slotOpt.isEmpty()) {
             log.warn("Slot pool exhausted — no available ports for new node");
@@ -1064,6 +1089,7 @@ public final class EmberCluster {
 
         log.info("Adding new node {} on port {} labels={}", nodeId.id(), port, labels);
         slotsByNodeId.put(nodeId.id(), slot);
+        lastSlotByNodeId.put(nodeId.id(), slot);
         nodeInfos.put(nodeId.id(), info);
         var allNodes = new ArrayList<>(nodeInfos.values());
         var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, false);

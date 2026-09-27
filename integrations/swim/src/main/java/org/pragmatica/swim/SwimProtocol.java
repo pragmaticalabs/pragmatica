@@ -38,6 +38,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
@@ -236,16 +237,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// This process's random boot token, seeded by [#announceJoin]; `0` until then (and for callers
     /// that announce without one). Carried on every self-ANNOUNCE and self-ALIVE.
     private final AtomicLong selfBootToken = new AtomicLong(0);
-    /// Boot token first seen for each peer identity (owner ruling, session 28: terminal removal).
+    /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
+    /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
     /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
     /// SAME token heals exactly as before (higher incarnation supersedes); a DIFFERENT token for a
-    /// known identity is a new process. Tokens are compared by EQUALITY only, never ordered.
-    private final Map<NodeId, Long> bootTokens = new ConcurrentHashMap<>();
-    /// Identities retired by a boot-token conflict: the old process is treated as dead and the new
-    /// one is refused — permanently, since a dead NodeId never returns (recovery is a fresh NodeId).
-    private final Set<NodeId> retiredIds = ConcurrentHashMap.newKeySet();
-    /// Count of evidence refused by the boot-token gate (conflicts plus evidence for retired ids).
-    private final AtomicLong bootTokenRefusals = new AtomicLong(0);
+    /// known identity is a new process and retires the identity. Equality only, never ordered.
+    private volatile BootTokens bootTokens = BootTokens.bootTokens(0L);
     /// Fix 1 (#336 at-risk self-refutation): epoch-ms of the last evidence that peers can
     /// reach THIS node — an inbound `Ping` ([#handlePing]) or a verified `Ack` to a probe
     /// this node sent ([#acceptProbeAckIfFromTarget]). When it goes stale (≥ the at-risk
@@ -1835,51 +1832,41 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// resident process is treated as dead and the new one is refused, as is every later piece of
     /// evidence for a retired id. Every refusal is counted and logged.
     private boolean admitsBootToken(NodeId peer, long token) {
-        if (isRetired(peer)) {
-            return refuseBootToken(peer, token, "identity already retired by a boot-token conflict");
-        }
-
-        if (token == 0L) {
-            return true;
-        }
-
-        var known = bootTokens.putIfAbsent(peer, token);
-
-        if (known == null || known == token) {
-            return true;
-        }
-
-        retire(peer, known, token);
-
-        return refuseBootToken(peer, token, "a different process (known token " + known + ")");
+        return switch (bootTokens.admit(peer, token)) {
+            case ADMITTED -> true;
+            case CONFLICT -> retire(peer, token);
+            case RETIRED -> refuseRetired(peer, token);
+        };
     }
 
-    private boolean refuseBootToken(NodeId peer, long token, String reason) {
-        bootTokenRefusals.incrementAndGet();
-        LOG.debug("SWIM refused evidence for {} carrying boot token {}: {}", peer.id(), token, reason);
+    private boolean refuseRetired(NodeId peer, long token) {
+        LOG.debug("SWIM refused evidence for {} carrying boot token {}: identity already retired by a boot-token conflict",
+                  peer.id(),
+                  token);
 
         return false;
     }
 
     /// A different process claimed `peer`: the resident process is treated as dead (FAULTY now,
-    /// unless it already is) and the identity is retired for the life of this process.
-    private void retire(NodeId peer, long known, long incoming) {
-        retiredIds.add(peer);
+    /// unless it already is) and the identity is retired for the life of this process. Refuses.
+    private boolean retire(NodeId peer, long incoming) {
         LOG.warn("SWIM boot-token conflict for {}: known process token {}, new token {} — the known process is"
                 + " treated as DEAD and the new process is REFUSED (terminal removal: recover with a fresh NodeId)",
                  peer.id(),
-                 known,
+                 bootTokens.tokenOf(peer),
                  incoming);
         option(members.get(peer)).filter(member -> member.state() != MemberState.FAULTY)
               .onPresent(this::transitionToFaulty);
+
+        return false;
     }
 
     private boolean isRetired(NodeId peer) {
-        return retiredIds.contains(peer);
+        return bootTokens.isRetired(peer);
     }
 
     private long bootTokenOf(NodeId peer) {
-        return bootTokens.getOrDefault(peer, 0L);
+        return bootTokens.tokenOf(peer);
     }
 
     /// A self-update about a previous process of this NodeId: it carries a token that is neither
@@ -1892,7 +1879,16 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Count of evidence refused by the boot-token gate — observability for the terminal-removal rule.
     public long bootTokenRefusals() {
-        return bootTokenRefusals.get();
+        return bootTokens.refusals();
+    }
+
+    /// Install the node's boot-token registry — the SAME instance the QUIC transport admits Hellos
+    /// through — before any peer evidence arrives. The registry's own token is this process's.
+    public Unit setBootTokens(BootTokens registry) {
+        bootTokens = registry;
+        selfBootToken.compareAndSet(0L, registry.self());
+
+        return Unit.unit();
     }
 
     /// Whether `peer` was retired by a boot-token conflict (a different process reused its NodeId).
