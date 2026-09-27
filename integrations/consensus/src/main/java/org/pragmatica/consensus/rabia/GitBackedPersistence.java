@@ -221,8 +221,13 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         return runGit("add", STATE_FILE).mapToUnit();
     }
 
+    /// `--allow-empty`: re-saving an unchanged snapshot is a successful save, not a failure. A node
+    /// that restores its OWN backup re-persists identical content (`RabiaEngine.persistRestoredState`),
+    /// and a plain `git commit` exits non-zero on "nothing to commit" — which fenced that node from
+    /// activating on every whole-cluster restart with `[backup]` enabled.
     private Result<Unit> gitCommit(Phase phase) {
         return runGit("commit",
+                      "--allow-empty",
                       "-m",
                       "Backup phase " + phase.value() + " at " + Instant.now()).mapToUnit();
     }
