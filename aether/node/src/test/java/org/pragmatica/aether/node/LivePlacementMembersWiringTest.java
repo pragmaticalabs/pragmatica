@@ -60,9 +60,20 @@ class LivePlacementMembersWiringTest {
         assertThat(code).contains("publicList<NodeId>liveMembers(){returncontroller.reconciledMembers();}");
     }
 
+    /// #1555 sticky ownership: the leader's writer decides by `desiredOwner` (keep the committed owner while it is in
+    /// the leader's live set), not by the routing owner, which now follows the committed record.
     @Test
-    void ownershipWriterHrwOwner_readsTheController() {
-        assertThat(assemblyCode()).contains("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.ownerFor(stream,partition)))");
+    void ownershipWriterHrwOwner_readsTheControllersDesiredOwner() {
+        assertThat(assemblyCode()).contains("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)))");
+    }
+
+    /// #1555 sticky ownership: every node routes by the committed record, and backfill resolves the same owner.
+    @Test
+    void stickyOwnership_routesByCommittedRecord_andBackfillFollowsIt() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("streamReplicaSetController.committedOwnerSource((stream,partition)->kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,partition),StreamPartitionOwnershipValue.class).map(StreamPartitionOwnershipValue::owner));");
+        assertThat(code).contains("streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);");
     }
 
     @Test
