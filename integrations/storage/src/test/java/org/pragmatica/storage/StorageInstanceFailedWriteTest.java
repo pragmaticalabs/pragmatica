@@ -6,6 +6,8 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Nested;
@@ -86,6 +88,31 @@ class StorageInstanceFailedWriteTest {
 
             assertThat(storage.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT);
             assertThat(disk.exists(id).await().unwrap()).as("the retry wrote the disk copy again").isTrue();
+        }
+
+        /// B1 under a concurrent read: while the last tier's write is held open, a `get` finds the block on the
+        /// disk and records that presence on the claim record. The last tier then fails. The claim must still
+        /// be released -- by id, since a compare against the original claim would miss the changed record and
+        /// leave it claiming a block no tier holds.
+        @Test
+        void aReadDuringTheWrite_doesNotKeepTheClaimAlive_whenTheWriteFails() throws InterruptedException {
+            var store = MetadataStore.inMemoryMetadataStore("read-during");
+            var gate = new GatedLastTier(MemoryTier.memoryTier(1 << 20, TierLevel.REMOTE));
+            var storage = StorageInstance.storageInstance("read-during",
+                                                          List.of(MemoryTier.memoryTier(1 << 20), diskTier(), gate),
+                                                          store);
+            var id = BlockId.blockId(CONTENT).unwrap();
+            var write = storage.put(CONTENT);
+
+            assertThat(gate.entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(storage.get(id).await().unwrap().isPresent()).as("the read finds the disk copy").isTrue();
+            assertThat(store.getLifecycle(id).unwrap().presentIn()).as("and recorded it on the claim")
+                                                                   .contains(TierLevel.LOCAL_DISK);
+
+            gate.fail.countDown();
+            write.await().onSuccess(_ -> fail("the last tier was injected to fail"));
+
+            assertThat(store.getLifecycle(id).isPresent()).as("no record survives the failed write").isFalse();
         }
 
         /// B2: compensation undoes only what THIS put created. A copy already on disk with no record (written
@@ -229,8 +256,31 @@ class StorageInstanceFailedWriteTest {
                              .unwrap();
     }
 
+    /// A shared last tier whose put blocks until released and then fails.
+    private static final class GatedLastTier extends FailingFirstPuts {
+        final CountDownLatch entered = new CountDownLatch(1);
+        final CountDownLatch fail = new CountDownLatch(1);
+
+        GatedLastTier(StorageTier delegate) {
+            super(delegate, 0);
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            return Promise.lift(Causes::fromThrowable, this::awaitRelease)
+                          .flatMap(_ -> Causes.cause("injected last-tier failure").<Unit> promise());
+        }
+
+        private Unit awaitRelease() throws InterruptedException {
+            entered.countDown();
+            fail.await(10, TimeUnit.SECONDS);
+
+            return Unit.unit();
+        }
+    }
+
     /// A tier whose first `failures` puts fail; everything else delegates.
-    private static final class FailingFirstPuts implements StorageTier {
+    private static class FailingFirstPuts implements StorageTier {
         private final StorageTier delegate;
         private final AtomicInteger remaining;
 
