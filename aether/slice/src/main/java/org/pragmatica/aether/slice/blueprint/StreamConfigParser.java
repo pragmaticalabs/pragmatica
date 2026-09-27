@@ -356,16 +356,16 @@ public interface StreamConfigParser {
         return success(config);
     }
 
-    /// Spec §11.x: the two decoupled replication knobs must satisfy `replicas >= 1` and
-    /// `0 <= min-sync-replicas <= replicas`. `replicas` is the replication factor (total copies incl.
+    /// Spec §11.x: the two decoupled replication knobs must satisfy `replicas >= StreamConfig.MIN_REPLICAS`
+    /// (#1547 — refused, never clamped) and `0 <= min-sync-replicas <= replicas`. `replicas` is the replication factor (total copies incl.
     /// owner); `min-sync-replicas` is the in-sync ack requirement (incl. owner). A `min-sync-replicas`
     /// exceeding `replicas` can never be met, so it is a build-time error via the same [Result] failure
     /// path used for the rest of the parser's config rejections.
     private static Result<StreamConfig> validateReplication(String streamName, StreamConfig config) {
-        if (config.replicas() < 1) {
-            return new StreamDeclarationError.ReplicationInvalid(streamName,
-                                                                 "replicas=" + config.replicas()
-                                                                + "; replicas must be >= 1").result();
+        if (config.replicas() < StreamConfig.MIN_REPLICAS) {
+            return new StreamDeclarationError.ReplicasBelowMinimum(streamName,
+                                                                   config.replicas(),
+                                                                   StreamConfig.MIN_REPLICAS).result();
         }
 
         if (config.minSyncReplicas() > config.replicas()) {
@@ -439,7 +439,7 @@ public interface StreamConfigParser {
         var consistencyMode = doc.getString(section, "consistency")
                                  .map(StreamConfigParser::parseConsistencyMode)
                                  .or(ConsistencyMode.EVENTUAL);
-        var replicas = doc.getInt(section, "replicas").or(1);
+        var replicas = doc.getInt(section, "replicas").or(StreamConfig.DEFAULT.replicas());
         var minSyncReplicas = doc.getInt(section, "min-sync-replicas").or(0);
         var compression = doc.getString(section, "compression")
                              .map(StreamConfigParser::parseCompression)

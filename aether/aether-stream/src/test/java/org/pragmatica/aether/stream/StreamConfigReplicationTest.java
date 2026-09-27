@@ -298,6 +298,62 @@ class StreamConfigReplicationTest {
         }
     }
 
+    /// #1547 review: the replication minimum holds on EVERY commit path, not only the fresh create.
+    @Nested
+    class ReplicationMinimumOnEveryCommitPath {
+
+        /// Control: a fresh RF=1 create is refused before anything is materialized.
+        @Test
+        void freshCreate_belowMinimum_isRefused() {
+            var manager = streamPartitionManager(Long.MAX_VALUE, clusterNode);
+            try {
+                manager.createStream(replicasConfig(1))
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected ReplicasBelowMinimum"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ReplicasBelowMinimum("orders", 1, 3)));
+
+                assertThat(clusterNode.streamConfigPuts()).isEmpty();
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// The verifier's probe: an RF=3 create whose commit fails leaves an uncommitted local entry; an RF=1
+        /// re-create of the same name must not reach the commit through the republish arm.
+        @Test
+        void reCreate_belowMinimum_afterAFailedCommit_isRefused_andNothingIsCommitted() {
+            var failingNode = new FailingClusterNode();
+            var manager = streamPartitionManager(Long.MAX_VALUE, failingNode);
+            try {
+                manager.createStream(replicasConfig(3))
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected the first commit to fail"));
+
+                failingNode.recover();
+                manager.createStream(replicasConfig(1))
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("An RF=1 re-create must not commit"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ReplicasBelowMinimum("orders", 1, 3)));
+
+                assertThat(failingNode.appliedAfterRecovery()).isZero();
+            } finally {
+                manager.close();
+            }
+        }
+
+        private static StreamConfig replicasConfig(int replicas) {
+            var defaults = StreamConfig.streamConfig("orders");
+
+            return StreamConfig.streamConfig("orders",
+                                             defaults.partitions(),
+                                             defaults.retention(),
+                                             defaults.autoOffsetReset(),
+                                             defaults.maxEventSizeBytes(),
+                                             defaults.consistencyMode(),
+                                             replicas,
+                                             0,
+                                             defaults.compression(),
+                                             defaults.encryptionKeyId());
+        }
+    }
+
     @Nested
     class HotPathNoRepublish {
 
@@ -504,8 +560,11 @@ class StreamConfigReplicationTest {
     private static final class FailingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private static final Cause COMMIT_REJECTED = Causes.cause("Consensus commit rejected");
         private volatile boolean healthy = false;
+        private final java.util.concurrent.atomic.AtomicInteger appliedAfterRecovery = new java.util.concurrent.atomic.AtomicInteger();
 
         void recover() {this.healthy = true;}
+
+        int appliedAfterRecovery() {return appliedAfterRecovery.get();}
 
         @Override public NodeId self() {return SELF;}
 
@@ -517,7 +576,7 @@ class StreamConfigReplicationTest {
 
         @SuppressWarnings("unchecked")
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-            if (healthy) {return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());}
+            if (healthy) {appliedAfterRecovery.incrementAndGet(); return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());}
             return COMMIT_REJECTED.promise();
         }
     }
