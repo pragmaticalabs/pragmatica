@@ -92,7 +92,7 @@ final class GenesisViewAgreement {
         var history = reports.computeIfAbsent(sender, _ -> new ArrayList<>());
 
         if (history.stream().anyMatch(report -> report.round() >= senderRound)) {
-            return;
+            return Unit.unit();
         }
 
         history.add(new Report(senderRound, Set.copyOf(senderView)));
