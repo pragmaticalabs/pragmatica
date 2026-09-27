@@ -2,6 +2,7 @@ package org.pragmatica.consensus.rabia;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -9,6 +10,7 @@ import java.util.TreeSet;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 
 
 /// Genesis view agreement (#1526, owner design). Executor-confined; the engine drives it.
@@ -84,13 +86,12 @@ final class GenesisViewAgreement {
     }
 
     /// Records one announcement from `sender` and merges its view.
-    void receive(NodeId sender, long senderRound, Set<NodeId> senderView) {
+    Unit receive(NodeId sender, long senderRound, Set<NodeId> senderView) {
         merge(senderView);
         merge(Set.of(sender));
         var history = reports.computeIfAbsent(sender, _ -> new ArrayList<>());
 
-        if (history.stream()
-                   .anyMatch(report -> report.round() >= senderRound)) {
+        if (history.stream().anyMatch(report -> report.round() >= senderRound)) {
             return;
         }
 
@@ -100,6 +101,8 @@ final class GenesisViewAgreement {
         }
 
         evaluate();
+
+        return Unit.unit();
     }
 
     Option<Set<NodeId>> agreed() {
@@ -129,11 +132,9 @@ final class GenesisViewAgreement {
 
     private Set<NodeId> missing() {
         var missing = new TreeSet<NodeId>((left, right) -> left.id()
-                                                                .compareTo(right.id()));
+                                                               .compareTo(right.id()));
 
-        view.stream()
-            .filter(member -> !member.equals(self) && !reportedStably(member))
-            .forEach(missing::add);
+        view.stream().filter(member -> !member.equals(self) && !reportedStably(member)).forEach(missing::add);
 
         return Set.copyOf(missing);
     }
@@ -143,7 +144,7 @@ final class GenesisViewAgreement {
             return;
         }
 
-        var merged = new java.util.HashSet<>(view);
+        var merged = new HashSet<>(view);
 
         merged.addAll(seen);
         view = Set.copyOf(merged);
@@ -157,9 +158,12 @@ final class GenesisViewAgreement {
     }
 
     private boolean canStart() {
-        return view.size() == configuredCount && view.contains(self) && announcedStably() && view.stream()
-                                                                                                  .filter(member -> !member.equals(self))
-                                                                                                  .allMatch(this::reportedStably);
+        return view.size() == configuredCount
+               && view.contains(self)
+               && announcedStably()
+               && view.stream()
+                      .filter(member -> !member.equals(self))
+                      .allMatch(this::reportedStably);
     }
 
     private boolean announcedStably() {
@@ -170,10 +174,12 @@ final class GenesisViewAgreement {
     private boolean reportedStably(NodeId member) {
         var history = reports.getOrDefault(member, List.of());
 
-        return history.size() == 2 && history.get(1)
-                                             .round() == history.get(0)
-                                                                .round() + 1 && history.stream()
-                                                                                       .allMatch(report -> report.view()
-                                                                                                                 .equals(view));
+        return history.size() == 2
+               && history.get(1)
+                         .round() == history.get(0)
+                                            .round() + 1
+               && history.stream()
+                         .allMatch(report -> report.view()
+                                                   .equals(view));
     }
 }

@@ -137,12 +137,17 @@ public class RabiaEngine<C extends Command> {
     /// is rendered from. Not a history: later epochs are learned from the log, never from this value.
     private volatile Option<VoterConfiguration> genesis = Option.none();
     private volatile boolean genesisPending;
-    private volatile Option<Supplier<Option<ClusterConfig>>> genesisCandidates = Option.none();
-    /// Executor-confined. The genesis roster this node has announced; latched once set.
-    private Option<ClusterConfig> genesisCandidate = Option.none();
-    /// Executor-confined. The latest genesis roster each pending peer announced.
-    private final Map<NodeId, ClusterConfig> genesisAnnouncements = new HashMap<>();
+    private volatile Option<Supplier<Set<NodeId>>> genesisDiscovery = Option.none();
+    /// Executor-confined after [#start]. Genesis view agreement while genesis is pending.
+    private volatile Option<GenesisViewAgreement> genesisAgreement = Option.none();
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
+
+    /// Genesis round interval: starts here and doubles while the view is unchanged, up to the sync retry
+    /// interval, so a waiting cluster does not flood the network and a changing one reacts quickly.
+    private static final TimeSpan GENESIS_ROUND_BASE = TimeSpan.timeSpan(250).millis();
+    private static final int GENESIS_BACKOFF_STEPS = 5;
+    private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
+
     private volatile Option<Cause> authorityFailure = Option.none();
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
     private final Map<Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
@@ -268,86 +273,97 @@ public class RabiaEngine<C extends Command> {
         return Result.success(Unit.unit());
     }
 
-    /// Genesis by agreement (#1526): as [#deferGenesis], and from [#start] on, every sync retry interval
-    /// this engine offers the candidate `candidates` supplies ([#proposeGenesis]). The supplier returns
-    /// none while no roster can be chosen; the engine still announces itself so an already formed
-    /// electorate can answer.
-    public synchronized Result<Unit> deferGenesis(Supplier<Option<ClusterConfig>> candidates) {
-        return deferGenesis().onSuccess(_ -> genesisCandidates = Option.some(candidates));
+    /// Genesis by view agreement (#1526): as [#deferGenesis], and from [#start] on this engine runs
+    /// [GenesisViewAgreement] rounds — merging what `discovered` sees with every view announced to it —
+    /// and installs epoch 0 once the agreement rules hold. `fixedView` (`cluster.genesis_voters`) replaces
+    /// discovery: it is the view and nothing is merged. A core whose electorate has already formed answers
+    /// an announcement with its configuration, and a pending node installs that instead, so a late or
+    /// replacement core joins the running cluster rather than starting a second one.
+    public synchronized Result<Unit> deferGenesis(Supplier<Set<NodeId>> discovered,
+                                                  int configuredCount,
+                                                  Option<ClusterConfig> fixedView) {
+        return deferGenesis().onSuccess(_ -> armGenesisAgreement(discovered, configuredCount, fixedView));
     }
 
-    /// Offers `candidate` as the epoch-0 roster. Epoch 0 is installed only once EVERY other member of the
-    /// candidate has announced the identical roster; any mismatch keeps waiting. The first candidate
-    /// offered is latched: a node never confirms two different rosters, so no two epoch-0
-    /// configurations sharing a member can both form. An answer from an already formed electorate that
-    /// includes its sender is installed instead, so a late or replacement core joins the running
-    /// cluster rather than starting a second one.
-    public Result<Unit> proposeGenesis(ClusterConfig candidate) {
-        return ClusterConfig.clusterConfig(candidate.members())
-                            .onSuccess(valid -> safeExecute(() -> offerGenesis(Option.some(valid))))
-                            .mapToUnit();
+    private void armGenesisAgreement(Supplier<Set<NodeId>> discovered,
+                                     int configuredCount,
+                                     Option<ClusterConfig> fixedView) {
+        genesisDiscovery = Option.some(discovered);
+        genesisAgreement = Option.some(GenesisViewAgreement.genesisViewAgreement(self,
+                                                                                 configuredCount,
+                                                                                 fixedView.map(roster -> Set.copyOf(roster.members()))));
     }
 
-    private void offerGenesisFromSupplier() {
+    /// Test hook: one genesis round on the apply executor, as the round timer would run it.
+    Unit runGenesisRoundForTesting() {
+        safeExecute(this::genesisRound);
+
+        return Unit.unit();
+    }
+
+    private void genesisRound() {
         if (!genesisPending) {
             cancelGenesisTimer();
 
             return;
         }
 
-        genesisCandidates.onPresent(supplier -> offerGenesis(supplier.get()));
+        genesisAgreement.onPresent(agreement -> announceGenesisRound(agreement, agreement.tick(authenticatedDiscovery())));
     }
 
-    private void offerGenesis(Option<ClusterConfig> offered) {
-        if (!genesisPending) {
-            return;
-        }
+    /// The cores discovery reports that also authenticate for this cluster: QUIC peers are admitted only
+    /// through the cluster's TLS authority, so a discovered id counts only once it is a connected peer.
+    /// A role label alone never puts a node in the view.
+    private Set<NodeId> authenticatedDiscovery() {
+        var authenticated = new HashSet<>(network.connectedPeers());
 
-        offered.onPresent(this::latchGenesisCandidate);
-        announceGenesis();
-        completeGenesisIfAgreed();
+        authenticated.add(self);
+
+        return genesisDiscovery.map(Supplier::get)
+                               .or(Set.of())
+                               .stream()
+                               .filter(authenticated::contains)
+                               .collect(Collectors.toUnmodifiableSet());
     }
 
-    private void latchGenesisCandidate(ClusterConfig offered) {
-        var normalized = new VoterConfiguration(0, offered).roster();
-
-        genesisCandidate.filter(latched -> !latched.sameMembership(normalized))
-                        .onPresent(latched -> log.warn("Node {} keeps its announced genesis roster {}; the newly offered {} "
-                                                      + "is ignored, because announcing a second roster could form two electorates",
-                                                       self,
-                                                       latched.members(),
-                                                       normalized.members()));
-        genesisCandidate = Option.some(genesisCandidate.or(normalized));
-    }
-
-    private void announceGenesis() {
-        var announcement = new GenesisAnnouncement(self, genesisCandidate, Option.none());
+    private void announceGenesisRound(GenesisViewAgreement agreement, GenesisViewAgreement.Report report) {
+        var announcement = new GenesisAnnouncement(self,
+                                                   report.round(),
+                                                   Option.some(new ClusterConfig(List.copyOf(report.view()))),
+                                                   Option.none());
         var recipients = new HashSet<>(network.connectedPeers());
 
-        genesisCandidate.onPresent(roster -> recipients.addAll(roster.members()));
+        recipients.addAll(report.view());
         recipients.stream().filter(node -> !node.equals(self)).forEach(node -> network.send(node, announcement));
+        logGenesisWait(agreement.status(), report.round());
+        completeGenesisIfAgreed(agreement);
     }
 
-    private void completeGenesisIfAgreed() {
-        genesisCandidate.filter(this::everyMemberAnnounced)
-                        .onPresent(roster -> installAgreedGenesis(new VoterConfiguration(0, roster)));
+    private void logGenesisWait(GenesisViewAgreement.Status status, long round) {
+        if (status.stage() == GenesisViewAgreement.Stage.EXCEEDS_COUNT && round % GENESIS_WARN_EVERY_ROUNDS == 1) {
+            log.warn("Node {} will NOT start genesis: {} core candidates are visible for the configured count: {}. "
+                    + "Set cluster.genesis_voters or remove the extra candidates (restart clears a node's view).",
+                     self,
+                     status.view().size(),
+                     status.view());
+        }
+
+        if (status.stage() == GenesisViewAgreement.Stage.WAITING && round % GENESIS_WARN_EVERY_ROUNDS == 1) {
+            log.info("Node {} genesis pending: view {}, waiting for a stable report from {}",
+                     self,
+                     status.view(),
+                     status.missing());
+        }
     }
 
-    private boolean everyMemberAnnounced(ClusterConfig roster) {
-        return roster.members()
-                     .stream()
-                     .filter(member -> !member.equals(self))
-                     .allMatch(member -> announcedSameRoster(member, roster));
-    }
-
-    private boolean announcedSameRoster(NodeId member, ClusterConfig roster) {
-        return Option.option(genesisAnnouncements.get(member))
-                     .map(roster::sameMembership)
-                     .or(false);
+    private void completeGenesisIfAgreed(GenesisViewAgreement agreement) {
+        agreement.agreed()
+                 .onPresent(view -> installAgreedGenesis(new VoterConfiguration(0,
+                                                                                new ClusterConfig(List.copyOf(view)))));
     }
 
     private void installAgreedGenesis(VoterConfiguration configuration) {
-        log.info("Node {} installs genesis roster {}: every member announced the same roster",
+        log.info("Node {} installs genesis roster {}: every member reported the identical view in two consecutive rounds",
                  self,
                  configuration.members());
         installGenesis(configuration);
@@ -369,8 +385,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         if (genesisPending) {
-            announcement.roster().onPresent(roster -> genesisAnnouncements.put(announcement.sender(), roster));
-            completeGenesisIfAgreed();
+            genesisAgreement.onPresent(agreement -> receiveGenesisView(agreement, announcement));
 
             return;
         }
@@ -378,8 +393,17 @@ public class RabiaEngine<C extends Command> {
         voters.filter(configuration -> configuration.contains(self))
               .onPresent(configuration -> network.send(announcement.sender(),
                                                        new GenesisAnnouncement(self,
+                                                                               0,
                                                                                Option.some(configuration.roster()),
                                                                                Option.some(configuration))));
+    }
+
+    private void receiveGenesisView(GenesisViewAgreement agreement, GenesisAnnouncement announcement) {
+        announcement.view()
+                    .onPresent(view -> agreement.receive(announcement.sender(),
+                                                         announcement.round(),
+                                                         Set.copyOf(view.members())));
+        completeGenesisIfAgreed(agreement);
     }
 
     private void joinFormedElectorate(VoterConfiguration formed) {
@@ -1620,21 +1644,39 @@ public class RabiaEngine<C extends Command> {
         return startPromise.get();
     }
 
-    /// Genesis agreement runs before consensus can start, so it owns its own timer: armed at [#start]
-    /// while genesis is pending with a candidate supplier, cancelled once genesis is installed or on stop.
+    /// Genesis agreement runs before consensus can start, so it owns its own round timer: armed at
+    /// [#start] while genesis is pending with a view agreement, rescheduled after every round with
+    /// backoff, and cancelled once genesis is installed or on stop.
     private void armGenesisTimer() {
-        if (!genesisPending || genesisCandidates.isEmpty() || genesisTimer.get() != null) {
+        if (!genesisPending || genesisAgreement.isEmpty()) {
             return;
         }
 
-        var task = SharedScheduler.scheduleAtFixedRate(() -> safeExecute(this::offerGenesisFromSupplier),
-                                                       config.syncRetryInterval());
+        scheduleGenesisRound(GENESIS_ROUND_BASE);
+    }
 
-        if (!genesisTimer.compareAndSet(null, task)) {
-            task.cancel(false);
+    private void scheduleGenesisRound(TimeSpan delay) {
+        if (!genesisPending || stopping.get()) {
+            return;
         }
 
-        safeExecute(this::offerGenesisFromSupplier);
+        var task = SharedScheduler.schedule(() -> safeExecute(this::timedGenesisRound), delay);
+
+        Option.option(genesisTimer.getAndSet(task)).onPresent(previous -> previous.cancel(false));
+    }
+
+    private void timedGenesisRound() {
+        genesisRound();
+        genesisAgreement.onPresent(agreement -> scheduleGenesisRound(genesisRoundDelay(agreement.roundsSinceChange())));
+    }
+
+    private TimeSpan genesisRoundDelay(long roundsSinceChange) {
+        var steps = Math.min(roundsSinceChange, GENESIS_BACKOFF_STEPS);
+        var delay = GENESIS_ROUND_BASE.millis() << steps;
+
+        return TimeSpan.timeSpan(Math.min(delay,
+                                          Math.max(GENESIS_ROUND_BASE.millis(),
+                                                   config.syncRetryInterval().millis()))).millis();
     }
 
     public synchronized Promise<Unit> stop() {

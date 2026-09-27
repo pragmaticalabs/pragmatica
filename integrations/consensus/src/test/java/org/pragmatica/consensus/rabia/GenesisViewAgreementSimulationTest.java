@@ -93,6 +93,56 @@ class GenesisViewAgreementSimulationTest {
         }
     }
 
+    /// Defined flapping behaviour: a core that was seen stays in every view it reached. While it is gone
+    /// for good, genesis holds and the status names it; when it returns, genesis completes.
+    @Test
+    void vanishedMember_holdsGenesisAndIsNamed_untilItReturns() {
+        var a = new NodeId("a");
+        var b = new NodeId("b");
+        var c = new NodeId("c");
+        var agreementA = GenesisViewAgreement.genesisViewAgreement(a, 3, Option.none());
+        var agreementB = GenesisViewAgreement.genesisViewAgreement(b, 3, Option.none());
+        var all = Set.of(a, b, c);
+
+        for (long round = 1; round <= 5; round++) {
+            agreementA.tick(all);
+            agreementB.tick(all);
+            agreementA.receive(b, round, all);
+            agreementB.receive(a, round, all);
+        }
+        assertThat(agreementA.agreed().isEmpty()).isTrue();
+        assertThat(agreementA.status().stage()).isEqualTo(GenesisViewAgreement.Stage.WAITING);
+        assertThat(agreementA.status().missing()).containsExactly(c);
+
+        agreementA.receive(c, 7, all);
+        agreementA.receive(c, 8, all);
+        agreementA.tick(all);
+        assertThat(agreementA.agreed().unwrap()).isEqualTo(all);
+    }
+
+    @Test
+    void genesisVoters_fixTheView_andAMismatchedPeerNeverAgrees() {
+        var a = new NodeId("a");
+        var b = new NodeId("b");
+        var c = new NodeId("c");
+        var fixed = Set.of(a, b, c);
+        var agreement = GenesisViewAgreement.genesisViewAgreement(a, 3, Option.some(fixed));
+
+        agreement.tick(Set.of(a, b, c, new NodeId("extra")));
+        agreement.tick(Set.of(a, b, c, new NodeId("extra")));
+        assertThat(agreement.status().view()).as("discovery is not merged into a fixed view").isEqualTo(fixed);
+        agreement.receive(b, 1, fixed);
+        agreement.receive(b, 2, fixed);
+        agreement.receive(c, 1, Set.of(c, b, new NodeId("other")));
+        agreement.receive(c, 2, Set.of(c, b, new NodeId("other")));
+        assertThat(agreement.agreed().isEmpty()).as("a peer with a different view blocks agreement").isTrue();
+
+        agreement.receive(c, 3, fixed);
+        agreement.receive(c, 4, fixed);
+        agreement.tick(fixed);
+        assertThat(agreement.agreed().unwrap()).isEqualTo(fixed);
+    }
+
     private record Message(int deliverAt, long order, NodeId from, NodeId to, long round, Set<NodeId> view, Option<Set<NodeId>> formed) {}
 
     private static final class Node {

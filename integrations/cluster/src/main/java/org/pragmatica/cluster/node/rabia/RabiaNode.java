@@ -184,9 +184,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return false;
     }
 
-    /// Genesis by agreement: defer genesis and offer the roster `candidates` supplies until every
-    /// member announces the identical one. Default refusal for implementations without a Rabia engine.
-    default Result<Unit> deferGenesis(Supplier<Option<ClusterConfig>> candidates) {
+    /// Genesis by view agreement: defer genesis and run agreement rounds over the cores `discovered`
+    /// reports, or over `fixedView` (`cluster.genesis_voters`) when set. Default refusal for
+    /// implementations without a Rabia engine.
+    default Result<Unit> deferGenesis(Supplier<Set<NodeId>> discovered,
+                                      int configuredCount,
+                                      Option<ClusterConfig> fixedView) {
         return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
     }
 
@@ -774,8 +777,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             }
 
             @Override
-            public Result<Unit> deferGenesis(Supplier<Option<ClusterConfig>> candidates) {
-                return consensus().deferGenesis(candidates);
+            public Result<Unit> deferGenesis(Supplier<Set<NodeId>> discovered,
+                                             int configuredCount,
+                                             Option<ClusterConfig> fixedView) {
+                return consensus().deferGenesis(discovered, configuredCount, fixedView);
             }
 
             @Override

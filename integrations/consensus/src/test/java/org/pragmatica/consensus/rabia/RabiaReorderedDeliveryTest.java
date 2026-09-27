@@ -14,6 +14,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequ
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -21,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
@@ -225,73 +227,62 @@ class RabiaReorderedDeliveryTest {
         assertThat(lateReplicaAppliedR).as("the late replica applied R itself in at least one schedule").isPositive();
     }
 
-    /// #1526 genesis by agreement. Epoch 0 forms only once every member of the roster has announced
-    /// the identical roster: a late core holds everyone, and the cluster forms and decides when it
-    /// arrives. Sync retries run on a short real-time interval here, as they would in production.
+    /// #1526 genesis view agreement on real engines: a late core holds everyone (its absence keeps the
+    /// view below the configured count), and the three form the cluster and decide once it appears.
     @Test
     void genesisWaitsForTheLateCoreAndFormsTheClusterWhenItArrives() {
         for (int seed = 0; seed < 4; seed++) {
             var cluster = new ScheduledCluster(3, seed, 3, timeSpan(100).millis());
             clusters.add(cluster);
-            var roster = new ClusterConfig(cluster.members);
-            cluster.engines.forEach(engine -> assertThat(engine.deferGenesis().isSuccess()).isTrue());
-            cluster.engines.forEach(engine -> engine.clusterState(ClusterStateNotification.active()));
-            cluster.engines.subList(0, 2).forEach(engine -> assertThat(engine.proposeGenesis(roster).isSuccess()).isTrue());
-            cluster.pumpUntil(() -> cluster.pending.isEmpty() && cluster.emitted.isEmpty());
-            assertThat(cluster.engines).as("the late core has not announced: nobody forms").allMatch(RabiaEngine::isGenesisPending);
-            assertThat(cluster.engines).noneMatch(RabiaEngine::isActive);
+            var visible = new java.util.concurrent.atomic.AtomicReference<>(Set.copyOf(cluster.members.subList(0, 2)));
+            for (int index = 0; index < 3; index++) {
+                var engine = cluster.engines.get(index);
+                var own = cluster.members.get(index);
+                assertThat(engine.deferGenesis(() -> index(visible.get(), own), 3, Option.none()).isSuccess()).isTrue();
+                engine.clusterState(ClusterStateNotification.active());
+            }
+            cluster.genesisRounds(List.of(0, 1), 6);
+            assertThat(cluster.engines).as("the late core is outside every view: nobody forms").allMatch(RabiaEngine::isGenesisPending);
             assertThat(cluster.sent).as("no ballot while genesis is pending").isEmpty();
 
-            assertThat(cluster.engines.get(2).proposeGenesis(roster).isSuccess()).isTrue();
+            visible.set(Set.copyOf(cluster.members));
+            cluster.genesisRounds(List.of(0, 1, 2), 6);
             cluster.pumpUntil(() -> cluster.engines.stream().allMatch(RabiaEngine::isActive));
             var formed = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after-late-core")));
             cluster.engines.forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), formed)));
             cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 1));
             for (var engine : cluster.engines) {
-                assertThat(engine.voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(0, roster));
+                assertThat(engine.voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(0, new ClusterConfig(cluster.members)));
             }
             cluster.stop();
         }
     }
 
-    /// #1526 genesis safety. Five cores, three configured: A and B offer {A,B,C}, D and E offer {C,D,E},
-    /// and the shared core C confirms exactly one of them (which one varies by schedule). At most one of
-    /// the two epoch-0 configurations may ever exist; D and E, announcing again, join the formed
-    /// electorate as observers instead of starting a second one.
+    /// #1526 genesis safety on real engines. Five cores, three configured, discovery split {A,B,C} and
+    /// {C,D,E}: C's view merges to five, over the count, so it never starts, and without C neither side
+    /// can agree a view of three. Nobody forms; every pending node reports EXCEEDS or keeps waiting.
     @Test
-    void conflictingGenesisRostersCannotBothForm() {
-        for (int seed = 0; seed < 8; seed++) {
+    void overlappingPartialViewsCannotFormTwoGeneses() {
+        for (int seed = 0; seed < 4; seed++) {
             var cluster = new ScheduledCluster(5, seed, 5);
             clusters.add(cluster);
             var members = cluster.members;
-            var left = new ClusterConfig(List.of(members.get(0), members.get(1), members.get(2)));
-            var right = new ClusterConfig(List.of(members.get(2), members.get(3), members.get(4)));
-            var chosen = seed % 2 == 0 ? left : right;
-            var offers = List.of(left, left, chosen, right, right);
-            cluster.engines.forEach(engine -> assertThat(engine.deferGenesis().isSuccess()).isTrue());
-            for (int round = 0; round < 2; round++) {
-                // The second round is the genesis timer announcing again.
-                for (int index = 0; index < offers.size(); index++) {
-                    cluster.engines.get(index).proposeGenesis(offers.get(index));
-                }
-                cluster.pumpUntil(() -> cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+            var left = Set.of(members.get(0), members.get(1), members.get(2));
+            var right = Set.of(members.get(2), members.get(3), members.get(4));
+            var views = List.of(left, left, Set.copyOf(members), right, right);
+            for (int index = 0; index < 5; index++) {
+                var view = views.get(index);
+                assertThat(cluster.engines.get(index).deferGenesis(() -> view, 3, Option.none()).isSuccess()).isTrue();
             }
+            cluster.genesisRounds(List.of(0, 1, 2, 3, 4), 10);
 
-            var formedLeft = cluster.engines.stream().filter(engine -> configuredAs(engine, left)).count();
-            var formedRight = cluster.engines.stream().filter(engine -> configuredAs(engine, right)).count();
-            assertThat(formedLeft == 0 || formedRight == 0)
-                .as("seed %s: both {A,B,C} (%s nodes) and {C,D,E} (%s nodes) formed", seed, formedLeft, formedRight)
-                .isTrue();
-            assertThat(cluster.engines).as("seed %s: the roster C confirmed forms and everyone joins it", seed)
-                                       .allMatch(engine -> configuredAs(engine, chosen));
+            assertThat(cluster.engines).as("seed %s: no epoch-0 configuration may form", seed).allMatch(RabiaEngine::isGenesisPending);
             cluster.stop();
         }
     }
 
-    private static boolean configuredAs(RabiaEngine<TestCommand> engine, ClusterConfig roster) {
-        return engine.voterConfiguration()
-                     .filter(configuration -> configuration.epoch() == 0 && configuration.roster().sameMembership(roster))
-                     .isPresent();
+    private static Set<NodeId> index(Set<NodeId> visible, NodeId own) {
+        return visible.contains(own) ? visible : Set.of(own);
     }
 
     /// #1526 — after a decided reconfiguration the requester opens slot R+1 with an empty proposal, so
@@ -520,6 +511,14 @@ class RabiaReorderedDeliveryTest {
             }
             settle();
             assertThat(completed.getAsBoolean()).as("schedule must make progress; pending=%s", pending.size()).isTrue();
+        }
+
+        /// Runs `rounds` genesis rounds on the given engines, delivering all traffic between rounds.
+        void genesisRounds(List<Integer> indices, int rounds) {
+            for (int round = 0; round < rounds; round++) {
+                indices.forEach(index -> engines.get(index).runGenesisRoundForTesting());
+                pumpUntil(() -> pending.isEmpty() && emitted.isEmpty());
+            }
         }
 
         void settle() {

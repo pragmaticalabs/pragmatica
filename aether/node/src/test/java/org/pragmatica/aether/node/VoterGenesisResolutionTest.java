@@ -16,36 +16,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #1526 genesis: the candidate a core offers for agreement, and the worker wait-and-retry.
-/// Agreement itself is pinned at the engine level (`RabiaReorderedDeliveryTest`).
+/// #1526 genesis at the node boundary: loud failure on malformed `cluster.genesis_voters`, and the
+/// worker wait-and-retry. Core genesis view agreement is pinned in the consensus module
+/// (`GenesisViewAgreementSimulationTest`, `RabiaReorderedDeliveryTest`).
 class VoterGenesisResolutionTest {
     private static final NodeId A = new NodeId("a");
     private static final NodeId B = new NodeId("b");
     private static final NodeId C = new NodeId("c");
-    private static final NodeId D = new NodeId("d");
     private static final List<NodeId> GENESIS_IDS = List.of(A, B, C);
     private static final VoterConfiguration GENESIS = new VoterConfiguration(0, new ClusterConfig(GENESIS_IDS));
-
-    @Test void genesisCandidate_lateCore_offersNothingAndWaits() {
-        assertThat(AetherNode.genesisCandidate(Option.none(), Set.of(A, B), 3).isEmpty()).isTrue();
-    }
-
-    @Test void genesisCandidate_everyConfiguredCoreDiscovered_offersThatRoster() {
-        assertThat(AetherNode.genesisCandidate(Option.none(), Set.of(A, B, C), 3).unwrap()
-                             .sameMembership(GENESIS.roster())).isTrue();
-    }
-
-    @Test void genesisCandidate_moreCandidatesThanConfigured_refusesToChoose() {
-        assertThat(AetherNode.genesisCandidate(Option.none(), Set.of(A, B, C, D), 3).isEmpty())
-            .as("an ambiguous candidate set must never be narrowed by the node itself").isTrue();
-    }
-
-    @Test void genesisCandidate_genesisVoters_areAuthoritativeWhateverIsDiscovered() {
-        assertThat(AetherNode.genesisCandidate(Option.some(GENESIS), Set.of(A, B, C, D), 3).unwrap())
-            .isEqualTo(GENESIS.roster());
-        assertThat(AetherNode.genesisCandidate(Option.some(GENESIS), Set.of(A), 3).unwrap())
-            .isEqualTo(GENESIS.roster());
-    }
 
     @Test void parseGenesisVoters_blankId_failsBootLoudly() {
         for (var malformed : List.of("a,,c", "a, ,c", "", "a,b,")) {

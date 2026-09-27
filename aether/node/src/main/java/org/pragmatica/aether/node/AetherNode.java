@@ -267,7 +267,6 @@ import org.pragmatica.cluster.node.forward.ForwardApplyRequest;
 import org.pragmatica.cluster.node.forward.ForwardApplyResponse;
 import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
-import org.pragmatica.consensus.rabia.ClusterConfig;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
@@ -5868,33 +5867,28 @@ public interface AetherNode extends ManageableNode {
         return initializeCoreVoters(node, config, configured, membershipFsmRef);
     }
 
-    /// A roster of this node alone needs no agreement — there is no other member to announce — so it is
-    /// installed at assembly. Every other core roster waits for agreement in the engine.
+    /// A roster of this node alone needs no agreement — there is no other member to report — so it is
+    /// installed at assembly. Every other core runs genesis view agreement in its engine over the
+    /// discovered core membership, or over `cluster.genesis_voters` when set.
     private static Result<Unit> initializeCoreVoters(RabiaNode<KVCommand<AetherKey>> node,
                                                      AetherNodeConfig config,
                                                      Option<VoterConfiguration> configured,
                                                      AtomicReference<MembershipFsm> membershipFsmRef) {
         var count = config.topology().clusterSize();
 
-        return genesisCandidate(configured,
-                                configuredVoters(config),
-                                count).filter(roster -> roster.members()
-                                                              .equals(List.of(config.self())))
-                               .map(roster -> node.initializeVoters(new VoterConfiguration(0, roster)))
-                               .or(() -> node.deferGenesis(() -> genesisCandidate(configured,
-                                                                                  discoveredCores(membershipFsmRef),
-                                                                                  count)));
+        return singleNodeGenesis(config, configured, count).map(node::initializeVoters)
+                                .or(() -> node.deferGenesis(() -> discoveredCores(membershipFsmRef),
+                                                            count,
+                                                            configured.map(VoterConfiguration::roster)));
     }
 
-    private static Result<Option<VoterConfiguration>> configuredGenesis(AetherNodeConfig config) {
-        return config.configProvider()
-                     .flatMap(provider -> provider.getString("cluster.genesis_voters"))
-                     .map(AetherNode::parsedGenesis)
-                     .or(Result.success(Option.none()));
-    }
-
-    private static Result<Option<VoterConfiguration>> parsedGenesis(String value) {
-        return parseGenesisVoters(value).map(Option::some);
+    private static Option<VoterConfiguration> singleNodeGenesis(AetherNodeConfig config,
+                                                                Option<VoterConfiguration> configured,
+                                                                int count) {
+        return configured.orElse(() -> completeRoster(List.copyOf(configuredVoters(config)),
+                                                      count))
+                         .filter(roster -> roster.members()
+                                                 .equals(List.of(config.self())));
     }
 
     private static Result<Unit> initializeWorkerVoters(RabiaNode<KVCommand<AetherKey>> node,
@@ -5913,38 +5907,6 @@ public interface AetherNode extends ManageableNode {
 
     /// Genesis wait-and-retry period for workers (#1526).
     static final TimeSpan GENESIS_RETRY_INTERVAL = TimeSpan.timeSpan(2).seconds();
-
-    /// The epoch-0 roster a core offers for agreement (#1526), or none while it must not choose one.
-    ///
-    /// `cluster.genesis_voters`, when set, is the candidate. Otherwise the discovered core membership is
-    /// the candidate once it names exactly `configuredCount` cores. Fewer means a configured core is
-    /// late: wait. MORE means the choice is ambiguous — two nodes could pick different subsets — so the
-    /// node refuses to choose and says so at WARN with the candidate set, until the operator sets
-    /// `cluster.genesis_voters` or the extra candidates disappear.
-    static Option<ClusterConfig> genesisCandidate(Option<VoterConfiguration> configured,
-                                                  Set<NodeId> discovered,
-                                                  int configuredCount) {
-        if (configured.isPresent()) {
-            return configured.map(VoterConfiguration::roster);
-        }
-
-        if (discovered.size() > configuredCount) {
-            LOG.warn("Genesis roster NOT chosen: {} core candidates are visible for {} configured cores: {}. "
-                    + "Set cluster.genesis_voters, or remove the extra candidates; this node waits and votes nowhere until then.",
-                     discovered.size(),
-                     configuredCount,
-                     discovered);
-
-            return Option.none();
-        }
-
-        return completeRoster(List.copyOf(discovered),
-                              configuredCount).map(VoterConfiguration::roster)
-                             .onEmpty(() -> LOG.info("Genesis roster pending: {} of {} configured cores discovered: {}",
-                                                     discovered.size(),
-                                                     configuredCount,
-                                                     discovered));
-    }
 
     static Option<VoterConfiguration> completeRoster(List<NodeId> knownCores, int configuredCount) {
         return Option.some(knownCores)
