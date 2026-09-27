@@ -55,8 +55,6 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequ
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRejected;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest;
-import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationTransfer;
-import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ConfigurationInstalled;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
@@ -173,6 +171,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     default Result<Unit> initializeVoters(VoterConfiguration configuration) {
         return ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.result();
+    }
+
+    /// Genesis wait-and-retry: withdraw the provisional roster until [#initializeVoters] supplies the
+    /// complete one. Default refusal for implementations without a Rabia engine.
+    default Result<Unit> deferGenesis() {
+        return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
     }
 
     default Option<VoterConfiguration> retirementSafeVoters() {
@@ -619,10 +623,6 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                              consensus::handleRoundRequest),
                                                                        route(ReconfigurationRequest.class,
                                                                              consensus::reconfigurationRequest),
-                                                                       route(ConfigurationTransfer.class,
-                                                                             consensus::configurationTransfer),
-                                                                       route(ConfigurationInstalled.class,
-                                                                             consensus::configurationInstalled),
                                                                        route(SyncRequest.class,
                                                                              consensus::handleSyncRequest),
                                                                        route(NewBatch.class,
@@ -748,6 +748,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Result<Unit> initializeVoters(VoterConfiguration configuration) {
                 return consensus().initializeVoters(configuration);
+            }
+
+            @Override
+            public Result<Unit> deferGenesis() {
+                return consensus().deferGenesis();
             }
 
             @Override

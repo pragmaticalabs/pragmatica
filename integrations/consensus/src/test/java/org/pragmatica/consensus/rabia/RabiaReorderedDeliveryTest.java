@@ -131,40 +131,102 @@ class RabiaReorderedDeliveryTest {
         assertThat(cluster.machines.getFirst().getProcessedCommands()).containsExactlyElementsOf(commands);
     }
 
+    /// #1526 acceptance 1 — the wedge #1390's certified handoff had once cores are in-memory.
+    /// Voters {A,B,C}; C is dead; D replaces C; B dies once A has applied the change's slot R, and
+    /// nothing B sent ever reaches D. Under §4, {A,B,D} governs from R+1, so A and D are a quorum and
+    /// keep deciding; D learns R from A through slot repair. Red at S1's head, where D needs B's
+    /// handoff transfer to certify and A is frozen awaiting it.
     @Test
-    void checkpointHandoffReplacesVotersWithoutReplayingApplicationState() {
-        for (int seed = 0; seed < 8; seed++) {
-            var cluster = new ScheduledCluster(6, seed, 3);
+    void replacementKeepsDecidingAfterTheLastOldPartnerDies() {
+        for (int seed = 0; seed < 6; seed++) {
+            var cluster = new ScheduledCluster(4, seed, 3);
             clusters.add(cluster);
             cluster.start();
-            var first = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("before")));
-            cluster.engines.subList(0, 3).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), first)));
-            cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 1));
-            var target = new ClusterConfig(cluster.members.subList(2, 5));
-            var changed = cluster.engines.getFirst().reconfigure(target);
-            cluster.settle();
-            cluster.splitHealth = true;
-            cluster.pumpUntil(() -> cluster.engines.stream().allMatch(engine -> engine.voterConfiguration().map(v -> v.epoch() == 1).or(false)));
-            cluster.pumpUntil(() -> changed.isResolved());
-            assertThat(changed.await().isSuccess()).isTrue();
-            var stale = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("stale-old-epoch")));
-            cluster.engines.forEach(engine -> engine.processDecision(new Decision<>(cluster.members.get(2), 0,
-                engine.currentPhaseForTesting(), StateValue.V1, stale)));
-            cluster.settle();
-            cluster.verifyPrefixes();
-            assertThat(cluster.machines.getFirst().getProcessedCommands()).hasSize(1);
-            var next = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after")));
-            cluster.engines.subList(2, 5).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.get(2), next)));
+            cluster.kill(2);
+            cluster.blocked = delivery -> delivery.source() == 1 && delivery.target() == 3;
+            var boundary = cluster.engines.getFirst().currentPhaseForTesting();
+            var change = cluster.engines.getFirst().reconfigure(new ClusterConfig(List.of(cluster.members.get(0),
+                                                                                         cluster.members.get(1),
+                                                                                         cluster.members.get(3))));
+            cluster.pumpUntil(() -> cluster.engines.getFirst().currentPhaseForTesting().compareTo(boundary) > 0);
+            cluster.kill(1);
+            var after = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after-B-died")));
+            cluster.engines.get(0).handleNewBatch(new NewBatch<>(cluster.members.get(0), after));
+            cluster.engines.get(3).handleNewBatch(new NewBatch<>(cluster.members.get(0), after));
+            cluster.pumpUntil(() -> List.of(0, 3).stream()
+                                         .allMatch(index -> cluster.machines.get(index).getProcessedCommands()
+                                                                   .contains(new TestCommand("after-B-died"))));
+            assertThat(change.await(timeSpan(3).seconds()).isSuccess()).as("seed %s", seed).isTrue();
+            assertThat(cluster.machines.get(0).getProcessedCommands()).containsExactlyElementsOf(cluster.machines.get(3).getProcessedCommands());
+            cluster.stop();
+        }
+    }
+
+    /// #1526 acceptance 2 — a change agreed at R governs from R+1 on EVERY replica, including one that
+    /// applies R late, under reordered and duplicated delivery. Every ballot and decision any replica
+    /// emits for a slot at or before R carries epoch 0 and every one after R carries epoch 1; logs stay
+    /// prefix-identical throughout (checked on every pump step).
+    ///
+    /// A replica reaches epoch 1 one of two ways: it applies R itself (its status then reports R+1 as
+    /// the effective slot), or a decision past a gap sends it to sync and it adopts a snapshot at or
+    /// after R+1 (no effective slot of its own). The late replica must take the first way in at least
+    /// one schedule, so the late-apply path is exercised rather than always bypassed.
+    @Test
+    void agreedChangeGovernsFromTheNextSlotOnEveryReplicaIncludingALateOne() {
+        var lateReplicaAppliedR = 0;
+        for (int seed = 0; seed < 8; seed++) {
+            var cluster = new ScheduledCluster(4, seed, 3);
+            clusters.add(cluster);
+            cluster.start();
+            var before = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("before")));
+            cluster.engines.subList(0, 3).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), before)));
+            cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 1)
+                                    && cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+            var boundary = cluster.engines.getFirst().currentPhaseForTesting();
+            cluster.sent.clear();
+            // v1 stays in the roster but applies R late: nothing reaches it until the new roster is deciding.
+            cluster.held = delivery -> delivery.target() == 1;
+            var target = new ClusterConfig(List.of(cluster.members.get(0), cluster.members.get(1), cluster.members.get(3)));
+            var change = cluster.engines.getFirst().reconfigure(target);
+            cluster.pumpUntil(change::isResolved);
+            assertThat(change.await().isSuccess()).as("seed %s", seed).isTrue();
+            var after = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after")));
+            cluster.engines.get(0).handleNewBatch(new NewBatch<>(cluster.members.getFirst(), after));
+            cluster.engines.get(3).handleNewBatch(new NewBatch<>(cluster.members.getFirst(), after));
+            cluster.pumpUntil(() -> List.of(0, 3).stream()
+                                         .allMatch(index -> cluster.machines.get(index).getProcessedCommands().size() == 2));
+            assertThat(cluster.engines.get(1).voterConfiguration().unwrap().epoch()).as("v1 is still late").isZero();
+            cluster.held = _ -> false;
             cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 2));
+            cluster.pumpUntil(() -> cluster.engines.stream().allMatch(engine -> engine.voterConfiguration().unwrap().epoch() == 1));
+
+            var effective = boundary.successor().value();
+            for (var engine : cluster.engines) {
+                assertThat(engine.voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(1, target));
+                assertThat(engine.voterReconfigurationStatus().effectiveSlot().map(slot -> slot == effective).or(true))
+                    .as("seed %s", seed).isTrue();
+            }
+            assertThat(cluster.engines.getFirst().voterReconfigurationStatus().effectiveSlot().unwrap()).isEqualTo(effective);
+            if (cluster.engines.get(1).voterReconfigurationStatus().effectiveSlot().isPresent()) {
+                lateReplicaAppliedR++;
+            }
+            assertThat(cluster.engines.get(2).isActive()).as("the removed voter no longer votes").isFalse();
+            assertThat(cluster.engines.get(2).isObserving()).isTrue();
+            assertThat(cluster.sent).isNotEmpty();
+            for (var message : cluster.sent) {
+                assertThat(epochOf(message)).as("seed %s: %s", seed, message)
+                                            .isEqualTo(phaseOf(message).compareTo(boundary) <= 0 ? 0L : 1L);
+            }
             for (var machine : cluster.machines) {
                 assertThat(machine.getProcessedCommands()).extracting(TestCommand::value).containsExactly("before", "after");
             }
             cluster.stop();
         }
+        assertThat(lateReplicaAppliedR).as("the late replica applied R itself in at least one schedule").isPositive();
     }
 
     @Test
-    void growThenShrinkPreservesTwoEpochHistoryAndRetirementEvidence() {
+    void growThenShrinkInstallsTwoEpochsAndGatesRetirementOnCatchUp() {
         for (int seed = 0; seed < 4; seed++) {
             var cluster = new ScheduledCluster(6, seed, 3);
             clusters.add(cluster);
@@ -173,6 +235,8 @@ class RabiaReorderedDeliveryTest {
             cluster.pumpUntil(grow::isResolved);
             assertThat(grow.await().isSuccess()).isTrue();
             cluster.pumpUntil(() -> cluster.engines.stream().allMatch(engine -> engine.voterConfiguration().unwrap().epoch() == 1));
+            var first = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after-grow")));
+            cluster.engines.subList(0, 5).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), first)));
             cluster.pumpUntil(() -> cluster.engines.get(2).retirementSafeVoters().isPresent());
             var shrink = cluster.engines.get(2).reconfigure(new ClusterConfig(cluster.members.subList(2, 5)));
             cluster.pumpUntil(shrink::isResolved);
@@ -182,9 +246,29 @@ class RabiaReorderedDeliveryTest {
             assertThat(cluster.engines.get(2).genesisVoters().unwrap().members()).containsExactlyElementsOf(cluster.members.subList(0, 3));
             var batch = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after-two-epochs")));
             cluster.engines.subList(2, 5).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.get(2), batch)));
-            cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 1));
+            cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 2));
             cluster.stop();
         }
+    }
+
+    private static long epochOf(ProtocolMessage message) {
+        return switch (message) {
+            case Propose<?> propose -> propose.epoch();
+            case VoteRound1 vote -> vote.epoch();
+            case VoteRound2 vote -> vote.epoch();
+            case Decision<?> decision -> decision.epoch();
+            default -> throw new IllegalArgumentException("not a slot ballot: " + message);
+        };
+    }
+
+    private static Phase phaseOf(ProtocolMessage message) {
+        return switch (message) {
+            case Propose<?> propose -> propose.phase();
+            case VoteRound1 vote -> vote.phase();
+            case VoteRound2 vote -> vote.phase();
+            case Decision<?> decision -> decision.phase();
+            default -> throw new IllegalArgumentException("not a slot ballot: " + message);
+        };
     }
 
     private void runSchedule(int size, int seed) {
@@ -203,7 +287,7 @@ class RabiaReorderedDeliveryTest {
         cluster.stop();
     }
 
-    private record Delivery(int target, ProtocolMessage message) {}
+    private record Delivery(int source, int target, ProtocolMessage message) {}
 
     private static final class ScheduledCluster {
         private final List<RabiaEngine<TestCommand>> engines = new ArrayList<>();
@@ -211,6 +295,14 @@ class RabiaReorderedDeliveryTest {
         private final List<NodeId> members;
         private final ConcurrentLinkedQueue<Delivery> emitted = new ConcurrentLinkedQueue<>();
         private final List<Delivery> pending = new ArrayList<>();
+        /// Every Propose, ballot and Decision any engine emitted since the last clear.
+        private final List<ProtocolMessage> sent = new java.util.concurrent.CopyOnWriteArrayList<>();
+        private final java.util.Set<Integer> dead = new java.util.HashSet<>();
+        private final List<Delivery> parked = new ArrayList<>();
+        /// Deliveries that are lost outright.
+        private java.util.function.Predicate<Delivery> blocked = _ -> false;
+        /// Deliveries that wait, in emission order, until the predicate releases them.
+        private java.util.function.Predicate<Delivery> held = _ -> false;
         private final Random random;
         private volatile boolean splitHealth;
 
@@ -240,7 +332,7 @@ class RabiaReorderedDeliveryTest {
                     public <M extends ProtocolMessage> Unit broadcast(M message) {
                         for (int target = 0; target < members.size(); target++) {
                             if (target != sender) {
-                                emitted.add(new Delivery(target, message));
+                                emit(new Delivery(sender, target, message));
                             }
                         }
                         return Unit.unit();
@@ -248,7 +340,7 @@ class RabiaReorderedDeliveryTest {
 
                     @Override
                     public <M extends ProtocolMessage> Unit send(NodeId id, M message) {
-                        emitted.add(new Delivery(members.indexOf(id), message));
+                        emit(new Delivery(sender, members.indexOf(id), message));
                         return Unit.unit();
                     }
                 };
@@ -259,6 +351,21 @@ class RabiaReorderedDeliveryTest {
                 if (index >= initialVoters) { engine.authorizeObservation(); }
                 engines.add(engine);
             }
+        }
+
+        void emit(Delivery delivery) {
+            if (delivery.message() instanceof Propose<?> || delivery.message() instanceof VoteRound1
+                || delivery.message() instanceof VoteRound2 || delivery.message() instanceof Decision<?>) {
+                sent.add(delivery.message());
+            }
+            emitted.add(delivery);
+        }
+
+        /// Crash-stops a replica: nothing is delivered to or from it again.
+        void kill(int index) {
+            dead.add(index);
+            pending.removeIf(delivery -> delivery.source() == index || delivery.target() == index);
+            engines.get(index).stop().await();
         }
 
         void start() {
@@ -287,7 +394,16 @@ class RabiaReorderedDeliveryTest {
                 settle();
                 verifyPrefixes();
                 for (var delivery = emitted.poll(); delivery != null; delivery = emitted.poll()) {
-                    pending.add(delivery);
+                    if (!dead.contains(delivery.source()) && !dead.contains(delivery.target()) && !blocked.test(delivery)) {
+                        parked.add(delivery);
+                    }
+                }
+                for (var iterator = parked.iterator(); iterator.hasNext(); ) {
+                    var delivery = iterator.next();
+                    if (!held.test(delivery)) {
+                        pending.add(delivery);
+                        iterator.remove();
+                    }
                 }
                 if (completed.getAsBoolean()) {
                     return;
@@ -306,7 +422,11 @@ class RabiaReorderedDeliveryTest {
         }
 
         void settle() {
-            engines.forEach(engine -> engine.settleForTesting().await());
+            for (int index = 0; index < engines.size(); index++) {
+                if (!dead.contains(index)) {
+                    engines.get(index).settleForTesting().await();
+                }
+            }
         }
 
         void verifyPrefixes() {
@@ -330,8 +450,6 @@ class RabiaReorderedDeliveryTest {
                 case SyncRequest message -> engine.handleSyncRequest(message);
                 case RoundRequest message -> engine.handleRoundRequest(message);
                 case ReconfigurationRequest message -> engine.reconfigurationRequest(message);
-                case ConfigurationTransfer<?> message -> engine.configurationTransfer((ConfigurationTransfer<TestCommand>) message);
-                case ConfigurationInstalled message -> engine.configurationInstalled(message);
                 case SyncResponse<?> message -> engine.processSyncResponse((SyncResponse<TestCommand>) message);
                 default -> {}
             }

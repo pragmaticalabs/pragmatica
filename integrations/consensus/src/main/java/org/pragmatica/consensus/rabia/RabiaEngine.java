@@ -121,160 +121,184 @@ public class RabiaEngine<C extends Command> {
         return passiveClient && passiveClientReady;
     }
 
-    private volatile Option<VoterConfigurationState<C>> voters = Option.none();
+    /// The installed voter configuration: epoch plus complete roster. Changes only through
+    /// [#installVoters] — genesis, a Rabia §4 command applied at its slot, or a sync adoption of a newer
+    /// epoch. Empty while genesis is pending ([#deferGenesis]).
+    private volatile Option<VoterConfiguration> voters = Option.none();
+    /// The configuration this engine was bootstrapped with — the anchor a replacement's genesis roster
+    /// is rendered from. Not a history: later epochs are learned from the log, never from this value.
+    private volatile Option<VoterConfiguration> genesis = Option.none();
+    private volatile boolean genesisPending;
     private volatile Option<Cause> authorityFailure = Option.none();
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
-    private final Map<ClusterConfig, Promise<Unit>> reconfigurationPromises = new java.util.HashMap<>();
-    private final Map<ClusterConfig, Long> reconfigurationEpochs = new java.util.HashMap<>();
-    private volatile Option<ClusterConfig> requestedConfiguration = Option.none();
+    private final Map<java.util.Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
+    /// The §4 command this voter currently carries on its proposals. Always of the current base epoch:
+    /// [#settleRequests] drops it once the epoch moves.
+    private volatile Option<ReconfigurationCommand> requestedConfiguration = Option.none();
+    /// Every identity this engine has installed as a voter during its lifetime.
+    private final java.util.Set<NodeId> voterHistory = ConcurrentHashMap.newKeySet();
 
-    private record BarrierKey(Phase phase, ClusterConfig target) {}
+    /// A change this replica applied itself: agreed at `slot` (R), governing from R+1.
+    private record AppliedChange(Phase slot, VoterConfiguration installed, java.util.Set<NodeId> added) {}
 
-    private final Map<BarrierKey, ConfigurationHandoff<C>> preparedHandoffs = new java.util.HashMap<>();
+    private volatile Option<AppliedChange> lastChange = Option.none();
+    /// Members added by [#lastChange] from which a ballot past R has been accepted.
+    private final java.util.Set<NodeId> caughtUp = ConcurrentHashMap.newKeySet();
+    private static final int MAX_DEFERRED_BALLOTS = 256;
+    /// Executor-confined. Ballots of a newer epoch than this replica has applied; see [#deferIfNewerEpoch].
+    private final java.util.ArrayDeque<org.pragmatica.consensus.ProtocolMessage> deferredBallots = new java.util.ArrayDeque<>();
+    /// Executor-confined. The slot this replica last asked each peer to repair; one request per slot.
+    private final Map<NodeId, Phase> repairRequests = new java.util.HashMap<>();
     private volatile Option<Cause> stateTransferFailure = Option.none();
-    private volatile Option<Cause> handoffPersistenceFailure = Option.none();
 
     public Option<Cause> stateTransferFailure() {
         return stateTransferFailure;
     }
 
-    /// Read one immutable authority value; never inspect executor-confined acknowledgement maps.
+    /// Read immutable values only; never inspect executor-confined maps.
     public VoterReconfigurationStatus voterReconfigurationStatus() {
-        var requested = requestedConfiguration;
         var failure = authorityFailure.map(Cause::message)
                                       .or(stateTransferFailure.map(Cause::message)
-                                                              .or(handoffPersistenceFailure.map(Cause::message).or("")));
+                                                              .or(""));
 
-        return voters.map(VoterConfigurationState::authority)
-                     .map(authority -> describeReconfiguration(authority, requested, failure))
-                     .or(new VoterReconfigurationStatus("UNAVAILABLE", Option.none(), List.of(), List.of(), Option.none(), 0, 0, failure));
+        return voters.map(configuration -> describeReconfiguration(configuration, failure))
+                     .or(() -> new VoterReconfigurationStatus(genesisPending
+                                                              ? "GENESIS_PENDING"
+                                                              : "UNAVAILABLE",
+                                                              Option.none(),
+                                                              List.of(),
+                                                              List.of(),
+                                                              Option.none(),
+                                                              List.of(),
+                                                              failure));
     }
 
-    private VoterReconfigurationStatus describeReconfiguration(VoterAuthority<C> authority,
-                                                              Option<ClusterConfig> requested,
-                                                              String failure) {
-        var configuration = authority.configuration();
-        var target = requested.map(ClusterConfig::members)
-                              .or(authority.handoff().map(handoff -> handoff.next().members()).or(List.of()));
-        var checkpointWitnesses = authority.handoff()
-                                           .map(handoff -> authority.history().stream()
-                                               .filter(certificate -> certificate.next().equals(handoff.next())
-                                                   && certificate.nextSlot().equals(handoff.nextSlot()))
-                                               .mapToInt(certificate -> certificate.witnesses().size())
-                                               .max().orElse(0)).or(0);
+    private VoterReconfigurationStatus describeReconfiguration(VoterConfiguration configuration, String failure) {
+        var requested = requestedConfiguration;
+        var change = changeGoverning(configuration);
+        var awaiting = change.map(this::awaitingCatchUp)
+                             .or(List.of());
 
-        return new VoterReconfigurationStatus(reconfigurationStage(authority, requested),
+        return new VoterReconfigurationStatus(reconfigurationStage(requested, awaiting),
                                              Option.some(configuration.epoch()),
-                                             configuration.members().stream().map(NodeId::id).toList(),
-                                             target.stream().map(NodeId::id).toList(),
-                                             authority.handoff().map(handoff -> handoff.nextSlot().value()),
-                                             checkpointWitnesses,
-                                             authority.installationWitnesses().size(),
+                                             identities(configuration.members()),
+                                             requested.map(command -> identities(command.target()
+                                                                                        .members()))
+                                                      .or(List.of()),
+                                             change.map(applied -> applied.slot()
+                                                                          .successor()
+                                                                          .value()),
+                                             identities(awaiting),
                                              failure);
     }
 
-    private String reconfigurationStage(VoterAuthority<C> authority, Option<ClusterConfig> requested) {
+    private static String reconfigurationStage(Option<ReconfigurationCommand> requested, List<NodeId> awaiting) {
         if (requested.isPresent()) {
             return "REQUESTED";
         }
-        return authority.handoff().map(handoff -> handoff.previous().equals(authority.configuration())
-                                                 ? "CHECKPOINT_COLLECTION"
-                                                 : authority.retirementSafe() ? "COMPLETE" : "INSTALLATION_PENDING")
-                        .or("STABLE");
+
+        return awaiting.isEmpty()
+               ? "STABLE"
+               : "CATCHING_UP";
     }
 
-    private Result<ConfigurationHandoff<C>> prepareHandoff(ClusterConfig target, Phase phase) {
-        var key = new BarrierKey(phase, target);
-
-        return Option.option(preparedHandoffs.get(key)).fold(() -> voters.toResult(ReconfigurationError.INCOMPATIBLE_EPOCH)
-                                                                         .flatMap(state -> stateMachine.makeSnapshot()
-                                                                                                       .flatMap(snapshot -> HandoffPreparation.prepare(state.authority(),
-                                                                                                                                                       target,
-                                                                                                                                                       phase.successor(),
-                                                                                                                                                       snapshot,
-                                                                                                                                                       List.copyOf(pendingBatches.values()),
-                                                                                                                                                       network::validateOutboundMessage)))
-                                                                         .onSuccess(handoff -> preparedHandoffs.put(key,
-                                                                                                                    handoff)),
-                                                             Result::success);
+    private static List<String> identities(java.util.Collection<NodeId> nodes) {
+        return nodes.stream()
+                    .map(NodeId::id)
+                    .sorted()
+                    .toList();
     }
 
-    private void rejectReconfiguration(ClusterConfig target, Cause cause) {
-        stateTransferFailure = Option.some(cause);
-        requestedConfiguration = Option.none();
-        Option.option(reconfigurationPromises.remove(target)).onPresent(promise -> promise.fail(cause));
-        reconfigurationEpochs.remove(target);
-        log.warn("Node {} refused bounded state transfer for configuration {}: {}", self, target, cause.message());
+    private Option<AppliedChange> changeGoverning(VoterConfiguration configuration) {
+        return lastChange.filter(change -> change.installed()
+                                                 .equals(configuration));
     }
 
-    private Option<ScheduledFuture<?>> handoffRetry = Option.none();
-    private Option<VoterAuthority<C>> persistedHandoffAuthority = Option.none();
-    private final java.util.Set<NodeId> handoffSnapshotRequests = new java.util.HashSet<>();
-
-    private void armHandoffRetry() {
-        if (handoffRetry.isEmpty()) {
-            handoffRetry = Option.some(SharedScheduler.scheduleAtFixedRate(() -> safeExecute(this::retryConfigurationHandoff),
-                                                                           config.syncRetryInterval()));
-        }
+    private List<NodeId> awaitingCatchUp(AppliedChange change) {
+        return change.added()
+                     .stream()
+                     .filter(node -> !caughtUp.contains(node))
+                     .sorted(Comparator.comparing(NodeId::id))
+                     .toList();
     }
 
-    /// Installs the complete bootstrap electorate, never a discovery seed subset.
-    public Result<Unit> initializeVoters(VoterConfiguration initial) {
-        if (participationStarted || stopping.get() || !(engineState.get() instanceof EngineState.Stopped)) {
+    /// Installs the complete bootstrap electorate, never a discovery seed subset. A configuration
+    /// persisted with the application state takes precedence over `initial`. Allowed before
+    /// participation starts, or once while genesis is pending ([#deferGenesis]).
+    public synchronized Result<Unit> initializeVoters(VoterConfiguration initial) {
+        if (!genesisPending && (participationStarted || stopping.get() || !(engineState.get() instanceof EngineState.Stopped))) {
             return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
         }
 
         return persistence.loadVerified()
-                          .flatMap(saved -> {
-                                       var authority = saved.flatMap(SavedState::authority)
-                                                            .or(new VoterAuthority<C>(initial,
-                                                                                      Option.none()));
-
-                                       if (!authority.isInternallyValid()) {
-                                       return ReconfigurationError.INCOMPATIBLE_EPOCH.result();
-                                   }
-
-                                       voters = Option.some(new VoterConfigurationState<>(authority));
-                                       currentConfig.set(Option.some(authority.configuration().roster()));
-                                       authorityFailure = Option.none();
-                                       voterListeners.forEach(listener -> listener.accept(authority.configuration()));
-
-                                       return Result.success(Unit.unit());
-                                   })
+                          .map(saved -> saved.flatMap(SavedState::configuration)
+                                             .or(initial))
+                          .map(this::installGenesis)
                           .onFailure(cause -> authorityFailure = Option.some(cause));
     }
 
-    /// A roster is safe for retiring old resources only after persisted new-quorum ACK evidence.
+    /// Genesis wait-and-retry: withdraws the provisional roster so this engine neither votes nor
+    /// adopts state until [#initializeVoters] supplies the complete one. Ballots that arrive meanwhile
+    /// are held (bounded) and re-delivered once the roster is installed.
+    public synchronized Result<Unit> deferGenesis() {
+        if (participationStarted || stopping.get() || !(engineState.get() instanceof EngineState.Stopped)) {
+            return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
+        }
+
+        voters = Option.none();
+        genesis = Option.none();
+        currentConfig.set(Option.none());
+        genesisPending = true;
+
+        return Result.success(Unit.unit());
+    }
+
+    public boolean isGenesisPending() {
+        return genesisPending;
+    }
+
+    private Unit installGenesis(VoterConfiguration configuration) {
+        var resolvesPending = genesisPending;
+
+        genesis = Option.some(configuration);
+        authorityFailure = Option.none();
+        voterHistory.clear();
+        installVoters(configuration);
+        if (resolvesPending) {
+            observerMode = !configuration.contains(self);
+            genesisPending = false;
+            safeExecute(this::drainDeferredBallots);
+        }
+
+        return Unit.unit();
+    }
+
+    private void installVoters(VoterConfiguration configuration) {
+        voters = Option.some(configuration);
+        voterHistory.addAll(configuration.members());
+        currentConfig.set(Option.some(configuration.roster()));
+        voterListeners.forEach(listener -> listener.accept(configuration));
+    }
+
+    /// The installed roster once nothing here can still change it: no §4 command is requested or
+    /// awaiting its slot, and every member added by the last change this replica applied has been
+    /// observed voting past that change's slot R. Resources outside it may then be retired.
+    ///
+    /// A replica that reached its epoch through a snapshot has no catch-up evidence of its own and
+    /// reports the roster as soon as nothing is pending — retirement only ever concerns identities
+    /// that are already outside the governing roster.
     public Option<VoterConfiguration> retirementSafeVoters() {
-        return voters.filter(value -> value.authority()
-                                           .retirementSafe())
-                     .map(VoterConfigurationState::configuration);
+        return voters.filter(_ -> requestedConfiguration.isEmpty() && reconfigurationPromises.isEmpty())
+                     .filter(configuration -> changeGoverning(configuration).map(change -> awaitingCatchUp(change).isEmpty())
+                                                                            .or(true));
     }
 
     public Option<VoterConfiguration> genesisVoters() {
-        return voters.map(RabiaEngine::originalVoters);
-    }
-
-    private static VoterConfiguration originalVoters(VoterConfigurationState<?> state) {
-        return Option.from(state.authority().history().stream().findFirst())
-                     .map(ConfigurationCertificate::previous)
-                     .or(state.configuration());
+        return genesis;
     }
 
     public java.util.Set<NodeId> verifiedVoterHistoryIds() {
-        return voters.map(state -> {
-                              var authority = state.authority();
-                              var identities = new java.util.HashSet<>(authority.configuration().members());
-
-                              authority.history()
-                                       .forEach(certificate -> {
-                                                    identities.addAll(certificate.previous().members());
-                                                    identities.addAll(certificate.next().members());
-                                                });
-
-                              return java.util.Set.copyOf(identities);
-                          })
-                     .or(java.util.Set.of());
+        return java.util.Set.copyOf(voterHistory);
     }
 
     /// Directory hints affect passive leader routing only; this method never installs voters.
@@ -290,7 +314,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     public Option<VoterConfiguration> voterConfiguration() {
-        return voters.map(VoterConfigurationState::configuration);
+        return voters;
     }
 
     public org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
@@ -326,16 +350,17 @@ public class RabiaEngine<C extends Command> {
                                  .or(false);
     }
 
-    private boolean awaitingHandoff() {
-        return voters.map(VoterConfigurationState::isAwaitingHandoff)
-                     .or(false);
+    /// Ballots count only from installed voters at the current epoch. An old-epoch ballot for a slot at
+    /// or past a change's R+1 therefore never counts, and neither does any ballot of a removed voter.
+    private boolean acceptsBallot(NodeId node, long epoch) {
+        return authorityFailure.isEmpty() && isVoter(node) && epoch == voterEpoch();
     }
 
-    private boolean acceptsBallot(NodeId node, long epoch) {
-        return authorityFailure.isEmpty()
-               && !awaitingHandoff()
-               && isVoter(node)
-               && epoch == voterEpoch();
+    /// Peers whose committed history this replica relays or repairs: installed voters and admitted
+    /// consensus members. Wider than [#acceptsBallot] on purpose — a lagging or removed voter must still
+    /// be able to learn the slot that changed the roster.
+    private boolean isTrustedPeer(NodeId node) {
+        return isVoter(node) || topologyManager.isConsensusMember(node);
     }
 
     private boolean broadcastVoters(org.pragmatica.consensus.ProtocolMessage message) {
@@ -366,16 +391,16 @@ public class RabiaEngine<C extends Command> {
         recipients.stream().filter(node -> !node.equals(self)).forEach(node -> network.send(node, message));
     }
 
-    private Result<Unit> saveAuthority() {
+    private Result<Unit> saveState() {
         if (passiveClient) {
             return Result.success(Unit.unit());
         }
 
         return voters.fold(() -> ReconfigurationError.INCOMPATIBLE_EPOCH.result(),
-                           value -> persistence.save(stateMachine,
-                                                     currentPhase.get(),
-                                                     pendingBatches.values(),
-                                                     value.authority()));
+                           configuration -> persistence.save(stateMachine,
+                                                             currentPhase.get(),
+                                                             pendingBatches.values(),
+                                                             configuration));
     }
 
     private final NodeId self;
@@ -687,12 +712,6 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (awaitingHandoff()) {
-            persistence.loadVerified().apply(this::failAuthorityLoad, saved -> saved.onPresent(this::restoreState));
-
-            return;
-        }
-
         if (activationGated && !activationAuthorized) {
             log.info("Node {}: cluster active but activation gated, storing notification", self);
             pendingQuorum.set(notification);
@@ -737,7 +756,8 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (!isVoter(self)) {
+        // A pending genesis decides the role later ([#installGenesis]); until then authorize as a voter.
+        if (voters.isPresent() && !isVoter(self)) {
             authorizeObservation();
 
             return;
@@ -810,14 +830,6 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doClusterConnected() {
-        if (awaitingHandoff()) {
-            engineState.set(new EngineState.Observing());
-            armHandoffRetry();
-            retryConfigurationHandoff();
-
-            return;
-        }
-
         syncResponses.clear();
         syncRounds.set(0);
         // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
@@ -867,7 +879,7 @@ public class RabiaEngine<C extends Command> {
 
         exitState(oldState);
         notifyConsensusStateTransition();
-        saveAuthority().onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
+        saveState().onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
                                                     self,
                                                     currentPhase.get(),
                                                     pendingBatches.size()))
@@ -904,8 +916,15 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    /// Proposes a checkpoint handoff. Completion requires a majority of the new electorate
-    /// to acknowledge durable installation; callers must retain old resources until success.
+    /// Requests a Rabia §4 voter reconfiguration to the complete roster `target`.
+    ///
+    /// The request becomes a special command carried out-of-batch on this voter's proposals, with the
+    /// current epoch as its base. Weak-MVC agrees the slot R that carries it, and from R+1 the target
+    /// governs on every replica ([#applyReconfiguration]). A single add, a single remove and a one-slot
+    /// replacement are all expressible; a change is refused unless the voters it retains are a majority
+    /// of the target. The promise completes when this replica applies the agreed command, and fails with
+    /// [ReconfigurationError#SUPERSEDED] when a different change is applied first. Retirement of removed
+    /// resources waits for [#retirementSafeVoters], not for this promise.
     public synchronized Promise<Unit> reconfigure(ClusterConfig target) {
         if (stopping.get()) {
             return new ConsensusError.NodeInactive(self).promise();
@@ -920,7 +939,8 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void proposeReconfiguration(ClusterConfig target, Promise<Unit> promise) {
-        var valid = ClusterConfig.clusterConfig(target.members());
+        var valid = ClusterConfig.clusterConfig(target.members())
+                                 .flatMap(this::admissibleCommand);
 
         if (valid.isFailure()) {
             promise.resolve(valid.mapToUnit());
@@ -928,71 +948,80 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (!engineState.get().isActive() || !isVoter(self) || awaitingHandoff()) {
-            promise.fail(ReconfigurationError.NOT_ACTIVE);
+        var command = valid.unwrap();
+
+        if (voters.map(current -> current.roster()
+                                         .sameMembership(command.target()))
+                  .or(false)) {
+            promise.succeed(Unit.unit());
 
             return;
         }
 
-        if (voterConfiguration().map(v -> v.roster()
-                                           .sameMembership(target)).or(false)) {
-            if (retirementSafeVoters().isPresent()) {
-                promise.succeed(Unit.unit());
-            } else {
-                trackReconfiguration(new VoterConfiguration(0, target).roster(), promise);
-                armHandoffRetry();
-                retryConfigurationHandoff();
-            }
-
+        if (!trackReconfiguration(command.target(), promise)) {
             return;
         }
 
-        if (retirementSafeVoters().isEmpty()) {
-            promise.fail(ReconfigurationError.NOT_ACTIVE);
-
-            return;
-        }
-
-        if (target.members().stream().anyMatch(node -> !isVoter(node) && !topologyManager.isConsensusMember(node))) {
-            promise.fail(ReconfigurationError.UNKNOWN_VOTER);
-
-            return;
-        }
-
-        var prepared = prepareHandoff(target, currentPhase.get());
-
-        if (prepared.isFailure()) {
-            prepared.onFailure(cause -> {
-                stateTransferFailure = Option.some(cause);
-                promise.fail(cause);
-            });
-
-            return;
-        }
-
-        var request = new ReconfigurationRequest(self, voterEpoch(), new VoterConfiguration(0, target).roster());
-
-        if (!trackReconfiguration(request.target(), promise)) {
-            return;
-        }
+        var request = new ReconfigurationRequest(self, command.baseEpoch(), command.target());
 
         handleReconfigurationRequest(request);
         broadcastVoters(request);
     }
 
+    /// Local admission of a requested change. Every check here is re-evaluated deterministically at the
+    /// agreed slot as well ([ReconfigurationCommand#successorOf]); refusing early only spares the log a
+    /// slot and gives the caller a precise cause.
+    private Result<ReconfigurationCommand> admissibleCommand(ClusterConfig target) {
+        if (!engineState.get().isActive() || !isVoter(self)) {
+            return ReconfigurationError.NOT_ACTIVE.result();
+        }
+
+        if (target.members()
+                  .stream()
+                  .anyMatch(node -> !isVoter(node) && !topologyManager.isConsensusMember(node))) {
+            return ReconfigurationError.UNKNOWN_VOTER.result();
+        }
+
+        var command = ReconfigurationCommand.reconfigurationCommand(voterEpoch(), target);
+
+        if (!voters.map(command::retainsTargetMajority)
+                   .or(false)) {
+            return ReconfigurationError.INSUFFICIENT_RETAINED_VOTERS.result();
+        }
+
+        return addsMembers(command)
+               ? transferableState().map(_ -> command)
+                                    .onFailure(cause -> stateTransferFailure = Option.some(cause))
+               : Result.success(command);
+    }
+
+    private boolean addsMembers(ReconfigurationCommand command) {
+        return command.target()
+                      .members()
+                      .stream()
+                      .anyMatch(node -> !isVoter(node));
+    }
+
+    /// An added voter catches up through sync, so the size bound #1390 applied to its handoff checkpoint
+    /// now applies to the sync response it will be sent. Checked before proposing, so an untransferable
+    /// state is a visible refusal rather than an added voter that can never catch up.
+    private Result<Unit> transferableState() {
+        return stateMachine.makeSnapshot()
+                           .map(snapshot -> new SyncResponse<C>(self,
+                                                                new SavedState<C>(snapshot,
+                                                                                  currentPhase.get(),
+                                                                                  List.of(),
+                                                                                  voters),
+                                                                ResponderState.LIVE))
+                           .flatMap(network::validateOutboundMessage)
+                           .mapError(_ -> ReconfigurationError.STATE_TRANSFER_TOO_LARGE);
+    }
+
     private boolean trackReconfiguration(ClusterConfig target, Promise<Unit> promise) {
-        var previous = Option.option(reconfigurationPromises.putIfAbsent(target, promise));
+        var previous = Option.option(reconfigurationPromises.putIfAbsent(java.util.Set.copyOf(target.members()),
+                                                                         promise));
 
         previous.onPresent(existing -> existing.onResult(promise::resolve));
-        if (previous.isEmpty()) {
-            var sameRoster = voterConfiguration().map(value -> value.roster()
-                                                                    .sameMembership(target)).or(false);
-
-            reconfigurationEpochs.put(target,
-                                      voterEpoch() + (sameRoster
-                                                      ? 0
-                                                      : 1));
-        }
 
         return previous.isEmpty();
     }
@@ -1012,19 +1041,14 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (voterConfiguration().map(value -> value.roster()
-                                                   .sameMembership(request.target())).or(false)) {
+        var command = ReconfigurationCommand.reconfigurationCommand(request.epoch(), request.target());
+
+        if (!voters.map(command::appliesTo)
+                   .or(false)) {
             return;
         }
 
-        if (prepareHandoff(request.target(),
-                           currentPhase.get()).onFailure(cause -> rejectReconfiguration(request.target(),
-                                                                                        cause))
-                          .isFailure()) {
-            return;
-        }
-
-        requestedConfiguration = Option.some(request.target());
+        adoptRequested(command);
         if (engineState.get().isInPhase()) {
             broadcastOwnProposalIfNeeded();
         } else {
@@ -1032,270 +1056,164 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    @Contract
-    @MessageReceiver
-    public void configurationTransfer(ConfigurationTransfer<C> transfer) {
-        safeExecute(() -> receiveConfigurationTransfer(transfer));
-    }
-
-    @Contract
-    @MessageReceiver
-    public void configurationInstalled(ConfigurationInstalled installed) {
-        safeExecute(() -> voters.onPresent(state -> {
-            if (!isVoter(self)
-                && state.isAwaitingHandoff()
-                && state.authority()
-                        .handoff()
-                        .map(handoff -> handoff.next()
-                                               .equals(installed.configuration()))
-                        .or(false)
-                && installed.configuration()
-                            .contains(installed.sender())
-                && handoffSnapshotRequests.add(installed.sender())) {
-                network.send(installed.sender(), new SyncRequest(self));
-            }
-
-            if (installed.requestAcknowledgements()) {
-                state.authority()
-                     .handoff()
-                     .filter(handoff -> handoff.next()
-                                               .equals(state.configuration())
-                                        && handoff.next()
-                                                  .equals(installed.configuration())
-                                        && handoff.nextSlot()
-                                                  .equals(installed.nextSlot())
-                                        && (handoff.previous()
-                                                   .contains(installed.sender()) || handoff.next()
-                                                                                           .contains(installed.sender())))
-                     .onPresent(this::acknowledgeConfiguration);
-            }
-
-            if (state.acknowledge(installed.sender(), installed.configuration(), installed.nextSlot())) {
-                certifyInstallation(state);
-            }
-        }));
-    }
-
-    private void certifyInstallation(VoterConfigurationState<C> state) {
-        if (state.authority().retirementSafe()) {
-            completeReconfiguration(state.configuration());
-
+    /// Carries `command` on this voter's next proposals. Competing commands of one base epoch resolve by
+    /// [ReconfigurationCommand#preferredOver], so every voter converges on the same proposal; a command
+    /// of another base epoch is never adopted.
+    private void adoptRequested(ReconfigurationCommand command) {
+        if (command.baseEpoch() != voterEpoch()) {
             return;
         }
 
-        var certificate = state.certifiedInstallation();
-
-        persistence.save(stateMachine,
-                         currentPhase.get(),
-                         pendingBatches.values(),
-                         certificate)
-                   .onSuccess(_ -> {
-                       state.install(certificate);
-                       handoffPersistenceFailure = Option.none();
-                       completeReconfiguration(certificate.configuration());
-                   })
-                   .onFailure(this::recordHandoffPersistenceFailure);
+        requestedConfiguration = Option.some(requestedConfiguration.filter(current -> current.preferredOver(command))
+                                                                   .or(command));
     }
 
-    private void completeReconfiguration(VoterConfiguration installed) {
-        handoffRetry.onPresent(task -> task.cancel(false));
-        handoffRetry = Option.none();
-        var completed = reconfigurationEpochs.entrySet()
-                                             .stream()
-                                             .filter(entry -> entry.getValue() <= installed.epoch())
-                                             .map(Map.Entry::getKey)
-                                             .toList();
+    /// Rabia §4 effective point. The command decided at `slot` (R) installs its successor roster in
+    /// memory here; [#advancePhase] then moves this replica to R+1, the first slot the new roster
+    /// governs. Slots are strictly sequential — a replica votes only in its current phase
+    /// ([#canVoteRound1], [#canVoteRound2], [#canMakeDecision]) — so no replica casts a ballot for R+1
+    /// before applying R, and every replica (a lagging one, an observer, a removed voter) switches
+    /// through this same path. A command whose base epoch is not the current one is a deterministic
+    /// no-op that still consumes its slot.
+    private void applyReconfiguration(Phase slot, ReconfigurationCommand command) {
+        voters.flatMap(command::successorOf)
+              .onPresent(next -> installAppliedChange(slot, next))
+              .onEmpty(() -> log.info("Node {} applied voter reconfiguration at slot {} as a no-op: base epoch {}, current epoch {}",
+                                      self,
+                                      slot,
+                                      command.baseEpoch(),
+                                      voterEpoch()));
+        settleRequests();
+    }
 
-        for (var target : completed) {
-            reconfigurationEpochs.remove(target);
-            Option.option(reconfigurationPromises.remove(target)).onPresent(promise -> {
-                if (target.sameMembership(installed.roster())) {
-                    promise.succeed(Unit.unit());
-                } else {
-                    promise.fail(ReconfigurationError.SUPERSEDED);
-                }
-            });
+    private void installAppliedChange(Phase slot, VoterConfiguration next) {
+        var previous = voters.map(VoterConfiguration::members)
+                             .or(List.of());
+        var added = next.members()
+                        .stream()
+                        .filter(node -> !previous.contains(node))
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+
+        caughtUp.clear();
+        if (added.contains(self)) {
+            caughtUp.add(self);
+        }
+
+        lastChange = Option.some(new AppliedChange(slot, next, added));
+        installVoters(next);
+        observerMode = !next.contains(self);
+        log.info("Node {} applied voter reconfiguration at slot {}: epoch {} {} governs from slot {}",
+                 self,
+                 slot,
+                 next.epoch(),
+                 next.members(),
+                 slot.successor());
+        safeExecute(this::drainDeferredBallots);
+    }
+
+    /// Settles local requests against the installed roster: a request whose base epoch has passed is
+    /// dropped, and each caller's promise succeeds when its target is installed or fails as superseded
+    /// once its target can no longer be proposed.
+    private void settleRequests() {
+        var epoch = voterEpoch();
+
+        requestedConfiguration = requestedConfiguration.filter(command -> command.baseEpoch() == epoch);
+        voters.onPresent(this::settlePromises);
+    }
+
+    private void settlePromises(VoterConfiguration installed) {
+        var requested = requestedConfiguration.map(command -> java.util.Set.copyOf(command.target()
+                                                                                         .members()));
+
+        for (var target : List.copyOf(reconfigurationPromises.keySet())) {
+            if (target.equals(java.util.Set.copyOf(installed.members()))) {
+                Option.option(reconfigurationPromises.remove(target))
+                      .onPresent(promise -> promise.succeed(Unit.unit()));
+            } else if (!requested.map(target::equals)
+                                 .or(false)) {
+                Option.option(reconfigurationPromises.remove(target))
+                      .onPresent(promise -> promise.fail(ReconfigurationError.SUPERSEDED));
+            }
         }
     }
 
-    private void beginConfigurationHandoff(ClusterConfig target, Phase boundary) {
-        var prepared = prepareHandoff(target, currentPhase.get());
-        var old = engineState.getAndSet(new EngineState.Observing());
-
-        exitState(old);
-        notifyConsensusStateTransition();
-        currentPhase.set(boundary);
-        requestedConfiguration = Option.none();
-        handoffSnapshotRequests.clear();
-        voters.onPresent(state -> prepared.flatMap(handoff -> state.barrier(target,
-                                                                            boundary,
-                                                                            handoff.snapshot(),
-                                                                            handoff.pendingBatches()))
-                                          .onSuccess(authority -> {
-                                                         // Freeze immediately; persistence failure must never reopen the old epoch.
-                                                         state.install(authority);
-                                                         armHandoffRetry();
-                                                         retryConfigurationHandoff();
-                                                     })
-                                          .onFailure(cause -> {
-                                                         authorityFailure = Option.some(cause);
-                                                         rejectReconfiguration(target, cause);
-                                                     }));
-    }
-
-    private void retryConfigurationHandoff() {
-        voters.onPresent(state -> state.authority()
-                                       .handoff()
-                                       .onPresent(handoff -> {
-                                                      if (state.isAwaitingHandoff()) {
-                                                      persistHandoffAuthority(state.authority())
-                                                          .onSuccess(_ -> advertiseHandoff(handoff))
-                                                          .onFailure(this::recordHandoffPersistenceFailure);
-                                                  } else {
-                                                      var request = new ConfigurationInstalled(self,
-                                                                                               handoff.next(),
-                                                                                               handoff.nextSlot(),
-                                                                                               true);
-
-                                                      broadcastCoreObservers(request);
-                                                      configurationInstalled(request);
-                                                  }
-                                                  }));
-    }
-
-    /// The frozen handoff checkpoint is immutable; retries only repeat network advertisement.
-    /// Failed persistence is never cached, so no advertisement can precede a successful save.
-    private Result<Unit> persistHandoffAuthority(VoterAuthority<C> authority) {
-        if (persistedHandoffAuthority.filter(authority::equals).isPresent()) {
-            return Result.success(Unit.unit());
-        }
-        return persistence.save(stateMachine, currentPhase.get(), pendingBatches.values(), authority)
-                          .onSuccess(_ -> rememberPersistedHandoff(authority));
-    }
-
-    private Unit rememberPersistedHandoff(VoterAuthority<C> authority) {
-        persistedHandoffAuthority = Option.some(authority);
-        handoffPersistenceFailure = Option.none();
-        return Unit.unit();
-    }
-
-    private Unit recordHandoffPersistenceFailure(Cause cause) {
-        handoffPersistenceFailure = Option.some(cause);
-        log.error("Node {} handoff persistence failed: {}", self, cause);
-        return Unit.unit();
-    }
-
-    private void advertiseHandoff(ConfigurationHandoff<C> handoff) {
-        if (!handoff.previous().contains(self)) {
-            broadcastCoreObservers(new SyncRequest(self));
-
+    /// Adopts the configuration a sync source carried when it is newer than the installed one. The
+    /// epoch never regresses; an equal epoch is already installed ([#eligibleSyncResponse] refuses a
+    /// different roster at the same epoch).
+    private void adoptSyncedConfiguration(VoterConfiguration configuration) {
+        if (configuration.epoch() <= voterEpoch()) {
             return;
         }
 
-        var transfer = new ConfigurationTransfer<C>(self, handoff);
-
-        java.util.stream.Stream.concat(handoff.previous().members().stream(),
-                                       handoff.next().members().stream())
-                               .distinct()
-                               .filter(node -> !node.equals(self))
-                               .forEach(node -> network.send(node, transfer));
-        receiveConfigurationTransfer(transfer);
+        installVoters(configuration);
+        observerMode = !configuration.contains(self);
+        settleRequests();
+        log.info("Node {} adopted voter epoch {} {} from synchronized state", self, configuration.epoch(), configuration.members());
+        safeExecute(this::drainDeferredBallots);
     }
 
-    private void receiveConfigurationTransfer(ConfigurationTransfer<C> transfer) {
-        voters.onPresent(state -> state.receive(transfer.sender(),
-                                                transfer.handoff())
-                                       .onSuccess(candidate -> candidate.onPresent(authority -> installConfiguration(state,
-                                                                                                                     authority)))
-                                       .onFailure(cause -> log.debug("Node {} rejected voter handoff: {}", self, cause)));
+    /// Rabia §4 slot boundary. A ballot of a NEWER epoch belongs to a slot after a change this replica
+    /// has not applied yet, so it cannot be judged against the current roster. It is held (bounded,
+    /// oldest dropped) and re-delivered once the epoch advances, and the sender is asked to repair this
+    /// replica's current slot so the change is learned without waiting for a stall re-broadcast.
+    private boolean deferIfNewerEpoch(NodeId sender, long epoch, org.pragmatica.consensus.ProtocolMessage message) {
+        if (epoch <= voterEpoch()) {
+            return false;
+        }
+
+        deferredBallots.offer(message);
+        if (deferredBallots.size() > MAX_DEFERRED_BALLOTS) {
+            deferredBallots.pollFirst();
+        }
+
+        requestSlotRepair(sender);
+
+        return true;
     }
 
-    private void installConfiguration(VoterConfigurationState<C> state, VoterAuthority<C> authority) {
-        authority.handoff()
-                 .onPresent(handoff -> {
-                                if (authority.configuration()
-                                             .equals(state.configuration()) && !state.isAwaitingHandoff()) {
-                                acknowledgeConfiguration(handoff);
+    private void requestSlotRepair(NodeId peer) {
+        var phase = currentPhase.get();
 
-                                return;
-                            }
-
-                                if (handoff.nextSlot()
-                                           .compareTo(currentPhase.get()) < 0) {
-                                return;
-                            }
-
-                                var old = engineState.getAndSet(new EngineState.Observing());
-
-                                exitState(old);
-                                notifyConsensusStateTransition();
-                                stateMachine.restoreCommittedSnapshot(handoff.snapshot(),
-                                                                      handoff.nextSlot().value())
-                                            .flatMap(_ -> persistence.save(stateMachine,
-                                                                           handoff.nextSlot(),
-                                                                           handoff.pendingBatches(),
-                                                                           authority))
-                                            .onSuccess(_ -> {
-                                                           state.install(authority);
-                                                           handoffPersistenceFailure = Option.none();
-                                                           stateTransferFailure = Option.none();
-                                                           requestedConfiguration = Option.none();
-                                                           authorityFailure = Option.none();
-                                                           currentConfig.set(Option.some(authority.configuration()
-                                                                                                  .roster()));
-                                                           reconcileSnapshotPending(handoff.nextSlot(),
-                                                                                    handoff.pendingBatches());
-                                                           currentPhase.set(handoff.nextSlot());
-                                                           phases.clear();
-                                                           observerMode = !authority.configuration()
-                                                                                    .contains(self);
-                                                           voterListeners.forEach(listener -> listener.accept(authority.configuration()));
-                                                           if (!observerMode && !recordParticipation()) {
-                                                           armHandoffRetry();
-
-                                                           return;
-                                                       }
-
-                                                           engineState.set(observerMode
-                                                                           ? new EngineState.Observing()
-                                                                           : new EngineState.Idle());
-                                                           notifyConsensusStateTransition();
-                                                           startPromise.get()
-                                                                       .succeed(Unit.unit());
-                                                           armHandoffRetry();
-                                                           acknowledgeConfiguration(handoff);
-                                                           retryConfigurationHandoff();
-                                                           replayStateNotifications();
-                                                           notifyStateRestored();
-                                                           startPhase();
-                                                       })
-                                            .onFailure(cause -> {
-                                                           authorityFailure = Option.some(cause);
-                                                           log.error("Node {} could not install voter handoff: {}",
-                                                                     self,
-                                                                     cause);
-                                                       });
-                            });
-    }
-
-    private void acknowledgeConfiguration(ConfigurationHandoff<C> handoff) {
-        if (!handoff.next().contains(self) || !recordParticipation()) {
+        if (voters.isEmpty() || phase.equals(repairRequests.get(peer))) {
             return;
         }
 
-        if (engineState.get().isObserving() && !observerMode) {
-            engineState.set(new EngineState.Idle());
-            notifyConsensusStateTransition();
-            startPromise.get().succeed(Unit.unit());
-            replayStateNotifications();
-            notifyStateRestored();
-            startPhase();
-        }
+        repairRequests.put(peer, phase);
+        network.send(peer, new RoundRequest(self, voterEpoch(), phase, 0));
+    }
 
-        var installed = new ConfigurationInstalled(self, handoff.next(), handoff.nextSlot());
-        // Epoch announcement also wakes observers that are waiting for certified state.
-        broadcastCoreObservers(installed);
-        configurationInstalled(installed);
+    private void drainDeferredBallots() {
+        var deferred = List.copyOf(deferredBallots);
+
+        deferredBallots.clear();
+        deferred.forEach(this::redeliverBallot);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void redeliverBallot(org.pragmatica.consensus.ProtocolMessage message) {
+        switch (message) {
+            case Propose<?> propose -> handlePropose((Propose<C>) propose);
+            case VoteRound1 vote -> handleVoteRound1(vote);
+            case VoteRound2 vote -> handleVoteRound2(vote);
+            default -> log.warn("Node {} dropped unexpected deferred message {}", self, message);
+        }
+    }
+
+    /// Repairs a peer that sent a ballot for a slot this replica has completed: it replays the decision,
+    /// or a snapshot when the slot's data is gone. Keyed on trust rather than on the current epoch, since
+    /// the peer is typically a replica that has not yet applied the slot that changed the roster.
+    private void repairPastSlot(NodeId peer, Phase phase) {
+        if (isTrustedPeer(peer)) {
+            replayCompletedSlot(peer, phase);
+        }
+    }
+
+    /// Records that a member added by the last applied change has voted past its slot R.
+    private void recordCatchUp(NodeId sender, Phase phase) {
+        voters.flatMap(this::changeGoverning)
+              .filter(change -> change.added()
+                                      .contains(sender) && phase.compareTo(change.slot()) > 0)
+              .onPresent(_ -> caughtUp.add(sender));
     }
 
     /// Hard-shutdown path used only by [#stop]. Performs the full state-clearing reset that
@@ -1543,8 +1461,6 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void performStop(Promise<Unit> promise) {
-        handoffRetry.onPresent(task -> task.cancel(false));
-        handoffRetry = Option.none();
         Option.option(cleanupTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
 
@@ -1562,7 +1478,7 @@ public class RabiaEngine<C extends Command> {
         reconfigurationPromises.clear();
         var persisted = passiveClient
                         ? Result.success(Unit.unit())
-                        : saveAuthority();
+                        : saveState();
         var reset = Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
                                 () -> {
                                     shutdownAndReset();
@@ -1619,20 +1535,6 @@ public class RabiaEngine<C extends Command> {
                 log.warn("SLOW-APPLY ms={} queueDepth={}", elapsed / 1_000_000, applyQueueDepth());
             }
         });
-    }
-
-    /// Fail closed when this node's voter authority cannot be loaded: it stops participating rather
-    /// than vote under an authority it cannot read.
-    private void failAuthorityLoad(Cause cause) {
-        authorityFailure = Option.some(cause);
-        var old = engineState.getAndSet(new EngineState.Observing());
-
-        exitState(old);
-        notifyConsensusStateTransition();
-        startPromise.get().fail(cause);
-        log.error("Node {} stopped consensus participation because its voter authority could not be loaded: {}",
-                  self,
-                  cause);
     }
 
     /// Diagnostic helper: backlog of the single-thread apply executor. The executor is always a
@@ -1737,7 +1639,7 @@ public class RabiaEngine<C extends Command> {
     private void startPhase() {
         var current = engineState.get();
 
-        if (!current.isActive() || !isVoter(self) || awaitingHandoff() || authorityFailure.isPresent()) {
+        if (!current.isActive() || !isVoter(self) || authorityFailure.isPresent()) {
             return;
         }
 
@@ -1827,6 +1729,15 @@ public class RabiaEngine<C extends Command> {
         var round = syncRounds.incrementAndGet();
 
         if (round % WARN_EVERY_N_SYNC_ROUNDS != 0) {
+            return;
+        }
+
+        if (genesisPending) {
+            log.warn("Node {} still SYNCING after {} rounds: the complete genesis voter roster is not resolved yet, "
+                    + "so no state can be adopted. This node has no leader and runs no reconciler while this persists.",
+                     self,
+                     round);
+
             return;
         }
 
@@ -2001,7 +1912,7 @@ public class RabiaEngine<C extends Command> {
                                                new SavedState<C>(response.state().snapshot(),
                                                                  response.state().lastCommittedPhase(),
                                                                  List.of(),
-                                                                 response.state().authority()),
+                                                                 response.state().configuration()),
                                                response.responder());
         var bounded = network.validateOutboundMessage(response)
                              .fold(_ -> network.validateOutboundMessage(emptyPending)
@@ -2021,15 +1932,38 @@ public class RabiaEngine<C extends Command> {
                           });
     }
 
+    /// Whether a sync response may count toward adoption. The responder must belong to the configuration
+    /// it claims, and that configuration must be either this replica's own or of a NEWER epoch; a lower
+    /// epoch is a lagging responder and is ignored. A different roster at the SAME epoch is a genesis
+    /// disagreement: it is refused and reported, because adopting it would join a second electorate.
+    /// A response without a configuration is legacy evidence for the genesis epoch only.
+    private boolean eligibleSyncResponse(SyncResponse<C> response) {
+        return response.state()
+                       .configuration()
+                       .fold(() -> voterEpoch() == 0 && isVoter(response.sender()),
+                             claimed -> claimed.contains(response.sender()) && comparableConfiguration(response.sender(),
+                                                                                                        claimed));
+    }
+
+    private boolean comparableConfiguration(NodeId sender, VoterConfiguration claimed) {
+        var own = voters;
+        var disagrees = own.filter(configuration -> configuration.epoch() == claimed.epoch() && !configuration.equals(claimed));
+
+        disagrees.onPresent(configuration -> log.warn("Node {} refuses sync state from {}: epoch {} roster {} differs from this node's {}. "
+                                                      + "The genesis rosters disagree; this node will not adopt state from another electorate.",
+                                                      self,
+                                                      sender,
+                                                      claimed.epoch(),
+                                                      claimed.members(),
+                                                      configuration.members()));
+
+        return own.map(configuration -> claimed.epoch() > configuration.epoch() || claimed.equals(configuration))
+                  .or(false);
+    }
+
     /// Handles a synchronization response from another node.
     private void handleSyncResponse(SyncResponse<C> response) {
-        var responseAuthority = response.state().authority();
-        var eligible = responseAuthority.fold(() -> voterEpoch() == 0 && isVoter(response.sender()),
-                                              authority -> voters.map(value -> value.accepts(authority))
-                                                                 .or(false) && authority.configuration()
-                                                                                        .contains(response.sender()));
-
-        if (!eligible || response.sender().equals(self)) {
+        if (!eligibleSyncResponse(response) || response.sender().equals(self)) {
             return;
         }
 
@@ -2112,7 +2046,7 @@ public class RabiaEngine<C extends Command> {
     /// `onFailure`. The fence is currently PERMANENT (nothing on this path clears it) and later sync
     /// rounds re-adopt and re-fire the restore hooks on the inactive node — open in #1516.
     private Unit persistRestoredState() {
-        return saveAuthority().onFailure(this::recordRestoredStateSaveFailure)
+        return saveState().onFailure(this::recordRestoredStateSaveFailure)
                             .or(Unit.unit());
     }
 
@@ -2219,14 +2153,6 @@ public class RabiaEngine<C extends Command> {
         onStateRestored.forEach(Runnable::run);
     }
 
-    private boolean samePendingBarrier(VoterAuthority<C> current, VoterAuthority<C> restored) {
-        return current.configuration()
-                      .equals(restored.configuration()) && current.handoff()
-                                                                  .flatMap(own -> restored.handoff()
-                                                                                          .map(own::sameCheckpoint))
-                                                                  .or(false);
-    }
-
     /// A snapshot that skips local slots may already include any old pending request.
     /// Only the source's still-pending batches can safely survive that gap. An equal-frontier
     /// restore has no skipped decisions, so it preserves local requests absent from the source.
@@ -2268,20 +2194,8 @@ public class RabiaEngine<C extends Command> {
         currentPhase.updateAndGet(existing -> existing.compareTo(state.lastCommittedPhase()) >= 0
                                               ? existing
                                               : state.lastCommittedPhase());
-        state.authority()
-             .onPresent(authority -> voters.onPresent(value -> {
-                                                          if (value.accepts(authority) || samePendingBarrier(value.authority(),
-                                                                                                             authority)) {
-                                                          value.install(authority);
-                                                          observerMode = !authority.configuration()
-                                                                                   .contains(self);
-                                                          currentConfig.set(Option.some(authority.configuration()
-                                                                                                 .roster()));
-                                                          voterListeners.forEach(listener -> listener.accept(authority.configuration()));
-                                                      } else {
-                                                          authorityFailure = Option.some(ReconfigurationError.INCOMPATIBLE_EPOCH);
-                                                      }
-                                                      }));
+        state.configuration()
+             .onPresent(this::adoptSyncedConfiguration);
         persistRestoredState();
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
@@ -2314,14 +2228,6 @@ public class RabiaEngine<C extends Command> {
 
     private void activate() {
         if (authorityFailure.isPresent()) {
-            return;
-        }
-
-        if (awaitingHandoff()) {
-            engineState.set(new EngineState.Observing());
-            armHandoffRetry();
-            retryConfigurationHandoff();
-
             return;
         }
 
@@ -2512,11 +2418,6 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (awaitingHandoff()) {
-            retryConfigurationHandoff();
-
-            return;
-        }
         // Observer snapshots are not evidence from the consensus electorate.
         if (observerMode || !isVoter(self)) {
             return;
@@ -2534,7 +2435,7 @@ public class RabiaEngine<C extends Command> {
                                                             new SavedState<C>(snapshot,
                                                                               currentPhase.get(),
                                                                               List.copyOf(pendingBatches.values()),
-                                                                              voters.map(VoterConfigurationState::authority)),
+                                                                              voters),
                                                             ResponderState.LIVE))
                         .onSuccess(response -> sendSyncResponse(request.sender(),
                                                                 response))
@@ -2624,32 +2525,16 @@ public class RabiaEngine<C extends Command> {
 
         var newestEpoch = syncResponses.values()
                                        .stream()
-                                       .mapToLong(response -> response.state()
-                                                                      .authority()
-                                                                      .map(a -> a.configuration()
-                                                                                 .epoch())
-                                                                      .or(0L))
+                                       .mapToLong(RabiaEngine::responseEpoch)
                                        .max()
                                        .orElse(voterEpoch());
         var responses = syncResponses.values()
                                      .stream()
-                                     .filter(response -> response.state()
-                                                                 .authority()
-                                                                 .map(a -> a.configuration()
-                                                                            .epoch())
-                                                                 .or(0L) == newestEpoch)
+                                     .filter(response -> responseEpoch(response) == newestEpoch)
                                      .toList();
 
         if (newestEpoch > voterEpoch()) {
-            var proposed = responses.getFirst().state().authority().map(VoterAuthority::configuration);
-
-            return proposed.filter(candidate -> responses.stream()
-                                                         .allMatch(response -> response.state()
-                                                                                       .authority()
-                                                                                       .map(a -> a.configuration()
-                                                                                                  .equals(candidate))
-                                                                                       .or(false)) && responses.size() >= candidate.quorumSize())
-                           .map(_ -> responses);
+            return newerEpochCandidates(responses);
         }
         // An observer is outside the electorate: its own state cannot supply the missing
         // member of a response majority, even on a cold start or with durable history.
@@ -2680,12 +2565,59 @@ public class RabiaEngine<C extends Command> {
         // Adoption normally fires on the arrival that first meets the requirement, so the collected set
         // is exactly the requirement and "a live majority among them" reduces to "all of them are
         // LIVE", where filtering removes nothing. The filter only SELECTS when the collected set is
-        // LARGER than the requirement, for example when a certified authority handoff changes
+        // LARGER than the requirement, for example when an applied reconfiguration changes
         // the installed electorate while responses are collected. Desired core counts cannot
         // directly change this denominator.
         return Option.some(liveResponses.size() >= clusterSize / 2 + 1
                            ? liveResponses
                            : responses);
+    }
+
+    private static long responseEpoch(SyncResponse<?> response) {
+        return response.state()
+                       .configuration()
+                       .map(VoterConfiguration::epoch)
+                       .or(0L);
+    }
+
+    /// Adoption of a NEWER voter epoch (#1526, Rabia §4 design point 3): ONE live responder that is a
+    /// member of the configuration it claims suffices; COLD responders never authorize it.
+    ///
+    /// Why this does not weaken safety under crash faults. The same-epoch arms below need a response
+    /// majority because the adopting replica may hold ballots of its own that a staler state would
+    /// contradict (#667's amnesiac self), or may be the only witness of a commit. Neither applies here:
+    /// - A live responder's claimed configuration is one it applied from the log, and its state is its
+    ///   own applied prefix — a genuine prefix of the one log. Crash faults do not fabricate either.
+    /// - A replica still at an OLDER epoch has not applied the change's slot R, and slots are strictly
+    ///   sequential, so it has never cast a ballot in any slot at or after R+1. The adopted frontier is
+    ///   at least R+1, so it joins every later slot as a fresh participant — which Weak-MVC tolerates
+    ///   exactly like a slow replica that missed earlier rounds. It has no ballot to contradict.
+    /// - A responder that is itself behind the cluster only makes this replica behind as well: it
+    ///   catches up through decision relay and slot repair. Staleness costs liveness, never safety.
+    ///
+    /// Requiring a response quorum here instead would wedge precisely the case §4 exists to handle: a
+    /// replacement voter whose only live peer in the new roster is the one that decided R (#1526's
+    /// {A,B,C} → {A,B,D} with B lost after R). Responses whose claimed configurations disagree are
+    /// refused — under crash faults that cannot happen, so it is reported as an inconsistency.
+    private Option<List<SyncResponse<C>>> newerEpochCandidates(List<SyncResponse<C>> responses) {
+        var live = responses.stream()
+                            .filter(response -> response.responder() == ResponderState.LIVE)
+                            .toList();
+        var claimed = live.stream()
+                          .map(response -> response.state()
+                                                   .configuration())
+                          .distinct()
+                          .count();
+
+        if (claimed > 1) {
+            log.warn("Node {} refuses newer-epoch sync state: live responders claim {} different configurations at one epoch",
+                     self,
+                     claimed);
+        }
+
+        return live.isEmpty() || claimed != 1
+               ? Option.none()
+               : Option.some(live);
     }
 
     /// Responses required once any responder is live.
@@ -2800,8 +2732,6 @@ public class RabiaEngine<C extends Command> {
         var current = currentPhase.get();
 
         phases.keySet().removeIf(phase -> isExpiredPhase(phase, current));
-        preparedHandoffs.keySet().removeIf(key -> key.phase()
-                                                     .compareTo(current) < 0);
     }
 
     private boolean isExpiredPhase(Phase phase, Phase current) {
@@ -2812,6 +2742,18 @@ public class RabiaEngine<C extends Command> {
     /// NOTE: All nodes MUST process proposals regardless of active/dormant state.
     /// Rabia is leaderless — every node participates in every round.
     private void handlePropose(Propose<C> propose) {
+        if (deferIfNewerEpoch(propose.sender(), propose.epoch(), propose)) {
+            return;
+        }
+
+        var currentPhaseValue = currentPhase.get();
+
+        if (isPastPhase(propose.phase(), currentPhaseValue)) {
+            repairPastSlot(propose.sender(), propose.phase());
+
+            return;
+        }
+
         if (!acceptsBallot(propose.sender(), propose.epoch())) {
             return;
         }
@@ -2820,24 +2762,9 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (propose.phase().equals(currentPhase.get()) && propose.reconfiguration()
-                                                                 .map(target -> prepareHandoff(target,
-                                                                                               propose.phase()).onFailure(cause -> rejectReconfiguration(target,
-                                                                                                                                                         cause))
-                                                                                              .isFailure())
-                                                                 .or(false)) {
-            return;
-        }
-
         log.trace("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
         observeClusterPhase(propose.phase());
-        var currentPhaseValue = currentPhase.get();
-
-        if (isPastPhase(propose.phase(), currentPhaseValue)) {
-            replayCompletedSlot(propose.sender(), propose.phase());
-
-            return;
-        }
+        recordCatchUp(propose.sender(), propose.phase());
 
         if (isFarFuturePhase(propose.phase(), currentPhaseValue)) {
             log.warn("Node {} behind by {} phases (current: {}, received: {}). Triggering resync.",
@@ -2858,7 +2785,8 @@ public class RabiaEngine<C extends Command> {
 
         var phaseData = getOrCreatePhaseData(propose.phase());
 
-        propose.reconfiguration().onPresent(target -> requestedConfiguration = Option.some(target));
+        propose.reconfiguration()
+               .onPresent(this::adoptRequested);
         enterPhaseIfNeeded(propose.phase(), currentPhaseValue, phaseData);
         if (engineState.get().isInPhase() && !phaseData.hasProposal(self)) {
             broadcastOwnProposalIfNeeded();
@@ -2912,8 +2840,6 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void broadcastOwnProposal(Phase phase, PhaseData<C> phaseData, Batch<C> batch) {
-        requestedConfiguration.onPresent(target -> prepareHandoff(target, phase).onFailure(cause -> rejectReconfiguration(target,
-                                                                                                                          cause)));
         var proposedBatch = requestedConfiguration.isPresent()
                             ? Batch.<C> emptyBatch()
                             : batch;
@@ -2955,13 +2881,6 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void broadcastRound1Vote(Phase phase, PhaseData<C> phaseData, int quorumSize) {
-        if (phaseData.agreedConfiguration(quorumSize)
-                     .map(target -> prepareHandoff(target, phase).onFailure(cause -> rejectReconfiguration(target, cause))
-                                                  .isFailure())
-                     .or(false)) {
-            return;
-        }
-
         var vote = phaseData.evaluateInitialVote(self, quorumSize);
 
         log.trace("Node {} broadcasting R1 vote {} for phase {} after collecting quorum proposals", self, vote, phase);
@@ -2983,6 +2902,16 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a round 1 vote from another node.
     private void handleVoteRound1(VoteRound1 vote) {
+        if (deferIfNewerEpoch(vote.sender(), vote.epoch(), vote)) {
+            return;
+        }
+
+        if (isPastPhase(vote.phase(), currentPhase.get())) {
+            repairPastSlot(vote.sender(), vote.phase());
+
+            return;
+        }
+
         if (!acceptsBallot(vote.sender(), vote.epoch())) {
             return;
         }
@@ -2993,11 +2922,7 @@ public class RabiaEngine<C extends Command> {
                   vote.phase(),
                   vote.stateValue());
         observeClusterPhase(vote.phase());
-        if (isPastPhase(vote.phase(), currentPhase.get())) {
-            replayCompletedSlot(vote.sender(), vote.phase());
-
-            return;
-        }
+        recordCatchUp(vote.sender(), vote.phase());
 
         if (vote.round() < 0) {
             return;
@@ -3047,13 +2972,17 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doHandleRoundRequest(RoundRequest request) {
-        if (!acceptsBallot(request.sender(), request.epoch()) || request.round() < 0) {
+        if (request.round() < 0) {
             return;
         }
 
         if (isPastPhase(request.phase(), currentPhase.get())) {
-            replayCompletedSlot(request.sender(), request.phase());
+            repairPastSlot(request.sender(), request.phase());
 
+            return;
+        }
+
+        if (!acceptsBallot(request.sender(), request.epoch())) {
             return;
         }
 
@@ -3115,6 +3044,16 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a round 2 vote from another node.
     private void handleVoteRound2(VoteRound2 vote) {
+        if (deferIfNewerEpoch(vote.sender(), vote.epoch(), vote)) {
+            return;
+        }
+
+        if (isPastPhase(vote.phase(), currentPhase.get())) {
+            repairPastSlot(vote.sender(), vote.phase());
+
+            return;
+        }
+
         if (!acceptsBallot(vote.sender(), vote.epoch())) {
             return;
         }
@@ -3125,11 +3064,7 @@ public class RabiaEngine<C extends Command> {
                   vote.phase(),
                   vote.stateValue());
         observeClusterPhase(vote.phase());
-        if (isPastPhase(vote.phase(), currentPhase.get())) {
-            replayCompletedSlot(vote.sender(), vote.phase());
-
-            return;
-        }
+        recordCatchUp(vote.sender(), vote.phase());
 
         if (vote.round() < 0) {
             return;
@@ -3207,12 +3142,9 @@ public class RabiaEngine<C extends Command> {
             }
 
             phaseData.completedDecision(decision);
-            if (decision.stateValue() == StateValue.V1 && decision.reconfiguration().isPresent()) {
+            if (decision.stateValue() == StateValue.V1) {
                 decision.reconfiguration()
-                        .onPresent(target -> beginConfigurationHandoff(target,
-                                                                       phaseData.phase().successor()));
-
-                return;
+                        .onPresent(command -> applyReconfiguration(phaseData.phase(), command));
             }
 
             advancePhase(phaseData.phase());
@@ -3255,7 +3187,7 @@ public class RabiaEngine<C extends Command> {
     /// Buffering on Paused would defeat the purpose — state would silently drift and require
     /// a full sync round on resume, which the new design explicitly avoids.
     private void handleDecision(Decision<C> decision) {
-        if (!acceptsBallot(decision.sender(), decision.epoch())) {
+        if (authorityFailure.isPresent() || !isTrustedPeer(decision.sender())) {
             return;
         }
 
@@ -3290,6 +3222,18 @@ public class RabiaEngine<C extends Command> {
             if (!state.isPaused()) {
                 triggerResync();
             }
+
+            return;
+        }
+
+        // The epoch governing a slot is a function of the applied prefix, so a correct Decision for the
+        // current slot carries this replica's epoch. Anything else is refused, never applied.
+        if (decision.epoch() != voterEpoch()) {
+            log.warn("Node {} refused a decision for slot {} at epoch {}; this replica governs the slot at epoch {}",
+                     self,
+                     decision.phase(),
+                     decision.epoch(),
+                     voterEpoch());
 
             return;
         }
@@ -3345,9 +3289,29 @@ public class RabiaEngine<C extends Command> {
             notifyConsensusStateTransition();
         }
 
+        if (oldState.isObserving()) {
+            promoteAddedVoter();
+        }
+
         if (!pendingBatches.isEmpty() || requestedConfiguration.isPresent()) {
             safeExecute(this::startPhase);
         }
+    }
+
+    /// An observer that applied a change adding it starts voting from the change's R+1, through the
+    /// same #1212 participation gate as any activation. A refused record leaves it observing; the next
+    /// applied slot retries.
+    private void promoteAddedVoter() {
+        if (!activationAuthorized || !recordParticipation()) {
+            return;
+        }
+
+        engineState.set(new EngineState.Idle());
+        armCleanupTask();
+        notifyConsensusStateTransition();
+        startPromise.get()
+                    .succeed(Unit.unit());
+        log.info("Node {} joined the voter roster at phase {}", self, currentPhase.get());
     }
 
     private void advancePhaseAsObserver(Phase nextPhase) {
@@ -3358,8 +3322,17 @@ public class RabiaEngine<C extends Command> {
         log.trace("Node {} (observer) advancing to phase {}", self, nextPhase);
     }
 
-    /// Gets or creates phase data for a specific phase.
+    /// Gets or creates phase data for a specific phase. Data for a current or future slot created under
+    /// an epoch the slot no longer belongs to is replaced, so every ballot, decision and coin flip of a
+    /// slot at or after a change's R+1 is evaluated under the epoch that governs it. Completed slots keep
+    /// their data, which replay needs verbatim.
     private PhaseData<C> getOrCreatePhaseData(Phase phase) {
-        return phases.computeIfAbsent(phase, slot -> new PhaseData<>(slot, voterEpoch()));
+        var epoch = voterEpoch();
+        var frontier = currentPhase.get();
+
+        return phases.compute(phase,
+                              (slot, existing) -> Option.option(existing)
+                                                        .filter(data -> data.epoch() == epoch || slot.compareTo(frontier) < 0)
+                                                        .or(() -> new PhaseData<>(slot, epoch)));
     }
 }
