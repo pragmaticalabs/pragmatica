@@ -44,8 +44,8 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Provisioning stall under churn | fix landed; budget cloud-pending | **pending validation (#362)** |
 | Per-node deployment failure (`ALL_OR_NOTHING` rollback) | n/a — permanent until cause is fixed | `DurableEntityForgeTest` |
 | `BEST_EFFORT` slice failure (durable `PARTIAL`) | n/a — durable until redeployed | `BlueprintStatusAggregationTest` |
-| Stream owner failover (RF ≥ 2) | owner view ≤180 s; complete history ≤120 s | 02-chaos C17–C20 |
-| Stream owner failover (RF = 1, default) | none until owner returns | guarantees.md §4 |
+| Stream owner failover (`min-sync-replicas ≥ 2`) | owner view ≤180 s; complete history ≤120 s | 02-chaos C17–C20 |
+| Stream owner loss (RF = 3, default `min-sync-replicas`) | owner view ≤180 s; replicated history served | `StreamDefaultRfOwnerReplacementTest` |
 | Core network partition | eviction ~3 s; heal to N ≤30 s | 12-network C9/C10 |
 | QUIC connection churn | missing-peer reconcile 5–60 s | 12-network connectedPeerCount |
 | Full-cluster restart | derived state rebuilds; snapshot-only KV | guarantees.md §1–§2 · **partial (#349)** |
@@ -126,25 +126,25 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ## Streams
 
-### Stream owner failover — RF ≥ 2 (`min-sync-replicas ≥ 2`)
+### Stream owner failover — `min-sync-replicas ≥ 2`
 
 - **Symptom:** a partition's owner dies; a brief read unavailability, then a caught-up replica serves the complete history.
 - **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes, `servedByOwner` returns true on the new owner, `replicas[].state` shows a CAUGHT_UP replica.
 - **Automatic response:** HRW ownership reseats to a CAUGHT_UP replica; the epoch fence rejects the deposed owner's late appends; the new owner serves **every** pre-kill event in order.
 - **Budget:** new owner-authoritative view ≤180 s; complete history (all N events) settled ≤120 s (02-chaos C18/C19/C20).
-- **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `min-sync-replicas ≥ 2` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events).
+- **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `min-sync-replicas = replicas` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events). At `2 ≤ min-sync-replicas < replicas` an acked event is on the owner and `min-sync − 1` peers, and promotion catches up from a single survivor, so a lossless promotion is not yet guaranteed (#411). The 02-chaos proof below ran at RF=2 with `min-sync-replicas = replicas`; its fixture is RF=3 with `min-sync-replicas = 2` since #1547.
 - **Operator action:** none.
 - **Proof anchor:** `02-chaos/test-stream-replica-failover.sh` (C17–C20); `PartitionBackfillTest`.
 
-### Stream owner failover — RF = 1 (default)
+### Stream owner loss — RF = 3, default `min-sync-replicas` (the default stream)
 
-- **Symptom:** after the owner dies, consumers read **empty** until the original owner restarts.
-- **Detection surface:** `/api/streams/replicas/...` shows no CAUGHT_UP non-owner replica.
-- **Automatic response:** none — no other replica holds the data; HRW may move ownership to a peer with no copy.
-- **Budget:** n/a — data is unavailable until the owner returns.
-- **Degraded / at risk:** un-replicated appends are **crash-durable on the dead owner's disk** (WAL fsync) but **not served** during the outage. Not lost, but unavailable.
-- **Operator action:** configure `min-sync-replicas ≥ 2` for failover safety; restart the owner to recover its partitions. See [known-limitations.md](known-limitations.md) (RF=1 one-disk-deep).
-- **Proof anchor:** guarantees.md §4 (RF=1 empty-after-failover); Forge `StreamCrashDurabilityTest` (per-owner WAL survives restart).
+- **Symptom:** a partition's owner is terminally removed; a brief read unavailability, then the next-ranked replica serves the partition.
+- **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes and the new owner's view shows the replicas' `confirmedOffset`.
+- **Automatic response:** HRW hands ownership to the next-ranked survivor, which was already a replica; a replacement core joining under a fresh identity is placed and backfilled like any new member.
+- **Budget:** new owner-authoritative view ≤180 s (the Forge test's bound).
+- **Degraded / at risk:** events acked but not yet replicated when the owner died. At the default `min-sync-replicas` the ack is the owner's WAL fsync alone, and a terminally removed owner's WAL is never read again, so those events are **lost**, not merely unavailable. Everything that reached the replicas is served `[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`]`.
+- **Operator action:** replace the lost core. To make every acked event survive an owner's loss, set `min-sync-replicas = replicas` (see [known-limitations.md](known-limitations.md)).
+- **Proof anchor:** Forge `StreamDefaultRfOwnerReplacementTest` (owner killed, replacement joins under a fresh id, all replicated events served).
 
 ### Fresh-stream first-publish race
 
