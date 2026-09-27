@@ -62,7 +62,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -4160,9 +4159,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         @Contract
         private static void deleteWalFile(Option<AppendLog> wal) {
-            wal.onPresent(w -> FileOps.deleteIfExists(w.path()).onFailure(cause -> log.warn("Failed to delete WAL file {}: {}",
-                                                                                            w.path(),
-                                                                                            cause.message())));
+            wal.onPresent(w -> w.deleteFiles().onFailure(cause -> log.warn("Failed to delete WAL files of {}: {}",
+                                                                           w.path(),
+                                                                           cause.message())));
         }
     }
 }

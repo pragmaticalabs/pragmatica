@@ -14,6 +14,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -167,6 +168,19 @@ public interface StorageInstance {
         return StorageError.LogsUnsupported.logsUnsupported(name()).result();
     }
 
+    /// The names of the append logs under [#logRoot], as [#openLog] takes them. READ-ONLY (#1569 A3): it
+    /// lists files and opens none, so no log is recovered and nothing on the volume changes. Empty when the
+    /// root does not exist yet.
+    default Result<List<String>> listLogs() {
+        return StorageError.LogsUnsupported.logsUnsupported(name()).result();
+    }
+
+    /// The extent of log `name` -- lowest and highest valid offsets, valid and total bytes -- READ-ONLY
+    /// ([AppendLog#inspect]; #1569 A3/A4): a torn tail is reported, never cut.
+    default Result<AppendLog.LogExtent> inspectLog(String name) {
+        return StorageError.LogsUnsupported.logsUnsupported(name()).result();
+    }
+
     /// Seal offsets `[fromOffset, toOffset]` of `log`: store `block` -- the caller's encoding of that
     /// range -- under `refName`, and only then let `log` be truncated through `toOffset` (#1567).
     ///
@@ -231,13 +245,24 @@ public interface StorageInstance {
                                            MetadataStore metadataStore,
                                            WritePolicy writePolicy,
                                            Option<Path> logRoot) {
-        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy, logRoot);
+        return storageInstance(name, tiers, metadataStore, writePolicy, logRoot, AppendLog.TornTailListener.NONE);
+    }
+
+    /// As above, with the listener every log this instance opens reports a torn tail to (#1569 A10).
+    static StorageInstance storageInstance(String name,
+                                           List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           WritePolicy writePolicy,
+                                           Option<Path> logRoot,
+                                           AppendLog.TornTailListener tornTailListener) {
+        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy, logRoot, tornTailListener);
     }
 }
 
 final class DefaultStorageInstance implements StorageInstance {
     private static final Logger log = LoggerFactory.getLogger(DefaultStorageInstance.class);
     private static final long PROMOTION_FAILURE_WARN_EVERY = 1_000;
+    private static final String LOG_SUFFIX = ".wal";
 
     private final String name;
     private final List<StorageTier> tiers;
@@ -253,6 +278,7 @@ final class DefaultStorageInstance implements StorageInstance {
     private final MetadataStore metadataStore;
     private final WritePolicy writePolicy;
     private final Option<Path> logRoot;
+    private final AppendLog.TornTailListener tornTailListener;
     private final Option<WriteBehindQueue> writeBehindQueue;
     /// Non-capacity promotion failures per cache tier, for the WARN-once-then-every-N policy (#910).
     private final Map<TierLevel, AtomicLong> promotionFailures = new ConcurrentHashMap<>();
@@ -275,7 +301,8 @@ final class DefaultStorageInstance implements StorageInstance {
                            List<StorageTier> tiers,
                            MetadataStore metadataStore,
                            WritePolicy writePolicy,
-                           Option<Path> logRoot) {
+                           Option<Path> logRoot,
+                           AppendLog.TornTailListener tornTailListener) {
         this.name = name;
         this.tiers = List.copyOf(tiers);
         this.requiredTiers = requiredTiersOf(this.tiers);
@@ -283,6 +310,7 @@ final class DefaultStorageInstance implements StorageInstance {
         this.metadataStore = metadataStore;
         this.writePolicy = writePolicy;
         this.logRoot = logRoot;
+        this.tornTailListener = tornTailListener;
         this.writeBehindQueue = writePolicy == WritePolicy.WRITE_BEHIND
                                 ? some(WriteBehindQueue.writeBehindQueue())
                                 : none();
@@ -425,7 +453,20 @@ final class DefaultStorageInstance implements StorageInstance {
     public Result<AppendLog> openLog(String logName) {
         return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
                       .flatMap(root -> logFile(root, logName))
-                      .flatMap(AppendLog::open);
+                      .flatMap(file -> AppendLog.open(file, tornTailListener));
+    }
+
+    @Override
+    public Result<List<String>> listLogs() {
+        return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
+                      .flatMap(DefaultStorageInstance::logNamesUnder);
+    }
+
+    @Override
+    public Result<AppendLog.LogExtent> inspectLog(String logName) {
+        return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
+                      .flatMap(root -> logFile(root, logName))
+                      .flatMap(AppendLog::inspect);
     }
 
     /// Steps 1-3 of the interface doc, as a data dependency: the ref is repointed only in a continuation
@@ -792,12 +833,31 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     // --- Log / seal flow ---
+    private static Result<List<String>> logNamesUnder(Path root) {
+        return FileOps.exists(root)
+               ? FileOps.walk(root, DefaultStorageInstance::isLogFile).map(files -> logNames(root, files))
+               : Result.success(List.of());
+    }
+
+    private static boolean isLogFile(Path path) {
+        return FileOps.isRegularFile(path) && path.getFileName()
+                                                  .toString()
+                                                  .endsWith(LOG_SUFFIX);
+    }
+
+    private static List<String> logNames(Path root, List<Path> files) {
+        return files.stream()
+                    .map(file -> root.relativize(file).toString())
+                    .map(relative -> relative.substring(0, relative.length() - LOG_SUFFIX.length()))
+                    .sorted()
+                    .toList();
+    }
     /// `name` resolves strictly under `root`: relative, and never climbing out of it with `..`.
     private static Result<Path> logFile(Path root, String logName) {
         var invalid = StorageError.InvalidLogName.invalidLogName(logName);
 
         return Result.lift(_ -> invalid,
-                           () -> root.resolve(logName + ".wal"))
+                           () -> root.resolve(logName + LOG_SUFFIX))
                      .filter(invalid,
                              file -> isStrictlyUnder(root, file, logName));
     }

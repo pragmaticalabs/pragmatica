@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
@@ -16,6 +17,7 @@ import java.util.zip.CRC32;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -43,6 +45,12 @@ import static org.pragmatica.lang.Unit.unit;
 /// Every record is appended and **fsync'd before the append resolves**; on recovery the log is
 /// replayed, and records are truncated once a [StorageInstance#seal] has made a block holding them
 /// durable.
+///
+/// ## Owner-epoch history (#1567 A11)
+/// Beside the log sits `<log>.epochs`, the durable history of which owner epoch began writing at which
+/// offset ([#recordEpochStart], [#epochHistory]) -- what ranks replicas by `(last owner epoch, head)` after
+/// an ownership move or a cold restart. It is a separate file written by temp, force, rename and directory
+/// force ([EpochHistory]); the record framing below is unchanged by it.
 ///
 /// ## Seal-gated truncation (#1567)
 /// [#truncate] never discards past [#sealedThrough], and only [StorageInstance#seal] advances that
@@ -134,8 +142,6 @@ public final class AppendLog implements AutoCloseable {
     /// File-size watermark past which a `truncate` triggers a compaction rewrite (else O(1) lazy).
     private static final long COMPACTION_THRESHOLD_BYTES = 8L * 1024 * 1024;
 
-    private static final Consumer<WalRecord> NO_OP = _ -> {};
-
     private static final Fn1<Cause, Throwable> APPEND_FAILED = t -> new WalError.AppendFailed(t.getMessage());
 
     private static final Fn1<Cause, Throwable> TRUNCATE_FAILED = t -> new WalError.TruncateFailed(t.getMessage());
@@ -162,8 +168,11 @@ public final class AppendLog implements AutoCloseable {
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
 
-    private AppendLog(Path file, FileChannel channel, long writePosition, long lastOffset) {
+    private final EpochHistory epochs;
+
+    private AppendLog(Path file, FileChannel channel, long writePosition, long lastOffset, EpochHistory epochs) {
         this.file = file;
+        this.epochs = epochs;
         this.channel = channel;
         this.writePosition = writePosition;
         this.lastOffset = lastOffset;
@@ -183,16 +192,48 @@ public final class AppendLog implements AutoCloseable {
     /// entry for a reader of a known file (a verification or tool). Its truncation is seal-gated all
     /// the same.
     public static Result<AppendLog> open(Path file) {
+        return open(file, TornTailListener.NONE);
+    }
+
+    /// [#open], reporting a torn tail the recovery cut off to `listener` as well as at WARN (#1569 A10).
+    /// Recovery -- the only step of a log's life that rewrites bytes it did not append -- runs HERE, on
+    /// an explicit open, and never on a read-only path ([#inspect], [StorageInstance#listLogs]).
+    public static Result<AppendLog> open(Path file, TornTailListener listener) {
+        return open(file, listener, FileOps::writeBytesForced);
+    }
+
+    /// Test seam: `sidecarWriter` writes (and forces) the epoch history's temp file ([EpochHistory]).
+    static Result<AppendLog> open(Path file, TornTailListener listener, Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
         var absolute = file.toAbsolutePath();
 
         return FileOps.createDirectoriesDurable(absolute.getParent()).flatMap(_ -> openDurably(absolute,
-                                                                                               Files.exists(absolute)));
+                                                                                               Files.exists(absolute),
+                                                                                               listener,
+                                                                                               sidecarWriter));
     }
 
-    private static Result<AppendLog> openDurably(Path file, boolean existed) {
+    /// What a log file holds, read without opening, recovering or writing it (#1569 A3/A4): the lowest and
+    /// highest valid offsets (`-1` for none), the bytes of the valid prefix, and the file's size -- a larger
+    /// size means a torn tail that the next [#open] would cut. The inventory probe reads this from a volume
+    /// it may not end up owning, so it must leave the volume byte-identical.
+    public static Result<LogExtent> inspect(Path file) {
+        return FileOps.readBytes(file).map(AppendLog::extentOf);
+    }
+
+    private static LogExtent extentOf(byte[] bytes) {
+        var low = new AtomicLong(-1);
+        var result = scan(wrapBigEndian(bytes), Long.MIN_VALUE, record -> low.compareAndSet(-1, record.offset()));
+
+        return new LogExtent(low.get(), result.lastOffset(), result.validEnd(), bytes.length);
+    }
+
+    private static Result<AppendLog> openDurably(Path file,
+                                                 boolean existed,
+                                                 TornTailListener listener,
+                                                 Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
         return existed
-               ? recover(file)
-               : recover(file).flatMap(AppendLog::forceCreatedEntry);
+               ? recover(file, listener, sidecarWriter)
+               : recover(file, listener, sidecarWriter).flatMap(AppendLog::forceCreatedEntry);
     }
 
     /// A failed force closes the log it just opened: its file may not survive a power loss, so it is
@@ -267,6 +308,42 @@ public final class AppendLog implements AutoCloseable {
     /// recorded (#1567); `-1` before the first seal since open. The ceiling of [#truncate].
     public long sealedThrough() {
         return sealedThrough.get();
+    }
+
+    /// Record, durably, that owner epoch `ownerEpoch` begins writing this log at `startOffset` (#1567 A11,
+    /// KIP-101's leader-epoch checkpoint). Durable before it returns -- see [EpochHistory] for the write
+    /// sequence -- and monotonic: refused with [WalError.EpochRegression] for an epoch at or below the last
+    /// one or a start below the last start, a no-op when it repeats the last entry exactly.
+    public Result<Unit> recordEpochStart(long ownerEpoch, long startOffset) {
+        return epochs.recordStart(ownerEpoch, startOffset);
+    }
+
+    /// The owner-epoch history, oldest first, as last made durable. Reads memory only.
+    public List<EpochStart> epochHistory() {
+        return epochs.entries();
+    }
+
+    /// Drop every epoch entry starting above `offset`, durably -- for a log truncated back to `offset`,
+    /// where no epoch began past it.
+    public Result<Unit> truncateEpochsAbove(long offset) {
+        return epochs.truncateAbove(offset);
+    }
+
+    /// Delete the log's files -- the log, its epoch history and any stale temp -- after [#close], when the
+    /// log itself is being discarded (a deleted stream). Best effort per file; the first failure is returned.
+    public Result<Unit> deleteFiles() {
+        var sidecar = EpochHistory.sidecarOf(file);
+
+        return Result.allOf(FileOps.deleteIfExists(file),
+                            FileOps.deleteIfExists(sidecar),
+                            FileOps.deleteIfExists(sidecar.resolveSibling(sidecar.getFileName() + ".tmp")))
+                     .mapToUnit();
+    }
+
+    /// READ-ONLY (#1569 A3): the owner-epoch history of the log at `file` as it is on the volume, without
+    /// opening the log; empty when it has none, a failure when its sidecar is damaged.
+    public static Result<List<EpochStart>> readEpochHistory(Path file) {
+        return EpochHistory.read(file.toAbsolutePath());
     }
 
     /// Called by [StorageInstance#seal] only, after the sealed block is durable and its ref recorded --
@@ -550,25 +627,71 @@ public final class AppendLog implements AutoCloseable {
     }
 
     // === open / recovery ===
-    private static Result<AppendLog> recover(Path file) {
-        return openChannel(file).flatMap(channel -> recoverFrom(file, channel));
+    private static Result<AppendLog> recover(Path file,
+                                             TornTailListener listener,
+                                             Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+        return openChannel(file).flatMap(channel -> recoverFrom(file, channel, listener, sidecarWriter));
     }
 
-    private static Result<AppendLog> recoverFrom(Path file, FileChannel channel) {
+    /// The epoch history is loaded before the torn tail is cut: a sidecar that cannot be read refuses the
+    /// open (closing the channel) with the log file untouched -- the ranking it feeds cannot be trusted, and
+    /// an operator must look before anything is discarded.
+    private static Result<AppendLog> recoverFrom(Path file,
+                                                 FileChannel channel,
+                                                 TornTailListener listener,
+                                                 Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+        return EpochHistory.load(file, sidecarWriter)
+                           .onFailure(_ -> closeQuietly(file, channel))
+                           .flatMap(history -> recoverWith(file, channel, listener, history));
+    }
+
+    private static Result<AppendLog> recoverWith(Path file,
+                                                 FileChannel channel,
+                                                 TornTailListener listener,
+                                                 EpochHistory history) {
         return FileOps.readBytes(file)
-                      .map(AppendLog::wrapBigEndian)
-                      .map(buf -> scan(buf, Long.MIN_VALUE, NO_OP))
-                      .flatMap(result -> truncateAndBuild(file, channel, result));
+                      .map(AppendLog::extentOf)
+                      .onSuccess(extent -> reportTornTail(file, extent, listener))
+                      .flatMap(extent -> truncateAndBuild(file,
+                                                          channel,
+                                                          new ScanResult(extent.validBytes(), extent.headOffset()),
+                                                          history));
     }
 
-    private static Result<AppendLog> truncateAndBuild(Path file, FileChannel channel, ScanResult result) {
+    private static void closeQuietly(Path file, FileChannel channel) {
+        Result.lift(CLOSE_FAILED, channel::close)
+              .onFailure(cause -> log.warn("AppendLog close issue for {}: {}", file, cause.message()));
+    }
+
+    /// #1569 A10: cutting a torn tail discards bytes, so it is never silent -- a WARN naming the log, the
+    /// byte range cut and the last valid offset, and the same fact to `listener`, which the node turns into
+    /// a cluster event.
+    private static void reportTornTail(Path file, LogExtent extent, TornTailListener listener) {
+        if (extent.fileBytes() > extent.validBytes()) {
+            var torn = new TornTail(file, extent.validBytes(), extent.fileBytes(), extent.headOffset());
+
+            log.warn("Append log {} has a torn tail: truncating bytes [{}, {}) past the last valid record (offset {}); "
+                    + "a record in that range was never acknowledged",
+                     file,
+                     torn.validEnd(),
+                     torn.fileBytes(),
+                     torn.lastValidOffset());
+            listener.tornTail(torn);
+        }
+    }
+
+    private static Result<AppendLog> truncateAndBuild(Path file,
+                                                      FileChannel channel,
+                                                      ScanResult result,
+                                                      EpochHistory history) {
         return Result.lift(t -> new WalError.OpenFailed(file,
                                                         t.getMessage()),
                            () -> channel.truncate(result.validEnd()))
                      .map(_ -> new AppendLog(file,
                                              channel,
                                              result.validEnd(),
-                                             result.lastOffset()));
+                                             result.lastOffset(),
+                                             history));
     }
 
     private static Result<FileChannel> openChannel(Path file) {
@@ -698,6 +821,25 @@ public final class AppendLog implements AutoCloseable {
 
     private record ScanResult(long validEnd, long lastOffset) {}
 
+    /// Owner epoch `ownerEpoch` began writing the log at `startOffset`.
+    public record EpochStart(long ownerEpoch, long startOffset) {}
+
+    /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record.
+    public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {}
+
+    /// A torn tail cut by recovery: bytes `[validEnd, fileBytes)` of `file` were discarded, and
+    /// `lastValidOffset` (`-1` for none) is the last record kept.
+    public record TornTail(Path file, long validEnd, long fileBytes, long lastValidOffset) {}
+
+    /// Receives every [TornTail] a recovery cuts (#1569 A10). The storage engine has no event plumbing of
+    /// its own; the node supplies a listener that raises the cluster event.
+    @FunctionalInterface
+    public interface TornTailListener {
+        TornTailListener NONE = _ -> Unit.unit();
+
+        Unit tornTail(TornTail tornTail);
+    }
+
     /// Failures surfaced by the WAL surface. I/O faults carry the underlying detail message; the
     /// enum holds the single fixed-message state error.
     public sealed interface WalError extends Cause {
@@ -759,6 +901,33 @@ public final class AppendLog implements AutoCloseable {
             @Override
             public String message() {
                 return "WAL close failed: " + detail;
+            }
+        }
+
+        /// A [#recordEpochStart] that would move the history backwards (#1567 A11).
+        record EpochRegression(long ownerEpoch, long startOffset, long lastEpoch, long lastStart) implements WalError {
+            @Override
+            public String message() {
+                return "Epoch start refused: epoch %d at offset %d does not follow epoch %d at offset %d".formatted(ownerEpoch,
+                                                                                                                  startOffset,
+                                                                                                                  lastEpoch,
+                                                                                                                  lastStart);
+            }
+        }
+
+        /// The epoch-history sidecar is damaged; the log is not opened. Recovery: inspect the sidecar -- it
+        /// ranks this replica against others after an ownership move, so it is never silently dropped.
+        record EpochHistoryCorrupt(Path sidecar, String detail) implements WalError {
+            @Override
+            public String message() {
+                return "Epoch history %s is damaged: %s".formatted(sidecar, detail);
+            }
+        }
+
+        record EpochWriteFailed(Path sidecar, String detail) implements WalError {
+            @Override
+            public String message() {
+                return "Epoch history %s could not be written durably: %s".formatted(sidecar, detail);
             }
         }
     }
