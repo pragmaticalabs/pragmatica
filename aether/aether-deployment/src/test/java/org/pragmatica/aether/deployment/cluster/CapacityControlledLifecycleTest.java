@@ -137,7 +137,7 @@ class CapacityControlledLifecycleTest {
         assertThat(ledger().inventoryComplete()).isTrue();
         assertThat(store.getTyped(new AetherKey.CapacityReservationKey(new NodeId("existing-east")),
                                   AetherValue.CapacityReservationValue.class).map(AetherValue.CapacityReservationValue::phase))
-            .as("the source's pre-existing instance is counted").contains(AetherValue.CapacityReservationPhase.OBSERVED);
+            .as("the source's pre-existing instance is counted").isEqualTo(Option.some(AetherValue.CapacityReservationPhase.OBSERVED));
         assertThat(ledger().allocated()).as("seed-era reservation + observed instance + new reservation").isEqualTo(3);
         assertThat(creates.get()).isEqualTo(2);
     }
