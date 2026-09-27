@@ -516,23 +516,35 @@ public interface StreamConfigParser {
         var retention = parseRetention(section);
 
         return firstFailure(List.of(partitions, replicas, minSync, maxEventSize, consistency, compression, retention)).map(failure -> failure.<StreamConfig> map(_ -> StreamConfig.DEFAULT))
-                           .or(() -> Result.all(partitions,
-                                                retention,
-                                                maxEventSize,
-                                                consistency,
-                                                replicas,
-                                                minSync,
-                                                compression).map((p, r, size, mode, rf, sync, codec) -> StreamConfig.streamConfig(alias,
-                                                                                                                                  p,
-                                                                                                                                  r,
-                                                                                                                                  section.string("auto-offset-reset")
-                                                                                                                                         .or("earliest"),
-                                                                                                                                  size,
-                                                                                                                                  parseConsistencyMode(mode),
-                                                                                                                                  rf,
-                                                                                                                                  sync,
-                                                                                                                                  parseCompression(codec),
-                                                                                                                                  section.string("encryption-key-id"))));
+                           .or(() -> assemble(section,
+                                              partitions,
+                                              retention,
+                                              maxEventSize,
+                                              consistency,
+                                              replicas,
+                                              minSync,
+                                              compression));
+    }
+
+    private static Result<StreamConfig> assemble(StreamSection section,
+                                                 Result<Integer> partitions,
+                                                 Result<RetentionPolicy> retention,
+                                                 Result<Long> maxEventSize,
+                                                 Result<String> consistency,
+                                                 Result<Integer> replicas,
+                                                 Result<Integer> minSync,
+                                                 Result<String> compression) {
+        return Result.all(partitions, retention, maxEventSize, consistency, replicas, minSync, compression).map((p, r, size, mode, rf, sync, codec) -> StreamConfig.streamConfig(section.alias(),
+                                                                                                                                                                                 p,
+                                                                                                                                                                                 r,
+                                                                                                                                                                                 section.string("auto-offset-reset")
+                                                                                                                                                                                        .or("earliest"),
+                                                                                                                                                                                 size,
+                                                                                                                                                                                 parseConsistencyMode(mode),
+                                                                                                                                                                                 rf,
+                                                                                                                                                                                 sync,
+                                                                                                                                                                                 parseCompression(codec),
+                                                                                                                                                                                 section.string("encryption-key-id")));
     }
 
     private static Option<Result<?>> firstFailure(List<Result<?>> results) {
@@ -616,10 +628,17 @@ public interface StreamConfigParser {
         var maxAge = optionalLong(section, "max-age", StreamValues::duration, DEFAULTS.maxAgeMs());
 
         return firstFailure(List.of(maxCount, maxBytes, maxAge)).map(failure -> failure.<RetentionPolicy> map(_ -> DEFAULTS))
-                           .or(() -> Result.all(maxCount, maxBytes, maxAge).map((count, bytes, age) -> RetentionPolicy.retentionPolicy(count,
-                                                                                                                                       bytes,
-                                                                                                                                       age,
-                                                                                                                                       mode)));
+                           .or(() -> compoundPolicy(maxCount, maxBytes, maxAge, mode));
+    }
+
+    private static Result<RetentionPolicy> compoundPolicy(Result<Long> maxCount,
+                                                          Result<Long> maxBytes,
+                                                          Result<Long> maxAge,
+                                                          RetentionMode mode) {
+        return Result.all(maxCount, maxBytes, maxAge).map((count, bytes, age) -> RetentionPolicy.retentionPolicy(count,
+                                                                                                                 bytes,
+                                                                                                                 age,
+                                                                                                                 mode));
     }
 
     private static Map<String, ConsumerConfig> extractConsumerConfigs(TomlDocument doc, String streamName) {
