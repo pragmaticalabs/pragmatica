@@ -74,6 +74,24 @@ class CapacityControlledLifecycleTest {
             ProvisionContext.forBootstrap(ClusterName.clusterName("test").unwrap(), "worker", SourceName.sourceName(source).unwrap(), node)).unwrap();
     }
 
+    /// #1551: on a self-bootstrapped cluster the committed config is the BootstrapModule seed
+    /// (`tomlContent=""`). Fleet inventory has no operator sources to list, so it completes empty and the
+    /// reservation proceeds to the provider, instead of failing the parse and blocking every provision.
+    @Test
+    void provisionNode_bootstrapSeedConfig_completesEmptyInventoryAndDispatches() {
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+                                 AetherValue.ClusterConfigValue.clusterConfigValue("", "test", "1.0.0",
+                                                                                   List.of(new AetherValue.TopologyEntry("", "core", 5)),
+                                                                                   3, 9, "bootstrap-seed", 1L)));
+
+        lifecycle.provisionNode(spec("new-core", "default")).await();
+
+        assertThat(creates.get()).as("the provider create must be reached").isEqualTo(1);
+        assertThat(ledger().inventoryComplete()).isTrue();
+        assertThat(ledger().allocated()).isEqualTo(1);
+    }
+
     @Test
     void unresolvedIdentityCannotBeReusedEvenWithSpareFleetCapacity() {
         initialize(0);

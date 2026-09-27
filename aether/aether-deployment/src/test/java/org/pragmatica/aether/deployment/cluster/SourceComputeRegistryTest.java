@@ -146,6 +146,37 @@ class SourceComputeRegistryTest {
         assertThat(calls).hasValue(1);
     }
 
+    /// #1551: a self-bootstrapped cluster commits only the BootstrapModule seed (`tomlContent=""`). The
+    /// unbound siblings (`resolve(source)`, `sources`, `isAvailable`) read that as "no operator config" and
+    /// use the local provider; the bound path (`binding`, `resolve(source, binding)`) must agree, or every
+    /// scale-up and auto-heal provision fails before reaching a provider.
+    @Test
+    void binding_bootstrapSeedWithLocalProvider_bindsAndResolvesToTheLocalProvider() {
+        var local = new NoopProvider();
+        var registry = SourceComputeRegistry.sourceComputeRegistry(() -> Option.some(value("")),
+                                                                   Option.<ComputeProvider>some(local),
+                                                                   _ -> org.pragmatica.lang.utils.Causes.cause("Factory must not run for the local provider")
+                                                                                                        .result());
+        var binding = registry.binding(SourceName.DEFAULT);
+
+        assertThat(binding.isSuccess()).as("bound path on the bootstrap seed: %s", binding).isTrue();
+        assertThat(registry.resolve(SourceName.DEFAULT, binding.unwrap())
+                           .unwrap()).isSameAs(local)
+                                     .isSameAs(registry.resolve(SourceName.DEFAULT).unwrap());
+    }
+
+    /// The seed fallback exists only where the unbound sibling has one: without a local provider the bound
+    /// path still refuses rather than inventing a provider.
+    @Test
+    void binding_bootstrapSeedWithoutLocalProvider_refuses() {
+        var registry = SourceComputeRegistry.sourceComputeRegistry(() -> Option.some(value("")),
+                                                                   _ -> org.pragmatica.lang.utils.Causes.cause("Factory must not run")
+                                                                                                        .result());
+
+        assertThat(registry.binding(SourceName.DEFAULT).isFailure()).isTrue();
+        assertThat(registry.resolve(SourceName.DEFAULT, "local").isFailure()).isTrue();
+    }
+
     private static SourceComputeRegistry protectedRegistry(String credential) {
         var source = org.pragmatica.config.source.MapConfigSource.mapConfigSource("test",
                                                                                   java.util.Map.of("cloud.sources.west.provider",
