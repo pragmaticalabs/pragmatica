@@ -2819,9 +2819,15 @@ public interface AetherNode extends ManageableNode {
                                                                           readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
                                                                                               membershipFsmRef::get),
                                                                           node));
-        var verifiedVoterIdentities = new AtomicReference<>(clusterNode.verifiedVoterHistoryIds());
+        // #1526: configured cores are bootstrap identities and keep core admission intent after a fresh
+        // genesis that did not include them (a cold restart forms genesis from the cores present), so a
+        // configured core that comes back late is admitted and voted in through a Rabia §4 add.
+        var configuredCoreIds = configuredVoters(config);
+        var verifiedVoterIdentities = new AtomicReference<>(bootstrapIdentities(configuredCoreIds,
+                                                                                clusterNode.verifiedVoterHistoryIds()));
 
-        clusterNode.onVoterConfiguration(_ -> verifiedVoterIdentities.set(clusterNode.verifiedVoterHistoryIds()));
+        clusterNode.onVoterConfiguration(_ -> verifiedVoterIdentities.set(bootstrapIdentities(configuredCoreIds,
+                                                                                              clusterNode.verifiedVoterHistoryIds())));
         var coreAdmission = CoreAdmission.coreAdmission(membershipFsmRef::get,
                                                         verifiedVoterIdentities::get,
                                                         node -> kvStore.getTyped(new AetherKey.CapacityReservationKey(node),
@@ -5879,7 +5885,13 @@ public interface AetherNode extends ManageableNode {
         return singleNodeGenesis(config, configured, count).map(node::initializeVoters)
                                 .or(() -> node.deferGenesis(() -> discoveredCores(membershipFsmRef),
                                                             count,
-                                                            configured.map(VoterConfiguration::roster)));
+                                                            configured.map(VoterConfiguration::roster),
+                                                            expectedCores(config, configured)));
+    }
+
+    private static Set<NodeId> expectedCores(AetherNodeConfig config, Option<VoterConfiguration> configured) {
+        return configured.map(roster -> Set.copyOf(roster.members()))
+                         .or(() -> configuredVoters(config));
     }
 
     private static Option<VoterConfiguration> singleNodeGenesis(AetherNodeConfig config,
@@ -5889,6 +5901,12 @@ public interface AetherNode extends ManageableNode {
                                                       count))
                          .filter(roster -> roster.members()
                                                  .equals(List.of(config.self())));
+    }
+
+    static Set<NodeId> bootstrapIdentities(Set<NodeId> configuredCores, Set<NodeId> voterHistory) {
+        return Stream.concat(configuredCores.stream(),
+                             voterHistory.stream())
+                     .collect(Collectors.toUnmodifiableSet());
     }
 
     private static Result<Option<VoterConfiguration>> configuredGenesis(AetherNodeConfig config) {

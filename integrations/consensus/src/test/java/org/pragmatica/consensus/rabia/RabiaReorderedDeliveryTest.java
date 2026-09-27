@@ -238,7 +238,7 @@ class RabiaReorderedDeliveryTest {
             for (int index = 0; index < 3; index++) {
                 var engine = cluster.engines.get(index);
                 var own = cluster.members.get(index);
-                assertThat(engine.deferGenesis(() -> index(visible.get(), own), 3, Option.none()).isSuccess()).isTrue();
+                assertThat(engine.deferGenesis(() -> index(visible.get(), own), 3, Option.none(), Set.copyOf(cluster.members)).isSuccess()).isTrue();
                 engine.clusterState(ClusterStateNotification.active());
             }
             cluster.genesisRounds(List.of(0, 1), 6);
@@ -272,7 +272,7 @@ class RabiaReorderedDeliveryTest {
             var views = List.of(left, left, Set.copyOf(members), right, right);
             for (int index = 0; index < 5; index++) {
                 var view = views.get(index);
-                assertThat(cluster.engines.get(index).deferGenesis(() -> view, 3, Option.none()).isSuccess()).isTrue();
+                assertThat(cluster.engines.get(index).deferGenesis(() -> view, 3, Option.none(), Set.of()).isSuccess()).isTrue();
             }
             cluster.genesisRounds(List.of(0, 1, 2, 3, 4), 10);
 

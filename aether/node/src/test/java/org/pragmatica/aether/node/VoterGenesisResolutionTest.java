@@ -36,6 +36,12 @@ class VoterGenesisResolutionTest {
         assertThat(AetherNode.parseGenesisVoters("c,b,a").unwrap()).isEqualTo(GENESIS);
     }
 
+    /// A configured core outside a fresh genesis roster keeps core admission intent, so it can be voted in.
+    @Test void bootstrapIdentities_includeConfiguredCoresOutsideTheVoterHistory() {
+        assertThat(AetherNode.bootstrapIdentities(Set.of(A, B, C), Set.of(A, B))).containsExactlyInAnyOrder(A, B, C);
+        assertThat(AetherNode.bootstrapIdentities(Set.of(A), Set.of(A, B))).containsExactlyInAnyOrder(A, B);
+    }
+
     @Test void retryGenesis_workerWithALateCore_completesOnceItIsDiscovered() {
         var pending = new AtomicBoolean(true);
         var installed = new ArrayList<VoterConfiguration>();

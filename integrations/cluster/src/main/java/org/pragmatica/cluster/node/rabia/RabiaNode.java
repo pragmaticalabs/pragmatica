@@ -189,7 +189,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// implementations without a Rabia engine.
     default Result<Unit> deferGenesis(Supplier<Set<NodeId>> discovered,
                                       int configuredCount,
-                                      Option<ClusterConfig> fixedView) {
+                                      Option<ClusterConfig> fixedView,
+                                      Set<NodeId> configuredCores) {
         return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
     }
 
@@ -779,8 +780,9 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Result<Unit> deferGenesis(Supplier<Set<NodeId>> discovered,
                                              int configuredCount,
-                                             Option<ClusterConfig> fixedView) {
-                return consensus().deferGenesis(discovered, configuredCount, fixedView);
+                                             Option<ClusterConfig> fixedView,
+                                             Set<NodeId> configuredCores) {
+                return consensus().deferGenesis(discovered, configuredCount, fixedView, configuredCores);
             }
 
             @Override

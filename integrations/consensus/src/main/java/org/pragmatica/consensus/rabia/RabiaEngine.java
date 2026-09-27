@@ -138,6 +138,7 @@ public class RabiaEngine<C extends Command> {
     private volatile Option<VoterConfiguration> genesis = Option.none();
     private volatile boolean genesisPending;
     private volatile Option<Supplier<Set<NodeId>>> genesisDiscovery = Option.none();
+    private volatile Set<NodeId> genesisConfiguredCores = Set.of();
     /// Executor-confined after [#start]. Genesis view agreement while genesis is pending.
     private volatile Option<GenesisViewAgreement> genesisAgreement = Option.none();
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
@@ -279,10 +280,15 @@ public class RabiaEngine<C extends Command> {
     /// discovery: it is the view and nothing is merged. A core whose electorate has already formed answers
     /// an announcement with its configuration, and a pending node installs that instead, so a late or
     /// replacement core joins the running cluster rather than starting a second one.
+    ///
+    /// `configuredCores` names the cores the configuration lists; it is used only to tell the operator
+    /// which of them have not appeared while genesis waits.
     public synchronized Result<Unit> deferGenesis(Supplier<Set<NodeId>> discovered,
                                                   int configuredCount,
-                                                  Option<ClusterConfig> fixedView) {
-        return deferGenesis().onSuccess(_ -> armGenesisAgreement(discovered, configuredCount, fixedView));
+                                                  Option<ClusterConfig> fixedView,
+                                                  Set<NodeId> configuredCores) {
+        return deferGenesis().onSuccess(_ -> armGenesisAgreement(discovered, configuredCount, fixedView))
+                           .onSuccess(_ -> genesisConfiguredCores = Set.copyOf(configuredCores));
     }
 
     private void armGenesisAgreement(Supplier<Set<NodeId>> discovered,
@@ -339,21 +345,40 @@ public class RabiaEngine<C extends Command> {
         completeGenesisIfAgreed(agreement);
     }
 
+    /// Every [#GENESIS_WARN_EVERY_ROUNDS] rounds a pending node says why it waits and what clears it.
     private void logGenesisWait(GenesisViewAgreement.Status status, long round) {
-        if (status.stage() == GenesisViewAgreement.Stage.EXCEEDS_COUNT && round % GENESIS_WARN_EVERY_ROUNDS == 1) {
-            log.warn("Node {} will NOT start genesis: {} core candidates are visible for the configured count: {}. "
-                    + "Set cluster.genesis_voters or remove the extra candidates (restart clears a node's view).",
+        if (round % GENESIS_WARN_EVERY_ROUNDS != 1) {
+            return;
+        }
+
+        if (status.stage() == GenesisViewAgreement.Stage.EXCEEDS_COUNT) {
+            log.warn("Node {} will NOT start genesis: {} core candidates are visible, more than the configured core count: {}. "
+                    + "Operator action: set cluster.genesis_voters to the intended roster, or remove the extra candidates "
+                    + "(restarting a node clears its view).",
                      self,
                      status.view().size(),
                      status.view());
+
+            return;
         }
 
-        if (status.stage() == GenesisViewAgreement.Stage.WAITING && round % GENESIS_WARN_EVERY_ROUNDS == 1) {
-            log.info("Node {} genesis pending: view {}, waiting for a stable report from {}",
+        if (status.stage() == GenesisViewAgreement.Stage.WAITING) {
+            log.warn("Node {} genesis pending: view {} ({} cores); configured cores not yet visible: {}; members not yet "
+                    + "reporting this view stably: {}. Genesis needs every configured core. Operator action: start or "
+                    + "reconnect the missing cores, or lower the cluster core count to the cores that exist, or set "
+                    + "cluster.genesis_voters to the intended roster.",
                      self,
                      status.view(),
+                     status.view().size(),
+                     missingConfiguredCores(status.view()),
                      status.missing());
         }
+    }
+
+    private Set<NodeId> missingConfiguredCores(Set<NodeId> view) {
+        return genesisConfiguredCores.stream()
+                                     .filter(core -> !view.contains(core))
+                                     .collect(Collectors.toUnmodifiableSet());
     }
 
     private void completeGenesisIfAgreed(GenesisViewAgreement agreement) {

@@ -110,6 +110,16 @@ import static org.awaitility.Awaitility.await;
 ///
 /// PASS  = zero provisions across the hold and the rejoin, the same 5 stable ids come back, AND the
 ///         positive control fills a genuine deficit (so the zero is not vacuous).
+///
+/// ## #1526 fixture change
+/// A full-cluster restart now forms a FRESH genesis from the cores present, and genesis forms only from
+/// the full roster it names, so the held-back members can no longer be genesis members that the others
+/// form without. The restarted genesis roster is the three cores started first (Ember gives
+/// `cluster.genesis_voters` only to started initial nodes); the two held-back members are configured
+/// cores that come back later, join the formed electorate as observers and are voted in through Rabia §4
+/// add commands, after which the electorate is five again. The #509 question is unchanged — slow
+/// configured members must not be replaced by provisioned nodes during the hold or the rejoin — and the
+/// rejoin now additionally waits for the two adds to land before the positive control runs.
 /// FAIL  = any provision during the hold — #509 reproducing at assembly level (the failure names the
 ///         requested node ids and when each was requested).
 @Tag("Heavy")
@@ -428,6 +438,12 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
         await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> countedCores() >= INITIAL_CORES);
         await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> cluster.currentLeader()
                                                                              .isPresent());
+        // #1526: the released configured cores are voted back in through Rabia §4 adds.
+        await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy)
+               .until(() -> cluster.currentLeader().flatMap(cluster::getNode)
+                                   .map(leader -> leader.coreNodeIds().size() == INITIAL_CORES)
+                                   .or(false));
+        recordMilestone("REJOIN: held-back members voted back into the electorate");
     }
 
     // ----- observation -----

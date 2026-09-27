@@ -22,5 +22,15 @@ whole-cluster restart is the exception, because no running peer remembers the ol
 The node status `voterReconfiguration` field reports the installed voter epoch, a requested change,
 and added voters still catching up (#1526). A voter change agreed at slot R governs from R+1; the
 new roster decides as soon as a majority of it is live, so replacing a dead core has no write pause.
-`GENESIS_PENDING` means a node is still discovering the full configured core roster; it clears when
-every configured core is reachable.
+`GENESIS_PENDING` means a node is still agreeing the genesis roster. Genesis needs every configured
+core: epoch 0 starts only when the view of authenticated cores has exactly the configured core count and
+every member reported that view in two consecutive rounds (#1526). A consequence to plan for: a cold
+restart with a core permanently lost never forms on its own. The waiting node logs a WARN every ten
+rounds naming the configured cores not yet visible and the members not yet reporting.
+
+**Recovery action:** start or reconnect the missing cores; or lower the cluster core count to the cores
+that exist; or set `cluster.genesis_voters` to the intended roster on every node. With more core
+candidates visible than configured and no `cluster.genesis_voters`, the node refuses to choose and logs a
+WARN with the candidate set: set `cluster.genesis_voters`, or remove the extra candidates (restarting a
+node clears its in-memory view). A configured core that comes back after genesis joins as an observer and
+is voted in through a Rabia §4 add.
