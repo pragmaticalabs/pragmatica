@@ -1049,6 +1049,31 @@ public interface AetherNode extends ManageableNode {
                                      nonDurableStreamsAllowed()).mapToUnit();
     }
 
+    /// #1567 F12/N2 — the durable-block counterpart of [#verifyWalBootable], at the same production entry
+    /// point. The `streams` instance's local-disk tier lives in `<streamDataDir>/segments`; when it cannot be
+    /// created the instance is built from memory and the in-memory DHT tier alone, where every seal refuses
+    /// (`StorageError.NoDurableTier`) -- so nothing is ever "sealed" into RAM and the WAL is never truncated
+    /// past it, but sealing stops and the WAL grows without bound. A node must not boot silently into that
+    /// state: without the same explicit non-durable opt-in, boot is refused. Directly constructed nodes
+    /// (Forge, Ember, tests) never pass through Main and keep the loud degrade, exactly as the WAL gate does.
+    public static Result<Unit> verifyStreamSegmentsBootable(AetherNodeConfig config) {
+        var segmentsDir = streamDataDir(config).resolve("segments");
+
+        return decideSegmentsAvailability(segmentsDir,
+                                          FileOps.createDirectories(segmentsDir).mapToUnit(),
+                                          nonDurableStreamsAllowed());
+    }
+
+    /// The pure decision, package-visible for [#verifyStreamSegmentsBootable]'s test.
+    static Result<Unit> decideSegmentsAvailability(Path segmentsDir, Result<Unit> probe, boolean allowNonDurable) {
+        return probe.fold(cause -> allowNonDurable
+                                   ? Result.unitResult()
+                                   : StorageFactory.StreamDiskTierUnavailable.streamDiskTierUnavailable(segmentsDir,
+                                                                                                       cause.message())
+                                                                              .result(),
+                          _ -> Result.unitResult());
+    }
+
     /// The #492-class killer (#634 structural follow-up): every ROUTED `Message.Wired` type must have
     /// a codec at boot, or the node REFUSES to start — the alternative, lived twice, is a generated
     /// codec registry that exists but was never aggregated, so every message of that type silently

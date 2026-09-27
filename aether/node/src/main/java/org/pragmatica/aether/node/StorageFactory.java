@@ -610,8 +610,7 @@ public final class StorageFactory {
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
 
         return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
-                                                                                    log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
-                                                                                             cause.message());
+                                                                                    warnNoDurableStreamTier(segmentsDir, cause);
 
                                                                                     return Result.success(withDht(dhtBuild,
                                                                                                                   List.of(memoryTier)));
@@ -629,14 +628,42 @@ public final class StorageFactory {
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
 
         return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
-                                                                                    log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
-                                                                                             cause.message());
+                                                                                    warnNoDurableStreamTier(segmentsDir, cause);
 
                                                                                     return withDht(dhtBuild,
                                                                                                    List.of(memoryTier));
                                                                                 },
                                                                                 disk -> withDht(dhtBuild,
                                                                                                 List.of(memoryTier, disk)));
+    }
+
+    /// #1567 F12: the fallback is loud because it stops sealing -- every seal on a tier list without a durable
+    /// tier refuses, so the WAL keeps every record and grows. A production boot refuses before it gets here
+    /// ([AetherNode#verifyStreamSegmentsBootable]); a directly constructed node degrades.
+    /// TODO(#1574): also emit this as an OperatorWarning cluster event once that event type exists.
+    private static void warnNoDurableStreamTier(Path segmentsDir, Cause cause) {
+        log.warn("Disk tier for 'streams' unavailable at {}: {}. Using memory + DHT only: stream segments can NOT be "
+                + "sealed (no durable tier) and each partition's WAL keeps every record until the disk tier is back "
+                + "and the node restarts",
+                 segmentsDir,
+                 cause.message());
+    }
+
+    /// The `streams` block tier could not be created and non-durable streams were not opted into (#1567
+    /// F12). Recovery: make `segmentsDir` creatable (mount, permissions, space) and restart, or opt in to
+    /// non-durable streams with `-Daether.allowNonDurableStreams=true`.
+    public record StreamDiskTierUnavailable(Path segmentsDir, String detail) implements Cause {
+        static StreamDiskTierUnavailable streamDiskTierUnavailable(Path segmentsDir, String detail) {
+            return new StreamDiskTierUnavailable(segmentsDir, detail);
+        }
+
+        @Override
+        public String message() {
+            return "stream segment directory " + segmentsDir + " cannot be created (" + detail
+                   + ") -- refusing to boot: sealed stream segments would have no durable tier, so no segment could "
+                   + "be sealed and every WAL would grow without bound. Fix the mount, or opt in to non-durable "
+                   + "streams explicitly with -Daether.allowNonDurableStreams=true";
+        }
     }
 
     private static Result<StorageSetup> assembleStreamSetup(List<StorageTier> tiers,

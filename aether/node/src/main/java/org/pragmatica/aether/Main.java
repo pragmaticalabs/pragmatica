@@ -302,10 +302,13 @@ public record Main(String[] args) {
     /// non-durable streams were opted into explicitly — otherwise every publish acks with NO fsync and
     /// "durable entity" silently becomes "in-memory entity". Delegates to the pure
     /// [AetherNode#verifyWalBootable] guard (tested via `WalAvailabilityGateTest`), exits on violation —
-    /// the same `verify* -> abortBoot` idiom as the cluster-name and dev-mode gates above.
+    /// the same `verify* -> abortBoot` idiom as the cluster-name and dev-mode gates above. The streams
+    /// block tier gets the same gate (#1567 F12, [AetherNode#verifyStreamSegmentsBootable]).
     @Contract
     private void enforceWalDurabilityBootable(AetherNodeConfig config) {
-        AetherNode.verifyWalBootable(config).onFailure(this::abortBoot);
+        AetherNode.verifyWalBootable(config)
+                  .flatMap(_ -> AetherNode.verifyStreamSegmentsBootable(config))
+                  .onFailure(this::abortBoot);
     }
 
     /// Boot gate: insecure dev-mode must be fundamentally incompatible with a real
