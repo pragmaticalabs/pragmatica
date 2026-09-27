@@ -1484,8 +1484,9 @@ public interface AetherNode extends ManageableNode {
         return pagePeerWatermark(forwardClient::readRemoteCatchup, target, streamName, partition, 0L);
     }
 
+    /// One page of a peer's partition read, over whichever forward-read class the probe uses.
     @FunctionalInterface
-    private interface PeerPageRead {
+    interface PeerPageRead {
         Promise<StreamForwardClient.ReadForwardResult> read(NodeId target,
                                                             String streamName,
                                                             int partition,
