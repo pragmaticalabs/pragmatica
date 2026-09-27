@@ -104,6 +104,31 @@ class QuicBootTokenAdmissionTest {
             .isFalse();
     }
 
+    /// The refused process LEARNS it was refused: the acceptor answers with an explicit HelloRefused,
+    /// and the dialer's registry notifies its self-refusal listener (the node then exits). Control:
+    /// an admitted dial notifies nothing.
+    @Test
+    void acceptor_refusal_isReportedToTheRefusedProcess() {
+        var port = startServer(serverRegistryKnowingClientAs(CLIENT_TOKEN));
+        var admittedTokens = BootTokens.bootTokens(CLIENT_TOKEN);
+        var admittedReasons = new java.util.concurrent.CopyOnWriteArrayList<String>();
+
+        admittedTokens.onSelfRefused(admittedReasons::add);
+        assertThat(connects(admittedTokens, port)).isTrue();
+        assertThat(admittedReasons).as("control: an admitted process is told nothing").isEmpty();
+
+        var refusedTokens = BootTokens.bootTokens(OTHER_TOKEN);
+        var refusedReasons = new java.util.concurrent.CopyOnWriteArrayList<String>();
+
+        refusedTokens.onSelfRefused(refusedReasons::add);
+        assertThat(connects(refusedTokens, port)).isFalse();
+        assertThat(refusedReasons).as("the refused process is told why, exactly once")
+                                  .singleElement()
+                                  .asString()
+                                  .contains(CLIENT_NODE.id())
+                                  .contains("fresh identity");
+    }
+
     @Test
     void dialer_differentTokenServer_isRefusedAndRetired() {
         var port = startServer(BootTokens.bootTokens(OTHER_TOKEN));

@@ -214,6 +214,42 @@ class SwimBootTokenTest {
                           timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis());
     }
 
+    /// A refused ANNOUNCE is answered with an explicit IdentityRefused to the announcer's address.
+    @Test
+    void refusedAnnounce_isAnsweredWithIdentityRefused() {
+        var transport = new RecordingTransport();
+        var answering = SwimProtocol.swimProtocol(config(), transport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+                                    .unwrap();
+
+        answering.onMessage(ADDR_A, Announce.announce(INFO_A, "", 5, TOKEN));
+        assertThat(transport.sentMessages).as("control: an admitted announce is not refused")
+                                          .noneMatch(SwimMessage.IdentityRefused.class::isInstance);
+
+        answering.onMessage(ADDR_A, Announce.announce(INFO_A, "", 6, OTHER_TOKEN));
+
+        assertThat(transport.sentMessages).filteredOn(SwimMessage.IdentityRefused.class::isInstance)
+                                          .singleElement()
+                                          .satisfies(message -> assertThat(((SwimMessage.IdentityRefused) message).refused()).isEqualTo(NODE_A));
+        answering.stop();
+    }
+
+    /// The refused process learns it: an IdentityRefused about ITS NodeId reaches the registry's
+    /// self-refusal listener (the node then exits); one about another NodeId is ignored.
+    @Test
+    void identityRefused_forSelf_notifiesSelfRefusal_forOthers_isIgnored() {
+        var tokens = BootTokens.bootTokens(TOKEN);
+        var reasons = new java.util.concurrent.CopyOnWriteArrayList<String>();
+
+        tokens.onSelfRefused(reasons::add);
+        protocol.setBootTokens(tokens);
+
+        protocol.onMessage(ADDR_B, SwimMessage.IdentityRefused.identityRefused(NODE_B, NODE_A, "not you"));
+        assertThat(reasons).as("a refusal about another NodeId is not ours").isEmpty();
+
+        protocol.onMessage(ADDR_B, SwimMessage.IdentityRefused.identityRefused(NODE_B, SELF_ID, "retired"));
+        assertThat(reasons).containsExactly("retired");
+    }
+
     private void announce(long incarnation, long bootToken) {
         protocol.onMessage(ADDR_A, Announce.announce(INFO_A, "", incarnation, bootToken));
     }
