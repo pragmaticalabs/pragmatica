@@ -225,6 +225,7 @@ public final class EmberCluster {
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
     private final AtomicBoolean raisedSwimTimeouts = new AtomicBoolean(false);
+    private final AtomicReference<RollbackConfig> rollbackConfig = new AtomicReference<>(RollbackConfig.rollbackConfig());
     /// #715 — this instance's own cluster QUIC/SWIM identity secret. Defaults to a fresh
     /// `SecureRandom` value so distinct `EmberCluster` instances never share cluster identity and
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
@@ -449,6 +450,14 @@ public final class EmberCluster {
     @Contract
     public void withRaisedSwimTimeouts() {
         raisedSwimTimeouts.set(true);
+    }
+
+    /// #1573 — the automatic-rollback configuration every node of this harness boots with. MUST be called
+    /// before [#start]. Defaults to [RollbackConfig#rollbackConfig()], the same default a production node
+    /// gets.
+    @Contract
+    public void withRollbackConfig(RollbackConfig config) {
+        rollbackConfig.set(config);
     }
 
     /// #715 — override this instance's cluster QUIC/SWIM identity secret. MUST be called before
@@ -1354,7 +1363,7 @@ public final class EmberCluster {
                                           Option.empty(),
                                           quicTls,
                                           TtmConfig.ttmConfig(),
-                                          RollbackConfig.rollbackConfig(),
+                                          rollbackConfig.get(),
                                           AppHttpConfig.appHttpConfig(true,
                                                                       appHttpPort,
                                                                       appHttpApiKeys.get(),

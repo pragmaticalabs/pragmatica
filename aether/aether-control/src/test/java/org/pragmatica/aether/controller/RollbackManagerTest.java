@@ -5,6 +5,8 @@
 
 package org.pragmatica.aether.controller;
 
+import java.util.Set;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -132,7 +134,9 @@ class RollbackManagerTest {
                                                   0,
                                                   System.currentTimeMillis(),
                                                   Option.some(V2),
-                                                  Option.some(V1));
+                                                  Option.some(V1),
+                                                  Set.of(),
+                                                  System.currentTimeMillis());
 
             var result = stateForTest.canRollback(config, System.currentTimeMillis());
 
@@ -148,7 +152,9 @@ class RollbackManagerTest {
                                            2,
                                            0,
                                            Option.some(V3),
-                                           Option.some(V1));
+                                           Option.some(V1),
+                                           Set.of(),
+                                           System.currentTimeMillis());
 
             var result = state.canRollback(config, System.currentTimeMillis());
 

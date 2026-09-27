@@ -337,6 +337,37 @@ class KVStoreSerializerTest {
 
     @Nested
     class RoundTrip {
+        /// #1573: the rollback record — count, last rollback and the failed versions — survives a
+        /// backup/restore, or a restored cluster would forget it must not roll back to a failed version.
+        @Test
+        void roundTrip_previousVersionRollbackRecord_preservesEveryField() {
+            var ab = ArtifactBase.artifactBase("com.example:svc").unwrap();
+            var v1 = Version.version("1.0.0").unwrap();
+            var v2 = Version.version("2.0.0").unwrap();
+            var v3 = Version.version("3.0.0").unwrap();
+            var value = new PreviousVersionValue(ab, v2, v1, 1000L, 2, 900L, List.of(v2, v3));
+            var key = PreviousVersionKey.previousVersionKey(ab);
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> assertThat(restored.get(key)).isEqualTo(value));
+        }
+
+        @Test
+        void roundTrip_previousVersionWithoutFailedVersions_preservesEmptyList() {
+            var ab = ArtifactBase.artifactBase("com.example:svc").unwrap();
+            var value = PreviousVersionValue.previousVersionValue(ab,
+                                                                  Version.version("1.0.0").unwrap(),
+                                                                  Version.version("2.0.0").unwrap());
+            var key = PreviousVersionKey.previousVersionKey(ab);
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> assertThat(restored.get(key)).isEqualTo(value));
+        }
+
         @Test
         void roundTrip_persistentTypes_preservesAllEntries() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();

@@ -56,8 +56,9 @@ record AdmittedSliceBridge(SliceBridge delegate,
                         .execute(() -> recorded(methodName, delegate.invokeWithContext(methodName, input, context)));
     }
 
+    /// Ordered (`withResult`): whatever the caller chains on this promise runs after the outcome is recorded.
     private Promise<byte[]> recorded(String method, Promise<byte[]> execution) {
-        return execution.onResult(result -> recordOutcome(method, result));
+        return execution.withResult(result -> recordOutcome(method, result));
     }
 
     @Contract
