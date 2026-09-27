@@ -57,10 +57,10 @@ public sealed interface StreamDeclarationError extends Cause {
 
         @Override
         public String message() {
-            return "Stream resource '" + alias + "' declares key(s) the stream parser does not read: "
-                 + keys.stream()
-                       .map(this::describe)
-                       .collect(Collectors.joining(", "));
+            return "Stream resource '" + alias
+                 + "' declares key(s) the stream parser does not read: " + keys.stream()
+                                                                               .map(this::describe)
+                                                                               .collect(Collectors.joining(", "));
         }
 
         private String describe(String key) {

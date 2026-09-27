@@ -333,13 +333,11 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                             Class<T> resourceType,
                                                             String configSection,
                                                             Option<ProvisioningContext> contextOpt) {
-        return loadConfig(configSection,
-                          factoryList.getFirst(),
-                          contextOpt).flatMap(config -> selectAndInvoke(factoryList,
-                                                                        config,
-                                                                        resourceType,
-                                                                        configSection,
-                                                                        contextOpt));
+        return loadConfig(configSection, factoryList.getFirst(), contextOpt).flatMap(config -> selectAndInvoke(factoryList,
+                                                                                                               config,
+                                                                                                               resourceType,
+                                                                                                               configSection,
+                                                                                                               contextOpt));
     }
 
     /// Select the factory whose `supports()` matches and REMEMBER it alongside the resource.
@@ -390,12 +388,20 @@ public final class SpiResourceProvider implements ResourceProvider {
     private <T, C> Promise<C> loadConfig(String section,
                                          ResourceFactory<T, C> factory,
                                          Option<ProvisioningContext> contextOpt) {
-        return factory.sectionBinder()
-                      .flatMap(binder -> compositeOf(contextOpt).map(composite -> binder.bind(composite, section)))
-                      .map(bound -> bound.mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
-                                                                                                             cause))
-                                         .async())
-                      .or(() -> loadConfig(section, factory.configType(), contextOpt));
+        return Option.all(factory.sectionBinder(),
+                          compositeOf(contextOpt))
+                     .map((binder, composite) -> bindSection(binder, composite, section))
+                     .or(() -> loadConfig(section,
+                                          factory.configType(),
+                                          contextOpt));
+    }
+
+    private static <C> Promise<C> bindSection(ResourceFactory.SectionBinder<C> binder,
+                                              ConfigurationProvider composite,
+                                              String section) {
+        return binder.bind(composite, section)
+                     .mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section, cause))
+                     .async();
     }
 
     /// #1549: a factory's own section binder reads the slice's configuration provider. With no provider in

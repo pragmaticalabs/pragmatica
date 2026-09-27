@@ -26,11 +26,8 @@ import org.pragmatica.lang.Result;
 /// sub-section belongs to the consumer parser and is never listed here.
 public sealed interface StreamSection {
     String alias();
-
     Set<String> keys();
-
     Option<String> string(String key);
-
     /// Absent → `Success(None)`; present but not an integer → failure naming the key, never a default.
     Result<Option<Integer>> integer(String key);
 
@@ -41,7 +38,9 @@ public sealed interface StreamSection {
     /// `section` is the full provider path of the section (e.g. `streams.orders`); the alias is its last
     /// segment, the same derivation the record binder used for the `name` component.
     static StreamSection providerSection(ConfigurationProvider provider, String section) {
-        return new ProviderStreamSection(provider, section, section.substring(section.lastIndexOf('.') + 1));
+        return new ProviderStreamSection(provider,
+                                         section,
+                                         section.substring(section.lastIndexOf('.') + 1));
     }
 
     record TomlStreamSection(TomlDocument doc, String section, String alias) implements StreamSection {

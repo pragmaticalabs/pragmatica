@@ -270,8 +270,8 @@ public interface StreamConfigParser {
 
         if (sourceOpt.isPresent()) {
             return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
-                                                                                                                     source -> parseExternalResource(streamName,
-                                                                                                                                                     source)));
+                                                                                                                      source -> parseExternalResource(streamName,
+                                                                                                                                                      source)));
         }
         // Spec §11.1.1: shortcut form — when `version` is omitted, default per role.
         // Producer (explicit, inferred from manifest, or absent → producer-assumed) → "1.0.0".
@@ -326,8 +326,8 @@ public interface StreamConfigParser {
                                                              String streamName,
                                                              StreamVersionSpec spec) {
         return parseStreamConfig(StreamSection.tomlSection(doc, section, streamName)).map(config -> StreamResource.owned(streamName,
-                                                                                                                          spec,
-                                                                                                                          config));
+                                                                                                                         spec,
+                                                                                                                         config));
     }
 
     /// Spec §7/§10: a blueprint declaring more than [#MAX_PARTITIONS_PER_STREAM_CEILING] partitions for one
@@ -403,8 +403,10 @@ public interface StreamConfigParser {
     static Result<StreamConfig> parseStreamConfig(StreamSection section) {
         return refuseUnknownKeys(section).flatMap(StreamConfigParser::refuseNonIntegers)
                                 .flatMap(StreamConfigParser::parseStreamSection)
-                                .flatMap(config -> validatePartitionCeiling(section.alias(), config))
-                                .flatMap(config -> validateReplication(section.alias(), config));
+                                .flatMap(config -> validatePartitionCeiling(section.alias(),
+                                                                            config))
+                                .flatMap(config -> validateReplication(section.alias(),
+                                                                       config));
     }
 
     /// Every key [#parseStreamConfig] reads directly under `[streams.<alias>]`, including the keys the
@@ -433,26 +435,17 @@ public interface StreamConfigParser {
     /// The first integer key whose value is not an integer, as its own typed cause — checked before the
     /// section is read, so the read that follows cannot fail and never aggregates two causes into one.
     private static Result<StreamSection> refuseNonIntegers(StreamSection section) {
-        return Option.from(INTEGER_KEYS.stream()
-                                       .map(section::integer)
-                                       .filter(Result::isFailure)
-                                       .findFirst())
+        return Option.from(INTEGER_KEYS.stream().map(section::integer).filter(Result::isFailure).findFirst())
                      .map(failure -> failure.map(_ -> section))
                      .or(success(section));
     }
 
     private static Result<StreamSection> refuseUnknownKeys(StreamSection section) {
-        var unknown = section.keys()
-                             .stream()
-                             .filter(key -> !STREAM_SECTION_KEYS.contains(key))
-                             .sorted()
-                             .toList();
+        var unknown = section.keys().stream().filter(key -> !STREAM_SECTION_KEYS.contains(key)).sorted().toList();
 
         return unknown.isEmpty()
                ? success(section)
-               : new StreamDeclarationError.UnknownStreamKeys(section.alias(),
-                                                              unknown,
-                                                              nearestKeys(unknown)).result();
+               : new StreamDeclarationError.UnknownStreamKeys(section.alias(), unknown, nearestKeys(unknown)).result();
     }
 
     private static Map<String, String> nearestKeys(List<String> unknown) {
@@ -490,7 +483,6 @@ public interface StreamConfigParser {
 
         for (int i = 1; i <= a.length(); i++) {
             current[0] = i;
-
             for (int j = 1; j <= b.length(); j++) {
                 var cost = a.charAt(i - 1) == b.charAt(j - 1)
                            ? 0
@@ -500,6 +492,7 @@ public interface StreamConfigParser {
             }
 
             var swap = previous;
+
             previous = current;
             current = swap;
         }
@@ -517,7 +510,10 @@ public interface StreamConfigParser {
                                                                                     minSyncReplicas.or(StreamConfig.DEFAULT.minSyncReplicas())));
     }
 
-    private static StreamConfig streamConfigOf(StreamSection section, int partitions, int replicas, int minSyncReplicas) {
+    private static StreamConfig streamConfigOf(StreamSection section,
+                                               int partitions,
+                                               int replicas,
+                                               int minSyncReplicas) {
         // #576: the parsed default used to be "latest", but the runtime never honored a `latest`
         // start-policy in the first place — StreamAccess#fetchFromCommitted's no-cursor path always
         // starts at offset 0 per the #478 ruling, permanently, not as a gap to be closed later.
@@ -551,9 +547,7 @@ public interface StreamConfigParser {
     private static RetentionPolicy parseRetention(StreamSection section) {
         var retentionType = section.string("retention").or("count");
         var retentionValue = section.string("retention-value").or("");
-        var mode = section.string("retention-mode")
-                          .map(StreamConfigParser::parseRetentionMode)
-                          .or(RetentionMode.ANY);
+        var mode = section.string("retention-mode").map(StreamConfigParser::parseRetentionMode).or(RetentionMode.ANY);
 
         return switch (retentionType.toLowerCase()) {
             case "compound" -> parseCompoundRetention(section, mode);
