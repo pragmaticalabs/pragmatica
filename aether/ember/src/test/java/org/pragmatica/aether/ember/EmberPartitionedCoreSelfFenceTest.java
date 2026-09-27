@@ -9,6 +9,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -86,45 +87,51 @@ class EmberPartitionedCoreSelfFenceTest {
 
     /// The false-fence guard for the #1560 re-check: a healthy five-core cluster in which ONE non-leader
     /// flaps — black-holed for [#FLAP_ON_MS], shorter than the SWIM suspicion bound, then healed for
-    /// [#FLAP_OFF_MS], [#FLAP_CYCLES] times — must never fence any node. Armed by requiring that the leader
-    /// saw the flapping peer SUSPECT at least once and that it refuted back to MEMBER, so the test cannot
-    /// pass by never disturbing the cluster. Partition mechanism: Ember `blackhole` (#1563: it still lets a
+    /// [#FLAP_OFF_MS], [#FLAP_CYCLES] times — must never fence any node. Armed by requiring that some
+    /// survivor saw the flapping peer SUSPECT at least once and that every survivor sees it MEMBER at the
+    /// end, so the test cannot pass by never disturbing the cluster. (Which survivor suspects it varies:
+    /// SWIM probes a random member per interval, and the leader alone missed every flap in one run.) Partition mechanism: Ember `blackhole` (#1563: it still lets a
     /// QUIC Hello through, which is irrelevant here because no flap is long enough to reach DEAD).
     @Test
     @Timeout(420)
     void flappingPeer_suspectThenRefutes_noNodeFences() {
         startCluster();
         var leaderId = cluster.currentLeader().unwrap();
-        var leader = cluster.getNode(leaderId).unwrap();
         var flapper = cluster.allNodes()
                              .stream()
                              .filter(node -> !node.self().id().equals(leaderId))
                              .findFirst()
                              .orElseThrow();
+        var survivors = cluster.allNodes()
+                               .stream()
+                               .filter(node -> node != flapper)
+                               .toList();
         var sawSuspect = false;
 
         for (int cycle = 0; cycle < FLAP_CYCLES; cycle++) {
             flapper.blackhole(true);
-            sawSuspect |= observeSuspect(leader, flapper, FLAP_ON_MS);
+            sawSuspect |= observeSuspect(survivors, flapper, FLAP_ON_MS);
             flapper.blackhole(false);
             sleep(FLAP_OFF_MS);
             assertThat(cluster.nodeCount()).as("no node fenced after flap cycle %d", cycle).isEqualTo(CLUSTER_SIZE);
         }
         sleep(OBSERVE_MS);
 
-        assertThat(sawSuspect).as("arming: the flaps must drive the peer SUSPECT on the leader").isTrue();
-        assertThat(leader.membershipFsm().memberStates().get(flapper.self())).as("the flapping peer refuted")
-                                                                             .isEqualTo("Member");
+        assertThat(sawSuspect).as("arming: the flaps must drive the peer SUSPECT on some survivor").isTrue();
+        survivors.forEach(node -> assertThat(node.membershipFsm().memberStates().get(flapper.self()))
+                                      .as("the flapping peer refuted on %s", node.self().id())
+                                      .isEqualTo("Member"));
         assertThat(cluster.nodeCount()).as("no node of a healthy cluster with one flapping peer fences")
                                        .isEqualTo(CLUSTER_SIZE);
     }
 
-    private static boolean observeSuspect(AetherNode observer, AetherNode peer, long forMs) {
+    private static boolean observeSuspect(List<AetherNode> observers, AetherNode peer, long forMs) {
         var deadline = System.currentTimeMillis() + forMs;
         var seen = false;
 
         while (System.currentTimeMillis() < deadline) {
-            seen |= "Suspect".equals(observer.membershipFsm().memberStates().get(peer.self()));
+            seen |= observers.stream()
+                             .anyMatch(observer -> "Suspect".equals(observer.membershipFsm().memberStates().get(peer.self())));
             sleep(100);
         }
 
