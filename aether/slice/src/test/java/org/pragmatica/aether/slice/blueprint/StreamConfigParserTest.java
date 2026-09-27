@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.aether.slice.blueprint.StreamConfigParser.parseResources;
 
 
@@ -230,6 +231,48 @@ class StreamConfigParserTest {
             var result = parseResources(toml);
 
             assertThat(result.isSuccess()).isTrue();
+        }
+
+        /// #1549: a key nothing in the stream parser reads is refused by a typed cause naming the key and the
+        /// known key it resembles — never ignored, because the runtime now binds through this same parse.
+        @Test
+        void rejectsUnknownKey_namingTheKnownKeyItResembles() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    max_event_size_bytes = 1024
+                    min_sync_replicas = 2
+                    """;
+
+            parseResources(toml).onSuccess(_ -> fail("unknown keys must be refused"))
+                                .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
+                                .onFailure(cause -> assertThat(((StreamDeclarationError.UnknownStreamKeys) cause).keys())
+                                                        .containsExactly("max_event_size_bytes", "min_sync_replicas"))
+                                .onFailure(cause -> assertThat(cause.message()).contains("did you mean 'min-sync-replicas'"));
+        }
+
+        @Test
+        void rejectsUnknownKey_onAnExternalSection() {
+            var toml = """
+                    [streams.audit]
+                    source = "io.acme.inventory:stock-updates:2.0.0"
+                    partitons = 4
+                    """;
+
+            parseResources(toml).onSuccess(_ -> fail("unknown keys must be refused on external sections too"))
+                                .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class));
+        }
+
+        @Test
+        void rejectsNonIntegerValue_forAnIntegerKey() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    replicas = "three"
+                    """;
+
+            parseResources(toml).onSuccess(_ -> fail("a non-integer replicas must be refused, not defaulted"))
+                                .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.NotAnInteger("orders", "replicas", "three")));
         }
 
         @Test

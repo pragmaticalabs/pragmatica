@@ -139,6 +139,14 @@ class StreamResourceValidatorPartitionTest {
                                       [streams.no-replicas]
                                       version = "1.0.0"
                                       replicas = 0
+
+                                      [streams.snake-keys]
+                                      version = "1.0.0"
+                                      min_sync_replicas = 2
+
+                                      [streams.wordy-count]
+                                      version = "1.0.0"
+                                      partitions = "four"
                                       """,
                                       APP_ARTIFACT);
 
@@ -149,7 +157,9 @@ class StreamResourceValidatorPartitionTest {
                                                "[streams.bad-source-version]::" + StreamResourceValidator.RULE_VERSION_FORMAT_INVALID,
                                                "[streams.bad-owned-version]::" + StreamResourceValidator.RULE_VERSION_FORMAT_INVALID,
                                                "[streams.too-many]::" + StreamResourceValidator.RULE_PARTITIONS_OVER_CEILING,
-                                               "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICATION_INVALID);
+                                               "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICATION_INVALID,
+                                               "[streams.snake-keys]::" + StreamResourceValidator.RULE_UNKNOWN_STREAM_KEY,
+                                               "[streams.wordy-count]::" + StreamResourceValidator.RULE_STREAM_KEY_NOT_INTEGER);
             assertThat(partition.rejected()).extracting(StreamValidationFailure::field)
                                             .as("no refusal may lose its alias")
                                             .doesNotContain("[streams]");

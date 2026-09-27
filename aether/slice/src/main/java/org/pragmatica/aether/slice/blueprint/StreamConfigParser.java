@@ -401,7 +401,8 @@ public interface StreamConfigParser {
     /// it does not read is refused ([StreamDeclarationError.UnknownStreamKeys]), as is an integer key
     /// whose value is not an integer, before any value is defaulted.
     static Result<StreamConfig> parseStreamConfig(StreamSection section) {
-        return refuseUnknownKeys(section).flatMap(StreamConfigParser::parseStreamSection)
+        return refuseUnknownKeys(section).flatMap(StreamConfigParser::refuseNonIntegers)
+                                .flatMap(StreamConfigParser::parseStreamSection)
                                 .flatMap(config -> validatePartitionCeiling(section.alias(), config))
                                 .flatMap(config -> validateReplication(section.alias(), config));
     }
@@ -425,6 +426,20 @@ public interface StreamConfigParser {
                                                "min-sync-replicas",
                                                "compression",
                                                "encryption-key-id");
+
+    /// The keys of [#STREAM_SECTION_KEYS] whose values are integers.
+    List<String> INTEGER_KEYS = List.of("partitions", "replicas", "min-sync-replicas");
+
+    /// The first integer key whose value is not an integer, as its own typed cause — checked before the
+    /// section is read, so the read that follows cannot fail and never aggregates two causes into one.
+    private static Result<StreamSection> refuseNonIntegers(StreamSection section) {
+        return Option.from(INTEGER_KEYS.stream()
+                                       .map(section::integer)
+                                       .filter(Result::isFailure)
+                                       .findFirst())
+                     .map(failure -> failure.map(_ -> section))
+                     .or(success(section));
+    }
 
     private static Result<StreamSection> refuseUnknownKeys(StreamSection section) {
         var unknown = section.keys()
