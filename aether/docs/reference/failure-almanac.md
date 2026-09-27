@@ -138,7 +138,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Stream owner loss — RF = 3, default `min-sync-replicas` (the default stream)
 
-- **Symptom:** a partition's owner is terminally removed and the partition stops being served: every survivor keeps resolving the dead node as owner, and forwarded reads fail with "Stream partition is not owned by this node".
+- **Symptom (#1550):** a partition's owner is terminally removed and the partition stops being served: every survivor keeps resolving the dead node as owner, and forwarded reads fail with "Stream partition is not owned by this node".
 - **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes and the new owner's view shows the replicas' `confirmedOffset`.
 - **Automatic response:** intended — HRW hands ownership to the next-ranked survivor, which is already a replica `[design intent — unverified]`. Measured 2026-09-27 on the rc4 tip and at RF=3: ownership did not move within 3 minutes, and a replacement core joining under a fresh identity did not move it either.
 - **Budget:** none today.

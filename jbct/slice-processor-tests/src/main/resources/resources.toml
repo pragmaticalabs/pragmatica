@@ -4,11 +4,11 @@
 # (com.example.durabletopic.DurableOrderSlice). The slice-processor reads `durability` from this
 # file at annotation-processing time to decide whether a subscriber may declare a MessageContext
 # parameter — see TopicDurabilityLoader. The durable knobs match the spec §3 v1 constraint
-# (replicas >= 2 and min_sync_replicas == replicas) so the declaration is one the runtime binder
+# (replicas >= 3 and min_sync_replicas == replicas) so the declaration is one the runtime binder
 # would also accept.
 [order-events]
 topic_name = "order-events"
 durability = "durable"
 partitions = 4
-replicas = 2
-min_sync_replicas = 2
+replicas = 3
+min_sync_replicas = 3

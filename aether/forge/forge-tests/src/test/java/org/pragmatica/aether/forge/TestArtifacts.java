@@ -76,9 +76,9 @@ final class TestArtifacts {
     /// different key convention — underscores (`topic_name`, `min_sync_replicas`) rather than the
     /// streams family's dashes.
     ///
-    /// Both its topics are `partitions = 1, replicas = 2, min_sync_replicas = 2`. That is the durable
-    /// tier's only proven scoping (a durable declaration outside `min-sync == replicas >= 2` is
-    /// rejected at parse), and the single partition is what makes the delivery count a discriminator:
+    /// Its topics are `partitions = 1, replicas = 3, min_sync_replicas = 3`. That is the durable
+    /// tier's only accepted scoping (a durable declaration outside `min-sync == replicas >= 3` is
+    /// rejected at parse, #1547), and the single partition is what makes the delivery count a discriminator:
     /// with the slice on every node, a correctly gated consumer records each event once cluster-wide
     /// while an ungated one records it once per node. Two subscriber methods bind to the SAME
     /// `poison-events` topic — one that can never ack and one that always can — making them two

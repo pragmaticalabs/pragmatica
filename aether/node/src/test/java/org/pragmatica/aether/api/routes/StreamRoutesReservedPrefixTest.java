@@ -125,7 +125,7 @@ class StreamRoutesReservedPrefixTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
 
         try {
-            var spec = DurableTopicSpec.durableTopicSpec(1, 2, 2, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
+            var spec = DurableTopicSpec.durableTopicSpec(1, 3, 3, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
 
             DurableTopicSubstrate.durableTopicSubstrate(manager)
                                  .activateTopic("foo", spec)
@@ -291,7 +291,7 @@ class StreamRoutesReservedPrefixTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
         var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
         var committed = DurableTopicSubstrate.topicStreamConfig("foo",
-                                                                DurableTopicSpec.durableTopicSpec(1, 2, 2, DurableTopicSpec.DEFAULT_RETENTION)
+                                                                DurableTopicSpec.durableTopicSpec(1, 3, 3, DurableTopicSpec.DEFAULT_RETENTION)
                                                                                 .unwrap());
 
         try {

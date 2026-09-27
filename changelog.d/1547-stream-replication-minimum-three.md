@@ -14,7 +14,7 @@
 - With the default factor, an event that reached the replica set before its owner was terminally removed
   is still held by two survivors; with the old default of 1 no survivor holds it.
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`]
-- **Not fixed here: serving that data after the owner's loss.** At every RF, including the rc4 tip's RF=2
+- **Not fixed here: serving that data after the owner's loss (#1550).** At every RF, including the rc4 tip's RF=2
   fixture in `StreamOwnerFailoverTest`, the survivors keep resolving the killed node as owner and no node
   serves the partition. The new test asserts that stall as a tripwire and keeps its serving assertions
   disabled until the stall is fixed.
@@ -22,11 +22,17 @@
   owner's WAL fsync and replication is not awaited, so an event acked inside the replication window is
   still lost with its owner. `min-sync-replicas = replicas` closes that window — except that in a
   `[streams.X]` section the dashed key never reaches the runtime binder, which reads `min_sync_replicas`
-  and falls back to 0 (not fixed here). When live cores drop below
+  and falls back to 0 (#1549, not fixed here). When live cores drop below
   3, placement clamps RF to the live core count and the partition runs under-replicated.
   [mechanism: `ReplicaPlacement.replicationFactor` = `clamp(replicas, 1, clusterSize)`]
-- System streams keep RF = cluster size. Durable topics (`replicas >= 2`) and durable entities
-  (`replication_factor >= 1`) keep their own rules. `test-stream-repl` and `test-stream-multipart` move
+- The same minimum now applies to every app-class stream: durable topics default to `replicas = 3` and
+  refuse fewer (`min_sync_replicas == replicas` still required), durable entities refuse
+  `replication_factor` below 3, and `StreamPartitionManager.createStream` refuses an app stream below 3
+  whichever path minted its config (`StreamError.ReplicasBelowMinimum`, pre-commit). System streams keep
+  RF = cluster size. `test-durable-topic` moves to `replicas = min_sync_replicas = 3`.
+  [verified: `aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java`]
+  [verified: `aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/DurableEntityConfigTest.java`]
+  [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionCapTest.java`] `test-stream-repl` and `test-stream-multipart` move
   from `replicas = 2` to 3. Docs that promised recovery "until the original owner returns" now state
   what survives terminal removal (guarantees §4, consistency table, known limitations, failure almanac,
   streaming spec §10.5).
