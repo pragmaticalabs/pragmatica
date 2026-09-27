@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Ticket | pragmatica #1569 (storage identity and adoption) |
-| Status | **r7.1, FINAL.** The reviewer rated r7 **SOUND**. r7.1 folds in the residuals R7-1..R7-4 and records the CTO decisions. The owner-level open questions are pending with the owner (§14). Rulings in force: divergence is **detect-and-flag**; entities follow **option A**. |
+| Status | **r7.1, FINAL.** The reviewer rated r7 **SOUND**. r7.1 folds in the residuals R7-1..R7-4 and records the CTO decisions. All open questions are decided (§14). Rulings in force: divergence is **detect-and-flag**; entities follow **option A**. |
 | Read point | `spec-src`, detached at rc4 tip `5f6ba462f`. Every `File.java:N` citation refers to that tree. "(Javadoc)" marks a citation of a documentation comment. |
 | Depends on | P1 #1529; P2 #1546 + `RestoreCommand`; P3 AHSE `openLog`/`seal` (A1-A8, A10, A12-A14); S8 (A9, A11); P4 #1555; P5 #1532; P6 #1577; #1574 (`OperatorWarning`); #1564 |
 | Out of scope | Designing `openLog`/`seal`/A11; automatic divergence reconciliation (post-GA, §9.6); the runtime divergence fix (S6); offset reuse after full retention expiry (**#1580**); total disk loss (#1570); a durable DHT (#1544); the remote tier (#249) |
@@ -680,16 +680,16 @@ Counts come from `<testcase>` elements in surefire and failsafe reports. "Untouc
 
 ## 14. Open questions
 
-**Owner-level, pending with the owner:**
+**Decided (owner)**, adopted as recommended (know on `docs/know-s28-rulings-5`):
 
-| # | Question | Recommendation |
+| # | Question | Decision |
 |---|---|---|
-| 22 | A late joiner that diverges or is ahead stops writes to P (fail-closed). | **Keep.** The exit is one `pick-source`. |
-| 1 | G-COLD as (W) or (F), with the exhaustive list of automatic modifications and the `placement_known`/#1580 bounds. | Adopt. |
-| 14 | The cold-restart admit refines ruling 4. | Record it as a know commit. |
-| 13 | A fresher copy after OPEN is detected and flagged, not prevented. | Accept. |
-| 21 | A flagged partition refuses reads. | Keep for rc4; `inspect-copy` later. |
-| 24 | Logs written before A11 flag once after rollout. | Accept (pre-GA); roll A11 out onto fresh volumes. |
+| 22 | A late joiner that diverges or is ahead stops writes to P (fail-closed). | **Decided (owner): keep.** The exit is one `pick-source`. |
+| 1 | G-COLD as (W) or (F), with the exhaustive list of automatic modifications and the `placement_known`/#1580 bounds. | **Decided (owner): adopted.** |
+| 14 | The cold-restart admit refines ruling 4. | **Decided (owner):** recorded as a know commit. |
+| 13 | A fresher copy after OPEN is detected and flagged, not prevented. | **Decided (owner): accepted.** |
+| 21 | A flagged partition refuses reads. | **Decided (owner): kept for rc4**; `inspect-copy` later. |
+| 24 | Logs written before A11 flag once after rollout. | **Decided (owner): accepted** (pre-GA); roll A11 out onto fresh volumes. |
 
 **Decided (CTO):**
 
@@ -718,7 +718,7 @@ Counts come from `<testcase>` elements in surefire and failsafe reports. "Untouc
 
 **Decisions and review**
 - Tickets: #1569 (this design), #1567 (AHSE openLog/seal), #1564 (replication policy), #1570 (AHSE unification), #1574 (OperatorWarning), #1532 (change-triggered backup)
-- Rulings: know commits on `docs/know-s28-rulings-5` (including d81a5c08e and b6b714cca)
+- Rulings: know commits on `docs/know-s28-rulings-5` (including d81a5c08e, b6b714cca and 2b0f20d74)
 - #1580 (R7-3)
 - Adversarial review: seven rounds, SOUND at r7 (review notes are kept in the CTO records)
 - Storage inventory at cb59a632f (kept in the CTO records)
