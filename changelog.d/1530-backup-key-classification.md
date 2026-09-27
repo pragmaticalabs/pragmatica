@@ -22,7 +22,7 @@
   hook). Their `SystemTags` pins stay, marked RETIRED, so the tags are never reused.
 - **The operator's scheduled-task pause is now cluster state.** It moved out of the runtime
   `ScheduledTaskValue` (component removed — a wire-shape change) into a new
-  `ScheduledTaskPauseKey`/`ScheduledTaskPauseValue` (tags 1705/1706): pause writes the key, resume
+  `ScheduledTaskPauseKey`/`ScheduledTaskPauseValue` (tags 1707/1708): pause writes the key, resume
   removes it, and `ScheduledTaskRegistry` derives each task's `paused` from it — including a pause that
   arrives before its task registers, which is what a restore produces. Republishing a task no longer
   touches the pause; the last replica's unpublish removes both. Pinned by unit tests in

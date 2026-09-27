@@ -523,9 +523,9 @@ public interface SystemTags {
         pin(table, 1697, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ScopeContent");
         pin(table, 1698, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ChunkRequest");
         pin(table, 1699, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.Chunk");
-        // scheduled-task operator pause as cluster state (#1541) — next free slots after 1704
-        pin(table, 1705, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey");
-        pin(table, 1706, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue");
+        // scheduled-task operator pause as cluster state (#1541) — next free slots after 1706
+        pin(table, 1707, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey");
+        pin(table, 1708, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // ---- 2114..16383 RESERVED ----
