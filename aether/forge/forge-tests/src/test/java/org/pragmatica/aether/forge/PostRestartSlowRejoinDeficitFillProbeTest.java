@@ -42,6 +42,7 @@ import org.pragmatica.lang.parse.Number;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
@@ -335,10 +336,60 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// atomic and never writes `ClusterConfigKey.CURRENT`, so `configuredCoreCountSupplier` would
     /// never see 6 and the control would silently no-op into a false pass. Same resolved caveat as
     /// `ScaleUpFiveToSevenProbeTest` and `ArtifactChurnSurvival5to7to5ProbeTest`.
+    ///
+    /// DISABLED until #1551 is fixed: the scale-up to 7 reaches the leader but the reconciler reports
+    /// `NO_DEFICIT` and provisions nothing, identically at rc4 `b91c7e3a8`, S1 `1eae5d9ea` and #1526.
+    /// [#reconcile_configuredCoreCountRaised_provisionsNothing_tripwire1551] pins that current behaviour
+    /// and reddens the moment the defect is fixed; then delete it and remove this `@Disabled`.
     @Test
     @Order(1)
+    @Disabled("#1551: scale-up deficit-fill provisions nothing (NO_DEFICIT); re-enable when the tripwire reddens")
     @TerminalOperation
     void reconcile_configuredCoreCountRaised_provisionsReplacement() {
+        var fill = runScaleUpControl();
+
+        assertThat(recorder.provisionCalls()).as("CONTROL-1: raising the configured core count %d→%d must reach the provider through "
+                                                + "the CTM provisionReplacement path within %ds. ZERO here means the deficit-fill "
+                                                + "path or the recorder is INERT in this cluster — which would make the zero asserted "
+                                                + "by the slow-rejoin test vacuous rather than meaningful. Reconciler suppression "
+                                                + "reasons seen: %s.",
+                                                 INITIAL_CORES,
+                                                 RAISED_CORES,
+                                                 FILL_BUDGET.toSeconds(),
+                                                 fill.reasons)
+                  .isGreaterThan(0);
+        assertThat(countedCores()).as("CONTROL-2: the provisioned core must actually JOIN and be counted, taking the "
+                                     + "counted-core denominator to %d within %ds. Counted ids=%s, provisions=%s. A "
+                                     + "provision that never joins would leave the control half-proven.",
+                                      RAISED_CORES,
+                                      FILL_BUDGET.toSeconds(),
+                                      countedCoreIds(),
+                                      recorder.render())
+                  .isEqualTo(RAISED_CORES);
+    }
+
+    /// TRIPWIRE for #1551 — ENABLED on purpose. It asserts the CURRENT defective behaviour: raising the
+    /// configured core count 5→7 provisions nothing. When #1551 is fixed this test REDDENS; then delete
+    /// it and remove the `@Disabled` from [#reconcile_configuredCoreCountRaised_provisionsReplacement],
+    /// which carries the real assertions. A disabled test would sit forgotten; this one cannot.
+    @Test
+    @Order(2)
+    @TerminalOperation
+    void reconcile_configuredCoreCountRaised_provisionsNothing_tripwire1551() {
+        var fill = runScaleUpControl();
+
+        assertThat(recorder.provisionCalls()).as("#1551 TRIPWIRE: the 5→7 scale-up now provisions (%s; reasons %s). The defect "
+                                                + "looks FIXED — delete this tripwire and re-enable "
+                                                + "reconcile_configuredCoreCountRaised_provisionsReplacement.",
+                                                 recorder.render(),
+                                                 fill.reasons)
+                  .isZero();
+    }
+
+    /// The positive control's scenario: arm on full membership, POST the scale to [#RAISED_CORES], and
+    /// observe until filled or the fill budget elapses.
+    @TerminalOperation
+    private HoldObservation runScaleUpControl() {
         await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfStartedNodeDied).until(() -> observedPeak() >= INITIAL_CORES);
         recordMilestone("CONTROL armed: observedPeak=" + observedPeak() + " (reachedFullMembership latch can now open)");
         var leaderPort = cluster.getLeaderManagementPort()
@@ -364,24 +415,8 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
                        + " provisionCalls=" + recorder.provisionCalls());
         dumpTimeline("DEFICIT-FILL CONTROL", fill.timeline);
         dumpProvisionLedger();
-        assertThat(recorder.provisionCalls()).as("CONTROL-1: raising the configured core count %d→%d must reach the provider through "
-                                                + "the CTM provisionReplacement path within %ds. ZERO here means the deficit-fill "
-                                                + "path or the recorder is INERT in this cluster — which would make the zero asserted "
-                                                + "by the slow-rejoin test vacuous rather than meaningful. Reconciler suppression "
-                                                + "reasons seen: %s.",
-                                                 INITIAL_CORES,
-                                                 RAISED_CORES,
-                                                 FILL_BUDGET.toSeconds(),
-                                                 fill.reasons)
-                  .isGreaterThan(0);
-        assertThat(countedCores()).as("CONTROL-2: the provisioned core must actually JOIN and be counted, taking the "
-                                     + "counted-core denominator to %d within %ds. Counted ids=%s, provisions=%s. A "
-                                     + "provision that never joins would leave the control half-proven.",
-                                      RAISED_CORES,
-                                      FILL_BUDGET.toSeconds(),
-                                      countedCoreIds(),
-                                      recorder.render())
-                  .isEqualTo(RAISED_CORES);
+
+        return fill;
     }
 
     // ----- restart mechanics -----
