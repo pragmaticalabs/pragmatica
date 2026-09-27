@@ -45,7 +45,6 @@ public interface BootTokens {
         CONFLICT,
         /// The NodeId was already retired by an earlier conflict.
         RETIRED;
-
         public boolean admitted() {
             return this == ADMITTED;
         }
@@ -53,18 +52,13 @@ public interface BootTokens {
 
     /// This process's own token (`0` when the node runs without one).
     long self();
-
     /// Present `token` as evidence for `peer`. Refusals (`CONFLICT`, `RETIRED`) are counted.
     Admission admit(NodeId peer, long token);
-
     boolean isRetired(NodeId peer);
-
     /// The token recorded for `peer`, `0` when none.
     long tokenOf(NodeId peer);
-
     /// Count of refused admissions — observability for the terminal-removal rule.
     long refusals();
-
     /// Register a listener invoked once per NodeId, on the admission that retires it — whichever
     /// layer (SWIM or the QUIC handshake) presented the conflicting token. Lets SWIM mark the known
     /// process dead even when the transport saw the new process first.

@@ -605,7 +605,10 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         private void sendHelloResponse(ChannelHandlerContext ctx) {
             // Responses flowing back from the acceptor carry NO preamble.
-            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels, bootTokens.self()));
+            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId,
+                                                                        selfAddress,
+                                                                        selfLabels,
+                                                                        bootTokens.self()));
 
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
             // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.
