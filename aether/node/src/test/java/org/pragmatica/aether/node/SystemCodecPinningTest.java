@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -41,6 +42,11 @@ class SystemCodecPinningTest {
         "org.pragmatica.lang."
     );
 
+    /// Retired pins that sit under a hot prefix. Their types were deleted, so no message carries them; the
+    /// pins stay only so the tag is never reused (SystemTags rules). A retired type is not hot.
+    private static final Set<String> RETIRED_IN_HOT_PACKAGES = Set.of("org.pragmatica.consensus.rabia.VotingJournalCheckpoint",
+                                                                      "org.pragmatica.consensus.rabia.VotingJournalRecord");
+
     /// The coverage assertion. [SliceCodec#systemCodec] refuses any type whose tag came back from the
     /// hash, so a framework codec added without a pin fails HERE, naming itself — which is why the
     /// system set never has to be rediscovered by hand.
@@ -58,6 +64,7 @@ class SystemCodecPinningTest {
                                  .stream()
                                  .filter(entry -> !entry.getKey().endsWith(".SyncRejected") && !entry.getKey().endsWith(".HelloRefused")
                                                   && !entry.getKey().endsWith(".IdentityRefused"))
+                                 .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))
                                  .filter(entry -> HOT_PREFIXES.stream().anyMatch(prefix -> entry.getKey().startsWith(prefix)))
                                  .toList();
 
