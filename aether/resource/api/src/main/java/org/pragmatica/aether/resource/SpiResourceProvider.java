@@ -388,12 +388,25 @@ public final class SpiResourceProvider implements ResourceProvider {
     private <T, C> Promise<C> loadConfig(String section,
                                          ResourceFactory<T, C> factory,
                                          Option<ProvisioningContext> contextOpt) {
-        return Option.all(factory.sectionBinder(),
-                          compositeOf(contextOpt))
-                     .map((binder, composite) -> bindSection(binder, composite, section))
-                     .or(() -> loadConfig(section,
-                                          factory.configType(),
-                                          contextOpt));
+        return factory.sectionBinder()
+                      .map(binder -> bindOrRefuse(binder, factory, section, contextOpt))
+                      .or(() -> loadConfig(section,
+                                           factory.configType(),
+                                           contextOpt));
+    }
+
+    private static <T, C> Promise<C> bindOrRefuse(ResourceFactory.SectionBinder<C> binder,
+                                                  ResourceFactory<T, C> factory,
+                                                  String section,
+                                                  Option<ProvisioningContext> contextOpt) {
+        return compositeOf(contextOpt).map(composite -> bindSection(binder, composite, section))
+                          .or(() -> noProviderForSectionBinder(factory, section));
+    }
+
+    private static <T, C> Promise<C> noProviderForSectionBinder(ResourceFactory<T, C> factory, String section) {
+        return new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
+                                                                 new ResourceProvisioningError.SectionBinderNeedsProvider(factory.resourceType(),
+                                                                                                                          section)).promise();
     }
 
     private static <C> Promise<C> bindSection(ResourceFactory.SectionBinder<C> binder,
@@ -404,8 +417,9 @@ public final class SpiResourceProvider implements ResourceProvider {
                      .async();
     }
 
-    /// #1549: a factory's own section binder reads the slice's configuration provider. With no provider in
-    /// the context the record-binder path below is the only one available, exactly as before #1549.
+    /// #1549: a factory's own section binder reads the slice's configuration provider. With no provider in the
+    /// context such a factory is REFUSED ([ResourceProvisioningError.SectionBinderNeedsProvider]) — never
+    /// handed to the record binder, which would silently default the section.
     private static Option<ConfigurationProvider> compositeOf(Option<ProvisioningContext> contextOpt) {
         return contextOpt.flatMap(context -> context.extension(ConfigurationProvider.class)
                                                     .option());

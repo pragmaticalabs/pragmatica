@@ -27,6 +27,7 @@ import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -397,14 +398,15 @@ public interface StreamConfigParser {
         return sectionName.startsWith(STREAMS_PREFIX) && sectionName.length() > STREAMS_PREFIX.length();
     }
 
-    /// The ONE parse of a `[streams.<alias>]` section into a validated [StreamConfig] (#1549): deploy
-    /// validation calls it over the blueprint's `resources.toml`, slice activation over the slice's
-    /// configuration provider ([StreamSection]), so what validates is exactly what is provisioned. A key
-    /// it does not read is refused ([StreamDeclarationError.UnknownStreamKeys]), as is an integer key
-    /// whose value is not an integer, before any value is defaulted.
+    /// The ONE parse of a `[streams.<alias>]` section into a validated [StreamConfig] (#1549). Deploy
+    /// validation calls it over the blueprint's `resources.toml` only; slice activation calls it over the
+    /// slice's composite configuration provider ([StreamSection]) — resources plus the slice, node, KV and
+    /// environment overlays — so the same rules and typed refusals apply at both, and a value an overlay
+    /// contributes is validated at activation rather than at deploy. A key it does not read is refused
+    /// ([StreamDeclarationError.UnknownStreamKeys]), and so is a malformed, overflowing or below-minimum
+    /// value ([StreamValues]), before anything is defaulted.
     static Result<StreamConfig> parseStreamConfig(StreamSection section) {
-        return refuseUnknownKeys(section).flatMap(StreamConfigParser::refuseNonIntegers)
-                                .flatMap(StreamConfigParser::parseStreamSection)
+        return refuseUnknownKeys(section).flatMap(StreamConfigParser::parseStreamSection)
                                 .flatMap(config -> validatePartitionCeiling(section.alias(),
                                                                             config))
                                 .flatMap(config -> validateReplication(section.alias(),
@@ -433,14 +435,6 @@ public interface StreamConfigParser {
 
     /// The keys of [#STREAM_SECTION_KEYS] whose values are integers.
     List<String> INTEGER_KEYS = List.of("partitions", "replicas", "min-sync-replicas");
-
-    /// The first integer key whose value is not an integer, as its own typed cause — checked before the
-    /// section is read, so the read that follows cannot fail and never aggregates two causes into one.
-    private static Result<StreamSection> refuseNonIntegers(StreamSection section) {
-        return Option.from(INTEGER_KEYS.stream().map(section::integer).filter(Result::isFailure).findFirst())
-                     .map(failure -> failure.map(_ -> section))
-                     .or(success(section));
-    }
 
     private static Result<StreamSection> refuseUnknownKeys(StreamSection section) {
         var unknown = section.keys().stream().filter(key -> !STREAM_SECTION_KEYS.contains(key)).sorted().toList();
@@ -502,76 +496,130 @@ public interface StreamConfigParser {
         return previous[b.length()];
     }
 
+    /// Every value is read into a typed [Result] first — [StreamValues] refuses a malformed, overflowing or
+    /// out-of-range value instead of throwing or defaulting — and the config is built only from values that
+    /// all parsed. The first refusal in key order is the section's cause (one typed cause, never a composite).
     private static Result<StreamConfig> parseStreamSection(StreamSection section) {
-        return Result.all(section.integer("partitions"),
-                          section.integer("replicas"),
-                          section.integer("min-sync-replicas"))
-                     .map((partitions, replicas, minSyncReplicas) -> streamConfigOf(section,
-                                                                                    partitions.or(DEFAULT_PARTITIONS),
-                                                                                    replicas.or(StreamConfig.DEFAULT.replicas()),
-                                                                                    minSyncReplicas.or(StreamConfig.DEFAULT.minSyncReplicas())));
+        var alias = section.alias();
+        var partitions = section.integer("partitions")
+                                .flatMap(value -> positive(alias, "partitions", value))
+                                .map(value -> value.or(DEFAULT_PARTITIONS));
+        var replicas = section.integer("replicas").map(value -> value.or(StreamConfig.DEFAULT.replicas()));
+        var minSync = section.integer("min-sync-replicas")
+                             .map(value -> value.or(StreamConfig.DEFAULT.minSyncReplicas()));
+        var maxEventSize = optionalLong(section,
+                                        "max-event-size",
+                                        StreamValues::size,
+                                        StreamConfig.DEFAULT.maxEventSizeBytes());
+        var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
+        var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
+        var retention = parseRetention(section);
+
+        return firstFailure(List.of(partitions, replicas, minSync, maxEventSize, consistency, compression, retention)).map(failure -> failure.<StreamConfig> map(_ -> StreamConfig.DEFAULT))
+                           .or(() -> Result.all(partitions,
+                                                retention,
+                                                maxEventSize,
+                                                consistency,
+                                                replicas,
+                                                minSync,
+                                                compression).map((p, r, size, mode, rf, sync, codec) -> StreamConfig.streamConfig(alias,
+                                                                                                                                  p,
+                                                                                                                                  r,
+                                                                                                                                  section.string("auto-offset-reset")
+                                                                                                                                         .or("earliest"),
+                                                                                                                                  size,
+                                                                                                                                  parseConsistencyMode(mode),
+                                                                                                                                  rf,
+                                                                                                                                  sync,
+                                                                                                                                  parseCompression(codec),
+                                                                                                                                  section.string("encryption-key-id"))));
     }
 
-    private static StreamConfig streamConfigOf(StreamSection section,
-                                               int partitions,
-                                               int replicas,
-                                               int minSyncReplicas) {
-        // #576: the parsed default used to be "latest", but the runtime never honored a `latest`
-        // start-policy in the first place — StreamAccess#fetchFromCommitted's no-cursor path always
-        // starts at offset 0 per the #478 ruling, permanently, not as a gap to be closed later.
-        // Defaulting to "earliest" here makes the parsed value match what actually happens; it does
-        // not change runtime behavior since nothing reads this field on the hot path (only
-        // KVStoreSerializer round-trips it). An explicit non-"earliest" value is rejected at
-        // StreamResourceValidator (aether-deployment) as inert rather than accepted silently.
-        var autoOffsetReset = section.string("auto-offset-reset").or("earliest");
-        var maxEventSizeBytes = section.string("max-event-size")
-                                       .map(StreamConfigParser::parseSizeBytes)
-                                       .or(StreamConfig.DEFAULT.maxEventSizeBytes());
-        var consistencyMode = section.string("consistency")
-                                     .map(StreamConfigParser::parseConsistencyMode)
-                                     .or(ConsistencyMode.EVENTUAL);
-        var compression = section.string("compression")
-                                 .map(StreamConfigParser::parseCompression)
-                                 .or(StreamCompression.NONE);
-
-        return StreamConfig.streamConfig(section.alias(),
-                                         partitions,
-                                         parseRetention(section),
-                                         autoOffsetReset,
-                                         maxEventSizeBytes,
-                                         consistencyMode,
-                                         replicas,
-                                         minSyncReplicas,
-                                         compression,
-                                         section.string("encryption-key-id"));
+    private static Option<Result<?>> firstFailure(List<Result<?>> results) {
+        return Option.from(results.stream().filter(Result::isFailure).findFirst());
     }
 
-    private static RetentionPolicy parseRetention(StreamSection section) {
-        var retentionType = section.string("retention").or("count");
-        var retentionValue = section.string("retention-value").or("");
-        var mode = section.string("retention-mode").map(StreamConfigParser::parseRetentionMode).or(RetentionMode.ANY);
-        // #1549: `time`, `size` and `compound` leave every bound they do not declare at the RetentionPolicy
-        // DEFAULT, never Long.MAX_VALUE. The ring's index is sized from the count, and an unbounded count
-        // cannot be allocated (stream creation threw once these forms first reached the runtime); the byte
-        // and age bounds follow the same rule so an undeclared bound means the default, uniformly. Under the
-        // default mode (ANY) eviction happens at whichever limit is hit first. `count` keeps its unbounded
-        // byte/age bounds: its count already sizes the ring, and changing it would move every count fixture.
-        return switch (retentionType.toLowerCase()) {
-            case "compound" -> parseCompoundRetention(section, mode);
-            case "time" -> RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(),
-                                                           DEFAULTS.maxBytes(),
-                                                           parseTimeMs(retentionValue),
-                                                           mode);
-            case "size" -> RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(),
-                                                           parseSizeBytes(retentionValue),
-                                                           DEFAULTS.maxAgeMs(),
-                                                           mode);
-            case "count" -> RetentionPolicy.retentionPolicy(parseCount(retentionValue),
-                                                            Long.MAX_VALUE,
-                                                            Long.MAX_VALUE,
-                                                            mode);
-            default -> RetentionPolicy.retentionPolicy();
+    private static Result<Option<Integer>> positive(String alias, String key, Option<Integer> value) {
+        return value.filter(present -> present < 1)
+                    .map(present -> new StreamDeclarationError.ValueOutOfRange(alias,
+                                                                               key,
+                                                                               String.valueOf(present),
+                                                                               1).<Option<Integer>> result())
+                    .or(success(value));
+    }
+
+    private static Result<Long> optionalLong(StreamSection section,
+                                             String key,
+                                             Functions.Fn3<Result<Long>, String, String, String> parser,
+                                             long defaultValue) {
+        return section.string(key)
+                      .map(raw -> parser.apply(section.alias(),
+                                               key,
+                                               raw))
+                      .or(success(defaultValue));
+    }
+
+    private static Result<String> optionalEnum(StreamSection section,
+                                               String key,
+                                               List<String> allowed,
+                                               String defaultValue) {
+        return section.string(key)
+                      .map(raw -> StreamValues.oneOf(section.alias(),
+                                                     key,
+                                                     raw,
+                                                     allowed))
+                      .or(success(defaultValue));
+    }
+
+    /// #1549: `time`, `size` and `compound` leave every bound they do not declare at the RetentionPolicy
+    /// DEFAULT, never Long.MAX_VALUE. The ring's index is sized from the count, and an unbounded count cannot
+    /// be allocated (stream creation threw once these forms first reached the runtime); the byte and age
+    /// bounds follow the same rule so an undeclared bound means the default, uniformly. Under the default
+    /// mode (ANY) eviction happens at whichever limit is hit first. `count` keeps its unbounded byte/age
+    /// bounds: its count already sizes the ring. Every declared value is typed-refused when malformed,
+    /// overflowing or below 1, as is an unknown `retention` or `retention-mode` spelling.
+    private static Result<RetentionPolicy> parseRetention(StreamSection section) {
+        var type = optionalEnum(section, "retention", List.of("count", "time", "size", "compound"), "count");
+        var mode = optionalEnum(section, "retention-mode", List.of("any", "all"), "any").map(StreamConfigParser::parseRetentionMode);
+
+        return type.flatMap(retentionType -> retentionWithMode(section, retentionType, mode));
+    }
+
+    /// Sequential, not `Result.all`: a refused spelling stays its own typed cause instead of a composite.
+    private static Result<RetentionPolicy> retentionWithMode(StreamSection section,
+                                                             String type,
+                                                             Result<RetentionMode> mode) {
+        return mode.flatMap(retentionMode -> retentionOf(section, type, retentionMode));
+    }
+
+    private static Result<RetentionPolicy> retentionOf(StreamSection section, String type, RetentionMode mode) {
+        return switch (type) {
+            case "compound" -> compoundRetention(section, mode);
+            case "time" -> optionalLong(section, "retention-value", StreamValues::duration, DEFAULTS.maxAgeMs()).map(ageMs -> RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(),
+                                                                                                                                                              DEFAULTS.maxBytes(),
+                                                                                                                                                              ageMs,
+                                                                                                                                                              mode));
+            case "size" -> optionalLong(section, "retention-value", StreamValues::size, DEFAULTS.maxBytes()).map(bytes -> RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(),
+                                                                                                                                                          bytes,
+                                                                                                                                                          DEFAULTS.maxAgeMs(),
+                                                                                                                                                          mode));
+            default -> optionalLong(section, "retention-value", StreamValues::count, DEFAULTS.maxCount()).map(count -> RetentionPolicy.retentionPolicy(count,
+                                                                                                                                                       Long.MAX_VALUE,
+                                                                                                                                                       Long.MAX_VALUE,
+                                                                                                                                                       mode));
         };
+    }
+
+    private static Result<RetentionPolicy> compoundRetention(StreamSection section, RetentionMode mode) {
+        var maxCount = optionalLong(section, "max-count", StreamValues::count, DEFAULTS.maxCount());
+        var maxBytes = optionalLong(section, "max-bytes", StreamValues::size, DEFAULTS.maxBytes());
+        var maxAge = optionalLong(section, "max-age", StreamValues::duration, DEFAULTS.maxAgeMs());
+
+        return firstFailure(List.of(maxCount, maxBytes, maxAge)).map(failure -> failure.<RetentionPolicy> map(_ -> DEFAULTS))
+                           .or(() -> Result.all(maxCount, maxBytes, maxAge).map((count, bytes, age) -> RetentionPolicy.retentionPolicy(count,
+                                                                                                                                       bytes,
+                                                                                                                                       age,
+                                                                                                                                       mode)));
     }
 
     private static Map<String, ConsumerConfig> extractConsumerConfigs(TomlDocument doc, String streamName) {
@@ -632,14 +680,6 @@ public interface StreamConfigParser {
         };
     }
 
-    private static RetentionPolicy parseCompoundRetention(StreamSection section, RetentionMode mode) {
-        var maxAge = section.string("max-age").map(StreamConfigParser::parseTimeMs).or(DEFAULTS.maxAgeMs());
-        var maxCount = section.string("max-count").map(StreamConfigParser::parseCount).or(DEFAULTS.maxCount());
-        var maxBytes = section.string("max-bytes").map(StreamConfigParser::parseSizeBytes).or(DEFAULTS.maxBytes());
-
-        return RetentionPolicy.retentionPolicy(maxCount, maxBytes, maxAge, mode);
-    }
-
     private static RetentionMode parseRetentionMode(String value) {
         return switch (value.toLowerCase()) {
             case "all" -> RetentionMode.ALL;
@@ -696,35 +736,5 @@ public interface StreamConfigParser {
         }
 
         return Long.parseLong(trimmed);
-    }
-
-    private static long parseSizeBytes(String value) {
-        if (value.isEmpty()) {
-            return 256 * 1024 * 1024L;
-        }
-
-        var trimmed = value.trim().toUpperCase();
-
-        if (trimmed.endsWith("GB")) {
-            return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024 * 1024 * 1024L;
-        }
-
-        if (trimmed.endsWith("MB")) {
-            return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024 * 1024L;
-        }
-
-        if (trimmed.endsWith("KB")) {
-            return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024L;
-        }
-
-        return Long.parseLong(trimmed);
-    }
-
-    private static long parseCount(String value) {
-        if (value.isEmpty()) {
-            return 100_000L;
-        }
-
-        return Long.parseLong(value.trim());
     }
 }

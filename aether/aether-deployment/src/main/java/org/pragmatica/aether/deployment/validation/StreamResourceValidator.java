@@ -68,7 +68,7 @@ public sealed interface StreamResourceValidator {
     String RULE_PARTITIONS_OVER_CEILING = "partitions-over-ceiling";
     String RULE_REPLICATION_INVALID = "replication-invalid";
     String RULE_UNKNOWN_STREAM_KEY = "unknown-stream-key";
-    String RULE_STREAM_KEY_NOT_INTEGER = "stream-key-not-integer";
+    String RULE_STREAM_KEY_INVALID = "stream-key-invalid";
     String RULE_SOURCE_ADDRESS_INVALID = "source-address-invalid";
     String RULE_NAMESPACE_INVALID = "namespace-invalid";
     String RULE_STREAM_NAME_INVALID = "stream-name-invalid";
@@ -144,7 +144,7 @@ public sealed interface StreamResourceValidator {
     ///
     /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
     /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
-    /// [#RULE_REPLICATION_INVALID], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_NOT_INTEGER], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
+    /// [#RULE_REPLICATION_INVALID], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
     /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
     /// type not named here — and #576's inert config keys ([#RULE_INERT_STREAM_CONFIG],
     /// [#RULE_INERT_CONSUMER_CONFIG]). Each names the alias it sits under, taken from the section the parser
@@ -341,7 +341,10 @@ public sealed interface StreamResourceValidator {
             case StreamDeclarationError.PartitionsOverCeiling _ -> RULE_PARTITIONS_OVER_CEILING;
             case StreamDeclarationError.ReplicationInvalid _ -> RULE_REPLICATION_INVALID;
             case StreamDeclarationError.UnknownStreamKeys _ -> RULE_UNKNOWN_STREAM_KEY;
-            case StreamDeclarationError.NotAnInteger _ -> RULE_STREAM_KEY_NOT_INTEGER;
+            case StreamDeclarationError.NotAnInteger _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.MalformedValue _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.ValueOverflows _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.ValueOutOfRange _ -> RULE_STREAM_KEY_INVALID;
             case ResourceAddressError.General address -> addressRule(address);
             case ResourceVersionError _ -> RULE_VERSION_FORMAT_INVALID;
             case StreamVersionSpecError _ -> RULE_VERSION_FORMAT_INVALID;

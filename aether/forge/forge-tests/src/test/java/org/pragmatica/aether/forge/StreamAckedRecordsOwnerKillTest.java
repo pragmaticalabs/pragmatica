@@ -135,6 +135,14 @@ class StreamAckedRecordsOwnerKillTest {
                 STREAM_NAME,
                 committed.replicas(),
                 committed.minSyncReplicas());
+        // Asserted BEFORE the kill as well as after it (v1557): a failure later in the test must not hide
+        // whether the declared min-sync reached the runtime — the #1549 claim this test exists to pin.
+        assertThat(committed.minSyncReplicas())
+            .describedAs("the declared min-sync-replicas reaches the committed runtime config, before any kill (#1549)")
+            .isEqualTo(DECLARED_MIN_SYNC);
+        assertThat(committed.replicas())
+            .describedAs("the declared replicas reach the committed runtime config, before any kill")
+            .isEqualTo(DECLARED_REPLICAS);
 
         // Publish only once the full replica set is registered: at min-sync 3 a publish needs both peers.
         await().atMost(PLACEMENT_TIMEOUT)

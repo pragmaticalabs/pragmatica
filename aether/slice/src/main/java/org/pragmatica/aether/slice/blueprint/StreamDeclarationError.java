@@ -79,6 +79,32 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
+    /// A value whose text is not in the form its key takes (#1549) — `"1.5MB"`, `"5 min"`, an unknown
+    /// retention or consistency spelling. Refused rather than defaulted or thrown.
+    record MalformedValue(String alias, String key, String value, String expected) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias + "' has " + key + " = '" + value + "', expected " + expected;
+        }
+    }
+
+    /// A value too large to represent once its unit is applied (#1549) — it used to wrap into a negative
+    /// bound silently (`"999999999999999d"`) or throw (`count` past the `long` range).
+    record ValueOverflows(String alias, String key, String value) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias + "' has " + key + " = '" + value + "', which overflows";
+        }
+    }
+
+    /// A value below its key's minimum (#1549): a count, size or duration of 0, or partitions below 1.
+    record ValueOutOfRange(String alias, String key, String value, long minimum) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias + "' has " + key + " = '" + value + "', below the minimum of " + minimum;
+        }
+    }
+
     /// `replicas < 1`, or `min-sync-replicas > replicas` (spec §11.x).
     record ReplicationInvalid(String alias, String detail) implements StreamDeclarationError {
         @Override

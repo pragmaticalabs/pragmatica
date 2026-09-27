@@ -250,24 +250,42 @@ class StreamSectionBindingTest {
                 .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 7_200_000L, RetentionMode.ANY));
         }
 
+        /// The parser refuses these first (StreamConfigParserTest); the engine backstop refuses the same bounds
+        /// on a config built by any other path, typed, never a throw out of the ring build.
         @Test
-        void zeroCount_isRefusedTyped() {
-            assertRefused("max-count = \"0\"", new StreamError.RetentionBoundInvalid(ALIAS, "max-count", 0));
+        void engineBackstop_zeroCount_isRefusedTyped() {
+            assertEngineRefuses(RetentionPolicy.retentionPolicy(0, DEFAULTS.maxBytes(), DEFAULTS.maxAgeMs()),
+                                new StreamError.RetentionBoundInvalid(ALIAS, "max-count", 0));
         }
 
         @Test
-        void negativeCount_isRefusedTyped() {
-            assertRefused("max-count = \"-5\"", new StreamError.RetentionBoundInvalid(ALIAS, "max-count", -5));
+        void engineBackstop_negativeCount_isRefusedTyped() {
+            assertEngineRefuses(RetentionPolicy.retentionPolicy(-5, DEFAULTS.maxBytes(), DEFAULTS.maxAgeMs()),
+                                new StreamError.RetentionBoundInvalid(ALIAS, "max-count", -5));
         }
 
         @Test
-        void zeroBytes_isRefusedTyped() {
-            assertRefused("max-bytes = \"0\"", new StreamError.RetentionBoundInvalid(ALIAS, "max-bytes", 0));
+        void engineBackstop_zeroBytes_isRefusedTyped() {
+            assertEngineRefuses(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 0, DEFAULTS.maxAgeMs()),
+                                new StreamError.RetentionBoundInvalid(ALIAS, "max-bytes", 0));
         }
 
         @Test
-        void zeroAge_isRefusedTyped() {
-            assertRefused("max-age = \"0\"", new StreamError.RetentionBoundInvalid(ALIAS, "max-age", 0));
+        void engineBackstop_negativeAge_isRefusedTyped() {
+            assertEngineRefuses(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), -1),
+                                new StreamError.RetentionBoundInvalid(ALIAS, "max-age", -1));
+        }
+
+        @Test
+        void bindTimeRefusal_isTheParsersTypedCause() {
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf(compound("max-count = \"0\"")), SECTION)
+                                                                   .onSuccess(config -> fail("count 0 must be refused, bound " + config))
+                                                                   .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ValueOutOfRange(ALIAS,
+                                                                                                                                                              "max-count",
+                                                                                                                                                              "0",
+                                                                                                                                                              1))));
         }
 
         @Test
@@ -303,12 +321,113 @@ class StreamSectionBindingTest {
             return "[streams.orders]\nretention = \"compound\"\n" + lines + "\n";
         }
 
+        private static void assertEngineRefuses(RetentionPolicy retention, Cause expected) {
+            var defaults = StreamConfig.streamConfig(ALIAS);
+            var config = StreamConfig.streamConfig(ALIAS,
+                                                   1,
+                                                   retention,
+                                                   defaults.autoOffsetReset(),
+                                                   defaults.maxEventSizeBytes(),
+                                                   defaults.consistencyMode(),
+                                                   defaults.replicas(),
+                                                   defaults.minSyncReplicas(),
+                                                   defaults.compression(),
+                                                   defaults.encryptionKeyId());
+            var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
+            try {
+                manager.createStream(config)
+                       .onSuccess(_ -> fail("expected " + expected))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(expected));
+            } finally {
+                manager.close();
+            }
+        }
+
         private static void assertRefused(String boundLine, Cause expected) {
             var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
             try {
                 manager.createStream(bindWith(new StreamPublisherFactory(), compound(boundLine)))
                        .onSuccess(_ -> fail("expected " + expected))
                        .onFailure(cause -> assertThat(cause).isEqualTo(expected));
+            } finally {
+                manager.close();
+            }
+        }
+    }
+
+    /// v1557 probed two cases where deploy (TOML text) and activation (flattened provider) disagreed; both views
+    /// now refuse them with the same typed cause.
+    @Nested
+    class DeployAndActivationRefuseAlike {
+        @Test
+        void quotedDottedKey_isRefusedAtBoth() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    "retention.value" = "5"
+                    """;
+
+            assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
+        }
+
+        @Test
+        void subTableOtherThanConsumers_isRefusedAtBoth() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+
+                    [streams.orders.retention]
+                    value = "5"
+                    """;
+
+            assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
+        }
+
+        @Test
+        void fractionalPartitions_isNotAnIntegerAtBoth() {
+            assertBothRefuseWith("[streams.orders]\nversion = \"1.0.0\"\npartitions = 3.0\n", StreamDeclarationError.NotAnInteger.class);
+        }
+
+        @Test
+        void partitionsBeyondTheIntRange_isNotAnIntegerAtBoth() {
+            assertBothRefuseWith("[streams.orders]\nversion = \"1.0.0\"\npartitions = 2147483648\n", StreamDeclarationError.NotAnInteger.class);
+        }
+
+        private static void assertBothRefuseWith(String toml, Class<? extends Cause> expected) {
+            StreamConfigParser.parseResources(toml)
+                              .onSuccess(resources -> fail("deploy must refuse, parsed " + resources))
+                              .onFailure(cause -> assertThat(cause).as("deploy").isInstanceOf(expected));
+            new StreamPublisherFactory().sectionBinder()
+                                        .onEmpty(() -> fail("stream factories must bind their own section"))
+                                        .onPresent(binder -> binder.bind(providerOf(toml), SECTION)
+                                                                   .onSuccess(config -> fail("activation must refuse, bound " + config))
+                                                                   .onFailure(cause -> assertThat(cause).as("activation").isInstanceOf(expected)));
+        }
+    }
+
+    /// With no slice configuration provider, a section-binding factory is refused typed — never handed to the
+    /// record binder, which would default the section silently.
+    @Nested
+    class NoProviderIsRefused {
+        @Test
+        void provide_withoutAComposite_refusesTyped_andNeverConsultsTheRecordBinder() {
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+            var recordBinderCalls = new java.util.concurrent.atomic.AtomicInteger();
+            var provider = SpiResourceProvider.spiResourceProvider(List.of(new StreamPublisherFactory()),
+                                                                   (_, _) -> {
+                                                                       recordBinderCalls.incrementAndGet();
+                                                                       return Result.success(StreamConfig.DEFAULT);
+                                                                   });
+            var context = ProvisioningContext.provisioningContext()
+                                             .withExtension(StreamPartitionManager.class, manager)
+                                             .withExtension(Serializer.class, identitySerializer());
+            try {
+                provider.provide(StreamPublisher.class, SECTION, context)
+                        .await()
+                        .onSuccess(_ -> fail("must refuse without a configuration provider"))
+                        .onFailure(cause -> assertThat(cause.message()).contains("configuration provider"));
+
+                assertThat(recordBinderCalls.get()).as("the record binder must not be consulted").isZero();
             } finally {
                 manager.close();
             }

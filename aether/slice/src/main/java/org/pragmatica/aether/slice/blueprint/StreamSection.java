@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice.blueprint;
 
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.toml.TomlDocument;
@@ -28,8 +29,22 @@ public sealed interface StreamSection {
     String alias();
     Set<String> keys();
     Option<String> string(String key);
-    /// Absent → `Success(None)`; present but not an integer → failure naming the key, never a default.
-    Result<Option<Integer>> integer(String key);
+
+    /// Absent → `Success(None)`; present but not an integer → [StreamDeclarationError.NotAnInteger], never a
+    /// default. Read from the value's TEXT on both sides, so `3.0` or `2147483648` fails the same way at deploy
+    /// (TOML) and at activation (provider), instead of one side returning a TOML type and the other a
+    /// provider type mismatch.
+    default Result<Option<Integer>> integer(String key) {
+        return string(key).map(raw -> StreamValues.integer(alias(),
+                                                           key,
+                                                           raw).map(Option::some))
+                     .or(Result.success(Option.none()));
+    }
+
+    /// `consumers.<group>...` belongs to the consumer parser, never to this section.
+    private static boolean isConsumerTable(String relative) {
+        return relative.startsWith("consumers.");
+    }
 
     static StreamSection tomlSection(TomlDocument doc, String section, String alias) {
         return new TomlStreamSection(doc, section, alias);
@@ -44,23 +59,29 @@ public sealed interface StreamSection {
     }
 
     record TomlStreamSection(TomlDocument doc, String section, String alias) implements StreamSection {
+        /// Direct keys, plus the keys of any sub-table other than `consumers.*` written as `<sub>.<key>` — a
+        /// `[streams.x.retention]` table or a quoted `"retention.value"` key is a key of this section nothing
+        /// reads, and must be refused here exactly as the provider view refuses its flattened form.
         @Override
         public Set<String> keys() {
-            return doc.keys(section);
+            var prefix = section + ".";
+            var nested = doc.sectionNames()
+                            .stream()
+                            .filter(name -> name.startsWith(prefix))
+                            .map(name -> name.substring(prefix.length()))
+                            .filter(sub -> !isConsumerTable(sub))
+                            .flatMap(sub -> doc.keys(section + "." + sub)
+                                               .stream()
+                                               .map(key -> sub + "." + key));
+
+            return Stream.concat(doc.keys(section).stream(),
+                                 nested)
+                         .collect(Collectors.toUnmodifiableSet());
         }
 
         @Override
         public Option<String> string(String key) {
             return doc.getString(section, key);
-        }
-
-        @Override
-        public Result<Option<Integer>> integer(String key) {
-            return doc.getString(section, key)
-                      .map(raw -> doc.getInt(section, key)
-                                     .toResult(new StreamDeclarationError.NotAnInteger(alias, key, raw))
-                                     .map(Option::some))
-                      .or(Result.success(Option.none()));
         }
     }
 
@@ -68,6 +89,8 @@ public sealed interface StreamSection {
     /// `StrictKeys` gives: an environment variable or KV overlay landing under the section was not
     /// written by the blueprint and must not fail a bind the file alone would accept.
     record ProviderStreamSection(ConfigurationProvider provider, String section, String alias) implements StreamSection {
+        /// Every key under the section except the consumer sub-tables — including dotted ones, which is how a
+        /// quoted `"retention.value"` or a `[streams.x.retention]` table arrives once flattened.
         @Override
         public Set<String> keys() {
             var prefix = section + ".";
@@ -76,18 +99,13 @@ public sealed interface StreamSection {
                            .stream()
                            .filter(key -> key.startsWith(prefix))
                            .map(key -> key.substring(prefix.length()))
-                           .filter(key -> key.indexOf('.') < 0)
+                           .filter(key -> !isConsumerTable(key))
                            .collect(Collectors.toUnmodifiableSet());
         }
 
         @Override
         public Option<String> string(String key) {
             return provider.getString(section + "." + key);
-        }
-
-        @Override
-        public Result<Option<Integer>> integer(String key) {
-            return provider.getInt(section + "." + key);
         }
     }
 }

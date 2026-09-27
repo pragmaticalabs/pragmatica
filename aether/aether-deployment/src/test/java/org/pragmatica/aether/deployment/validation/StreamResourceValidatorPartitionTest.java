@@ -159,7 +159,7 @@ class StreamResourceValidatorPartitionTest {
                                                "[streams.too-many]::" + StreamResourceValidator.RULE_PARTITIONS_OVER_CEILING,
                                                "[streams.no-replicas]::" + StreamResourceValidator.RULE_REPLICATION_INVALID,
                                                "[streams.snake-keys]::" + StreamResourceValidator.RULE_UNKNOWN_STREAM_KEY,
-                                               "[streams.wordy-count]::" + StreamResourceValidator.RULE_STREAM_KEY_NOT_INTEGER);
+                                               "[streams.wordy-count]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID);
             assertThat(partition.rejected()).extracting(StreamValidationFailure::field)
                                             .as("no refusal may lose its alias")
                                             .doesNotContain("[streams]");
