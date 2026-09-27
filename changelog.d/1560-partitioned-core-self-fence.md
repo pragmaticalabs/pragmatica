@@ -3,12 +3,12 @@
   - Every peer the membership FSM had already demoted to DEPARTING or DEAD therefore came back as a "stuck" member.
   - The isolated node's SWIM still read those peers SUSPECTED. Lifeguard stretches suspicion when every local probe fails, and SUSPECTED counts as alive to the gate.
   - The fence was suppressed with an effective quorum of 5 of 5. The only later fence was the PASSIVE path, 15 s after its own edge.
-- The counted set is now the FSM's counted core members narrowed to the installed voters, as it was before #1390, keeping #1390's voter scoping. [verified: `aether/node/src/test/java/org/pragmatica/aether/node/QuorumCoConfirmationSeamTest.java`, which reddens both tests when the counted set is reverted to the voter set]
+- The counted set is now the FSM's counted core members narrowed to the installed voters, as it was before #1390, keeping #1390's voter scoping. [verified: `aether/node/src/test/java/org/pragmatica/aether/node/QuorumCoConfirmationSeamTest.java`, which reddens both tests when the counted set is reverted to the voter set. The same revert, with the re-arm below kept, reddens the Ember test below: the non-leader fenced in 33.0 s]
 - **A suppressed quorum-loss check is now re-evaluated instead of dropped.** Before this change, a count-path or presence-path check that the co-confirmation gate suppressed did not schedule another check. The fence was stranded on whatever the gate read at that single instant.
   - A suppressed check now re-arms every second.
   - It fires only while the node is still below threshold and the gate no longer suppresses.
   - Recovery cancels it.
   - The `T` debounce and the cold-boot deferral are unchanged.
   - The suppression WARN is logged once per episode; repeat checks log at DEBUG.
-  [verified: `QuorumLossDetectorTest$CoConfirmationGate`, whose three `suppressed*` tests redden when the re-arm is removed]
+  [verified: `QuorumLossDetectorTest$CoConfirmationGate`, whose three `suppressed*` tests redden when the re-arm is removed] [unverified end to end: once the counted set was fixed, no Ember run suppressed the first check, so the re-check path never ran there. Removing the re-arm left the Ember test green at 19.0 s (N=1). The rc4 log shows the stranding the re-arm closes: one suppressed check and no second one]
 - End to end, a single black-holed core of five self-fences in 19.0 s, both as the leader and as a non-leader. The black-hole starts after the 75 s cold-boot window. At the rc4 tip the non-leader took 34.0 s. [verified: `aether/ember/src/test/java/org/pragmatica/aether/ember/EmberPartitionedCoreSelfFenceTest.java`, bound 30 s. On bigboy it measured 19.0 s at c83ba0ed2, 34.0 s at the rc4 tip (red), and 19.0 s with the fix] [unverified: the heal-after-fence stream scenario of #1555 has not been re-run on this branch]
