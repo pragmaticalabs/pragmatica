@@ -91,27 +91,21 @@ class WorkerRuntimeCommitWiringTest {
         assertThat(AetherNode.installedCorePlacementMembers(unavailable, counted)).isSameAs(unavailable);
     }
 
-    @Test void assembledWorkerUsesDurableEpochBeforeAnyMetricsCanBePublished() {
-        var self = new NodeId("durable-worker");
+    /// The assembled collector stamps this process's boot token before any sample can be published, and
+    /// a re-assembly under the same NodeId draws a new, unequal token (owner ruling, session 28: tokens
+    /// are compared by equality, never persisted).
+    @Test void assembledWorkerStampsBootTokenBeforeAnyMetrics_andReassemblyDrawsANewToken() {
+        var self = new NodeId("boot-token-worker");
         var config = workerConfig(self);
         node = AetherNode.aetherNode(config, () -> {}).unwrap();
-        assertThat(node.metricsCollector().allObservations().get(self).incarnation()).isEqualTo(1);
+        var first = node.metricsCollector().allObservations().get(self).incarnation();
+        assertThat(first).as("a real token, never the unwired 0 default").isPositive();
         node.stop().await(timeSpan(10).seconds()).unwrap();
         node = null;
         ConfigService.clear();
         ResourceProvider.clear();
         node = AetherNode.aetherNode(config, () -> {}).unwrap();
-        assertThat(node.metricsCollector().allObservations().get(self).incarnation()).isEqualTo(2);
-    }
-
-    @Test void corruptEpochRefusesAssemblyInsteadOfPublishingAnUnfencedSample() {
-        var config = workerConfig(new NodeId("corrupt-epoch-worker"));
-        var control = storageRoot.resolve("control");
-        org.pragmatica.lang.Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
-            () -> java.nio.file.Files.createDirectories(control)).unwrap();
-        org.pragmatica.lang.Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
-            () -> java.nio.file.Files.write(control.resolve("producer-incarnation.bin"), new byte[]{1})).unwrap();
-        assertThat(AetherNode.aetherNode(config, () -> {}).isFailure()).isTrue();
+        assertThat(node.metricsCollector().allObservations().get(self).incarnation()).isPositive().isNotEqualTo(first);
     }
 
     private AetherNodeConfig workerConfig(NodeId self) {
@@ -123,8 +117,7 @@ class WorkerRuntimeCommitWiringTest {
             .artifactRepo(org.pragmatica.dht.DHTConfig.FULL).coreMax(1)
             .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none())
             .quicTls(TlsConfig.selfSignedMutual()).certificateProvider(Option.none())
-            .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot,
-                org.pragmatica.config.ConfigurationProvider.builder().build())))
+            .configProvider(Option.none())
             .environment(Option.none()).managementHttpProtocol(org.pragmatica.aether.config.HttpProtocol.H1).storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false)).build();
     }
 

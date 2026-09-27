@@ -57,8 +57,8 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// ## Durability, stated per operation rather than as a label
 ///   - A write resolves only once the record is fsync-durable on the owner AND held by the keyspace's
-///     declared `minSyncReplicas`. At `replication_factor = 1` that is the owner alone, which survives a
-///     RESTART and not a node loss; at 2 or more a peer holds it before the caller is told anything.
+///     declared `minSyncReplicas` — the owner plus one peer, since `replication_factor` is at least 3
+///     (#1547), so a peer holds it before the caller is told anything.
 ///   - A write that reaches the log but misses the replication barrier reports
 ///     [EntityLogError.ReplicationBarrierUnmet] and IS applied locally, because the record is in the log
 ///     and a recovering node will replay it. Reporting failure while diverging from the log would be

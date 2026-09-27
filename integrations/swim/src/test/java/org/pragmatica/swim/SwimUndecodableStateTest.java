@@ -83,7 +83,7 @@ class SwimUndecodableStateTest {
     }
 
     private void gossip(MemberState state, long incarnation) {
-        protocol.onMessage(ADDR_B, new Ping(NODE_B, incarnation + 1, List.of(new MembershipUpdate(NODE_A, state, incarnation, ADDR_A))));
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, incarnation + 1, List.of(MembershipUpdate.membershipUpdate(NODE_A, state, incarnation, ADDR_A))));
     }
 
     private void seedAlive() {

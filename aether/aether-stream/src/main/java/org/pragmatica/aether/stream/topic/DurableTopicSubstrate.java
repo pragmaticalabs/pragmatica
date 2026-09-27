@@ -51,7 +51,7 @@ import static org.pragmatica.lang.Option.none;
 ///   is per-entry and group-targeted, so cross-entry ordering buys nothing — and one partition
 ///   keeps the inspect/page surface trivial. Poison throughput is failure-bounded.
 /// - **`ConsistencyMode.EVENTUAL`**: the durability floor is the two-knob synchronous-replication
-///   barrier (`min-sync == replicas >= 2`, enforced at parse), not the STRONG consensus publish
+///   barrier (`min-sync == replicas >= 3`, default 3, enforced at parse), not the STRONG consensus publish
 ///   path, which remains unwired (guarantees.md §4 known-gaps).
 public interface DurableTopicSubstrate {
     /// Create the topic stream and its DLQ stream, both or neither observable as success: a failed

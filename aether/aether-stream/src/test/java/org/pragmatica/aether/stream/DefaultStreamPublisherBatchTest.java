@@ -363,7 +363,7 @@ class DefaultStreamPublisherBatchTest {
     private static StreamConfig replicatedConfig() {
         var base = config(1);
         return StreamConfig.streamConfig(base.name(), base.partitions(), base.retention(), base.autoOffsetReset(),
-            base.maxEventSizeBytes(), base.consistencyMode(), 2, 2, base.compression(), base.encryptionKeyId());
+            base.maxEventSizeBytes(), base.consistencyMode(), 3, 2, base.compression(), base.encryptionKeyId());
     }
 
     private static StreamConfig config(int partitions) {

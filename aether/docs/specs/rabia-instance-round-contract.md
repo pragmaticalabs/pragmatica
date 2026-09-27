@@ -92,55 +92,11 @@ predictable schedule.
 8. Worker, unknown, and self-echo synchronization responses cannot complete a core quorum.
 9. The full consensus suite and generated serialization compile after the vote wire change.
 
-## Crash-recovery write-ahead contract
+## Crash and restart model
 
-A durable local WAL is required for a production voter. Before emitting its immutable proposal,
-round-one ballot, or round-two ballot, a node appends and fsyncs that promise. Retransmission of the
-same promise requires no additional write; a conflicting promise for the same epoch/slot/round is a
-fatal protocol error. A Decision is appended and fsynced before application or publication. Recovery
-restores the checkpoint, replays the subsequent contiguous Decisions, and restores the open slot's
-own proposal and ballots before responding to synchronization or voting. A restarted process cannot
-choose a new proposal or ballot merely because its volatile PhaseData map was lost.
-
-The checkpoint includes the application frontier, voter authority/retirement evidence, WAL sequence,
-and retained promises for the still-open slot. The temporary checkpoint file is fsynced, atomically
-renamed, and the containing directory is fsynced before the covered WAL prefix is replaced. A crash
-after rename but before directory fsync may lose the rename; recovery must retain the old WAL prefix
-until directory durability is established. A crash between those replacements leaves redundant old records,
-which recovery validates and then ignores below the checkpoint sequence. An incomplete frame,
-checksum mismatch, unknown schema, or sequence gap fails startup; this implementation does not
-silently truncate or reinterpret corrupted durable history as a fresh node.
-
-The append boundary is local storage, not git or a remote content store. Each new proposal, ballot,
-and Decision adds one fsync in the baseline implementation. Batching application commands still
-amortizes this cost across a batch; network rounds and fsync latency both contribute to commit latency.
-Snapshot map/set encoding is canonical only on the checkpoint path, leaving ordinary wire encoding
-unchanged. Group commit is a possible later optimization, provided no vote or successful result can
-escape before the group is durable. Performance measurements must report the filesystem and storage
-used; an in-memory protocol test is not a durable-throughput benchmark.
-
-The adapter holds an exclusive OS file lock for the node's consensus directory until serialized
-shutdown closes it. A second process cannot reuse that identity's WAL directory concurrently.
-Production selects `cluster.consensus_path`; Ember uses a distinct per-cluster, per-node temporary
-path that survives that node's in-process restart. In-memory persistence remains an explicit test
-choice and does not imply crash durability. Passive workers do not replay the global consensus WAL.
-
-[limit: durable-journal-envelope] Baseline bounds: records are at most 64 MiB; checkpoint payloads at most 512 MiB; WAL at most 256 MiB;
-compaction is requested after 4,096 appended records or 32 MiB. At most 65,536 uncompacted/open-slot
-promises are retained, including binary-round history. Exceeding a bound stops voting with a typed
-failure; it does not discard an unresolved promise. Optional git backup receives only immutable
-checkpoints on a separate worker, with one in-flight and one latest pending snapshot. Backup failure
-is observable but cannot delay voting or make a durable write appear unsuccessful.
-
-[unverified: production-durable-throughput] Local development measurements (not production storage): 64 append+fsync samples
-had median 6.7–8.3 ms and p95 8.4–23.1 ms across three runs. A proposal, two ballots, and a Decision
-therefore add material serial storage latency per batch. Production throughput and tail latency
-must be measured with actual batch size, core count, disk, and inter-region delay. These figures are
-not a claim that a 10K-node hierarchy can run its core protocol at in-memory test throughput.
-
-Disk durability is a deployment assumption: retain the voter directory for an identity across process
-restarts. If that directory is lost, replace the node with a fresh identity through a certified
-configuration handoff. Deleting all local evidence and reasserting the same identity as newly created
-is outside this crash-recovery contract; neither an empty directory nor a discovery seed list proves
-that the identity never voted. Explicit configured genesis must agree with recovered genesis, while
-ordinary discovery membership and capacity-count changes cannot override verified local authority.
+Voters are fail-stop and consensus state is in memory (owner ruling, session 28; the #1390 vote
+write-ahead log is removed). A voter that crashes loses its proposals and ballots together with its
+process, so it never votes again under that identity: removal is terminal, and recovery is a new
+node with a fresh NodeId admitted through a certified configuration handoff. Each process draws a
+random boot token that peers compare by equality; a different token for a known NodeId is a new
+process and is refused, so a restarted process cannot silently re-enter with a lost voting history.

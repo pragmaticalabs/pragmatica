@@ -109,7 +109,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///   - **No owner-loss arm** — the SIGKILL failover case is tracked as #739; without it this suite
 ///     does not prove survival of a partition owner's death.
 ///   - **Publish outcomes (#1236) and pre-durability visibility (#1235) have no arm.** Driving a
-///     `NOT_ENOUGH_REPLICAS` result needs fewer live replica targets than `min_sync_replicas = 2`,
+///     `NOT_ENOUGH_REPLICAS` result needs fewer live replica targets than `min_sync_replicas = 3`,
 ///     which a five-node cluster only reaches by losing quorum; #1235's loss needs an owner failover,
 ///     the missing #739 arm. Every publish here resolves normally, so neither defect can show.
 @Tag("Heavy")
@@ -126,6 +126,8 @@ class DurableTopicDeliveryForgeTest {
     private static final int BASE_MGMT_PORT = 19100;
     private static final int BASE_APP_HTTP_PORT = 19200;
     private static final int NODES = 5;
+    /// Peer acks that make an append visible: the fixture's `min_sync_replicas = 3` minus the owner (#1547).
+    private static final long VISIBILITY_PEER_ACKS = 2;
     private static final int INSTANCES = 5;
 
     private static final int ORDER_COUNT = 20;
@@ -910,8 +912,8 @@ class DurableTopicDeliveryForgeTest {
     /// `min_sync_replicas - 1` peers have acked)` (`StreamPartitionManager.ackedVisible`/`refreshVisible`).
     /// An append seen with 0 attached that becomes visible only after the attach is delivered by the
     /// visible-advance notification, and the arm would read green without any backlog read. So the same
-    /// owner sample must also show a NON-owner replica row acked through the new event's offset
-    /// (`min_sync_replicas = 2` here, so one peer); the owner's own row is substituted with its raw head
+    /// owner sample must also show enough NON-owner replica rows acked through the new event's offset
+    /// (`min_sync_replicas = 3` here, so two peers — [#VISIBILITY_PEER_ACKS]); the owner's own row is substituted with its raw head
     /// and is excluded. Owner-side durability has no management surface and is assumed to precede or
     /// closely follow the peer ack `[unverified: no black-box read of the owner's durable offset]`.
     /// Sampling continues while the append is not yet peer-acked or the owner's instance is not yet
@@ -1084,7 +1086,8 @@ class DurableTopicDeliveryForgeTest {
     private static boolean peerConfirmedAtLeast(String body, long offset) {
         return REPLICA_ROW.matcher(body)
                           .results()
-                          .anyMatch(row -> "false".equals(row.group(2)) && Long.parseLong(row.group(1)) >= offset);
+                          .filter(row -> "false".equals(row.group(2)) && Long.parseLong(row.group(1)) >= offset)
+                          .count() >= VISIBILITY_PEER_ACKS;
     }
 
     private static Option<Long> ownerHeadOffset(String body) {

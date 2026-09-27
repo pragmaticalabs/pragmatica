@@ -112,7 +112,11 @@ class CommunityHealthIndexTest {
         assertThat(index.accept(governor, report(request, 100))).isTrue();
         assertThat(index.isReachable(worker)).isFalse();
     }
-    @Test void regressedMemberEpochExcludesOnlyThatMemberAndRecoversOnNewEpoch() {
+    /// `MemberHealth.incarnation` is the member's boot token — equality only, never ordered (owner
+    /// ruling, session 28). The first token pins the member; evidence from a different token is another
+    /// process claiming the NodeId and is excluded, without affecting other members. This replaced
+    /// #1390's "a regressed epoch excludes the member" ordering.
+    @Test void memberTokenChange_excludesOnlyThatMember_pinnedTokenStillCounts() {
         var first = index.request("community").unwrap();
         assertThat(index.accept(governor, report(first, 0))).isTrue();
         var next = index.request("community").unwrap();
@@ -120,13 +124,13 @@ class CommunityHealthIndexTest {
         assertThat(index.accept(governor, new Report(governor, "community", next.governorTerm(),
             next.incarnation(), next.sequence(), List.of(new MemberHealth(worker, 1, true, true, zero),
                 new MemberHealth(governor, 4, true, true, zero))))).isTrue();
-        assertThat(index.isReady(worker)).isFalse();
+        assertThat(index.isReady(worker)).as("the other process's evidence is excluded").isFalse();
         assertThat(index.isReady(governor)).isTrue();
         assertThat(index.hasFreshReport("community")).isTrue();
-        var recovered = index.request("community").unwrap();
-        assertThat(index.accept(governor, new Report(governor, "community", recovered.governorTerm(),
-            recovered.incarnation(), recovered.sequence(), List.of(new MemberHealth(worker, 3, true, true, zero))))).isTrue();
-        assertThat(index.isReady(worker)).isTrue();
+        var pinned = index.request("community").unwrap();
+        assertThat(index.accept(governor, new Report(governor, "community", pinned.governorTerm(),
+            pinned.incarnation(), pinned.sequence(), List.of(new MemberHealth(worker, 2, true, true, zero))))).isTrue();
+        assertThat(index.isReady(worker)).as("control: the pinned token's evidence counts").isTrue();
     }
 
     private static GovernorAnnouncementValue announcement(NodeId governor, long term) {

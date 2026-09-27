@@ -515,9 +515,9 @@ public interface SystemTags {
         pin(table, 1701, "org.pragmatica.aether.worker.health.CommunityHealthMessage.Request");
         pin(table, 1702, "org.pragmatica.aether.worker.health.CommunityHealthMessage.Report");
         pin(table, 1704, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRejected");
+        pin(table, 1705, "org.pragmatica.consensus.net.NetworkMessage.HelloRefused");
+        pin(table, 1706, "org.pragmatica.swim.SwimMessage.IdentityRefused");
         pin(table, 1703, "org.pragmatica.aether.worker.health.CommunityHealthMessage.MemberHealth");
-        pin(table, 1693, "org.pragmatica.consensus.rabia.VotingJournalCheckpoint");
-        pin(table, 1694, "org.pragmatica.consensus.rabia.VotingJournalRecord");
         pin(table, 1695, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest");
         pin(table, 1696, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.Manifest");
         pin(table, 1697, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ScopeContent");

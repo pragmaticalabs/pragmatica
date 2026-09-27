@@ -38,6 +38,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
@@ -52,6 +53,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.Announce;
+import org.pragmatica.swim.SwimMessage.IdentityRefused;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
@@ -233,6 +235,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// until [#announceJoin] seeds a real incarnation, so a bogus incarnation-0
     /// self is never gossiped.
     private final AtomicLong selfIncarnation = new AtomicLong(0);
+    /// This process's random boot token, seeded by [#announceJoin]; `0` until then (and for callers
+    /// that announce without one). Carried on every self-ANNOUNCE and self-ALIVE.
+    private final AtomicLong selfBootToken = new AtomicLong(0);
+    /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
+    /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
+    /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
+    /// SAME token heals exactly as before (higher incarnation supersedes); a DIFFERENT token for a
+    /// known identity is a new process and retires the identity. Equality only, never ordered.
+    private volatile BootTokens bootTokens = BootTokens.bootTokens(0L);
     /// Fix 1 (#336 at-risk self-refutation): epoch-ms of the last evidence that peers can
     /// reach THIS node — an inbound `Ping` ([#handlePing]) or a verified `Ack` to a probe
     /// this node sent ([#acceptProbeAckIfFromTarget]). When it goes stale (≥ the at-risk
@@ -400,6 +411,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         this.piggybackBuffer = PiggybackBuffer.piggybackBuffer(config.maxPiggyback());
         this.isBooting = isBooting;
         this.transportConnected = transportConnected;
+        bootTokens.onRetired(this::onRetired);
     }
 
     /// Factory creating a SWIM protocol instance.
@@ -535,7 +547,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // OBSERVED (which would restart the SUSPECT<->FAULTY oscillation once it escalates).
         // A genuine rejoin arrives via self-ANNOUNCE (`handleAnnounce`), which clears the
         // tombstone.
-        if (isTombstoned(nodeId, 0L)) {
+        if (isTombstoned(nodeId, 0L) || isRetired(nodeId)) {
             return;
         }
 
@@ -745,7 +757,23 @@ public final class SwimProtocol implements SwimMessageHandler {
             case Announce announce -> handleAnnounce(sender, announce);
             case WhoAmI w -> handleWhoAmI(sender, w);
             case WhoAmIReply r -> handleWhoAmIReply(r);
+            case IdentityRefused refused -> handleIdentityRefused(refused);
         }
+    }
+
+    /// A peer refused THIS process's ANNOUNCE: our NodeId belongs to a retired or different process
+    /// (terminal removal). Hand it to the shared registry, whose self-refusal listener makes the node
+    /// log ERROR and exit. A refusal about some other NodeId is not ours and is ignored.
+    private void handleIdentityRefused(IdentityRefused refused) {
+        if (!selfId.equals(refused.refused())) {
+            return;
+        }
+
+        LOG.error("SWIM: peer {} refused this process's identity {}: {}",
+                  refused.from().id(),
+                  selfId.id(),
+                  refused.reason());
+        bootTokens.selfRefused(refused.reason());
     }
 
     // -- Internal tick --
@@ -782,7 +810,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         addMemberUpdate(MembershipUpdate.membershipUpdate(selfId,
                                                           MemberState.ALIVE,
                                                           refreshedSelfIncarnation(incarnation),
-                                                          selfAddress));
+                                                          selfAddress,
+                                                          selfBootToken.get()));
     }
 
     /// Fix 1 (#336 PRIMARY): the incarnation this round's proactive self-ALIVE advertises.
@@ -1507,8 +1536,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// P2 reconnection: a verified probe-ack is genuine proof this node is no longer isolated;
     /// the isolation latch clear + isolation-era FAULTY backlog expiry happen in
     /// [#recordHealthyAndEmit] (the single HEALTHY-edge chokepoint this routes through).
+    /// A retired identity (boot-token conflict) is refused here, the single entry for probe-ack alive
+    /// evidence: a same-address new process answering a probe must never revive the retired member.
     private void acceptAliveEvidence(NodeId peer) {
-        if (!inMembershipScope(peer)) {
+        if (!inMembershipScope(peer) || isRetired(peer)) {
             return;
         }
 
@@ -1601,6 +1632,17 @@ public final class SwimProtocol implements SwimMessageHandler {
         // still present as FAULTY when its self-ANNOUNCE arrives, so the clear must not
         // be gated on absence. A dead node never self-announces, so this cannot reopen
         // the oscillation; this is what preserves partition-heal (suite 12 S06).
+        // Boot-token gate (owner ruling, session 28): an ANNOUNCE from a different process for a
+        // known identity retires it — the old process is treated as dead, the new one refused. It
+        // runs BEFORE the tombstone clear so a refused process can never reopen the identity.
+        if (!admitsBootToken(announce.nodeInfo().id(),
+                             announce.bootToken())) {
+            refuseAnnounce(sender,
+                           announce.nodeInfo().id());
+
+            return;
+        }
+
         tombstones.remove(announce.nodeInfo().id());
         if (!members.containsKey(announce.nodeInfo().id())) {
             // Direct liveness evidence: a self-ANNOUNCE datagram is a node speaking for ITSELF
@@ -1764,6 +1806,18 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Runs on the shared scheduler. Stops once this node is acknowledged by a peer (inbound probe) or after 60 attempts (30s).
     @Contract
     public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
+        announceJoin(self, clusterName, incarnation, 0L, seeds);
+    }
+
+    /// As [#announceJoin(NodeInfo,String,long,List)], carrying this process's random `bootToken`
+    /// on every ANNOUNCE and self-ALIVE, so peers can tell a same-process heal (same token, higher
+    /// incarnation) from a different process reusing this NodeId (refused — terminal removal).
+    @Contract
+    public void announceJoin(NodeInfo self,
+                             String clusterName,
+                             long incarnation,
+                             long bootToken,
+                             List<InetSocketAddress> seeds) {
         // #501: arming is lifecycle state, so it is serialized against start()/stop() by the same
         // lock. Without it the announce loop can be installed after a concurrent stop() has already
         // read announceFuture, leaving a live loop no stop() can reach.
@@ -1778,6 +1832,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // announce loop runs. Monotonic max so a re-announce (or a refutation that
             // already advanced the value) never regresses it.
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
+            selfBootToken.compareAndSet(0L, bootToken);
             var attempts = new AtomicInteger(0);
             var future = new AtomicReference<ScheduledFuture<?>>();
             var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,
@@ -1792,6 +1847,90 @@ public final class SwimProtocol implements SwimMessageHandler {
             // A re-announce supersedes the previous loop; stop() cancels whichever is current.
             announceFuture.getAndSet(option(task)).onPresent(f -> f.cancel(false));
         }
+    }
+
+    /// Boot-token gate for evidence about `peer` (owner ruling, session 28). `0` carries no process
+    /// identity and is admitted. The first non-zero token is recorded; an equal token is admitted
+    /// (same process — heals exactly as before). A different token retires the identity: the
+    /// resident process is treated as dead and the new one is refused, as is every later piece of
+    /// evidence for a retired id. Every refusal is counted and logged.
+    private boolean admitsBootToken(NodeId peer, long token) {
+        return switch (bootTokens.admit(peer, token)) {
+            case ADMITTED -> true;
+            case CONFLICT -> refuseConflict(peer, token);
+            case RETIRED -> refuseRetired(peer, token);
+        };
+    }
+
+    /// Tell the refused announcer explicitly, so it exits instead of announcing forever.
+    private void refuseAnnounce(InetSocketAddress sender, NodeId refused) {
+        transport.send(sender,
+                       IdentityRefused.identityRefused(selfId,
+                                                       refused,
+                                                       "NodeId " + refused.id()
+                                                      + " belongs to a retired process; start with a fresh identity"));
+    }
+
+    private boolean refuseRetired(NodeId peer, long token) {
+        LOG.debug("SWIM refused evidence for {} carrying boot token {}: identity already retired by a boot-token conflict",
+                  peer.id(),
+                  token);
+
+        return false;
+    }
+
+    private boolean refuseConflict(NodeId peer, long incoming) {
+        LOG.warn("SWIM boot-token conflict for {}: known process token {}, new token {} — the known process is"
+                + " treated as DEAD and the new process is REFUSED (terminal removal: recover with a fresh NodeId)",
+                 peer.id(),
+                 bootTokens.tokenOf(peer),
+                 incoming);
+
+        return false;
+    }
+
+    /// Retirement listener on the shared registry: whichever layer (SWIM or the QUIC handshake) saw
+    /// the conflicting token, the resident process is treated as dead — FAULTY now, unless it already
+    /// is — so a same-address new process answering probes can never keep the old member alive.
+    private void onRetired(NodeId peer) {
+        option(members.get(peer)).filter(member -> member.state() != MemberState.FAULTY)
+              .onPresent(this::transitionToFaulty);
+    }
+
+    private boolean isRetired(NodeId peer) {
+        return bootTokens.isRetired(peer);
+    }
+
+    private long bootTokenOf(NodeId peer) {
+        return bootTokens.tokenOf(peer);
+    }
+
+    /// A self-update about a previous process of this NodeId: it carries a token that is neither
+    /// unknown nor this process's own.
+    private boolean isAboutAnotherProcess(MembershipUpdate update) {
+        return update.bootToken() != 0L
+               && selfBootToken.get() != 0L
+               && update.bootToken() != selfBootToken.get();
+    }
+
+    /// Count of evidence refused by the boot-token gate — observability for the terminal-removal rule.
+    public long bootTokenRefusals() {
+        return bootTokens.refusals();
+    }
+
+    /// Install the node's boot-token registry — the SAME instance the QUIC transport admits Hellos
+    /// through — before any peer evidence arrives. The registry's own token is this process's.
+    public Unit setBootTokens(BootTokens registry) {
+        bootTokens = registry;
+        registry.onRetired(this::onRetired);
+        selfBootToken.compareAndSet(0L, registry.self());
+
+        return Unit.unit();
+    }
+
+    /// Whether `peer` was retired by a boot-token conflict (a different process reused its NodeId).
+    public boolean isRetiredIdentity(NodeId peer) {
+        return isRetired(peer);
     }
 
     /// Per-peer health view used by transport-side gates (e.g. `swimHealthGate`
@@ -1838,7 +1977,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         seeds.stream()
              .takeWhile(_ -> !announceStopped.get())
              .forEach(seed -> transport.send(seed,
-                                             Announce.announce(self, clusterName, incarnation)));
+                                             Announce.announce(self,
+                                                               clusterName,
+                                                               incarnation,
+                                                               selfBootToken.get())));
         if (attempt >= 60) {
             cancelAnnounce(future, self, "max attempts reached");
         }
@@ -1918,6 +2060,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
+        if (!admitsBootToken(update.nodeId(), update.bootToken())) {
+            return;
+        }
+
         var existing = option(members.get(update.nodeId()));
 
         if (existing.isPresent()) {
@@ -1963,6 +2109,16 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
+        if (isAboutAnotherProcess(update)) {
+            LOG.warn("Ignoring {} about this node's id carrying boot token {} — a previous process with this"
+                    + " NodeId, not this one (token {})",
+                     update.state(),
+                     update.bootToken(),
+                     selfBootToken.get());
+
+            return;
+        }
+
         if (update.incarnation() < selfIncarnation.get()) {
             LOG.debug("Ignoring stale self-suspicion at incarnation {} (already refuted; current self-incarnation {})",
                       update.incarnation(),
@@ -1978,7 +2134,11 @@ public final class SwimProtocol implements SwimMessageHandler {
         // means this node's liveness traffic was too slow to pre-empt it — local
         // trouble, LHM rises once per suspicion event.
         lhmIncrement("self suspected/faulted by a remote node (missed refutation traffic)");
-        addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, bumped, selfAddress));
+        addMemberUpdate(MembershipUpdate.membershipUpdate(selfId,
+                                                          MemberState.ALIVE,
+                                                          bumped,
+                                                          selfAddress,
+                                                          selfBootToken.get()));
     }
 
     private void applyNewMember(MembershipUpdate update) {
@@ -2304,7 +2464,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         piggybackBuffer.addUpdate(MembershipUpdate.membershipUpdate(member.nodeId(),
                                                                     member.state(),
                                                                     member.incarnation(),
-                                                                    member.address()));
+                                                                    member.address(),
+                                                                    bootTokenOf(member.nodeId())));
     }
 
     private void addMemberUpdate(MembershipUpdate update) {

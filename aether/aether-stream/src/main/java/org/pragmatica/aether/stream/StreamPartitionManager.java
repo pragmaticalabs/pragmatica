@@ -805,7 +805,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> createFreshStream(StreamConfig config, CommitMode commitMode) {
-        return checkPartitionCaps(config).flatMap(_ -> materializeFreshStream(config, commitMode));
+        return checkReplicationMinimum(config).flatMap(_ -> checkPartitionCaps(config))
+                                      .flatMap(_ -> materializeFreshStream(config, commitMode));
+    }
+
+    /// #1547 engine backstop: an APP stream is never created below `StreamConfig.MIN_REPLICAS` copies,
+    /// whichever path minted its config. System streams are exempt — their factor is the cluster size.
+    /// Applied on the create path only; a config already committed is adopted as-is.
+    private static Result<Unit> checkReplicationMinimum(StreamConfig config) {
+        return isSystemStream(config.name()) || config.replicas() >= StreamConfig.MIN_REPLICAS
+               ? success(unit())
+               : new StreamError.ReplicasBelowMinimum(config.name(), config.replicas(), StreamConfig.MIN_REPLICAS).result();
     }
 
     /// Create-time admission gate (#265 increment 4, spec §7): reject a fresh stream that breaches the
@@ -956,8 +966,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `STREAM_CONFIG_COMMIT_FAILED` (explicit-create durability contract — unchanged). ASYNC fires the
     /// `Put` without blocking and returns `Result.unitResult()` immediately; the entry is latched by the
     /// async `onSuccess` callback, a transient failure is logged and retried by the next publish.
+    ///
+    /// #1547: the replication minimum is re-checked HERE, on every commit path. The fresh-create check alone
+    /// was bypassable: a re-create of a materialized-but-uncommitted stream republishes the INCOMING config
+    /// (`ensureConfigCommitted` → `republishExistingConfig`), so an RF=1 re-create after a failed RF=3 commit
+    /// committed `replicas = 1`.
     private Result<Unit> publishStreamConfig(StreamConfig config, StreamEntry entry, CommitMode commitMode) {
-        return clusterNode.fold(() -> latchCommitted(entry), node -> commitMode.publish(this, node, config, entry));
+        return checkReplicationMinimum(config).flatMap(_ -> clusterNode.fold(() -> latchCommitted(entry),
+                                                                             node -> commitMode.publish(this,
+                                                                                                        node,
+                                                                                                        config,
+                                                                                                        entry)));
     }
 
     private Result<Unit> latchCommitted(StreamEntry entry) {

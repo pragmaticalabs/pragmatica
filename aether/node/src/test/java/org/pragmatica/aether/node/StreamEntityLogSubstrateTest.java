@@ -105,7 +105,7 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
-        substrate.ensureLog("orders", 1, 1, 0).unwrap();
+        substrate.ensureLog("orders", 1, 3, 0).unwrap();
         partitionManager.ownerWriteAdmission((_, _) -> Option.some(new NodeId("node-owner")));
 
         var refusal = substrate.append("orders", 0, new byte[] {1, 2, 3}).await();
@@ -133,7 +133,7 @@ class StreamEntityLogSubstrateTest {
                                                  null);
 
         // minSyncReplicas=2 ("owner plus one peer") must await exactly ONE non-self ack.
-        substrate.ensureLog("orders", 1, 2, 2).unwrap();
+        substrate.ensureLog("orders", 1, 3, 2).unwrap();
         substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
 
         assertThat(capturedMinAcks.get()).isEqualTo(1);
@@ -181,7 +181,7 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
-        substrate.ensureLog("orders", 1, 2, 2).unwrap();
+        substrate.ensureLog("orders", 1, 3, 2).unwrap();
         substrate.append("orders", 0, new byte[] {1, 2, 3}).await().unwrap();
 
         assertThat(substrate.headOffset("orders", 0)).isEqualTo(0L);
@@ -208,7 +208,7 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
-        substrate.ensureLog("ledger", 1, 1, 1).unwrap();
+        substrate.ensureLog("ledger", 1, 3, 1).unwrap();
         substrate.append("ledger", 0, new byte[16]).await().unwrap();
 
         substrate.append("ledger", 0, new byte[300_000])

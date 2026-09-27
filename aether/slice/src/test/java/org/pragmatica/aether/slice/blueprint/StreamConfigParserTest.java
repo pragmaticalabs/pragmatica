@@ -6,12 +6,17 @@ package org.pragmatica.aether.slice.blueprint;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 
+import java.util.List;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.aether.slice.blueprint.StreamConfigParser.parseResources;
 
 
@@ -232,13 +237,49 @@ class StreamConfigParserTest {
             assertThat(result.isSuccess()).isTrue();
         }
 
+        /// #1547: the stream replication factor minimum is 3 — a declared value below it is refused by a
+        /// typed cause naming the stream, the declared value and the minimum; it is never clamped up.
+        @Test
+        void rejectsReplicasBelowMinimum() {
+            List.of(-1, 0, 1, 2).forEach(StreamConfigParserTest::assertReplicasRefused);
+        }
+
+        @Test
+        void acceptsReplicasAtMinimum() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    replicas = 3
+                    """;
+
+            parseResources(toml).onFailure(cause -> fail(cause.message()))
+                                .onSuccess(resources -> assertThat(ownedConfig(resources, "orders").replicas()).isEqualTo(3));
+        }
+
+        /// #1547: an absent `replicas` resolves to the minimum, 3 — both in the parser and in
+        /// `StreamConfig.DEFAULT`, which is what the provisioning config binder falls back to for an
+        /// absent key, so the validated and the provisioned default cannot disagree.
+        @Test
+        void absentReplicas_defaultsToThree() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    """;
+
+            parseResources(toml).onFailure(cause -> fail(cause.message()))
+                                .onSuccess(resources -> assertThat(ownedConfig(resources, "orders").replicas()).isEqualTo(3));
+            assertThat(StreamConfig.DEFAULT.replicas()).isEqualTo(3);
+            assertThat(StreamConfig.streamConfig("orders").replicas()).isEqualTo(3);
+            assertThat(StreamConfig.MIN_REPLICAS).isEqualTo(3);
+        }
+
         @Test
         void rejectsMinSyncReplicasExceedingReplicas() {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
-                    replicas = 2
-                    min-sync-replicas = 3
+                    replicas = 3
+                    min-sync-replicas = 4
                     """;
 
             var result = parseResources(toml);
@@ -366,5 +407,25 @@ class StreamConfigParserTest {
             var owned = (StreamResource.Owned) result.get("inventory");
             assertThat(owned.version()).isSameAs(StreamVersionSpec.Latest.INSTANCE);
         }
+    }
+
+    private static void assertReplicasRefused(int replicas) {
+        var toml = """
+                [streams.orders]
+                version = "1.0.0"
+                replicas = %d
+                """.formatted(replicas);
+
+        parseResources(toml).onSuccess(_ -> fail("replicas=" + replicas + " must be refused, not clamped"))
+                            .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.ReplicasBelowMinimum("orders",
+                                                                                                                          replicas,
+                                                                                                                          3)))
+                            .onFailure(cause -> assertThat(cause.message()).contains("'orders'")
+                                                                           .contains("replicas=" + replicas)
+                                                                           .contains("minimum is 3"));
+    }
+
+    private static StreamConfig ownedConfig(Map<String, StreamResource> resources, String alias) {
+        return ((StreamResource.Owned) resources.get(alias)).config();
     }
 }

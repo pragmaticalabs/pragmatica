@@ -39,7 +39,19 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
-    /// `replicas < 1`, or `min-sync-replicas > replicas` (spec §11.x).
+    /// `replicas` below [org.pragmatica.aether.slice.StreamConfig#MIN_REPLICAS] (#1547). Refused rather than clamped: a blueprint that
+    /// asks for fewer copies is told so by name, never silently handed a different replication factor.
+    record ReplicasBelowMinimum(String alias, int replicas, int minimum) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares replicas=" + replicas
+                 + "; the stream replication factor minimum is " + minimum
+                 + " (under terminal node removal a smaller factor loses a dead owner's partitions)";
+        }
+    }
+
+    /// `min-sync-replicas > replicas` (spec §11.x).
     record ReplicationInvalid(String alias, String detail) implements StreamDeclarationError {
         @Override
         public String message() {
