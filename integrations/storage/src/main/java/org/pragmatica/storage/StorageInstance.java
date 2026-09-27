@@ -9,6 +9,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -240,10 +241,12 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private final String name;
     private final List<StorageTier> tiers;
-    /// Tiers a write-through put must land on, in write order: the last tier, then every durable tier
-    /// ([StorageTier#isDurable]) before it. A failure on any of them fails the put (#1567). Before
-    /// #1567 only the last tier was required -- on the `streams` instance that is the in-memory DHT
-    /// tier, so a local-disk failure was absorbed as a cache miss (#910) and the block lived in memory.
+    /// Tiers a write-through put must land on, in write order: every durable tier
+    /// ([StorageTier#isDurable]) before the last, then the last. A failure on any of them fails the put
+    /// (#1567). Before #1567 only the last tier was required -- on the `streams` instance that is the
+    /// in-memory DHT tier, so a local-disk failure was absorbed as a cache miss (#910) and the block lived
+    /// in memory. Durable tiers go first so that a failure of the last (shared) tier is compensated on
+    /// node-private tiers only ([#undoRequiredWrites]).
     private final List<StorageTier> requiredTiers;
     /// Every other tier: best-effort cache, a failure there is absorbed (#910).
     private final List<StorageTier> cacheTiers;
@@ -262,6 +265,11 @@ final class DefaultStorageInstance implements StorageInstance {
     /// it is there so that a second collector for the same id would wait on the first's promise
     /// rather than replace it.
     private final Map<BlockId, Promise<Unit>> collecting = new ConcurrentHashMap<>();
+    /// Claimed writes in flight, keyed by id, each resolving with its claimant's outcome once the claim is
+    /// finalized or released (#1567). A put of the same content registers here BEFORE it claims, so a put
+    /// that finds a registration waits for that write instead of deduplicating onto a claim whose bytes may
+    /// never land -- a ref, cursor or checkpoint naming it would then name nothing.
+    private final Map<BlockId, Promise<Unit>> writing = new ConcurrentHashMap<>();
 
     DefaultStorageInstance(String name,
                            List<StorageTier> tiers,
@@ -444,12 +452,57 @@ final class DefaultStorageInstance implements StorageInstance {
 
     // --- Write flow ---
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
-        var sentinel = sentinelFor(id);
+        return claimOrAwait(id, content, sentinelFor(id), this::writeThroughTiers, this::deduplicateBlock, this::handlePut);
+    }
 
-        return metadataStore.claimBlock(id, sentinel)
-               ? afterCollection(id).flatMap(_ -> writeThroughTiers(id, content))
-                                .onFailure(_ -> metadataStore.releaseClaim(id, sentinel))
-               : deduplicateBlock(id, content);
+    /// #1567: one writer per id at a time. The caller registers its own promise in [#writing] before it
+    /// claims. If another write is registered, this put waits for it and then goes round again (`again`):
+    /// after a successful write its claim fails and it deduplicates onto the finished block; after a failed
+    /// write the claim was released, so it claims and writes the block itself. Retrying rather than failing
+    /// is deliberate: this put holds the content, and a first writer's failure (a full tier, a flaky disk)
+    /// says nothing about whether this write can land -- if it cannot, this put fails on its own attempt.
+    private Promise<BlockId> claimOrAwait(BlockId id,
+                                          byte[] content,
+                                          BlockLifecycle sentinel,
+                                          Fn2<Promise<BlockId>, BlockId, byte[]> write,
+                                          Fn2<Promise<BlockId>, BlockId, byte[]> deduplicate,
+                                          Fn2<Promise<BlockId>, BlockId, byte[]> again) {
+        var mine = Promise.<Unit> promise();
+
+        return option(writing.putIfAbsent(id, mine)).fold(() -> claimAndWrite(id, content, sentinel, mine, write, deduplicate),
+                                                          inFlight -> inFlight.fold(_ -> again.apply(id, content)));
+    }
+
+    /// No registered writer: either this put claims the id and writes it, or the block is already complete
+    /// (every claimant registers first, so a claim that fails here is never someone's in-flight write).
+    private Promise<BlockId> claimAndWrite(BlockId id,
+                                           byte[] content,
+                                           BlockLifecycle sentinel,
+                                           Promise<Unit> mine,
+                                           Fn2<Promise<BlockId>, BlockId, byte[]> write,
+                                           Fn2<Promise<BlockId>, BlockId, byte[]> deduplicate) {
+        if (!metadataStore.claimBlock(id, sentinel)) {
+            finishWriting(id, mine, Result.unitResult());
+
+            return deduplicate.apply(id, content);
+        }
+
+        return afterCollection(id).flatMap(_ -> write.apply(id, content))
+                                  .fold(result -> claimantDone(id, sentinel, mine, result));
+    }
+
+    /// The claim is released BEFORE the waiters are resumed, as a dependent step rather than an `onFailure`
+    /// callback, so a waiter going round again finds the id free and claims it itself.
+    private Promise<BlockId> claimantDone(BlockId id, BlockLifecycle sentinel, Promise<Unit> mine, Result<BlockId> result) {
+        result.onFailure(_ -> metadataStore.releaseClaim(id, sentinel));
+        finishWriting(id, mine, result.mapToUnit());
+
+        return resolved(result);
+    }
+
+    private void finishWriting(BlockId id, Promise<Unit> mine, Result<Unit> outcome) {
+        writing.remove(id, mine);
+        mine.resolve(outcome);
     }
 
     /// #801: a claim that succeeded because GC has just compare-and-removed this id's orphan record
@@ -512,15 +565,19 @@ final class DefaultStorageInstance implements StorageInstance {
                : writeToAllTiers(id, content);
     }
 
+    /// The claimant's write: a required tier that fails after earlier ones succeeded undoes those first
+    /// ([#undoRequiredWrites]), while the claim is still held.
     private Promise<BlockId> writeToAllTiers(BlockId id, byte[] content) {
         var lastLevel = tiers.getLast().level();
 
-        return writeRequiredTiers(id, content, 0).flatMap(_ -> promoteToCacheTiers(id, content))
+        return writeRequiredTiers(id, content, 0).fold(result -> undoOnFailure(id, result))
+                                 .flatMap(_ -> promoteToCacheTiers(id, content))
                                  .map(_ -> trackNewBlock(id, lastLevel));
     }
 
-    /// Sequential and fail-fast: a required tier that fails ends the put with its cause, and the caller
-    /// releases the claim ([#handlePut]). Presence is recorded as a dependent step of each write.
+    /// Sequential and fail-fast: a required tier that fails ends the write with a [RequiredTierFailed]
+    /// naming how many required tiers had already succeeded. Presence is recorded as a dependent step of
+    /// each write.
     private Promise<Unit> writeRequiredTiers(BlockId id, byte[] content, int index) {
         if (index >= requiredTiers.size()) {
             return Promise.success(unit());
@@ -529,8 +586,60 @@ final class DefaultStorageInstance implements StorageInstance {
         var tier = requiredTiers.get(index);
 
         return tier.put(id, content)
+                   .mapError(cause -> RequiredTierFailed.requiredTierFailed(index, cause))
                    .map(_ -> recordRequiredPresence(id, tier))
                    .flatMap(_ -> writeRequiredTiers(id, content, index + 1));
+    }
+
+    /// A required write that failed, and how many required tiers ([#requiredTiers], in order) had
+    /// already taken the block. Internal to the write path: the caller sees `origin`.
+    record RequiredTierFailed(int written, Cause origin, String message) implements Cause {
+        static RequiredTierFailed requiredTierFailed(int written, Cause origin) {
+            return new RequiredTierFailed(written, origin, origin.message());
+        }
+    }
+
+    /// #910's orphan, not reintroduced: a block a required tier took before a later required tier failed
+    /// would sit on that tier with no record once the claim is released, and GC -- driven by records --
+    /// never collects it. So the tiers already written are deleted from first, as a dependent step,
+    /// before the failure (its original cause) reaches the caller and before the claim is released.
+    /// BER, best effort: a failed delete is logged at WARN and absorbed -- the orphan it leaves is the
+    /// pre-fix outcome, and failing the put for it would change nothing the caller can act on. A shared
+    /// tier is never undone: another node's copy of the same content-addressed block may live there.
+    private Promise<Unit> undoOnFailure(BlockId id, Result<Unit> result) {
+        return result.fold(cause -> undoRequiredWrites(id, cause), _ -> Promise.success(unit()));
+    }
+
+    private Promise<Unit> undoRequiredWrites(BlockId id, Cause cause) {
+        var failure = cause instanceof RequiredTierFailed failed
+                      ? failed
+                      : RequiredTierFailed.requiredTierFailed(0, cause);
+
+        return deleteWritten(id, failure.written() - 1).flatMap(_ -> failure.origin()
+                                                                             .<Unit> promise());
+    }
+
+    private Promise<Unit> deleteWritten(BlockId id, int index) {
+        if (index < 0) {
+            return Promise.success(unit());
+        }
+
+        var tier = requiredTiers.get(index);
+
+        return (tier.isShared()
+                ? Promise.success(unit())
+                : tier.delete(id)
+                      .recover(cause -> undoFailed(tier, id, cause))).flatMap(_ -> deleteWritten(id, index - 1));
+    }
+
+    private static Unit undoFailed(StorageTier tier, BlockId id, Cause cause) {
+        log.warn("Could not remove block {} from tier {} after a later required tier failed; it stays there "
+                + "unreferenced and garbage collection will not find it: {}",
+                 id,
+                 tier.level(),
+                 cause.message());
+
+        return unit();
     }
 
     /// The last tier's presence is the claim record itself ([#trackNewBlock]); the others are added to it.
@@ -546,8 +655,8 @@ final class DefaultStorageInstance implements StorageInstance {
         var last = tiers.getLast();
         var durableBefore = tiers.stream().filter(tier -> tier != last && tier.isDurable());
 
-        return Stream.concat(Stream.of(last),
-                             durableBefore)
+        return Stream.concat(durableBefore,
+                             Stream.of(last))
                      .toList();
     }
 
@@ -715,9 +824,10 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     /// A write-through put whatever the instance's policy. A block this instance already holds is
-    /// credited and then written to the required tiers again: its record may be the claim of a write
-    /// still in flight, which dedup does not wait for, and a seal must not name a block it has not
-    /// itself seen become durable.
+    /// credited and then written to the required tiers again: it may have been written behind
+    /// ([WritePolicy#WRITE_BEHIND]) or before its durable tier existed, and a seal must not name a block
+    /// it has not itself seen become durable. An in-flight write of the same block is waited for first
+    /// ([#claimOrAwait]).
     private Promise<BlockId> storeDurably(byte[] content) {
         return BlockId.blockId(content)
                       .async()
@@ -728,10 +838,7 @@ final class DefaultStorageInstance implements StorageInstance {
         var sentinel = BlockLifecycle.blockLifecycle(id,
                                                      tiers.getLast().level());
 
-        return metadataStore.claimBlock(id, sentinel)
-               ? afterCollection(id).flatMap(_ -> writeToAllTiers(id, content))
-                                .onFailure(_ -> metadataStore.releaseClaim(id, sentinel))
-               : rewriteDeduplicated(id, content);
+        return claimOrAwait(id, content, sentinel, this::writeToAllTiers, this::rewriteDeduplicated, this::handleDurablePut);
     }
 
     /// The credit is taken first so GC cannot collect the block under the rewrite (#801); if the rewrite
