@@ -1476,12 +1476,25 @@ public interface AetherNode extends ManageableNode {
 
     /// #1555: the owner promotion gate's probe. Same paging as [#probePeerWatermark], but over the catch-up read
     /// class — the class the gate's catch-up then pulls with — so the probed watermark is one the catch-up can
-    /// reach, and a peer's own owner-promotion state never refuses it.
+    /// reach, and a peer's own owner-promotion state never refuses it. A peer that answers PARTITION_NOT_LOCAL
+    /// holds no ring for the partition (placement never made it owner or replica), so it holds nothing to catch
+    /// up from: its watermark is -1, not "unreachable". Every other failure stays a failure, which blocks
+    /// promotion.
     private static Promise<Long> probePeerAppendedWatermark(StreamForwardClient forwardClient,
                                                             NodeId target,
                                                             String streamName,
                                                             int partition) {
-        return pagePeerWatermark(forwardClient::readRemoteCatchup, target, streamName, partition, 0L);
+        return pagePeerWatermark(forwardClient::readRemoteCatchup, target, streamName, partition, 0L)
+                                .fold(result -> result.fold(AetherNode::emptyWhenNotHeld, Promise::success));
+    }
+
+    /// The remote read failure travels as its message only ([StreamForwardError.ReadForwardFailed]), so the
+    /// not-held refusal is recognised by that message.
+    private static Promise<Long> emptyWhenNotHeld(Cause cause) {
+        return cause.message()
+                    .contains(StreamError.General.PARTITION_NOT_LOCAL.message())
+               ? Promise.success(-1L)
+               : cause.promise();
     }
 
     /// One page of a peer's partition read, over whichever forward-read class the probe uses.
