@@ -634,6 +634,17 @@ public final class EmberCluster {
     ///
     /// @param heldBackNodeIds ids of initial nodes whose `start()` is deferred; empty = plain [#start]
     public Promise<Unit> start(Set<String> heldBackNodeIds) {
+        return start(heldBackNodeIds, heldBackNodeIds);
+    }
+
+    /// TEST SEAM (#1554) — a cold start where some initial cores boot late: they are held back like
+    /// [#start(Set)] but stay in the genesis roster, so the started cores wait in genesis for them, as
+    /// production cores do when a configured core is slow to boot. Start them with [#startHeldBackNodes].
+    public Promise<Unit> startWithLateGenesisMembers(Set<String> lateNodeIds) {
+        return start(lateNodeIds, Set.of());
+    }
+
+    private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
         log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {})",
                  initialClusterSize,
                  basePort,
@@ -642,7 +653,7 @@ public final class EmberCluster {
                  heldBackNodeIds);
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
 
-        genesisExcluded = Set.copyOf(heldBackNodeIds);
+        genesisExcluded = Set.copyOf(excludedFromGenesis);
         availableSlots.clear();
         for (int i = 0; i < poolSize; i++) {
             availableSlots.offer(i);
@@ -1024,9 +1035,18 @@ public final class EmberCluster {
         return Map.copyOf(configured);
     }
 
-    private Promise<NodeId> addConfiguredNode(Map<String, String> labels) {
-        var nodeId = nodeId(nodeIdPrefix + "-" + nodeCounter.incrementAndGet()).unwrap();
+    /// TEST SEAM (#1554) — add a core under an explicit NodeId, so a test can place the joiner at a chosen
+    /// position in the NodeId order (the lower NodeId of a pair is its designated dialer). Harness-scoped.
+    public Promise<NodeId> addCoreNode(String nodeIdStr) {
+        return addConfiguredNode(nodeId(nodeIdStr).unwrap(), configuredNodeLabels(Map.of()));
+    }
 
+    private Promise<NodeId> addConfiguredNode(Map<String, String> labels) {
+        return addConfiguredNode(nodeId(nodeIdPrefix + "-" + nodeCounter.incrementAndGet()).unwrap(),
+                                 labels);
+    }
+
+    private Promise<NodeId> addConfiguredNode(NodeId nodeId, Map<String, String> labels) {
         if ("core".equalsIgnoreCase(labels.getOrDefault(NodeInfo.LABEL_ROLE, "core"))) {
             localCoreAdmissions.add(nodeId.id());
         } else if ("worker".equalsIgnoreCase(labels.get(NodeInfo.LABEL_ROLE)) || "spot".equalsIgnoreCase(labels.get(NodeInfo.LABEL_ROLE))) {

@@ -4029,7 +4029,7 @@ public interface AetherNode extends ManageableNode {
         metricsScheduler.setMetricsRecipient(node -> isCoreMember(membershipFsm, node));
         topologyObserver.setConsensusMembership(coreAdmission::isAllowed);
         var configuredTransferPeers = configuredVoters(config);
-        var bootNanos = System.nanoTime();
+        var dialingSinceNanos = new AtomicLong();
 
         topologyObserver.setStateTransferMembership(peer -> !peer.equals(config.self()) && (coreAdmission.isAllowed(peer) || configuredTransferPeers.contains(peer)));
         clusterNode.network()
@@ -4356,7 +4356,7 @@ public interface AetherNode extends ManageableNode {
         clusterNetworkRef.setConnectionInitiator((_, peer) -> hierarchyPeerPolicy.initiatesCoreBootstrap(bootstrapInitiator(clusterNode,
                                                                                                                             config.self(),
                                                                                                                             configuredTransferPeers,
-                                                                                                                            bootNanos),
+                                                                                                                            dialingSinceNanos),
                                                                                                          configuredTransferPeers.contains(peer)) || hierarchyPeerPolicy.isConnectionInitiator(peer,
                                                                                                                                                                                               configuredTransferPeers.contains(peer) || routingCoreIds.get()
                                                                                                                                                                                                                                                       .contains(peer) || membershipFsm.memberDescriptor(peer)
@@ -5851,23 +5851,32 @@ public interface AetherNode extends ManageableNode {
     /// within a fraction of a second; if they also bypassed the order, every pair dialed both ways and
     /// the superseded duplicate could lose its FORWARD lane (#1578). So a pending core initiates only
     /// once it is isolated: no connection to any configured core after the grace window. That is the
-    /// joiner the formed seeds cannot see.
+    /// joiner the formed seeds cannot see. The window starts at the transport's first dial decision,
+    /// not at construction: a node built long before it starts would otherwise start out "isolated".
     private static boolean bootstrapInitiator(RabiaNode<KVCommand<AetherKey>> node,
                                               NodeId self,
                                               Set<NodeId> configuredPeers,
-                                              long bootNanos) {
+                                              AtomicLong dialingSinceNanos) {
         return node.voterConfiguration()
                    .map(configuration -> !configuration.contains(self))
-                   .or(() -> isolatedPendingCore(node, configuredPeers, bootNanos));
+                   .or(() -> isolatedPendingCore(node,
+                                                 configuredPeers,
+                                                 dialingSince(dialingSinceNanos)));
+    }
+
+    private static long dialingSince(AtomicLong dialingSinceNanos) {
+        var _ = dialingSinceNanos.compareAndSet(0L, System.nanoTime());
+
+        return dialingSinceNanos.get();
     }
 
     private static boolean isolatedPendingCore(RabiaNode<KVCommand<AetherKey>> node,
                                                Set<NodeId> configuredPeers,
-                                               long bootNanos) {
-        return System.nanoTime() - bootNanos >= PENDING_CORE_ISOLATION_GRACE.nanos() && node.network()
-                                                                                            .connectedPeers()
-                                                                                            .stream()
-                                                                                            .noneMatch(configuredPeers::contains);
+                                               long dialingSinceNanos) {
+        return System.nanoTime() - dialingSinceNanos >= PENDING_CORE_ISOLATION_GRACE.nanos() && node.network()
+                                                                                                    .connectedPeers()
+                                                                                                    .stream()
+                                                                                                    .noneMatch(configuredPeers::contains);
     }
 
     private static Set<NodeId> configuredVoters(AetherNodeConfig config) {
