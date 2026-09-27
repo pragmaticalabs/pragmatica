@@ -50,7 +50,7 @@ The `Topic<T>` compile-time layer (#396) is unchanged — it carries the type, t
 
 ## 4. Per-operation guarantee table (normative)
 
-This table is the contract; `guarantees.md` §22 is replaced by it on implementation. Each cell names the guarantee **and** the mechanism that earns it. "Durable" cells assume the §3 constraint (`replicas ≥ 2`, `min-sync == replicas`); other configs are unrepresentable in v1.
+This table is the contract; `guarantees.md` §22 is replaced by it on implementation. Each cell names the guarantee **and** the mechanism that earns it. "Durable" cells assume the §3 constraint (`replicas ≥ 3`, `min-sync == replicas`); other configs are unrepresentable in v1.
 
 | Operation | Ephemeral | Durable |
 |-----------|-----------|---------|
