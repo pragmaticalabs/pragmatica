@@ -152,11 +152,10 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         var phase = extractPhase(tomlText);
 
         return tomlToSnapshot.apply(tomlText)
-                             .flatMap(snapshot -> VoterConfigurationHeader.decode(tomlText)
-                                                                          .map(configuration -> new SavedState<>(snapshot,
-                                                                                                                 phase,
-                                                                                                                 List.of(),
-                                                                                                                 configuration)));
+                             .flatMap(snapshot -> VoterConfigurationHeader.decode(tomlText).map(configuration -> new SavedState<>(snapshot,
+                                                                                                                                  phase,
+                                                                                                                                  List.of(),
+                                                                                                                                  configuration)));
     }
 
     private Phase extractPhase(String tomlText) {

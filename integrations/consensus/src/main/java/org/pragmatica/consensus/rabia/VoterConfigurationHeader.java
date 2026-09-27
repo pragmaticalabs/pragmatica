@@ -21,12 +21,13 @@ final class VoterConfigurationHeader {
     private VoterConfigurationHeader() {}
 
     static String encode(VoterConfiguration configuration) {
-        return PREFIX + configuration.epoch() + "|" + configuration.members()
-                                                                     .stream()
-                                                                     .map(NodeId::id)
-                                                                     .map(VoterConfigurationHeader::encodeId)
-                                                                     .collect(Collectors.joining(","))
-               + "\n";
+        return PREFIX + configuration.epoch()
+             + "|" + configuration.members()
+                                  .stream()
+                                  .map(NodeId::id)
+                                  .map(VoterConfigurationHeader::encodeId)
+                                  .collect(Collectors.joining(","))
+             + "\n";
     }
 
     static Result<Option<VoterConfiguration>> decode(String text) {
@@ -46,21 +47,17 @@ final class VoterConfigurationHeader {
             return ReconfigurationError.INCOMPATIBLE_EPOCH.result();
         }
 
-        return parseEpoch(parts[0]).flatMap(epoch -> Result.allOf(Arrays.stream(parts[1].split(",", -1))
-                                                                         .map(VoterConfigurationHeader::decodeNode))
-                                                           .flatMap(nodes -> VoterConfiguration.voterConfiguration(epoch,
-                                                                                                                  nodes)));
+        return parseEpoch(parts[0]).flatMap(epoch -> Result.allOf(Arrays.stream(parts[1].split(",", -1)).map(VoterConfigurationHeader::decodeNode)).flatMap(nodes -> VoterConfiguration.voterConfiguration(epoch,
+                                                                                                                                                                                                           nodes)));
     }
 
     private static String encodeId(String id) {
-        return Base64.getEncoder()
-                     .encodeToString(id.getBytes(StandardCharsets.UTF_8));
+        return Base64.getEncoder().encodeToString(id.getBytes(StandardCharsets.UTF_8));
     }
 
     private static Result<NodeId> decodeNode(String encoded) {
         return Result.lift(ReconfigurationError.INCOMPATIBLE_EPOCH,
-                           () -> Base64.getDecoder()
-                                       .decode(encoded))
+                           () -> Base64.getDecoder().decode(encoded))
                      .map(bytes -> new String(bytes, StandardCharsets.UTF_8))
                      .flatMap(NodeId::nodeId);
     }

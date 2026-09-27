@@ -23,10 +23,7 @@ import org.pragmatica.serialization.Codec;
 @Codec
 public record ReconfigurationCommand(long baseEpoch, ClusterConfig target) {
     public ReconfigurationCommand {
-        target = new ClusterConfig(target.members()
-                                         .stream()
-                                         .sorted(Comparator.comparing(NodeId::id))
-                                         .toList());
+        target = new ClusterConfig(target.members().stream().sorted(Comparator.comparing(NodeId::id)).toList());
     }
 
     public static ReconfigurationCommand reconfigurationCommand(long baseEpoch, ClusterConfig target) {
@@ -41,16 +38,15 @@ public record ReconfigurationCommand(long baseEpoch, ClusterConfig target) {
     }
 
     public boolean appliesTo(VoterConfiguration current) {
-        return baseEpoch == current.epoch() && isWellFormed() && !current.roster()
-                                                                         .sameMembership(target)
+        return baseEpoch == current.epoch()
+               && isWellFormed()
+               && !current.roster()
+                          .sameMembership(target)
                && retainsTargetMajority(current);
     }
 
     public boolean retainsTargetMajority(VoterConfiguration current) {
-        var retained = target.members()
-                             .stream()
-                             .filter(current::contains)
-                             .count();
+        var retained = target.members().stream().filter(current::contains).count();
 
         return retained >= target.clusterSize() / 2 + 1;
     }
@@ -67,15 +63,11 @@ public record ReconfigurationCommand(long baseEpoch, ClusterConfig target) {
 
     private String key() {
         return String.join(",",
-                           target.members()
-                                 .stream()
-                                 .map(NodeId::id)
-                                 .toList());
+                           target.members().stream().map(NodeId::id).toList());
     }
 
     private boolean isWellFormed() {
-        return !target.members()
-                      .isEmpty() && Set.copyOf(target.members())
-                                       .size() == target.clusterSize();
+        return ! target.members()
+                       .isEmpty() && Set.copyOf(target.members()).size() == target.clusterSize();
     }
 }

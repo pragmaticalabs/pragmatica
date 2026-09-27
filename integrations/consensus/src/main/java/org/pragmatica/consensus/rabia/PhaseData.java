@@ -153,7 +153,9 @@ final class PhaseData<C extends Command> {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    org.pragmatica.lang.Unit registerProposal(NodeId node, Batch<C> batch, Option<ReconfigurationCommand> configuration) {
+    org.pragmatica.lang.Unit registerProposal(NodeId node,
+                                              Batch<C> batch,
+                                              Option<ReconfigurationCommand> configuration) {
         if (!proposals.containsKey(node)) {
             configuration.onPresent(value -> configurations.put(node, value));
             proposals.put(node, batch);

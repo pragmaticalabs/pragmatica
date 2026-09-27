@@ -15,8 +15,12 @@
  */
 package org.pragmatica.consensus.rabia;
 
+import java.util.ArrayDeque;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -33,10 +37,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.StateMachine.Batch.Id;
@@ -131,24 +137,26 @@ public class RabiaEngine<C extends Command> {
     private volatile boolean genesisPending;
     private volatile Option<Cause> authorityFailure = Option.none();
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
-    private final Map<java.util.Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
+    private final Map<Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
     /// The §4 command this voter currently carries on its proposals. Always of the current base epoch:
     /// [#settleRequests] drops it once the epoch moves.
     private volatile Option<ReconfigurationCommand> requestedConfiguration = Option.none();
     /// Every identity this engine has installed as a voter during its lifetime.
-    private final java.util.Set<NodeId> voterHistory = ConcurrentHashMap.newKeySet();
+    private final Set<NodeId> voterHistory = ConcurrentHashMap.newKeySet();
 
     /// A change this replica applied itself: agreed at `slot` (R), governing from R+1.
-    private record AppliedChange(Phase slot, VoterConfiguration installed, java.util.Set<NodeId> added) {}
+    private record AppliedChange(Phase slot, VoterConfiguration installed, Set<NodeId> added) {}
 
     private volatile Option<AppliedChange> lastChange = Option.none();
     /// Members added by [#lastChange] from which a ballot past R has been accepted.
-    private final java.util.Set<NodeId> caughtUp = ConcurrentHashMap.newKeySet();
+    private final Set<NodeId> caughtUp = ConcurrentHashMap.newKeySet();
+
     private static final int MAX_DEFERRED_BALLOTS = 256;
+
     /// Executor-confined. Ballots of a newer epoch than this replica has applied; see [#deferIfNewerEpoch].
-    private final java.util.ArrayDeque<org.pragmatica.consensus.ProtocolMessage> deferredBallots = new java.util.ArrayDeque<>();
+    private final ArrayDeque<ProtocolMessage> deferredBallots = new ArrayDeque<>();
     /// Executor-confined. The slot this replica last asked each peer to repair; one request per slot.
-    private final Map<NodeId, Phase> repairRequests = new java.util.HashMap<>();
+    private final Map<NodeId, Phase> repairRequests = new HashMap<>();
     private volatile Option<Cause> stateTransferFailure = Option.none();
 
     public Option<Cause> stateTransferFailure() {
@@ -157,39 +165,41 @@ public class RabiaEngine<C extends Command> {
 
     /// Read immutable values only; never inspect executor-confined maps.
     public VoterReconfigurationStatus voterReconfigurationStatus() {
-        var failure = authorityFailure.map(Cause::message)
-                                      .or(stateTransferFailure.map(Cause::message)
-                                                              .or(""));
+        var failure = authorityFailure.map(Cause::message).or(stateTransferFailure.map(Cause::message).or(""));
 
         return voters.map(configuration -> describeReconfiguration(configuration, failure))
-                     .or(() -> new VoterReconfigurationStatus(genesisPending
-                                                              ? "GENESIS_PENDING"
-                                                              : "UNAVAILABLE",
-                                                              Option.none(),
-                                                              List.of(),
-                                                              List.of(),
-                                                              Option.none(),
-                                                              List.of(),
-                                                              failure));
+                     .or(() -> unresolvedStatus(failure));
+    }
+
+    private VoterReconfigurationStatus unresolvedStatus(String failure) {
+        var stage = genesisPending
+                    ? "GENESIS_PENDING"
+                    : "UNAVAILABLE";
+
+        return new VoterReconfigurationStatus(stage,
+                                              Option.none(),
+                                              List.of(),
+                                              List.of(),
+                                              Option.none(),
+                                              List.of(),
+                                              failure);
     }
 
     private VoterReconfigurationStatus describeReconfiguration(VoterConfiguration configuration, String failure) {
         var requested = requestedConfiguration;
         var change = changeGoverning(configuration);
-        var awaiting = change.map(this::awaitingCatchUp)
-                             .or(List.of());
+        var awaiting = change.map(this::awaitingCatchUp).or(List.of());
 
         return new VoterReconfigurationStatus(reconfigurationStage(requested, awaiting),
-                                             Option.some(configuration.epoch()),
-                                             identities(configuration.members()),
-                                             requested.map(command -> identities(command.target()
-                                                                                        .members()))
-                                                      .or(List.of()),
-                                             change.map(applied -> applied.slot()
-                                                                          .successor()
-                                                                          .value()),
-                                             identities(awaiting),
-                                             failure);
+                                              Option.some(configuration.epoch()),
+                                              identities(configuration.members()),
+                                              requested.map(command -> identities(command.target().members()))
+                                                       .or(List.of()),
+                                              change.map(applied -> applied.slot()
+                                                                           .successor()
+                                                                           .value()),
+                                              identities(awaiting),
+                                              failure);
     }
 
     private static String reconfigurationStage(Option<ReconfigurationCommand> requested, List<NodeId> awaiting) {
@@ -202,7 +212,7 @@ public class RabiaEngine<C extends Command> {
                : "CATCHING_UP";
     }
 
-    private static List<String> identities(java.util.Collection<NodeId> nodes) {
+    private static List<String> identities(Collection<NodeId> nodes) {
         return nodes.stream()
                     .map(NodeId::id)
                     .sorted()
@@ -298,16 +308,21 @@ public class RabiaEngine<C extends Command> {
     /// that are already outside the governing roster.
     public Option<VoterConfiguration> retirementSafeVoters() {
         return voters.filter(_ -> requestedConfiguration.isEmpty() && reconfigurationPromises.isEmpty())
-                     .filter(configuration -> changeGoverning(configuration).map(change -> awaitingCatchUp(change).isEmpty())
-                                                                            .or(true));
+                     .filter(this::addedMembersCaughtUp);
+    }
+
+    private boolean addedMembersCaughtUp(VoterConfiguration configuration) {
+        return changeGoverning(configuration).map(this::awaitingCatchUp)
+                              .map(List::isEmpty)
+                              .or(true);
     }
 
     public Option<VoterConfiguration> genesisVoters() {
         return genesis;
     }
 
-    public java.util.Set<NodeId> verifiedVoterHistoryIds() {
-        return java.util.Set.copyOf(voterHistory);
+    public Set<NodeId> verifiedVoterHistoryIds() {
+        return Set.copyOf(voterHistory);
     }
 
     /// Directory hints affect passive leader routing only; this method never installs voters.
@@ -362,7 +377,9 @@ public class RabiaEngine<C extends Command> {
     /// Ballots count only from installed voters at the current epoch. An old-epoch ballot for a slot at
     /// or past a change's R+1 therefore never counts, and neither does any ballot of a removed voter.
     private boolean acceptsBallot(NodeId node, long epoch) {
-        return authorityFailure.isEmpty() && isVoter(node) && epoch == voterEpoch();
+        return authorityFailure.isEmpty()
+               && isVoter(node)
+               && epoch == voterEpoch();
     }
 
     /// Peers whose committed history this replica relays or repairs: installed voters and admitted
@@ -381,6 +398,7 @@ public class RabiaEngine<C extends Command> {
                                              .stream()
                                              .filter(node -> !node.equals(self))
                                              .forEach(node -> network.send(node, message)));
+
         return true;
     }
 
@@ -764,7 +782,6 @@ public class RabiaEngine<C extends Command> {
 
             return;
         }
-
         // A pending genesis decides the role later ([#installGenesis]); until then authorize as a voter.
         if (voters.isPresent() && !isVoter(self)) {
             authorizeObservation();
@@ -889,10 +906,10 @@ public class RabiaEngine<C extends Command> {
         exitState(oldState);
         notifyConsensusStateTransition();
         saveState().onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
-                                                    self,
-                                                    currentPhase.get(),
-                                                    pendingBatches.size()))
-                     .onFailure(cause -> log.error("Node {} failed to persist state on pause: {}", self, cause));
+                                                self,
+                                                currentPhase.get(),
+                                                pendingBatches.size()))
+                 .onFailure(cause -> log.error("Node {} failed to persist state on pause: {}", self, cause));
     }
 
     /// Membership-architecture-spec §4.5 / §7.3 — quorum-return handler when previously paused.
@@ -948,8 +965,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void proposeReconfiguration(ClusterConfig target, Promise<Unit> promise) {
-        var valid = ClusterConfig.clusterConfig(target.members())
-                                 .flatMap(this::admissibleCommand);
+        var valid = ClusterConfig.clusterConfig(target.members()).flatMap(this::admissibleCommand);
 
         if (valid.isFailure()) {
             promise.resolve(valid.mapToUnit());
@@ -960,8 +976,7 @@ public class RabiaEngine<C extends Command> {
         var command = valid.unwrap();
 
         if (voters.map(current -> current.roster()
-                                         .sameMembership(command.target()))
-                  .or(false)) {
+                                         .sameMembership(command.target())).or(false)) {
             promise.succeed(Unit.unit());
 
             return;
@@ -985,22 +1000,19 @@ public class RabiaEngine<C extends Command> {
             return ReconfigurationError.NOT_ACTIVE.result();
         }
 
-        if (target.members()
-                  .stream()
-                  .anyMatch(node -> !isVoter(node) && !topologyManager.isConsensusMember(node))) {
+        if (target.members().stream().anyMatch(node -> !isVoter(node) && !topologyManager.isConsensusMember(node))) {
             return ReconfigurationError.UNKNOWN_VOTER.result();
         }
 
         var command = ReconfigurationCommand.reconfigurationCommand(voterEpoch(), target);
 
-        if (!voters.map(command::retainsTargetMajority)
-                   .or(false)) {
+        if (!voters.map(command::retainsTargetMajority).or(false)) {
             return ReconfigurationError.INSUFFICIENT_RETAINED_VOTERS.result();
         }
 
         return addsMembers(command)
                ? transferableState().map(_ -> command)
-                                    .onFailure(cause -> stateTransferFailure = Option.some(cause))
+                                  .onFailure(cause -> stateTransferFailure = Option.some(cause))
                : Result.success(command);
     }
 
@@ -1027,7 +1039,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private boolean trackReconfiguration(ClusterConfig target, Promise<Unit> promise) {
-        var previous = Option.option(reconfigurationPromises.putIfAbsent(java.util.Set.copyOf(target.members()),
+        var previous = Option.option(reconfigurationPromises.putIfAbsent(Set.copyOf(target.members()),
                                                                          promise));
 
         previous.onPresent(existing -> existing.onResult(promise::resolve));
@@ -1052,8 +1064,7 @@ public class RabiaEngine<C extends Command> {
 
         var command = ReconfigurationCommand.reconfigurationCommand(request.epoch(), request.target());
 
-        if (!voters.map(command::appliesTo)
-                   .or(false)) {
+        if (!voters.map(command::appliesTo).or(false)) {
             return;
         }
 
@@ -1096,12 +1107,11 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void installAppliedChange(Phase slot, VoterConfiguration next) {
-        var previous = voters.map(VoterConfiguration::members)
-                             .or(List.of());
+        var previous = voters.map(VoterConfiguration::members).or(List.of());
         var added = next.members()
                         .stream()
                         .filter(node -> !previous.contains(node))
-                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                        .collect(Collectors.toUnmodifiableSet());
 
         caughtUp.clear();
         if (added.contains(self)) {
@@ -1131,17 +1141,13 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void settlePromises(VoterConfiguration installed) {
-        var requested = requestedConfiguration.map(command -> java.util.Set.copyOf(command.target()
-                                                                                         .members()));
+        var requested = requestedConfiguration.map(command -> Set.copyOf(command.target().members()));
 
         for (var target : List.copyOf(reconfigurationPromises.keySet())) {
-            if (target.equals(java.util.Set.copyOf(installed.members()))) {
-                Option.option(reconfigurationPromises.remove(target))
-                      .onPresent(promise -> promise.succeed(Unit.unit()));
-            } else if (!requested.map(target::equals)
-                                 .or(false)) {
-                Option.option(reconfigurationPromises.remove(target))
-                      .onPresent(promise -> promise.fail(ReconfigurationError.SUPERSEDED));
+            if (target.equals(Set.copyOf(installed.members()))) {
+                Option.option(reconfigurationPromises.remove(target)).onPresent(promise -> promise.succeed(Unit.unit()));
+            } else if (!requested.map(target::equals).or(false)) {
+                Option.option(reconfigurationPromises.remove(target)).onPresent(promise -> promise.fail(ReconfigurationError.SUPERSEDED));
             }
         }
     }
@@ -1157,7 +1163,10 @@ public class RabiaEngine<C extends Command> {
         installVoters(configuration);
         observerMode = !configuration.contains(self);
         settleRequests();
-        log.info("Node {} adopted voter epoch {} {} from synchronized state", self, configuration.epoch(), configuration.members());
+        log.info("Node {} adopted voter epoch {} {} from synchronized state",
+                 self,
+                 configuration.epoch(),
+                 configuration.members());
         safeExecute(this::drainDeferredBallots);
     }
 
@@ -1165,7 +1174,7 @@ public class RabiaEngine<C extends Command> {
     /// has not applied yet, so it cannot be judged against the current roster. It is held (bounded,
     /// oldest dropped) and re-delivered once the epoch advances, and the sender is asked to repair this
     /// replica's current slot so the change is learned without waiting for a stall re-broadcast.
-    private boolean deferIfNewerEpoch(NodeId sender, long epoch, org.pragmatica.consensus.ProtocolMessage message) {
+    private boolean deferIfNewerEpoch(NodeId sender, long epoch, ProtocolMessage message) {
         if (epoch <= voterEpoch()) {
             return false;
         }
@@ -1199,7 +1208,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     @SuppressWarnings("unchecked")
-    private void redeliverBallot(org.pragmatica.consensus.ProtocolMessage message) {
+    private void redeliverBallot(ProtocolMessage message) {
         switch (message) {
             case Propose<?> propose -> handlePropose((Propose<C>) propose);
             case VoteRound1 vote -> handleVoteRound1(vote);
@@ -1359,7 +1368,9 @@ public class RabiaEngine<C extends Command> {
                        _ -> {});
     }
 
-    private synchronized Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared, Consumer<Cause> onRejected) {
+    private synchronized Result<Batch<C>> submitCommands(List<C> commands,
+                                                         Consumer<Batch<C>> onBatchPrepared,
+                                                         Consumer<Cause> onRejected) {
         if (stopping.get()) {
             return new ConsensusError.NodeInactive(self).result();
         }
@@ -1375,7 +1386,7 @@ public class RabiaEngine<C extends Command> {
 
         return validateSubmission(commands).map(_ -> prepareBatch(commands))
                                  .onSuccess(batch -> safeExecute(() -> registerBatch(batch, onBatchPrepared),
-                                                                () -> onRejected.accept(new ConsensusError.NodeInactive(self))))
+                                                                 () -> onRejected.accept(new ConsensusError.NodeInactive(self))))
                                  .onSuccess(batch -> safeExecute(() -> broadcastBatch(batch)));
     }
 
@@ -1497,6 +1508,7 @@ public class RabiaEngine<C extends Command> {
 
                                     return Unit.unit();
                                 });
+
         executor.shutdown();
         promise.resolve(persisted.flatMap(_ -> reset));
     }
@@ -1510,7 +1522,8 @@ public class RabiaEngine<C extends Command> {
     /// survives to process subsequent rounds; the failed round is abandoned and re-driven by the
     /// sender's retry. Errors (non-RuntimeException Throwable) are intentionally left to propagate.
     private void safeExecute(Runnable task) {
-        safeExecute(task, () -> {});
+        safeExecute(task,
+                    () -> {});
     }
 
     private synchronized void safeExecute(Runnable task, Runnable onStopped) {
@@ -1954,7 +1967,7 @@ public class RabiaEngine<C extends Command> {
                        .configuration()
                        .fold(() -> voterEpoch() == 0 && isVoter(response.sender()),
                              claimed -> claimed.contains(response.sender()) && comparableConfiguration(response.sender(),
-                                                                                                        claimed));
+                                                                                                       claimed));
     }
 
     private boolean comparableConfiguration(NodeId sender, VoterConfiguration claimed) {
@@ -1962,7 +1975,7 @@ public class RabiaEngine<C extends Command> {
         var disagrees = own.filter(configuration -> configuration.epoch() == claimed.epoch() && !configuration.equals(claimed));
 
         disagrees.onPresent(configuration -> log.warn("Node {} refuses sync state from {}: epoch {} roster {} differs from this node's {}. "
-                                                      + "The genesis rosters disagree; this node will not adopt state from another electorate.",
+                                                     + "The genesis rosters disagree; this node will not adopt state from another electorate.",
                                                       self,
                                                       sender,
                                                       claimed.epoch(),
@@ -2059,7 +2072,7 @@ public class RabiaEngine<C extends Command> {
     /// rounds re-adopt and re-fire the restore hooks on the inactive node — open in #1516.
     private Unit persistRestoredState() {
         return saveState().onFailure(this::recordRestoredStateSaveFailure)
-                            .or(Unit.unit());
+                        .or(Unit.unit());
     }
 
     /// #1020 — a failed re-persist after a restore. #1390's `authorityFailure` keeps the node from
@@ -2206,8 +2219,7 @@ public class RabiaEngine<C extends Command> {
         currentPhase.updateAndGet(existing -> existing.compareTo(state.lastCommittedPhase()) >= 0
                                               ? existing
                                               : state.lastCommittedPhase());
-        state.configuration()
-             .onPresent(this::adoptSyncedConfiguration);
+        state.configuration().onPresent(this::adoptSyncedConfiguration);
         persistRestoredState();
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
@@ -2429,7 +2441,6 @@ public class RabiaEngine<C extends Command> {
         if (!topologyManager.isStateTransferPeer(request.sender())) {
             return;
         }
-
         // Observer snapshots are not evidence from the consensus electorate.
         if (observerMode || !isVoter(self)) {
             return;
@@ -2612,14 +2623,9 @@ public class RabiaEngine<C extends Command> {
     /// {A,B,C} → {A,B,D} with B lost after R). Responses whose claimed configurations disagree are
     /// refused — under crash faults that cannot happen, so it is reported as an inconsistency.
     private Option<List<SyncResponse<C>>> newerEpochCandidates(List<SyncResponse<C>> responses) {
-        var live = responses.stream()
-                            .filter(response -> response.responder() == ResponderState.LIVE)
-                            .toList();
-        var claimed = live.stream()
-                          .map(response -> response.state()
-                                                   .configuration())
-                          .distinct()
-                          .count();
+        var live = responses.stream().filter(response -> response.responder() == ResponderState.LIVE).toList();
+        var claimed = live.stream().map(response -> response.state()
+                                                            .configuration()).distinct().count();
 
         if (claimed > 1) {
             log.warn("Node {} refuses newer-epoch sync state: live responders claim {} different configurations at one epoch",
@@ -2777,7 +2783,6 @@ public class RabiaEngine<C extends Command> {
 
         log.trace("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
         observeClusterPhase(propose.phase());
-
         if (isFarFuturePhase(propose.phase(), currentPhaseValue)) {
             log.warn("Node {} behind by {} phases (current: {}, received: {}). Triggering resync.",
                      self,
@@ -2797,8 +2802,7 @@ public class RabiaEngine<C extends Command> {
 
         var phaseData = getOrCreatePhaseData(propose.phase());
 
-        propose.reconfiguration()
-               .onPresent(this::adoptRequested);
+        propose.reconfiguration().onPresent(this::adoptRequested);
         enterPhaseIfNeeded(propose.phase(), currentPhaseValue, phaseData);
         if (engineState.get().isInPhase() && !phaseData.hasProposal(self)) {
             broadcastOwnProposalIfNeeded();
@@ -2919,7 +2923,6 @@ public class RabiaEngine<C extends Command> {
         }
 
         recordCatchUp(vote.sender(), vote.epoch(), vote.phase());
-
         if (isPastPhase(vote.phase(), currentPhase.get())) {
             repairPastSlot(vote.sender(), vote.phase());
 
@@ -2936,7 +2939,6 @@ public class RabiaEngine<C extends Command> {
                   vote.phase(),
                   vote.stateValue());
         observeClusterPhase(vote.phase());
-
         if (vote.round() < 0) {
             return;
         }
@@ -3062,7 +3064,6 @@ public class RabiaEngine<C extends Command> {
         }
 
         recordCatchUp(vote.sender(), vote.epoch(), vote.phase());
-
         if (isPastPhase(vote.phase(), currentPhase.get())) {
             repairPastSlot(vote.sender(), vote.phase());
 
@@ -3079,7 +3080,6 @@ public class RabiaEngine<C extends Command> {
                   vote.phase(),
                   vote.stateValue());
         observeClusterPhase(vote.phase());
-
         if (vote.round() < 0) {
             return;
         }
@@ -3157,8 +3157,7 @@ public class RabiaEngine<C extends Command> {
 
             phaseData.completedDecision(decision);
             if (decision.stateValue() == StateValue.V1) {
-                decision.reconfiguration()
-                        .onPresent(command -> applyReconfiguration(phaseData.phase(), command));
+                decision.reconfiguration().onPresent(command -> applyReconfiguration(phaseData.phase(), command));
             }
 
             advancePhase(phaseData.phase());
@@ -3239,7 +3238,6 @@ public class RabiaEngine<C extends Command> {
 
             return;
         }
-
         // The epoch governing a slot is a function of the applied prefix, so a correct Decision for the
         // current slot carries this replica's epoch. Anything else is refused, never applied.
         if (decision.epoch() != voterEpoch()) {
@@ -3323,8 +3321,7 @@ public class RabiaEngine<C extends Command> {
         engineState.set(new EngineState.Idle());
         armCleanupTask();
         notifyConsensusStateTransition();
-        startPromise.get()
-                    .succeed(Unit.unit());
+        startPromise.get().succeed(Unit.unit());
         log.info("Node {} joined the voter roster at phase {}", self, currentPhase.get());
     }
 
@@ -3345,8 +3342,11 @@ public class RabiaEngine<C extends Command> {
         var frontier = currentPhase.get();
 
         return phases.compute(phase,
-                              (slot, existing) -> Option.option(existing)
-                                                        .filter(data -> data.epoch() == epoch || slot.compareTo(frontier) < 0)
-                                                        .or(() -> new PhaseData<>(slot, epoch)));
+                              (slot, existing) -> currentPhaseData(slot, Option.option(existing), epoch, frontier));
+    }
+
+    private PhaseData<C> currentPhaseData(Phase slot, Option<PhaseData<C>> existing, long epoch, Phase frontier) {
+        return existing.filter(data -> data.epoch() == epoch || slot.compareTo(frontier) < 0)
+                       .or(() -> new PhaseData<>(slot, epoch));
     }
 }

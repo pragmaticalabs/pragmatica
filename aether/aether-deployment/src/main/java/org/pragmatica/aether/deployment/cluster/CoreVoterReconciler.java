@@ -62,10 +62,9 @@ public interface CoreVoterReconciler {
             private Promise<Unit> reconcileInstalled(VoterConfiguration current) {
                 var target = selectVoters(self, current, readyCoreCandidates.get(), desired.getAsInt());
 
-                if (target.isEmpty() || Set.copyOf(target)
-                                           .equals(Set.copyOf(current.members())) || settled.get()
-                                                                                            .filter(current::equals)
-                                                                                            .isEmpty()) {
+                if (target.isEmpty() || Set.copyOf(target).equals(Set.copyOf(current.members())) || settled.get()
+                                                                                                           .filter(current::equals)
+                                                                                                           .isEmpty()) {
                     return Promise.unitPromise();
                 }
 

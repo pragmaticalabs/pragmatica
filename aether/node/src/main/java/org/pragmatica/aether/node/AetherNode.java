@@ -644,9 +644,9 @@ public interface AetherNode extends ManageableNode {
                                    syncHoldConfig,
                                    onSyncResponseReceived)
                         .flatMap(clusterNode -> initializeVoterConfiguration(clusterNode,
-                                                                         config,
-                                                                         installedVoters,
-                                                                         persistence))
+                                                                             config,
+                                                                             installedVoters,
+                                                                             persistence))
                         .flatMap(clusterNode -> configuredWorker(config)
                                                 ? clusterNode.configurePassiveClient()
                                                              .map(ignored -> clusterNode)
@@ -2863,8 +2863,7 @@ public interface AetherNode extends ManageableNode {
                                                                                          () -> Option.option(membershipFsmRef.get())
                                                                                                      .map(MembershipFsm::coreCountedMembers)
                                                                                                      .or(Set.of()),
-                                                                                         config.topology()
-                                                                                               .clusterSize()),
+                                                                                         config.topology().clusterSize()),
                                                                       GENESIS_RETRY_INTERVAL));
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode,
@@ -5839,9 +5838,9 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static Result<RabiaNode<KVCommand<AetherKey>>> initializeVoterConfiguration(RabiaNode<KVCommand<AetherKey>> node,
-                                                                                    AetherNodeConfig config,
-                                                                                    AtomicReference<Set<NodeId>> installedVoters,
-                                                                                    RabiaPersistence<KVCommand<AetherKey>> persistence) {
+                                                                                        AetherNodeConfig config,
+                                                                                        AtomicReference<Set<NodeId>> installedVoters,
+                                                                                        RabiaPersistence<KVCommand<AetherKey>> persistence) {
         var initialRoster = configuredVoters(config);
 
         node.onVoterConfiguration(configuration -> installVoterConfiguration(node, installedVoters, configuration));
@@ -5877,7 +5876,7 @@ public interface AetherNode extends ManageableNode {
                                value -> parseGenesisVoters(value).map(Option::some));
     }
 
-    static Option<VoterConfiguration> completeRoster(java.util.Collection<NodeId> knownCores, int configuredCount) {
+    static Option<VoterConfiguration> completeRoster(List<NodeId> knownCores, int configuredCount) {
         return Option.some(knownCores)
                      .filter(cores -> cores.size() == configuredCount)
                      .flatMap(cores -> VoterConfiguration.voterConfiguration(0,
@@ -5904,18 +5903,20 @@ public interface AetherNode extends ManageableNode {
 
         var discovered = discoveredCores.get();
 
-        return resolveGenesis(configured, Option.none(), List.copyOf(discovered), configuredCount)
-                     .flatMap(resolved -> resolved.toResult(VoterBootstrapError.GENESIS_ROSTER_INCOMPLETE))
-                     .flatMap(initializeVoters::apply)
-                     .onSuccessRun(() -> LOG.info("Genesis voter roster resolved from {} discovered cores: {}",
-                                                  discovered.size(),
-                                                  discovered))
-                     .onFailure(cause -> LOG.info("Genesis voter roster pending ({} of {} cores discovered: {}): {}",
-                                                  discovered.size(),
-                                                  configuredCount,
-                                                  discovered,
-                                                  cause.message()))
-                     .or(Unit.unit());
+        return resolveGenesis(configured,
+                              Option.none(),
+                              List.copyOf(discovered),
+                              configuredCount).flatMap(resolved -> resolved.toResult(VoterBootstrapError.GENESIS_ROSTER_INCOMPLETE))
+                             .flatMap(initializeVoters::apply)
+                             .onSuccessRun(() -> LOG.info("Genesis voter roster resolved from {} discovered cores: {}",
+                                                          discovered.size(),
+                                                          discovered))
+                             .onFailure(cause -> LOG.info("Genesis voter roster pending ({} of {} cores discovered: {}): {}",
+                                                          discovered.size(),
+                                                          configuredCount,
+                                                          discovered,
+                                                          cause.message()))
+                             .or(Unit.unit());
     }
 
     static Result<VoterConfiguration> parseGenesisVoters(String value) {
@@ -5930,8 +5931,8 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static void installVoterConfiguration(RabiaNode<KVCommand<AetherKey>> node,
-                                              AtomicReference<Set<NodeId>> installedVoters,
-                                              VoterConfiguration configuration) {
+                                                  AtomicReference<Set<NodeId>> installedVoters,
+                                                  VoterConfiguration configuration) {
         installedVoters.set(Set.copyOf(configuration.members()));
         ((TopologyObserver) node.topologyManager()).installVoterConfiguration(configuration);
     }
