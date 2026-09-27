@@ -11,7 +11,7 @@
     <packaging>jar</packaging>
 
     <name>Test Blueprint - Stream (Multi-Partition, Replicated)</name>
-    <description>partitions=4 / RF=2 / min-sync-replicas=2 stream — for the #429 multi-partition e2e and #430 publish-under-reshuffle forge tests</description>
+    <description>partitions=4 / RF=3 / min-sync-replicas=2 stream — for the #429 multi-partition e2e and #430 publish-under-reshuffle forge tests</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

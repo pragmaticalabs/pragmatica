@@ -231,6 +231,20 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// An APP stream created with fewer than `StreamConfig.MIN_REPLICAS` copies (#1547). The engine
+    /// backstop behind every mint path — blueprint parser, durable topics, durable entities and the
+    /// management defaults each refuse or default above it first, so this names a path that bypassed
+    /// them. Rejected PRE-COMMIT on the creating node, never clamped; a fatal config error, never retried.
+    /// System streams are exempt: their factor is the cluster size.
+    record ReplicasBelowMinimum(String streamName, int replicas, int minimum) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' declares replicas=%d, below the stream replication minimum of %d".formatted(streamName,
+                                                                                                            replicas,
+                                                                                                            minimum);
+        }
+    }
+
     /// Cluster-wide aggregate partition-cap breach (#265 increment 4, spec §7/§10/§11): admitting this stream
     /// would push the cluster's total materialized-ring count (Σ `partitions × replicas` across every committed
     /// stream plus this one) past the aggregate guard `100 × nodes × maxDeclaredReplicas` — the Kafka-style

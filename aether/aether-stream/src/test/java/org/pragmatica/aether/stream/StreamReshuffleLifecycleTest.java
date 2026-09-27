@@ -89,7 +89,7 @@ class StreamReshuffleLifecycleTest {
                 manager.clusterSizeSupplier(() -> 3);
                 manager.replicaCatchupSource((_, _) -> new CatchupView(3, true));
                 manager.ownerReleaseGuard((_, _) -> true);
-                manager.createStream(cfg("s", 1, 1)).onFailure(_ -> fail("create should succeed"));
+                manager.createStream(cfg("s", 1, 3)).onFailure(_ -> fail("create should succeed"));
                 assertThat(manager.totalAllocatedBytes()).isEqualTo(FLOOR);
 
                 role.set(Role.NONE);
@@ -122,7 +122,7 @@ class StreamReshuffleLifecycleTest {
                 manager.clusterSizeSupplier(() -> 3);
                 manager.replicaCatchupSource((_, _) -> new CatchupView(3, true));
                 manager.ownerReleaseGuard((_, _) -> true);
-                manager.createStream(cfg("s", 1, 1)).onFailure(_ -> fail("create should succeed"));
+                manager.createStream(cfg("s", 1, 3)).onFailure(_ -> fail("create should succeed"));
 
                 role.set(Role.NONE);
                 manager.reconcileReshuffle();   // tick 1: candidate
@@ -212,7 +212,7 @@ class StreamReshuffleLifecycleTest {
                 manager.clusterSizeSupplier(() -> 3);
                 manager.replicaCatchupSource((_, _) -> new CatchupView(3, true));   // catch-up gate passes
                 manager.ownerReleaseGuard((_, _) -> committedElsewhere.get());
-                manager.createStream(cfg("s", 1, 1)).onFailure(_ -> fail("create should succeed"));
+                manager.createStream(cfg("s", 1, 3)).onFailure(_ -> fail("create should succeed"));
 
                 role.set(Role.NONE);
                 manager.reconcileReshuffle();
