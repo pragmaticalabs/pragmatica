@@ -143,6 +143,21 @@ class GenesisViewAgreementSimulationTest {
         assertThat(agreement.agreed().unwrap()).isEqualTo(fixed);
     }
 
+    @Test
+    void genesisVoters_anchorOnTheirOwnSize_notTheConfiguredCount() {
+        var a = new NodeId("a");
+        var b = new NodeId("b");
+        var fixed = Set.of(a, b);
+        var agreement = GenesisViewAgreement.genesisViewAgreement(a, 3, Option.some(fixed));
+
+        agreement.receive(b, 1, fixed);
+        agreement.receive(b, 2, fixed);
+        agreement.tick(fixed);
+        agreement.tick(fixed);
+
+        assertThat(agreement.agreed().unwrap()).isEqualTo(fixed);
+    }
+
     private record Message(int deliverAt, long order, NodeId from, NodeId to, long round, Set<NodeId> view, Option<Set<NodeId>> formed) {}
 
     private static final class Node {

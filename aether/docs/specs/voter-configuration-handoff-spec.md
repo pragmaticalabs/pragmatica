@@ -33,8 +33,9 @@ sync retry interval. Epoch 0 starts with view V only when:
 2. the node announced V in its last two rounds; and
 3. every other member of V reported exactly V in two consecutive rounds.
 
-When `cluster.genesis_voters` is set it IS the view: nothing is merged, and a member reporting any other
-view blocks genesis. A malformed value (a blank id) fails boot loudly (`MALFORMED_GENESIS_VOTERS`).
+When `cluster.genesis_voters` is set it IS the view: nothing is merged, a member reporting any other
+view blocks genesis, and the size anchor is the roster's own size (the operator named the electorate, so
+there is no discovery choice for the configured count to guard). A malformed value (a blank id) fails boot loudly (`MALFORMED_GENESIS_VOTERS`).
 With more candidates visible than configured and no `cluster.genesis_voters`, the node does not start
 and logs a WARN with the candidate set every ten rounds. A roster of the node alone (`clusterSize` 1)
 is installed at assembly.

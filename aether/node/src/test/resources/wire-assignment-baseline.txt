@@ -300,7 +300,7 @@ SHAPE org.pragmatica.consensus.rabia.ClusterConfig (members:java.util.List<org.p
 SHAPE org.pragmatica.consensus.rabia.CorrelationId (id:java.lang.String)
 SHAPE org.pragmatica.consensus.rabia.Phase (value:long)
 SHAPE org.pragmatica.consensus.rabia.RabiaPersistence$SavedState (snapshot:byte[],lastCommittedPhase:org.pragmatica.consensus.rabia.Phase,pendingBatches:java.util.List<org.pragmatica.consensus.StateMachine$Batch<C>>,configuration:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.VoterConfiguration>)
-SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$GenesisAnnouncement (sender:org.pragmatica.consensus.NodeId,roster:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.ClusterConfig>,formed:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.VoterConfiguration>)
+SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$GenesisAnnouncement (sender:org.pragmatica.consensus.NodeId,round:long,view:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.ClusterConfig>,formed:org.pragmatica.lang.Option<org.pragmatica.consensus.rabia.VoterConfiguration>)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$NewBatch (sender:org.pragmatica.consensus.NodeId,batch:org.pragmatica.consensus.StateMachine$Batch<C>)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$ReconfigurationRequest (sender:org.pragmatica.consensus.NodeId,epoch:long,target:org.pragmatica.consensus.rabia.ClusterConfig)
 SHAPE org.pragmatica.consensus.rabia.RabiaProtocolMessage$Asynchronous$RoundRequest (sender:org.pragmatica.consensus.NodeId,epoch:long,phase:org.pragmatica.consensus.rabia.Phase,round:long)

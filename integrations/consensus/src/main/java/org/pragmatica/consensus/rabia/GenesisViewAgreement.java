@@ -66,8 +66,14 @@ final class GenesisViewAgreement {
         this.view = fixedView.or(() -> Set.of(self));
     }
 
+    /// With a fixed view (`cluster.genesis_voters`) the anchor is that roster's own size: the operator
+    /// named the electorate explicitly and discovery plays no part, so there is no partition-driven
+    /// choice for the configured count to guard. Two nodes with different fixed views never agree,
+    /// because a shared member reports only its own.
     static GenesisViewAgreement genesisViewAgreement(NodeId self, int configuredCount, Option<Set<NodeId>> fixedView) {
-        return new GenesisViewAgreement(self, configuredCount, fixedView.map(Set::copyOf));
+        return new GenesisViewAgreement(self,
+                                        fixedView.map(Set::size).or(configuredCount),
+                                        fixedView.map(Set::copyOf));
     }
 
     /// Starts a round: merges what discovery currently sees and returns the `(round, view)` to announce.
