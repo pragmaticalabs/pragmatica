@@ -110,6 +110,10 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                                                                     topologyManager::handleDiscoveredNodes),
                                                                               route(Hello.class,
                                                                                     _ -> {}),
+        // HelloRefused answers a refused handshake on the CONTROL stream and is consumed by the
+        // dialer's Hello handler, never routed; the route satisfies sealed-hierarchy completeness.
+        route(NetworkMessage.HelloRefused.class,
+              _ -> {}),
 
         // Transport-internal liveness beacon (Wave 5): swallowed by the
         // QuicClusterNetwork inbound funnel BEFORE routing (it only refreshes
