@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.lifecycle;
 
-import java.util.function.Consumer;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -22,8 +21,6 @@ public interface NodeLifecycle {
 
     Promise<Unit> drain();
 
-    @Contract
-    void addStateListener(Consumer<NodeStateChanged> listener);
 
     static NodeLifecycle nodeLifecycle() {
         return NodeLifecycleImpl.nodeLifecycleImpl();

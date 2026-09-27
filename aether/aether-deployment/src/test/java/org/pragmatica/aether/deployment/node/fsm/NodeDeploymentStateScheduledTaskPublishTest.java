@@ -481,10 +481,6 @@ class NodeDeploymentStateScheduledTaskPublishTest {
             return 0;
         }
 
-        @Override
-        public Unit setFailureListener(SliceInvoker.SliceFailureListener listener) {
-            return Unit.unit();
-        }
 
         @Override
         public Unit registerAffinityResolver(Artifact artifact,

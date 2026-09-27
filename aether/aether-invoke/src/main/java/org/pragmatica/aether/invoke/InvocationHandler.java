@@ -13,6 +13,7 @@ import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -191,12 +192,21 @@ class InvocationHandlerImpl implements InvocationHandler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
-        var admitted = new AdmittedSliceBridge(bridge, () -> admission);
+        var admitted = new AdmittedSliceBridge(bridge,
+                                               () -> admission,
+                                               (method, outcome) -> recordExecution(artifact, method, outcome));
 
         localSlices.put(artifact, admitted);
         classLoaderBridges.put(bridge.classLoader(), admitted);
         bridge.observabilityCells().forEach(cellRegistrar::register);
         log.debug("Registered slice for invocation: {}", artifact);
+    }
+
+    /// #1573: feeds the per-node execution outcomes the leader's all-instances-failed detector reads.
+    private Unit recordExecution(Artifact artifact, String method, ExecutionOutcome outcome) {
+        metricsCollector.onPresent(mc -> mc.recordExecution(artifact, method, outcome));
+
+        return Unit.unit();
     }
 
     @Override

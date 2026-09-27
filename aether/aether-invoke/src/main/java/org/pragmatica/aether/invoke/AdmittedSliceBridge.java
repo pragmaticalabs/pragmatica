@@ -9,9 +9,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.SliceDefect;
 import org.pragmatica.aether.slice.topic.MessageContext;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -22,17 +25,54 @@ import org.pragmatica.serialization.SliceCodec;
 
 
 /// One admission boundary for every registered bridge, including same-node invocations.
-record AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> admission) implements SliceBridge {
+///
+/// #1573: it is also the one place every execution on this node passes, so it records each execution's
+/// outcome for the leader's all-instances-failed detector — success, or a [SliceDefect] the bridge
+/// produced. A failure the method returned itself, DRAINING, and a reply timeout are not recorded.
+record AdmittedSliceBridge(SliceBridge delegate,
+                           Supplier<InvocationAdmission> admission,
+                           ExecutionRecorder recorder) implements SliceBridge {
+    /// #1573: receives one outcome per finished execution.
+    @FunctionalInterface
+    interface ExecutionRecorder {
+        ExecutionRecorder NONE = (_, _) -> Unit.unit();
+
+        Unit record(String method, ExecutionOutcome outcome);
+    }
+
+    AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> admission) {
+        this(delegate, admission, ExecutionRecorder.NONE);
+    }
+
     @Override
     public Promise<byte[]> invoke(String methodName, byte[] input) {
         return admission.get()
-                        .execute(() -> delegate.invoke(methodName, input));
+                        .execute(() -> recorded(methodName, delegate.invoke(methodName, input)));
     }
 
     @Override
     public Promise<byte[]> invokeWithContext(String methodName, byte[] input, MessageContext context) {
         return admission.get()
-                        .execute(() -> delegate.invokeWithContext(methodName, input, context));
+                        .execute(() -> recorded(methodName, delegate.invokeWithContext(methodName, input, context)));
+    }
+
+    private Promise<byte[]> recorded(String method, Promise<byte[]> execution) {
+        return execution.onResult(result -> recordOutcome(method, result));
+    }
+
+    @Contract
+    private void recordOutcome(String method, Result<byte[]> result) {
+        outcomeOf(result).onPresent(outcome -> recorder.record(method, outcome));
+    }
+
+    private static Option<ExecutionOutcome> outcomeOf(Result<byte[]> result) {
+        return result.fold(AdmittedSliceBridge::failureOutcome, _ -> Option.some(ExecutionOutcome.SUCCESS));
+    }
+
+    private static Option<ExecutionOutcome> failureOutcome(Cause cause) {
+        return cause instanceof SliceDefect
+               ? Option.some(ExecutionOutcome.DEFECT)
+               : Option.none();
     }
 
     /// QUIC response deadlines bound the reply, not the application execution. Both execution
@@ -47,7 +87,8 @@ record AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> a
         }
 
         var remaining = new AtomicInteger(2);
-        var execution = ObservabilityCells.around(delegate, method, () -> delegate.invoke(method, input));
+        var execution = recorded(method,
+                                 ObservabilityCells.around(delegate, method, () -> delegate.invoke(method, input)));
 
         execution.onResultRun(() -> releaseAfterBoth(remaining, gate));
         execution.map(bytes -> bytes)

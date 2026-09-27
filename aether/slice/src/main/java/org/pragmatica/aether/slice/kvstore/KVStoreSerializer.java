@@ -481,7 +481,11 @@ public final class KVStoreSerializer {
         return v.artifactBase()
                 .asString() + PIPE + v.previousVersion()
                                       .withQualifier() + PIPE + v.currentVersion()
-                                                                 .withQualifier() + PIPE + v.updatedAt();
+                                                                 .withQualifier() + PIPE + v.updatedAt() + PIPE + v.rollbackCount()
+               + PIPE + v.lastRollbackAt() + PIPE + v.failedVersions()
+                                                      .stream()
+                                                      .map(Version::withQualifier)
+                                                      .collect(Collectors.joining(","));
     }
 
     private static String serializeHttpNodeRoute(HttpNodeRouteValue v) {
@@ -879,8 +883,8 @@ public final class KVStoreSerializer {
     private static Result<Map.Entry<AetherKey, AetherValue>> parsePreviousVersionEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 4) {
-            return parseFailure("previous-version value requires 4 fields, got " + parts.length);
+        if (parts.length != 7) {
+            return parseFailure("previous-version value requires 7 fields, got " + parts.length);
         }
 
         return PreviousVersionKey.previousVersionKey("previous-version/" + identity).flatMap(key -> buildPreviousVersionValue(parts).map(val -> entry(key,
@@ -890,11 +894,22 @@ public final class KVStoreSerializer {
     private static Result<AetherValue> buildPreviousVersionValue(String[] parts) {
         return Result.all(ArtifactBase.artifactBase(parts[0]),
                           Version.version(parts[1]),
-                          Version.version(parts[2]))
-                     .map((ab, prev, curr) -> new PreviousVersionValue(ab,
-                                                                       prev,
-                                                                       curr,
-                                                                       Long.parseLong(parts[3])));
+                          Version.version(parts[2]),
+                          parseFailedVersions(parts[6]))
+                     .map((ab, prev, curr, failed) -> new PreviousVersionValue(ab,
+                                                                               prev,
+                                                                               curr,
+                                                                               Long.parseLong(parts[3]),
+                                                                               Integer.parseInt(parts[4]),
+                                                                               Long.parseLong(parts[5]),
+                                                                               failed));
+    }
+
+    private static Result<List<Version>> parseFailedVersions(String raw) {
+        return raw.isEmpty()
+               ? Result.success(List.of())
+               : Result.allOf(Arrays.stream(raw.split(","))
+                                    .map(Version::version));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseHttpNodeRouteEntry(String identity, String raw) {

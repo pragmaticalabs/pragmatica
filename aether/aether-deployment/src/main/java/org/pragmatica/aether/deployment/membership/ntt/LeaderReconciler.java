@@ -606,11 +606,12 @@ public final class LeaderReconciler {
         ctm.drainNode(reapedNodeId, DrainReason.JOIN_GRACE_REAP);
     }
 
-    /// Register the consumer that receives every emitted [`ReconcileIntent`]. At E1 the
-    /// wiring layer's consumer just logs; Stage 6+ replaces it with the actual CTM
-    /// provisioning / drain dispatcher.
+    /// TEST observation seam only (#1573): production registers no listener, and the reconciler
+    /// dispatches provisioning / drain to the CTM directly — the intent is a record of a decision
+    /// already acted on, never the trigger for one. Package-private so no production caller can
+    /// mistake it for a wiring point.
     @Contract
-    public void setReconcileListener(Consumer<ReconcileIntent> newListener) {
+    void setReconcileListener(Consumer<ReconcileIntent> newListener) {
         reconcileListener = newListener;
     }
 

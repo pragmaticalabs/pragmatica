@@ -52,6 +52,7 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
+import org.pragmatica.aether.controller.AllInstancesFailedDetector;
 import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -3106,6 +3107,19 @@ public interface AetherNode extends ManageableNode {
                                                                 kvStore,
                                                                 clusterNode.leaderManager())
                               : RollbackManager.disabled();
+        // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
+        // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
+        // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
+        // non-leader, so a new leader starts from fresh windows.
+        var allInstancesFailedDetector = AllInstancesFailedDetector.allInstancesFailedDetector(metricsCollector::allObservations,
+                                                                                               () -> activeInstancesByArtifact(deploymentMap),
+                                                                                               isLeaderSupplier,
+                                                                                               delegateRouter::route,
+                                                                                               System::currentTimeMillis);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(allInstancesFailedDetector::tick,
+                                                                      config.timeouts().cluster().pingInterval(),
+                                                                      config.timeouts().cluster().pingInterval()));
         var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
                                                      clusterNode.network(),
@@ -5810,6 +5824,26 @@ public interface AetherNode extends ManageableNode {
     /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
     /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
     /// holder is populated before any snapshot is taken).
+    /// #1573: the ACTIVE instances of every deployed artifact version, as the all-instances-failed detector
+    /// needs them. An unparsable artifact or node id is skipped, never guessed.
+    private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap) {
+        var result = new HashMap<Artifact, Set<NodeId>>();
+
+        deploymentMap.allDeployments()
+                     .forEach(info -> Artifact.artifact(info.artifact())
+                                              .onSuccess(artifact -> result.put(artifact, activeNodes(info))));
+
+        return Map.copyOf(result);
+    }
+
+    private static Set<NodeId> activeNodes(DeploymentMap.SliceDeploymentInfo info) {
+        return info.instances()
+                   .stream()
+                   .filter(instance -> instance.state() == SliceState.ACTIVE)
+                   .map(instance -> new NodeId(instance.nodeId()))
+                   .collect(Collectors.toUnmodifiableSet());
+    }
+
     private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
@@ -7675,6 +7709,8 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
+        entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
+                                              alertManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaleCapped.class, eventAggregator::onScaleCapped));

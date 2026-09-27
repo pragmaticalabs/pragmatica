@@ -162,14 +162,6 @@ public interface SliceInvoker extends SliceInvokerFacade {
     int DEFAULT_MAX_RETRIES = 3;
     long BASE_RETRY_DELAY_MS = 100;
 
-    @FunctionalInterface
-    interface SliceFailureListener {
-        @SuppressWarnings("JBCT-RET-01")
-        void onSliceFailure(SliceFailureEvent event);
-    }
-
-    Unit setFailureListener(SliceFailureListener listener);
-
     /// #275: membership-liveness narrowing for slice-to-slice endpoint selection, the same
     /// [AccessibilityFilter] the HTTP forward path consults (`MembershipFsm.reachableMembers`). A node
     /// the filter rejects is skipped by every selection path (round-robin, cache affinity, failover and
@@ -254,7 +246,6 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-    private volatile Option<SliceFailureListener> failureListener = Option.none();
     /// #275: liveness narrowing for endpoint selection, `IDENTITY` until `AetherNode` wires the
     /// membership-backed filter (the same one the HTTP forward path uses).
     private volatile AccessibilityFilter accessibilityFilter = AccessibilityFilter.IDENTITY;
@@ -764,13 +755,8 @@ class SliceInvokerImpl implements SliceInvoker {
                   ctx.slice,
                   ctx.method,
                   ctx.attemptCount());
-        var event = SliceFailureEvent.AllInstancesFailed.allInstancesFailed(ctx.requestId,
-                                                                            ctx.slice,
-                                                                            ctx.method,
-                                                                            ctx.lastError,
-                                                                            ctx.attemptedNodes);
-
-        publishFailureEvent(event);
+        // #1573: no event from here. The all-instances-failed verdict belongs to the leader-side
+        // AllInstancesFailedDetector, which sees every instance; one caller's retry exhaustion does not.
         promise.fail(new SliceInvokerError.AllInstancesFailedError(ctx.slice,
                                                                    ctx.method,
                                                                    ctx.attemptedNodes.size() + " nodes attempted"));
@@ -783,24 +769,7 @@ class SliceInvokerImpl implements SliceInvoker {
                  ctx.slice,
                  ctx.method,
                  ctx.attemptCount());
-        if (ctx.attemptCount() >= endpointRegistry.findEndpoints(ctx.slice, ctx.method).size()) {
-            var event = SliceFailureEvent.AllInstancesFailed.allInstancesFailed(ctx.requestId,
-                                                                                ctx.slice,
-                                                                                ctx.method,
-                                                                                ctx.lastError,
-                                                                                ctx.attemptedNodes);
-
-            publishFailureEvent(event);
-        }
-
         promise.fail(ctx.lastError.or(Causes.cause("Max retries exceeded with no error recorded")));
-    }
-
-    @Override
-    public Unit setFailureListener(SliceFailureListener listener) {
-        this.failureListener = Option.some(listener);
-
-        return unit();
     }
 
     @Override
@@ -826,27 +795,6 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private static String affinityLookupKey(Artifact artifact, MethodName method) {
         return artifact.asString() + "/" + method.name();
-    }
-
-    private void publishFailureEvent(SliceFailureEvent event) {
-        var requestId = extractRequestId(event);
-
-        log.warn("[requestId={}] SliceFailureEvent: {}", requestId, event);
-        failureListener.onPresent(listener -> safeNotifyFailureListener(listener, event, requestId));
-    }
-
-    private String extractRequestId(SliceFailureEvent event) {
-        return switch (event) {
-            case SliceFailureEvent.AllInstancesFailed failed -> failed.requestId();
-        };
-    }
-
-    private void safeNotifyFailureListener(SliceFailureListener listener, SliceFailureEvent event, String requestId) {
-        try {
-            listener.onSliceFailure(event);
-        } catch (Exception e) {
-            log.error("[requestId={}] Error notifying failure listener: {}", requestId, e.getMessage());
-        }
     }
 
     @Override
