@@ -4348,7 +4348,8 @@ public interface AetherNode extends ManageableNode {
                                                                           metricsScheduler.publishObservationsNow();
                                                                       },
                                                                       config.timeouts().cluster().pingInterval()));
-        clusterNetworkRef.setConnectionInitiator((_, peer) -> hierarchyPeerPolicy.initiatesCoreBootstrap(installedVoterIds(clusterNode).contains(config.self()),
+        clusterNetworkRef.setConnectionInitiator((_, peer) -> hierarchyPeerPolicy.initiatesCoreBootstrap(stagedCore(clusterNode,
+                                                                                                                    config.self()),
                                                                                                          configuredTransferPeers.contains(peer)) || hierarchyPeerPolicy.isConnectionInitiator(peer,
                                                                                                                                                                                               configuredTransferPeers.contains(peer) || routingCoreIds.get()
                                                                                                                                                                                                                                                       .contains(peer) || membershipFsm.memberDescriptor(peer)
@@ -5825,6 +5826,14 @@ public interface AetherNode extends ManageableNode {
     /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
     /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
     /// holder is populated before any snapshot is taken).
+    /// Staged: an installed configuration that does not include this node. No configuration (genesis
+    /// pending) is not staged, so a genesis candidate keeps the single-dialer order.
+    private static boolean stagedCore(RabiaNode<KVCommand<AetherKey>> node, NodeId self) {
+        return node.voterConfiguration()
+                   .filter(configuration -> !configuration.contains(self))
+                   .isPresent();
+    }
+
     private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
