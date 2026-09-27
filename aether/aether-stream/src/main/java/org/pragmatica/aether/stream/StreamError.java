@@ -240,8 +240,8 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stream '%s' declares replicas=%d, below the stream replication minimum of %d".formatted(streamName,
-                                                                                                           replicas,
-                                                                                                           minimum);
+                                                                                                            replicas,
+                                                                                                            minimum);
         }
     }
 
