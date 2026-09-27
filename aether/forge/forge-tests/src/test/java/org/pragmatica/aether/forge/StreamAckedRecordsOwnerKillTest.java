@@ -1,0 +1,488 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
+package org.pragmatica.aether.forge;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.awaitility.core.ConditionTimeoutException;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
+
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.locks.LockSupport;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+
+import org.pragmatica.aether.ember.EmberCluster;
+
+/// #1549 — every ACKED event survives the owner's terminal removal when `min-sync-replicas = replicas`.
+///
+/// The fixture is the `test-stream-repl` blueprint: `[streams.repl-failover-events]` declares
+/// `replicas = 3` and `min-sync-replicas = 3`, so a publish acks only after BOTH non-owner replicas hold
+/// the event. Until #1549 that declaration never reached the runtime — the record binder read
+/// `min_sync_replicas`, found nothing and committed `0`, so every publish acked on the owner alone. The
+/// flow: 5-node Ember cluster → deploy → the committed config reads `replicas = 3, minSyncReplicas = 3` →
+/// publish N events, each acked → kill the partition's HRW owner IMMEDIATELY after the last ack, with no
+/// wait for replication → at least two SURVIVORS hold all N acked events → a REPLACEMENT joins under a
+/// fresh node id (terminal removal: the dead identity is never reused).
+///
+/// What the enabled test proves: an acked event is held by the surviving replicas at the moment its owner
+/// dies. It does NOT prove the survivors SERVE it: after an owner is killed every survivor keeps resolving
+/// the dead node as HRW owner and no node serves the partition (#1550, measured on the rc4 tip). The test
+/// ends with a TRIPWIRE asserting that stall; it fails the moment ownership moves, and its message says to
+/// delete it and enable [#replacementJoined_newOwnerServesEveryAckedEvent].
+///
+/// What discriminates, stated because the obvious control does not: with the #1549 binding reverted the
+/// committed config reads `minSyncReplicas = 0`, and the final assertion fails on it. The survivor
+/// assertion alone would NOT reliably fail in that arm — in-JVM replication usually beats the kill, so an
+/// owner-only ack is usually replicated anyway. The acked-record guarantee is therefore carried by the
+/// committed `min-sync-replicas` plus the barrier's mechanism (a publish resolves only after
+/// `min-sync − 1` distinct peer acks), and this test pins both that the knob reaches the runtime and that
+/// the data is where the barrier says it is.
+///
+/// Ember equivalence: the owner kill is [EmberCluster#killNode] (`node.stop()`, a SWIM leave), not a
+/// SIGKILL.
+@Tag("Heavy")
+@Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+class StreamAckedRecordsOwnerKillTest {
+    private static final System.Logger LOG = System.getLogger(StreamAckedRecordsOwnerKillTest.class.getName());
+    private static final int BASE_PORT = 38700;
+    private static final int BASE_MGMT_PORT = 38800;
+    private static final int BASE_APP_HTTP_PORT = 38900;
+    private static final int NODES = 5;
+    private static final int INSTANCES = 5;
+    private static final int N_EVENTS = 20;
+    private static final int PARTITION = 0;
+
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
+    private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+    private static final Duration PLACEMENT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration FAILOVER_TIMEOUT = Duration.ofSeconds(180);
+    private static final Duration STALL_PROBE = Duration.ofSeconds(60);
+    private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
+
+    private static final String STREAM_SLICE = TestArtifacts.STREAM_REPL_SLICE;
+    private static final String BLUEPRINT_ID = "forge.test:stream-acked-owner-kill:1.0.0";
+    private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "repl-failover-events");
+    private static final int DECLARED_REPLICAS = 3;
+    private static final int DECLARED_MIN_SYNC = 3;
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
+
+    private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
+    private static final Pattern OFFSET_FIELD = Pattern.compile("\"offset\"\\s*:\\s*(\\d+)");
+    private static final Pattern PAYLOAD_FIELD = Pattern.compile("\"payload\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern NODE_COUNT_FIELD = Pattern.compile("\"nodeCount\"\\s*:\\s*(\\d+)");
+
+    private EmberCluster cluster;
+    private String killedOwner = "";
+    private final HttpOperations http = jdkHttpOperations();
+
+    private record Event(long offset, String payload) {}
+
+    @BeforeAll
+    void setUp() {
+        var configProvider = ConfigurationProvider.builder()
+                                                  .withSystemProperties("aether.")
+                                                  .withEnvironment("AETHER_")
+                                                  .build();
+        cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "sako", Option.some(configProvider));
+        startAndAwaitReady();
+    }
+
+    @AfterAll
+    void tearDown() {
+        if (cluster != null) {
+            var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
+        }
+    }
+
+    @Test
+    @Order(1)
+    void ownerKilledRightAfterTheLastAck_survivorsHoldEveryAckedEvent() {
+        await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> committedConfig().isPresent());
+        var committed = committedConfig().unwrap();
+        LOG.log(System.Logger.Level.INFO,
+                "#1549 committed config for {0}: replicas={1} minSyncReplicas={2}",
+                STREAM_NAME,
+                committed.replicas(),
+                committed.minSyncReplicas());
+
+        // Publish only once the full replica set is registered: at min-sync 3 a publish needs both peers.
+        await().atMost(PLACEMENT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> ownerView().map(view -> view.replicas().size() >= DECLARED_REPLICAS).or(false));
+        publishBatch(appPort(), "pre", N_EVENTS);
+
+        // No replication wait: the owner is killed as soon as the last publish has been acked.
+        var atAck = ownerView().unwrap();
+        killedOwner = atAck.ownerNodeId().or("");
+        assertThat(killedOwner).describedAs("HRW owner identified at the last ack").isNotBlank();
+        LifecycleAwait.nodeBestEffort("kill owner " + killedOwner, cluster, cluster.killNode(killedOwner));
+        LOG.log(System.Logger.Level.INFO, "#1549 replica set at the last ack: {0}", atAck);
+
+        var holders = survivorsHoldingFullHistory();
+        LOG.log(System.Logger.Level.INFO, "#1549 survivors holding all {0} acked events after the kill: {1}", N_EVENTS, holders);
+        assertThat(holders)
+            .describedAs("survivors holding every ACKED event at the owner's terminal removal")
+            .hasSizeGreaterThanOrEqualTo(DECLARED_REPLICAS - 1);
+
+        var replacement = cluster.addNode().await().unwrap();
+        assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(killedOwner);
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
+
+        assertThat(committed.replicas())
+            .describedAs("the declared replicas reach the committed runtime config")
+            .isEqualTo(DECLARED_REPLICAS);
+        assertThat(committed.minSyncReplicas())
+            .describedAs("the declared min-sync-replicas reaches the committed runtime config (#1549: it was 0)")
+            .isEqualTo(DECLARED_MIN_SYNC);
+
+        assertOwnershipStillStalledOnTheDeadOwner();
+    }
+
+    /// The serving half, disabled while ownership stalls on the dead owner (see the class doc and the
+    /// tripwire at the end of the enabled test). Runs after it, on the same cluster, when enabled.
+    @Test
+    @Order(2)
+    @Disabled("#1550: stream ownership never leaves a killed owner (measured 2026-09-27 on rc4 83d515575); the tripwire in "
+              + "ownerKilledRightAfterTheLastAck_survivorsHoldEveryAckedEvent fails when that is fixed")
+    void replacementJoined_newOwnerServesEveryAckedEvent() {
+        awaitOrDump("a surviving replica takes ownership", () -> ownerChanged(killedOwner));
+        var served = drain(appPort(), 0L, N_EVENTS, deadline(FAILOVER_TIMEOUT));
+        LOG.log(System.Logger.Level.INFO,
+                "#1549 after the replacement joined: owner={0} served={1}/{2}",
+                ownerView().flatMap(ReplicaSetView::ownerNodeId).or("<none>"),
+                served.size(),
+                N_EVENTS);
+        assertContiguousBatch(served, "served by the new owner after the replacement joined");
+    }
+
+    /// TRIPWIRE, not a specification: asserts today's WRONG behaviour so that fixing it cannot go
+    /// unnoticed. Ownership should move to a surviving replica; today it stays on the killed node.
+    private void assertOwnershipStillStalledOnTheDeadOwner() {
+        var until = deadline(STALL_PROBE);
+        var moved = ownerChanged(killedOwner);
+
+        while (!moved && System.nanoTime() < until) {
+            LockSupport.parkNanos(POLL_INTERVAL.toNanos());
+            moved = ownerChanged(killedOwner);
+        }
+
+        assertThat(moved)
+            .describedAs("TRIPWIRE (#1550): stream ownership moved off the killed owner %s — the stall this asserts is fixed. "
+                         + "Delete this tripwire and enable replacementJoined_newOwnerServesEveryAckedEvent.",
+                         killedOwner)
+            .isFalse();
+    }
+
+    /// Live nodes whose LOCAL partition holds offsets `0..N-1` — read from each node's own ring, not from
+    /// any owner's registry, so it is a statement about where the data is, independent of who serves it.
+    private List<String> survivorsHoldingFullHistory() {
+        return cluster.allNodes()
+                      .stream()
+                      .filter(node -> holdsFullHistory(node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION)))
+                      .map(node -> node.self().id())
+                      .toList();
+    }
+
+    private static boolean holdsFullHistory(ReplicaSetView localView) {
+        return localView.earliestRetainedOffset() == 0 && localView.ownerHeadOffset() >= N_EVENTS;
+    }
+
+    // --- replica-set view (in-JVM, owner-authoritative) ---------------------
+
+    private Option<ReplicaSetView> ownerView() {
+        for (var node : cluster.allNodes()) {
+            var view = node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION);
+
+            if (view.servedByOwner()) {
+                return Option.some(view);
+            }
+        }
+
+        return Option.none();
+    }
+
+    /// Failure-path observability, as in [AbstractStreamOwnerFailover]: on timeout every live node's
+    /// replica view is logged before the timeout propagates, so a stalled ownership move is diagnosable.
+    private void awaitOrDump(String what, Callable<Boolean> condition) {
+        try {
+            await().atMost(FAILOVER_TIMEOUT).pollInterval(POLL_INTERVAL).alias(what).until(condition);
+        } catch (ConditionTimeoutException timeout) {
+            cluster.allNodes()
+                   .forEach(node -> LOG.log(System.Logger.Level.WARNING,
+                                            "#1549 timeout ({0}) view self={1}: {2}",
+                                            what,
+                                            node.self(),
+                                            node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION)));
+            throw timeout;
+        }
+    }
+
+    private Option<StreamConfig> committedConfig() {
+        return Option.from(cluster.allNodes().stream().findFirst())
+                     .flatMap(node -> node.kvStore()
+                                          .getTyped(StreamConfigKey.streamConfigKey(STREAM_NAME),
+                                                    StreamConfigValue.class))
+                     .map(StreamConfigValue::config);
+    }
+
+    private boolean ownerChanged(String oldOwner) {
+        return ownerView().flatMap(ReplicaSetView::ownerNodeId)
+                          .map(owner -> !owner.isBlank() && !owner.equals(oldOwner))
+                          .or(false);
+    }
+
+    // --- assertions ---------------------------------------------------------
+
+    private static void assertContiguousBatch(List<Event> events, String phase) {
+        assertThat(events)
+            .describedAs("all %d events %s (no loss, no dups)", N_EVENTS, phase)
+            .hasSize(N_EVENTS);
+
+        for (int i = 0; i < N_EVENTS; i++) {
+            assertThat(events.get(i).offset()).describedAs("event %d offset", i).isEqualTo((long) i);
+            assertThat(events.get(i).payload()).describedAs("event %d payload", i).isEqualTo("pre-" + i);
+        }
+    }
+
+    // --- publish / read -----------------------------------------------------
+
+    private void publishBatch(int port, String tag, int count) {
+        for (int i = 0; i < count; i++) {
+            publish(port, tag + "-" + i);
+        }
+    }
+
+    private void publish(int port, String payload) {
+        var response = httpPost(port, "/api/stream-repl/publish", "{\"payload\":\"" + payload + "\"}");
+
+        assertThat(response).describedAs("publish '%s' must succeed", payload)
+                            .doesNotContain("\"error\"")
+                            .contains("published");
+    }
+
+    private List<Event> drain(int port, long base, int count, long deadlineNanos) {
+        var collected = new ArrayList<Event>();
+        var offset = base;
+
+        while (collected.size() < count && System.nanoTime() < deadlineNanos) {
+            var events = readEvents(port, offset, count);
+
+            if (events.isEmpty()) {
+                LockSupport.parkNanos(POLL_GAP_NANOS);
+                continue;
+            }
+
+            collected.addAll(events);
+            offset = events.getLast().offset() + 1;
+        }
+
+        return List.copyOf(collected);
+    }
+
+    private List<Event> readEvents(int port, long fromOffset, int maxEvents) {
+        var body = "{\"fromOffset\":" + fromOffset + ",\"maxEvents\":" + maxEvents + "}";
+
+        return parseEvents(httpPost(port, "/api/stream-repl/read", body));
+    }
+
+    private static List<Event> parseEvents(String body) {
+        var events = new ArrayList<Event>();
+        Matcher objects = EVENT_OBJECT.matcher(body);
+
+        while (objects.find()) {
+            var object = objects.group();
+            Matcher offset = OFFSET_FIELD.matcher(object);
+            Matcher payload = PAYLOAD_FIELD.matcher(object);
+
+            if (offset.find() && payload.find()) {
+                events.add(new Event(Long.parseLong(offset.group(1)), payload.group(1)));
+            }
+        }
+
+        return List.copyOf(events);
+    }
+
+    // --- deployment + readiness --------------------------------------------
+
+    private void startAndAwaitReady() {
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
+
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
+
+        deployStreamSlice();
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::appHttpReady);
+    }
+
+    private void deployStreamSlice() {
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(BLUEPRINT_ID, STREAM_SLICE, INSTANCES);
+        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+        var response = postBlueprintWithRetry(leaderPort, blueprint);
+
+        assertThat(response).describedAs("min-sync-3 stream-slice deployment")
+                            .doesNotContain("\"error\"")
+                            .contains("\"status\":\"applied\"");
+    }
+
+    private boolean appHttpReady() {
+        var ports = cluster.getAvailableAppHttpPorts();
+
+        if (ports.isEmpty()) {
+            return false;
+        }
+
+        var body = httpPost(ports.getFirst(), "/api/stream-repl/read", "{\"fromOffset\":0,\"maxEvents\":1}");
+
+        return !body.contains("\"error\"") && body.contains("events");
+    }
+
+    private void failIfSliceFailed() {
+        var failed = cluster.slicesStatus()
+                            .stream()
+                            .anyMatch(s -> s.artifact().equals(STREAM_SLICE) && s.state().equals("FAILED"));
+
+        if (failed) {
+            throw new AssertionError("min-sync-3 stream slice deployment FAILED: " + STREAM_SLICE);
+        }
+    }
+
+    private int appPort() {
+        return cluster.getAvailableAppHttpPorts()
+                      .stream()
+                      .findFirst()
+                      .orElseThrow(() -> new AssertionError("No app-http route is ready"));
+    }
+
+    private int anyMgmtPort() {
+        return cluster.status().nodes().getFirst().mgmtPort();
+    }
+
+    private static long deadline(Duration budget) {
+        return System.nanoTime() + budget.toNanos();
+    }
+
+    private boolean allNodesAreMembers(int expected) {
+        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/v1/health"))
+                                 .GET()
+                                 .timeout(Duration.ofSeconds(5))
+                                 .build();
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(), expected))
+                   .or(false);
+    }
+
+    private static boolean healthHasFullMembership(String body, int expected) {
+        if (!body.contains("\"quorum\":true")) {
+            return false;
+        }
+
+        var matcher = NODE_COUNT_FIELD.matcher(body);
+
+        return matcher.find() && Integer.parseInt(matcher.group(1)) >= expected;
+    }
+
+    // --- HTTP ---------------------------------------------------------------
+
+    private String postBlueprintWithRetry(int port, String body) {
+        var lastResponse = ERROR_FALLBACK;
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
+
+            if (!lastResponse.contains("\"error\"")) {
+                return lastResponse;
+            }
+
+            if (attempt < 3) {
+                LockSupport.parkNanos(Duration.ofSeconds(2).toNanos());
+            }
+        }
+
+        return lastResponse;
+    }
+
+    private String httpPostToml(int port, String path, String body) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .header("Content-Type", "application/toml")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
+    }
+
+    private String httpPost(int port, String path, String body) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .timeout(Duration.ofSeconds(15))
+                                 .build();
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
+    }
+
+    private String httpDelete(int port, String path) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .DELETE()
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
+    }
+}
