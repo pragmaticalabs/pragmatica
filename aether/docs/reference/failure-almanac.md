@@ -45,7 +45,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Per-node deployment failure (`ALL_OR_NOTHING` rollback) | n/a — permanent until cause is fixed | `DurableEntityForgeTest` |
 | `BEST_EFFORT` slice failure (durable `PARTIAL`) | n/a — durable until redeployed | `BlueprintStatusAggregationTest` |
 | Stream owner failover (`min-sync-replicas ≥ 2`) | owner view ≤180 s; complete history ≤120 s | 02-chaos C17–C20 |
-| Stream owner loss (RF = 3, default `min-sync-replicas`) | owner view ≤180 s; replicated history served | `StreamDefaultRfOwnerReplacementTest` |
+| Stream owner loss (RF = 3, default `min-sync-replicas`) | none today — ownership stays on the dead owner; replicated history held on survivors | `StreamDefaultRfOwnerReplacementTest` |
 | Core network partition | eviction ~3 s; heal to N ≤30 s | 12-network C9/C10 |
 | QUIC connection churn | missing-peer reconcile 5–60 s | 12-network connectedPeerCount |
 | Full-cluster restart | derived state rebuilds; snapshot-only KV | guarantees.md §1–§2 · **partial (#349)** |
@@ -138,13 +138,13 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Stream owner loss — RF = 3, default `min-sync-replicas` (the default stream)
 
-- **Symptom:** a partition's owner is terminally removed; a brief read unavailability, then the next-ranked replica serves the partition.
+- **Symptom:** a partition's owner is terminally removed and the partition stops being served: every survivor keeps resolving the dead node as owner, and forwarded reads fail with "Stream partition is not owned by this node".
 - **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes and the new owner's view shows the replicas' `confirmedOffset`.
-- **Automatic response:** HRW hands ownership to the next-ranked survivor, which was already a replica; a replacement core joining under a fresh identity is placed and backfilled like any new member.
-- **Budget:** new owner-authoritative view ≤180 s (the Forge test's bound).
-- **Degraded / at risk:** events acked but not yet replicated when the owner died. At the default `min-sync-replicas` the ack is the owner's WAL fsync alone, and a terminally removed owner's WAL is never read again, so those events are **lost**, not merely unavailable. Everything that reached the replicas is served `[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`]`.
-- **Operator action:** replace the lost core. To make every acked event survive an owner's loss, set `min-sync-replicas = replicas` (see [known-limitations.md](known-limitations.md)).
-- **Proof anchor:** Forge `StreamDefaultRfOwnerReplacementTest` (owner killed, replacement joins under a fresh id, all replicated events served).
+- **Automatic response:** intended — HRW hands ownership to the next-ranked survivor, which is already a replica `[design intent — unverified]`. Measured 2026-09-27 on the rc4 tip and at RF=3: ownership did not move within 3 minutes, and a replacement core joining under a fresh identity did not move it either.
+- **Budget:** none today.
+- **Degraded / at risk:** events acked but not yet replicated when the owner died. At the default `min-sync-replicas` the ack is the owner's WAL fsync alone, and a terminally removed owner's WAL is never read again, so those events are **lost**, not merely unavailable. Everything that reached the replicas is still HELD on the survivors `[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`]`; it is not served while ownership stays on the dead owner.
+- **Operator action:** replace the lost core; no action is known to move ownership off the dead owner. To make every acked event reach the replicas before the ack, set `min-sync-replicas = replicas` (see [known-limitations.md](known-limitations.md)).
+- **Proof anchor:** Forge `StreamDefaultRfOwnerReplacementTest` (owner killed, replacement joins under a fresh id: two survivors hold all events, RF=1 control holds none; the serving half is disabled behind a tripwire on the ownership stall).
 
 ### Fresh-stream first-publish race
 
