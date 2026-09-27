@@ -39,7 +39,9 @@
   with every undeclared bound at `Long.MAX_VALUE`; they never reached the runtime before this fix, and once
   they did, stream creation THREW (the ring's index is sized from the count). Every bound they do not
   declare is now the `RetentionPolicy` default (100,000 events, 256 MB, 24 h), and a count the ring cannot
-  index is refused as `StreamError.RetentionCountUnindexable` instead of throwing. The shipped
+  index is refused as `StreamError.RetentionCountUnindexable` instead of throwing, as is a count, byte or
+  age bound below 1 (`StreamError.RetentionBoundInvalid` — a count of 0 used to throw a division by zero, a
+  negative count a negative allocation). The shipped
   `examples/notification-hub` (`retention = "time"`, `"5m"`) now resolves to
   `RetentionPolicy[maxCount=100000, maxBytes=268435456, maxAgeMs=300000, mode=ANY]` and its stream
   creates; before this fix it silently ran at the 24 h default, and with the binder fixed alone it would

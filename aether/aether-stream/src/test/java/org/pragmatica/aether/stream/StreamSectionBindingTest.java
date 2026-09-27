@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.TomlConfigSource;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -220,6 +221,94 @@ class StreamSectionBindingTest {
                 manager.createStream(bindWith(new StreamPublisherFactory(), toml, section))
                        .onFailure(cause -> fail("stream creation failed: " + cause.message()));
                 assertThat(manager.streamInfo(alias).isPresent()).isTrue();
+            } finally {
+                manager.close();
+            }
+        }
+    }
+
+    /// #1549, per bound: every bound a `time`/`size`/`compound` form does not declare resolves to the
+    /// RetentionPolicy default, and every bound the engine cannot honour is refused as a typed Result —
+    /// never a throw out of the ring build.
+    @Nested
+    class RetentionBounds {
+        @Test
+        void compoundDeclaringOnlyCount_defaultsBytesAndAge() {
+            assertThat(retentionOf("retention = \"compound\"\nmax-count = \"500\""))
+                .isEqualTo(RetentionPolicy.retentionPolicy(500, DEFAULTS.maxBytes(), DEFAULTS.maxAgeMs(), RetentionMode.ANY));
+        }
+
+        @Test
+        void compoundDeclaringOnlyBytes_defaultsCountAndAge() {
+            assertThat(retentionOf("retention = \"compound\"\nmax-bytes = \"8MB\""))
+                .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 8L * 1024 * 1024, DEFAULTS.maxAgeMs(), RetentionMode.ANY));
+        }
+
+        @Test
+        void compoundDeclaringOnlyAge_defaultsCountAndBytes() {
+            assertThat(retentionOf("retention = \"compound\"\nmax-age = \"2h\""))
+                .isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 7_200_000L, RetentionMode.ANY));
+        }
+
+        @Test
+        void zeroCount_isRefusedTyped() {
+            assertRefused("max-count = \"0\"", new StreamError.RetentionBoundInvalid(ALIAS, "max-count", 0));
+        }
+
+        @Test
+        void negativeCount_isRefusedTyped() {
+            assertRefused("max-count = \"-5\"", new StreamError.RetentionBoundInvalid(ALIAS, "max-count", -5));
+        }
+
+        @Test
+        void zeroBytes_isRefusedTyped() {
+            assertRefused("max-bytes = \"0\"", new StreamError.RetentionBoundInvalid(ALIAS, "max-bytes", 0));
+        }
+
+        @Test
+        void zeroAge_isRefusedTyped() {
+            assertRefused("max-age = \"0\"", new StreamError.RetentionBoundInvalid(ALIAS, "max-age", 0));
+        }
+
+        @Test
+        void countOnePastTheIndexableCapacity_isRefusedTyped() {
+            assertRefused("max-count = \"" + (OffHeapRingBuffer.MAX_CAPACITY + 1) + "\"",
+                          new StreamError.RetentionCountUnindexable(ALIAS, OffHeapRingBuffer.MAX_CAPACITY + 1, OffHeapRingBuffer.MAX_CAPACITY));
+        }
+
+        /// At the capacity itself the ring is indexable in principle but not affordable: the refusal is the
+        /// budget's typed one, not a throw.
+        @Test
+        void countAtTheIndexableCapacity_isRefusedByTheBudget_typed() {
+            assertRefused("max-count = \"" + OffHeapRingBuffer.MAX_CAPACITY + "\"", StreamError.General.STREAM_MEMORY_EXCEEDED);
+        }
+
+        @Test
+        void declaredUnboundedBytesAndAge_create() {
+            var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
+            try {
+                manager.createStream(bindWith(new StreamPublisherFactory(),
+                                              compound("max-bytes = \"9223372036854775807\"\nmax-age = \"9223372036854775807\"")))
+                       .onFailure(cause -> fail("declared unbounded bytes/age must create: " + cause.message()));
+            } finally {
+                manager.close();
+            }
+        }
+
+        private static RetentionPolicy retentionOf(String retentionLines) {
+            return bindWith(new StreamPublisherFactory(), "[streams.orders]\n" + retentionLines + "\n").retention();
+        }
+
+        private static String compound(String lines) {
+            return "[streams.orders]\nretention = \"compound\"\n" + lines + "\n";
+        }
+
+        private static void assertRefused(String boundLine, Cause expected) {
+            var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
+            try {
+                manager.createStream(bindWith(new StreamPublisherFactory(), compound(boundLine)))
+                       .onSuccess(_ -> fail("expected " + expected))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(expected));
             } finally {
                 manager.close();
             }

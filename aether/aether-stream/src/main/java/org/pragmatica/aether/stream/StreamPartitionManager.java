@@ -809,15 +809,34 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      .flatMap(_ -> materializeFreshStream(config, commitMode));
     }
 
-    /// #1549: the ring's index is sized from the retention count, so a count it cannot index is refused
-    /// before anything is reserved, instead of building the ring over an overflowed allocation size.
+    /// #1549: every retention bound is at least 1, and the count is one the ring can index — refused before
+    /// anything is reserved, instead of throwing out of the ring build (division by zero, a negative
+    /// allocation, or an overflowed allocation size).
     private static Result<Unit> checkRetentionCapacity(StreamConfig config) {
-        return config.retention()
-                     .maxCount() <= OffHeapRingBuffer.MAX_CAPACITY
+        var retention = config.retention();
+
+        return checkRetentionBound(config.name(),
+                                   "max-count",
+                                   retention.maxCount()).flatMap(_ -> checkRetentionBound(config.name(),
+                                                                                          "max-bytes",
+                                                                                          retention.maxBytes()))
+                                  .flatMap(_ -> checkRetentionBound(config.name(),
+                                                                    "max-age",
+                                                                    retention.maxAgeMs()))
+                                  .flatMap(_ -> checkIndexable(config.name(),
+                                                               retention.maxCount()));
+    }
+
+    private static Result<Unit> checkRetentionBound(String streamName, String bound, long value) {
+        return value >= 1
                ? success(unit())
-               : new StreamError.RetentionCountUnindexable(config.name(),
-                                                           config.retention().maxCount(),
-                                                           OffHeapRingBuffer.MAX_CAPACITY).result();
+               : new StreamError.RetentionBoundInvalid(streamName, bound, value).result();
+    }
+
+    private static Result<Unit> checkIndexable(String streamName, long maxCount) {
+        return maxCount <= OffHeapRingBuffer.MAX_CAPACITY
+               ? success(unit())
+               : new StreamError.RetentionCountUnindexable(streamName, maxCount, OffHeapRingBuffer.MAX_CAPACITY).result();
     }
 
     /// Create-time admission gate (#265 increment 4, spec §7): reject a fresh stream that breaches the
