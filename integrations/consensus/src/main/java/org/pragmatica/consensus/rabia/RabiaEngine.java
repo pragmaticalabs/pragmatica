@@ -2078,7 +2078,7 @@ public class RabiaEngine<C extends Command> {
                     .onSuccessRun(this::activate)
                     .onSuccessRun(this::replayStateNotifications)
                     .onSuccessRun(this::notifyStateRestored)
-                    .onFailure(onRestoreFailure);
+                    .onFailure(cause -> onRestoreFailure.accept(cause));
     }
 
     /// #1020 — the ONE operator signal on a failed restore, so it names the CONSEQUENCE and not only
