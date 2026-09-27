@@ -247,8 +247,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         // list, so the inventory completes empty, the same "no operator config" reading the registry uses.
         return SourceComputeRegistry.operatorConfig(store.getTyped(AetherKey.ClusterConfigKey.CURRENT,
                                                                    AetherValue.ClusterConfigValue.class))
-                                    .fold(this::markInventoryComplete,
-                          config -> ClusterBootstrapConfigParser.parse(config.tomlContent())
+                                    .fold(this::markInventoryComplete, this::inventoryOperatorSources);
+    }
+
+    private Promise<Unit> inventoryOperatorSources(AetherValue.ClusterConfigValue config) {
+        return ClusterBootstrapConfigParser.parse(config.tomlContent())
                                                                 .async()
                                                                 .flatMap(parsed -> {
                                                                              var pass = Promise.unitPromise();

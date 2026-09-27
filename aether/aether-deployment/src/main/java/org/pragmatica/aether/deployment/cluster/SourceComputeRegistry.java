@@ -35,7 +35,6 @@ public interface SourceComputeRegistry {
     /// Durable binding of the local provider on a cluster that carries no operator source configuration.
     /// Real bindings are 64-hex SHA-256 digests, so this value cannot collide with one.
     String LOCAL_SOURCE_BINDING = "local";
-
     Result<ComputeProvider> resolve(SourceName source);
 
     default Result<ComputeProvider> resolve(SourceName source, String expectedBinding) {
@@ -112,7 +111,9 @@ public interface SourceComputeRegistry {
             @Override
             public synchronized Result<ComputeProvider> resolve(SourceName source, String expectedBinding) {
                 return operatorConfig(configuration.get()).fold(() -> localBound(source, expectedBinding),
-                                                                value -> resolveBoundConfigured(value, source, expectedBinding));
+                                                                value -> resolveBoundConfigured(value,
+                                                                                                source,
+                                                                                                expectedBinding));
             }
 
             private Result<ComputeProvider> localProviderOnly() {
@@ -128,14 +129,14 @@ public interface SourceComputeRegistry {
             private Result<ComputeProvider> resolveBoundConfigured(ClusterConfigValue value,
                                                                    SourceName source,
                                                                    String expectedBinding) {
-                return ClusterBootstrapConfigParser.parse(value.tomlContent())
-                                    .flatMap(config -> Option.option(config.sources().get(source.value()))
-                                                             .toResult(EnvironmentError.operationNotSupported("Unknown compute source: " + source.value()))
-                                                             .flatMap(profile -> resolveBound(profile,
-                                                                                              config.cluster()
-                                                                                                    .name()
-                                                                                                    .value(),
-                                                                                              expectedBinding)));
+                return ClusterBootstrapConfigParser.parse(value.tomlContent()).flatMap(config -> Option.option(config.sources()
+                                                                                                                     .get(source.value()))
+                                                                                                       .toResult(EnvironmentError.operationNotSupported("Unknown compute source: " + source.value()))
+                                                                                                       .flatMap(profile -> resolveBound(profile,
+                                                                                                                                        config.cluster()
+                                                                                                                                              .name()
+                                                                                                                                              .value(),
+                                                                                                                                        expectedBinding)));
             }
 
             private Result<ComputeProvider> resolveBound(SourceProfile profile, String clusterName, String expected) {
@@ -210,9 +211,8 @@ public interface SourceComputeRegistry {
             @Override
             public Result<String> binding(SourceName source) {
                 return operatorConfig(configuration.get()).fold(() -> localProviderOnly().map(_ -> LOCAL_SOURCE_BINDING),
-                                                                value -> ClusterBootstrapConfigParser.parse(value.tomlContent())
-                                                                                                     .flatMap(config -> bindingFor(config,
-                                                                                                                                   source)));
+                                                                value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).flatMap(config -> bindingFor(config,
+                                                                                                                                                              source)));
             }
 
             private Result<String> bindingFor(ClusterBootstrapConfig config, SourceName source) {
@@ -232,11 +232,10 @@ public interface SourceComputeRegistry {
 
             @Override
             public Result<List<SourceName>> sources(Map<String, String> filter) {
-                return operatorConfig(configuration.get())
-                                    .fold(() -> localProvider.map(_ -> List.of(SourceName.DEFAULT))
-                                                             .toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent")),
-                                          value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).map(config -> matchingSources(config,
-                                                                                                                                         filter)));
+                return operatorConfig(configuration.get()).fold(() -> localProvider.map(_ -> List.of(SourceName.DEFAULT))
+                                                                                   .toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent")),
+                                                                value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).map(config -> matchingSources(config,
+                                                                                                                                                               filter)));
             }
 
             @Override
