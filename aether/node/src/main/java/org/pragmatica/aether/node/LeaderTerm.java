@@ -76,7 +76,8 @@ public final class LeaderTerm {
         return committedLeader.get()
                               .filter(this::namesSelf)
                               .map(LeaderValue::viewSequence)
-                              .map(sequence -> Math.max(sequence, term.get()))
+                              .map(sequence -> Math.max(sequence,
+                                                        term.get()))
                               .or(term::get);
     }
 

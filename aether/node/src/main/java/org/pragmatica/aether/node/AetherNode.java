@@ -449,7 +449,6 @@ public interface AetherNode extends ManageableNode {
 
     /// Process exit code after a completed drain (`DrainProcedure`) and a failed SWIM start.
     int EXIT_DRAINED = 2;
-
     /// Process exit code when the cluster refused this process's identity (#1558, terminal removal): its
     /// NodeId belongs to a retired or different process, so it can never be admitted. Distinct from
     /// [#EXIT_DRAINED] so orchestration and the CTM can tell "refused — replace with a fresh NodeId" from

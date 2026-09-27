@@ -1411,7 +1411,10 @@ public final class EmberCluster {
         // cluster), do NOT halt the JVM (would kill all other in-process nodes). Record the exit code
         // the process would have exited with, then stop the node gracefully and remove it from the
         // cluster's registry instead.
-        return AetherNode.aetherNode(config, code -> onNodeExit(nodeId.id(), code)).unwrap();
+        return AetherNode.aetherNode(config,
+                                     code -> onNodeExit(nodeId.id(),
+                                                        code))
+                         .unwrap();
     }
 
     /// Per-node `storageConfig` map for [#createNode]. When a writable base dir was set via
