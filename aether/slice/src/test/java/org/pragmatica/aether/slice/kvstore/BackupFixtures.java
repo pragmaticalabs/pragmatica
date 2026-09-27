@@ -28,7 +28,6 @@ import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.delegation.DelegationCodecsSlice;
 import org.pragmatica.aether.slice.generation.GenerationCodecsSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyAuditKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey;
@@ -48,9 +47,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.AbTestRoutingValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyAuditValue;
@@ -72,12 +69,12 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceCodecsSliceApi;
 import org.pragmatica.aether.slice.stream.StreamCodecsSliceApi;
+import org.pragmatica.cluster.state.kvstore.KvstoreCodecs;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
@@ -99,7 +96,8 @@ final class BackupFixtures {
 
     record Fixture(ClusterStateKey key, AetherValue value) {}
 
-    /// The codec registries a node assembles for the KV value types, minus everything unrelated.
+    /// The codec registries a node assembles for the KV value types and the KV commands carrying them,
+    /// minus everything unrelated.
     static SliceCodec codec() {
         var codecs = new ArrayList<TypeCodec<?>>();
 
@@ -112,6 +110,7 @@ final class BackupFixtures {
         codecs.addAll(GenerationCodecsSlice.CODECS);
         codecs.addAll(BlueprintCodecsSlice.CODECS);
         codecs.addAll(KvstoreCodecsSlice.CODECS);
+        codecs.addAll(KvstoreCodecs.CODECS);
 
         return SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), codecs);
     }
@@ -191,10 +190,6 @@ final class BackupFixtures {
                                                            owner.asString(),
                                                            1_700_000_000_000L,
                                                            1_700_000_000_500L)),
-                       new Fixture(AbTestRoutingKey.abTestRoutingKey(base),
-                                   AbTestRoutingValue.abTestRoutingValue("checkout-v2", "{\"split\":\"50|50\"}", "{\"b\":\"1.3.0\"}")),
-                       new Fixture(StreamMetadataKey.streamMetadataKey("orders.events"),
-                                   StreamMetadataValue.streamMetadataValue("orders.events", 8, "time", "7d", "1MB", "block", owner.asString())),
                        new Fixture(ClusterConfigKey.CURRENT,
                                    ClusterConfigValue.clusterConfigValue("[cluster]\nname = \"prod|eu\"\n# ünïcødé = yes\n",
                                                                          "prod",

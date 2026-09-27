@@ -1183,34 +1183,6 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
-    record AbTestRoutingKey(ArtifactBase artifactBase) implements ClusterStateKey {
-        private static final String PREFIX = "ab-test-routing/";
-
-        @Override
-        public String asString() {
-            return PREFIX + artifactBase.asString();
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static AbTestRoutingKey abTestRoutingKey(ArtifactBase artifactBase) {
-            return new AbTestRoutingKey(artifactBase);
-        }
-
-        public static Result<AbTestRoutingKey> abTestRoutingKey(String key) {
-            if (!key.startsWith(PREFIX)) {
-                return AB_TEST_ROUTING_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var artifactBasePart = key.substring(PREFIX.length());
-
-            return ArtifactBase.artifactBase(artifactBasePart).map(AbTestRoutingKey::new);
-        }
-    }
-
     record NodeArtifactKey(NodeId nodeId, Artifact artifact) implements RuntimeKey {
         private static final String PREFIX = "node-artifact/";
 
@@ -1350,8 +1322,6 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> AB_TEST_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test key format: %s");
 
-    Fn1<Cause, String> AB_TEST_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test-routing key format: %s");
-
     Fn1<Cause, String> CLUSTER_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-config key format: %s");
 
     Fn1<Cause, String> ENTITY_KEYSPACE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-keyspace key format: %s");
@@ -1360,45 +1330,11 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> STORAGE_STATUS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-status key format: %s");
 
-    Fn1<Cause, String> STREAM_METADATA_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-meta key format: %s");
-
     Fn1<Cause, String> CONSUMER_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid consumer-assign key format: %s");
 
     Fn1<Cause, String> STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-cursor key format: %s");
 
     Fn1<Cause, String> STREAM_REGISTRATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-reg key format: %s");
-
-    record StreamMetadataKey(String streamName) implements ClusterStateKey {
-        private static final String PREFIX = "stream-meta/";
-
-        @Override
-        public String asString() {
-            return PREFIX + streamName;
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static StreamMetadataKey streamMetadataKey(String streamName) {
-            return new StreamMetadataKey(streamName);
-        }
-
-        public static Result<StreamMetadataKey> streamMetadataKey(String key, boolean isKey) {
-            if (!key.startsWith(PREFIX)) {
-                return STREAM_METADATA_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var name = key.substring(PREFIX.length());
-
-            if (name.isEmpty()) {
-                return STREAM_METADATA_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            return success(new StreamMetadataKey(name));
-        }
-    }
 
     /// The committed assignee of one consumer group's partition (#1271) — the authority a
     /// [StreamCursorCheckpointKey] write is guarded by. Replaces the never-used per-stream

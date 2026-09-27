@@ -1379,40 +1379,6 @@ public sealed interface AetherValue {
         }
     }
 
-    record AbTestRoutingValue(String testId, String splitRuleJson, String variantVersionsJson) implements AetherValue {
-        public static AbTestRoutingValue abTestRoutingValue(String testId,
-                                                            String splitRuleJson,
-                                                            String variantVersionsJson) {
-            return new AbTestRoutingValue(testId, splitRuleJson, variantVersionsJson);
-        }
-    }
-
-    record StreamMetadataValue(String streamName,
-                               int partitionCount,
-                               String retention,
-                               String retentionValue,
-                               String maxEventSize,
-                               String backpressure,
-                               String owningBlueprint,
-                               long createdAt) implements AetherValue {
-        public static StreamMetadataValue streamMetadataValue(String streamName,
-                                                              int partitionCount,
-                                                              String retention,
-                                                              String retentionValue,
-                                                              String maxEventSize,
-                                                              String backpressure,
-                                                              String owningBlueprint) {
-            return new StreamMetadataValue(streamName,
-                                           partitionCount,
-                                           retention,
-                                           retentionValue,
-                                           maxEventSize,
-                                           backpressure,
-                                           owningBlueprint,
-                                           System.currentTimeMillis());
-        }
-    }
-
     /// Committed assignee of one consumer group's partition (#1271). Written by the leader-only
     /// `ConsumerAssignmentWriter`; read by every node's attach admission and by the applier's cross-key
     /// guard on [StreamCursorCheckpointValue] writes. `epoch` is `Epoch(rabiaTerm, assignmentTerm)`, so it

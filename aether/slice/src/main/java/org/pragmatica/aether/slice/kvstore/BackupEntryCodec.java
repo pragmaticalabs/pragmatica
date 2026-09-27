@@ -4,10 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -15,7 +19,6 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyAuditKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey;
@@ -35,8 +38,27 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyAuditValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ObservabilityConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
@@ -61,67 +83,110 @@ import static org.pragmatica.lang.Result.success;
 /// [ClusterStateKey][AetherKey.ClusterStateKey] that [backs up][AetherKey.ClusterStateKey#isBackedUp];
 /// runtime state is filtered out on encode and refused on decode.
 ///
-/// Layout, one entry per line after a four-line header:
+/// Layout, one entry per line after a five-line header:
 ///
 /// ```
 /// aether-kv-backup/1
 /// revision=<long>
 /// incarnation=<escaped text, empty when not yet assigned>
 /// entries=<count>
+/// sha256=<lowercase hex SHA-256 of every OTHER line of the document>
 /// <base64 of the value's generated binary codec> <escaped canonical key string>
 /// ```
 ///
 /// The key is its readable [AetherKey#asString] form, so a document can be inspected and grepped. The
-/// value is the SAME bytes consensus replicates — the generated `@Codec`, wire-tag pinned in
-/// `SystemTags` — so a value round-trips losslessly without a second, hand-written grammar to keep in
-/// step with every record. Escaping covers only `\`, newline and carriage return: enough to keep one
-/// entry on one line, nothing a reader has to learn. Entries are sorted by key, and values are written
-/// with the canonical codec, so the same state always renders to the same bytes.
+/// value is the bytes of the generated `@Codec`, wire-tag pinned in `SystemTags`, written through the
+/// canonical codec — the same encoding the KV snapshot and the persisted command log use — so a value
+/// round-trips losslessly without a second, hand-written grammar. Escaping covers only `\`, newline and
+/// carriage return: enough to keep one entry on one line. Entries are sorted by key.
 ///
-/// Decoding is strict in both directions, because a backup that restores something other than what
-/// was taken is worse than one that refuses: every key must parse back to exactly one key type and
-/// re-render to the identical string, and every value must re-encode to the identical bytes (which also
-/// rejects trailing garbage the binary reader would otherwise ignore). Every entry is checked and every
-/// failure is reported with its line number, rather than stopping at the first.
+/// **There is exactly one valid rendering of any state.** Decoding accepts only that rendering: the
+/// decoded state must re-encode to the identical document, so `+7`, `01`, unpadded base64, reordered
+/// entries and every other spelling a lenient parser would tolerate are refused. On top of that the
+/// checksum refuses a document whose bytes changed after it was written — including a value corrupted
+/// into another value that still decodes. Each key type is bound to the one value type it holds, in
+/// both directions. Every entry is checked and every entry failure is reported with its line number.
 public record BackupEntryCodec(SliceCodec codec) {
     public static final int FORMAT_VERSION = 1;
     private static final String MAGIC = "aether-kv-backup/";
     private static final String REVISION = "revision=";
     private static final String INCARNATION = "incarnation=";
     private static final String ENTRIES = "entries=";
-    private static final int HEADER_LINES = 4;
+    private static final String CHECKSUM = "sha256=";
+    private static final int CHECKSUM_LINE = 4;
+    private static final int HEADER_LINES = 5;
     private static final String SEPARATOR = " ";
 
     private static final Comparator<Map.Entry<AetherKey, AetherValue>> BY_KEY = Comparator.comparing(BackupEntryCodec::keyString);
 
-    /// One parser per backed-up key type, each accepting only its own prefix. Kept exhaustive by
-    /// `BackupEntryCodecTest`, which requires a round-tripping fixture for every
-    /// [ClusterStateKey][AetherKey.ClusterStateKey] type — a type missing here fails that test.
-    private static final List<Fn1<Result<? extends ClusterStateKey>, String>> KEY_PARSERS = List.of(SliceTargetKey::sliceTargetKey,
-                                                                                                    AppBlueprintKey::appBlueprintKey,
-                                                                                                    DeploymentOutcomeKey::deploymentOutcomeKey,
-                                                                                                    VersionRoutingKey::versionRoutingKey,
-                                                                                                    DeploymentKey::parseDeploymentKey,
-                                                                                                    PreviousVersionKey::previousVersionKey,
-                                                                                                    LogLevelKey::logLevelKey,
-                                                                                                    ObservabilityConfigKey::observabilityConfigKey,
-                                                                                                    AlertThresholdKey::alertThresholdKey,
-                                                                                                    ConfigKey::configKey,
-                                                                                                    key -> SchemaVersionKey.schemaVersionKey(key,
-                                                                                                                                             true),
-                                                                                                    CommunityKey::parseCommunityKey,
-                                                                                                    AbTestKey::abTestKey,
-                                                                                                    AbTestRoutingKey::abTestRoutingKey,
-                                                                                                    key -> StreamMetadataKey.streamMetadataKey(key,
-                                                                                                                                               true),
-                                                                                                    ClusterConfigKey::clusterConfigKey,
-                                                                                                    key -> StreamConfigKey.streamConfigKey(key,
-                                                                                                                                           true),
-                                                                                                    ApiKeyKey::parseApiKeyKey,
-                                                                                                    ApiKeyAuditKey::parseApiKeyAuditKey,
-                                                                                                    AutoHealStateKey::autoHealStateKey,
-                                                                                                    BlueprintStreamBindingsKey::blueprintStreamBindingsKey,
-                                                                                                    EntityCheckpointKey::entityCheckpointKey);
+    /// One binding per backed-up key type: the value type it holds and the parser accepting only its own
+    /// prefix. Kept exhaustive by `BackupEntryCodecTest`, which requires a round-tripping fixture for
+    /// every [ClusterStateKey][AetherKey.ClusterStateKey] type — a type missing here fails that test.
+    private static final List<KeyBinding> BINDINGS = List.of(KeyBinding.keyBinding(SliceTargetKey.class,
+                                                                                   SliceTargetValue.class,
+                                                                                   SliceTargetKey::sliceTargetKey),
+                                                             KeyBinding.keyBinding(AppBlueprintKey.class,
+                                                                                   AppBlueprintValue.class,
+                                                                                   AppBlueprintKey::appBlueprintKey),
+                                                             KeyBinding.keyBinding(DeploymentOutcomeKey.class,
+                                                                                   DeploymentOutcomeValue.class,
+                                                                                   DeploymentOutcomeKey::deploymentOutcomeKey),
+                                                             KeyBinding.keyBinding(VersionRoutingKey.class,
+                                                                                   VersionRoutingValue.class,
+                                                                                   VersionRoutingKey::versionRoutingKey),
+                                                             KeyBinding.keyBinding(DeploymentKey.class,
+                                                                                   DeploymentValue.class,
+                                                                                   DeploymentKey::parseDeploymentKey),
+                                                             KeyBinding.keyBinding(PreviousVersionKey.class,
+                                                                                   PreviousVersionValue.class,
+                                                                                   PreviousVersionKey::previousVersionKey),
+                                                             KeyBinding.keyBinding(LogLevelKey.class,
+                                                                                   LogLevelValue.class,
+                                                                                   LogLevelKey::logLevelKey),
+                                                             KeyBinding.keyBinding(ObservabilityConfigKey.class,
+                                                                                   ObservabilityConfigValue.class,
+                                                                                   ObservabilityConfigKey::observabilityConfigKey),
+                                                             KeyBinding.keyBinding(AlertThresholdKey.class,
+                                                                                   AlertThresholdValue.class,
+                                                                                   AlertThresholdKey::alertThresholdKey),
+                                                             KeyBinding.keyBinding(ConfigKey.class,
+                                                                                   ConfigValue.class,
+                                                                                   ConfigKey::configKey),
+                                                             KeyBinding.keyBinding(SchemaVersionKey.class,
+                                                                                   SchemaVersionValue.class,
+                                                                                   key -> SchemaVersionKey.schemaVersionKey(key,
+                                                                                                                            true)),
+                                                             KeyBinding.keyBinding(CommunityKey.class,
+                                                                                   CommunityValue.class,
+                                                                                   CommunityKey::parseCommunityKey),
+                                                             KeyBinding.keyBinding(AbTestKey.class,
+                                                                                   AbTestValue.class,
+                                                                                   AbTestKey::abTestKey),
+                                                             KeyBinding.keyBinding(ClusterConfigKey.class,
+                                                                                   ClusterConfigValue.class,
+                                                                                   ClusterConfigKey::clusterConfigKey),
+                                                             KeyBinding.keyBinding(StreamConfigKey.class,
+                                                                                   StreamConfigValue.class,
+                                                                                   key -> StreamConfigKey.streamConfigKey(key,
+                                                                                                                          true)),
+                                                             KeyBinding.keyBinding(ApiKeyKey.class,
+                                                                                   ApiKeyValue.class,
+                                                                                   ApiKeyKey::parseApiKeyKey),
+                                                             KeyBinding.keyBinding(ApiKeyAuditKey.class,
+                                                                                   ApiKeyAuditValue.class,
+                                                                                   ApiKeyAuditKey::parseApiKeyAuditKey),
+                                                             KeyBinding.keyBinding(AutoHealStateKey.class,
+                                                                                   AutoHealStateValue.class,
+                                                                                   AutoHealStateKey::autoHealStateKey),
+                                                             KeyBinding.keyBinding(BlueprintStreamBindingsKey.class,
+                                                                                   BlueprintStreamBindingsValue.class,
+                                                                                   BlueprintStreamBindingsKey::blueprintStreamBindingsKey),
+                                                             KeyBinding.keyBinding(EntityCheckpointKey.class,
+                                                                                   EntityFoldCheckpointValue.class,
+                                                                                   EntityCheckpointKey::entityCheckpointKey));
+
+    private static final Map<Class<?>, Class<?>> VALUE_TYPES = BINDINGS.stream().collect(Collectors.toMap(KeyBinding::keyType,
+                                                                                                          KeyBinding::valueType));
 
     /// `codec` must carry every value type a backed-up key can hold — in a node, the assembled node
     /// codec. Values are written through its canonical form so collection order cannot vary the bytes.
@@ -135,23 +200,22 @@ public record BackupEntryCodec(SliceCodec codec) {
     }
 
     /// Render the backed-up subset of `entries`. Fails, naming every offending key, if a value cannot
-    /// be encoded or a key would not parse back to itself — a backup that cannot be restored as taken
-    /// is refused at the moment it is taken, not discovered at restore.
+    /// be encoded, is not the type its key holds, or a key would not parse back to itself — a backup
+    /// that cannot be restored as taken is refused at the moment it is taken, not discovered at restore.
     public Result<String> encode(BackupHeader header, Map<AetherKey, AetherValue> entries) {
         return Result.allOf(entries.entrySet()
                                    .stream()
                                    .filter(BackupEntryCodec::isBackedUpEntry)
                                    .sorted(BY_KEY)
                                    .map(this::encodeEntry)
-                                   .toList()).map(lines -> render(header, lines));
+                                   .toList()).flatMap(lines -> seal(header, lines));
     }
 
-    /// Parse a document produced by [#encode]. Header faults fail fast; entry faults are collected so
-    /// the failure names every bad line at once.
+    /// Parse a document produced by [#encode], and only such a document. Header faults and a checksum
+    /// mismatch fail fast; entry faults are collected so the failure names every bad line at once.
     public Result<BackupDocument> decode(String document) {
-        var lines = document.lines().toList();
-
-        return parseHeader(lines).flatMap(header -> decodeEntries(header, lines));
+        return option(document).toResult(BackupError.General.MISSING_DOCUMENT)
+                     .flatMap(this::decodeDocument);
     }
 
     /// Header of a backup document. `clusterIncarnation` is a placeholder until cluster incarnations
@@ -171,6 +235,18 @@ public record BackupEntryCodec(SliceCodec codec) {
 
     /// Every way a document can fail to encode or decode. Line numbers are 1-based document lines.
     public sealed interface BackupError extends Cause {
+        enum General implements BackupError {
+            MISSING_DOCUMENT("No backup document was supplied");
+            private final String message;
+            General(String message) {
+                this.message = message;
+            }
+            @Override
+            public String message() {
+                return message;
+            }
+        }
+
         record ValueEncodingFailed(String key, Cause origin, String message) implements BackupError, Cause.Wrapped {
             static final Fn2<ValueEncodingFailed, String, Cause> FACTORY = Causes.forTwoValues("Value of '%s' could not be encoded: %s",
                                                                                                ValueEncodingFailed::new);
@@ -179,6 +255,16 @@ public record BackupEntryCodec(SliceCodec codec) {
         record KeyNotRoundTrippable(String key, String message) implements BackupError {
             static final Fn1<KeyNotRoundTrippable, String> FACTORY = Causes.forOneValue("Key '%s' does not parse back to itself from its canonical string",
                                                                                         KeyNotRoundTrippable::new);
+        }
+
+        record ValueTypeRefused(String key, String valueType, String message) implements BackupError {
+            static final Fn2<ValueTypeRefused, String, String> FACTORY = Causes.forTwoValues("Key '%s' does not hold a %s",
+                                                                                             ValueTypeRefused::new);
+        }
+
+        record ChecksumUnavailable(Cause origin, String message) implements BackupError, Cause.Wrapped {
+            static final Fn1<ChecksumUnavailable, Cause> FACTORY = Causes.forOneValue("SHA-256 is unavailable: %s",
+                                                                                      ChecksumUnavailable::new);
         }
 
         record MissingHeaderLine(int lineNumber, String expected, String message) implements BackupError {
@@ -194,6 +280,11 @@ public record BackupEntryCodec(SliceCodec codec) {
         record UnsupportedFormatVersion(int version, String message) implements BackupError {
             static final Fn1<UnsupportedFormatVersion, Integer> FACTORY = Causes.forOneValue("Unsupported backup format version %d",
                                                                                              UnsupportedFormatVersion::new);
+        }
+
+        record ChecksumMismatch(String declared, String computed, String message) implements BackupError {
+            static final Fn2<ChecksumMismatch, String, String> FACTORY = Causes.forTwoValues("Checksum mismatch: header declares %s, document hashes to %s",
+                                                                                             ChecksumMismatch::new);
         }
 
         record EntryCountMismatch(int declared, int found, String message) implements BackupError {
@@ -236,20 +327,40 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                                                                ValueNotCanonical::new);
         }
 
+        record ValueTypeMismatch(int lineNumber, String key, String valueType, String message) implements BackupError {
+            static final Fn3<ValueTypeMismatch, Integer, String, String> FACTORY = Causes.forThreeValues("Line %d: key '%s' does not hold a %s",
+                                                                                                         ValueTypeMismatch::new);
+        }
+
         record NotAKvValue(String decodedType, String message) implements BackupError {
             static final Fn1<NotAKvValue, String> FACTORY = Causes.forOneValue("Decoded a %s, which is not a KV value",
                                                                                NotAKvValue::new);
         }
 
-        record DuplicateKey(String key, String message) implements BackupError {
-            static final Fn1<DuplicateKey, String> FACTORY = Causes.forOneValue("Key '%s' appears more than once",
-                                                                                DuplicateKey::new);
+        record DuplicateKey(int lineNumber, String key, String message) implements BackupError {
+            static final Fn2<DuplicateKey, Integer, String> FACTORY = Causes.forTwoValues("Line %d: key '%s' appears more than once",
+                                                                                          DuplicateKey::new);
+        }
+
+        record NonCanonicalDocument(int lineNumber, String message) implements BackupError {
+            static final Fn1<NonCanonicalDocument, Integer> FACTORY = Causes.forOneValue("Line %d: the document is not in canonical form",
+                                                                                         NonCanonicalDocument::new);
         }
     }
 
-    private record ParsedHeader(BackupHeader header, int declaredEntries) {
-        static ParsedHeader parsedHeader(BackupHeader header, int declaredEntries) {
-            return new ParsedHeader(header, declaredEntries);
+    private record KeyBinding(Class<? extends ClusterStateKey> keyType,
+                              Class<? extends AetherValue> valueType,
+                              Fn1<Result<? extends ClusterStateKey>, String> parser) {
+        static KeyBinding keyBinding(Class<? extends ClusterStateKey> keyType,
+                                     Class<? extends AetherValue> valueType,
+                                     Fn1<Result<? extends ClusterStateKey>, String> parser) {
+            return new KeyBinding(keyType, valueType, parser);
+        }
+    }
+
+    private record ParsedHeader(BackupHeader header, int declaredEntries, String checksum) {
+        static ParsedHeader parsedHeader(BackupHeader header, int declaredEntries, String checksum) {
+            return new ParsedHeader(header, declaredEntries, checksum);
         }
     }
 
@@ -259,12 +370,20 @@ public record BackupEntryCodec(SliceCodec codec) {
         }
     }
 
+    private record NumberedEntry(int lineNumber, AetherKey key, AetherValue value) {
+        static NumberedEntry numberedEntry(int lineNumber, AetherKey key, AetherValue value) {
+            return new NumberedEntry(lineNumber, key, value);
+        }
+    }
+
     // --- encode ---
     private Result<String> encodeEntry(Map.Entry<AetherKey, AetherValue> entry) {
         return Result.all(ensureRoundTrips(entry.getKey()),
+                          ensureHeldType(entry.getKey(),
+                                         entry.getValue()),
                           encodeValue(entry.getKey(),
                                       entry.getValue()))
-                     .map(BackupEntryCodec::formatEntry);
+                     .map((key, _, encodedValue) -> formatEntry(key, encodedValue));
     }
 
     private static Result<AetherKey> ensureRoundTrips(AetherKey key) {
@@ -274,6 +393,18 @@ public record BackupEntryCodec(SliceCodec codec) {
 
     private static boolean isRoundTrippable(AetherKey key) {
         return parseCandidates(key.asString()).equals(List.of(key));
+    }
+
+    private static Result<AetherValue> ensureHeldType(AetherKey key, AetherValue value) {
+        return success(value).filter(BackupError.ValueTypeRefused.FACTORY.apply(key.asString(),
+                                                                                value.getClass().getSimpleName()),
+                                     candidate -> isHeldBy(key, candidate));
+    }
+
+    /// Whether `value` is the one value type `key`'s type holds. A key type without a binding holds nothing.
+    private static boolean isHeldBy(AetherKey key, AetherValue value) {
+        return option(VALUE_TYPES.get(key.getClass())).filter(type -> type == value.getClass())
+                     .isPresent();
     }
 
     private Result<String> encodeValue(AetherKey key, AetherValue value) {
@@ -287,15 +418,90 @@ public record BackupEntryCodec(SliceCodec codec) {
         return encodedValue + SEPARATOR + escape(key.asString());
     }
 
-    private static String render(BackupHeader header, List<String> entryLines) {
-        var headerLines = Stream.of(MAGIC + FORMAT_VERSION,
-                                    REVISION + header.revision(),
-                                    INCARNATION + escape(header.clusterIncarnation().or("")),
-                                    ENTRIES + entryLines.size());
+    /// Header fields, then entries, then the checksum over both inserted as the last header line.
+    private static Result<String> seal(BackupHeader header, List<String> entryLines) {
+        var unsealed = Stream.concat(Stream.of(MAGIC + FORMAT_VERSION,
+                                               REVISION + header.revision(),
+                                               INCARNATION + escape(header.clusterIncarnation().or("")),
+                                               ENTRIES + entryLines.size()),
+                                     entryLines.stream())
+                             .toList();
 
-        return Stream.concat(headerLines,
-                             entryLines.stream())
-                     .collect(Collectors.joining("\n", "", "\n"));
+        return checksum(unsealed).map(sum -> joinLines(withChecksumLine(unsealed, sum)));
+    }
+
+    private static List<String> withChecksumLine(List<String> unsealed, String sum) {
+        var lines = new ArrayList<>(unsealed);
+
+        lines.add(CHECKSUM_LINE, CHECKSUM + sum);
+
+        return lines;
+    }
+
+    private static String joinLines(List<String> lines) {
+        return lines.stream()
+                    .collect(Collectors.joining("\n", "", "\n"));
+    }
+
+    /// SHA-256, lowercase hex, over `lines` joined as a document is joined.
+    static Result<String> checksum(List<String> lines) {
+        return Result.lift(cause -> BackupError.ChecksumUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
+                           () -> MessageDigest.getInstance("SHA-256"))
+                     .map(digest -> HexFormat.of().formatHex(digest.digest(joinLines(lines).getBytes(StandardCharsets.UTF_8))));
+    }
+
+    // --- decode: document ---
+    private Result<BackupDocument> decodeDocument(String document) {
+        var lines = document.lines().toList();
+
+        return parseHeader(lines).flatMap(parsed -> verifyChecksum(parsed, lines))
+                          .flatMap(parsed -> decodeEntries(parsed, lines))
+                          .flatMap(decoded -> ensureCanonical(document, decoded));
+    }
+
+    private static Result<ParsedHeader> verifyChecksum(ParsedHeader parsed, List<String> lines) {
+        return checksum(withoutChecksumLine(lines)).flatMap(computed -> matchChecksum(parsed, computed));
+    }
+
+    private static List<String> withoutChecksumLine(List<String> lines) {
+        return IntStream.range(0,
+                               lines.size())
+                        .filter(index -> index != CHECKSUM_LINE)
+                        .mapToObj(lines::get)
+                        .toList();
+    }
+
+    private static Result<ParsedHeader> matchChecksum(ParsedHeader parsed, String computed) {
+        return parsed.checksum()
+                     .equals(computed)
+               ? success(parsed)
+               : BackupError.ChecksumMismatch.FACTORY.apply(parsed.checksum(),
+                                                            computed)
+                                                     .result();
+    }
+
+    /// The decoded state must render back to exactly the document it came from.
+    private Result<BackupDocument> ensureCanonical(String document, BackupDocument decoded) {
+        return encode(decoded.header(), decoded.entries()).flatMap(rendered -> matchRendering(document,
+                                                                                              rendered,
+                                                                                              decoded));
+    }
+
+    private static Result<BackupDocument> matchRendering(String document, String rendered, BackupDocument decoded) {
+        return document.equals(rendered)
+               ? success(decoded)
+               : BackupError.NonCanonicalDocument.FACTORY.apply(firstDifferingLine(document, rendered)).result();
+    }
+
+    private static int firstDifferingLine(String document, String rendered) {
+        var left = document.split("\n", -1);
+        var right = rendered.split("\n", -1);
+
+        return IntStream.range(0,
+                               Math.min(left.length, right.length))
+                        .filter(index -> !left[index].equals(right[index]))
+                        .findFirst()
+                        .orElse(Math.min(left.length, right.length)) + 1;
     }
 
     // --- decode: header ---
@@ -303,10 +509,12 @@ public record BackupEntryCodec(SliceCodec codec) {
         return Result.all(headerField(lines, 0, MAGIC).flatMap(raw -> parseFormatVersion(raw, 1)),
                           headerField(lines, 1, REVISION).flatMap(raw -> parseRevision(raw, 2)),
                           headerField(lines, 2, INCARNATION).flatMap(raw -> parseIncarnation(raw, 3)),
-                          headerField(lines, 3, ENTRIES).flatMap(raw -> parseEntryCount(raw, 4)))
-                     .map((_, revision, incarnation, count) -> ParsedHeader.parsedHeader(BackupHeader.backupHeader(revision,
-                                                                                                                   incarnation),
-                                                                                         count));
+                          headerField(lines, 3, ENTRIES).flatMap(raw -> parseEntryCount(raw, 4)),
+                          headerField(lines, CHECKSUM_LINE, CHECKSUM))
+                     .map((_, revision, incarnation, count, sum) -> ParsedHeader.parsedHeader(BackupHeader.backupHeader(revision,
+                                                                                                                        incarnation),
+                                                                                              count,
+                                                                                              sum));
     }
 
     /// The text after `prefix` on header line `index`, or a failure naming the field that is missing.
@@ -352,8 +560,14 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                                              entries));
     }
 
+    private static Result<Unit> ensureEntryCount(int declared, int found) {
+        return declared == found
+               ? Result.unitResult()
+               : BackupError.EntryCountMismatch.FACTORY.apply(declared, found).result();
+    }
+
     /// Every entry line decoded, with all failures collected rather than the first.
-    private Result<List<Map.Entry<AetherKey, AetherValue>>> decodeEntryLines(List<String> entryLines) {
+    private Result<List<NumberedEntry>> decodeEntryLines(List<String> entryLines) {
         return Result.allOf(IntStream.range(0,
                                             entryLines.size())
                                      .mapToObj(index -> decodeEntry(HEADER_LINES + index + 1,
@@ -361,13 +575,7 @@ public record BackupEntryCodec(SliceCodec codec) {
                                      .toList());
     }
 
-    private static Result<Unit> ensureEntryCount(int declared, int found) {
-        return declared == found
-               ? Result.unitResult()
-               : BackupError.EntryCountMismatch.FACTORY.apply(declared, found).result();
-    }
-
-    private Result<Map.Entry<AetherKey, AetherValue>> decodeEntry(int lineNumber, String line) {
+    private Result<NumberedEntry> decodeEntry(int lineNumber, String line) {
         var separator = line.indexOf(SEPARATOR);
 
         if (separator <= 0) {
@@ -381,10 +589,19 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                          line.substring(0, separator)));
     }
 
-    private Result<Map.Entry<AetherKey, AetherValue>> decodeKeyAndValue(int lineNumber,
-                                                                        String key,
-                                                                        String encodedValue) {
-        return Result.all(decodeKey(lineNumber, key), decodeValue(lineNumber, key, encodedValue)).map(Map::entry);
+    private Result<NumberedEntry> decodeKeyAndValue(int lineNumber, String key, String encodedValue) {
+        return Result.all(decodeKey(lineNumber, key), decodeValue(lineNumber, key, encodedValue)).flatMap((decodedKey, value) -> ensureHeldType(lineNumber,
+                                                                                                                                                decodedKey,
+                                                                                                                                                value));
+    }
+
+    private static Result<NumberedEntry> ensureHeldType(int lineNumber, AetherKey key, AetherValue value) {
+        return isHeldBy(key, value)
+               ? success(NumberedEntry.numberedEntry(lineNumber, key, value))
+               : BackupError.ValueTypeMismatch.FACTORY.apply(lineNumber,
+                                                             key.asString(),
+                                                             value.getClass().getSimpleName())
+                                                      .result();
     }
 
     private static Result<AetherKey> decodeKey(int lineNumber, String key) {
@@ -434,16 +651,19 @@ public record BackupEntryCodec(SliceCodec codec) {
                              encoded.bytes());
     }
 
-    private static Result<Map<AetherKey, AetherValue>> toEntryMap(List<Map.Entry<AetherKey, AetherValue>> entries) {
+    /// Every repeated key is reported at the line that repeats it.
+    private static Result<Map<AetherKey, AetherValue>> toEntryMap(List<NumberedEntry> entries) {
         var map = new HashMap<AetherKey, AetherValue>();
+        var checked = new ArrayList<Result<NumberedEntry>>();
 
         for (var entry : entries) {
-            if (map.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
-                return BackupError.DuplicateKey.FACTORY.apply(entry.getKey().asString()).result();
-            }
+            checked.add(map.putIfAbsent(entry.key(), entry.value()) == null
+                        ? success(entry)
+                        : BackupError.DuplicateKey.FACTORY.apply(entry.lineNumber(),
+                                                                 entry.key().asString()).result());
         }
 
-        return success(Map.copyOf(map));
+        return Result.allOf(checked).map(_ -> Map.copyOf(map));
     }
 
     // --- keys ---
@@ -459,9 +679,10 @@ public record BackupEntryCodec(SliceCodec codec) {
     /// Every backed-up key type that accepts `key`. Exactly one for a well-formed document; a parser that
     /// throws on hostile input counts as not accepting it.
     static List<ClusterStateKey> parseCandidates(String key) {
-        return KEY_PARSERS.stream()
-                          .flatMap(parser -> tryParse(parser, key).stream())
-                          .toList();
+        return BINDINGS.stream()
+                       .flatMap(binding -> tryParse(binding.parser(),
+                                                    key).stream())
+                       .toList();
     }
 
     private static Option<ClusterStateKey> tryParse(Fn1<Result<? extends ClusterStateKey>, String> parser, String key) {

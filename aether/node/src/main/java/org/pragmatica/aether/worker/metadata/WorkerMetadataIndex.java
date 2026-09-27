@@ -234,7 +234,6 @@ public final class WorkerMetadataIndex {
             case AetherKey.EndpointKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.SliceTargetKey entry -> Set.of("artifact:" + entry.artifactBase().asString());
             case AetherKey.VersionRoutingKey entry -> Set.of("artifact:" + entry.artifactBase().asString());
-            case AetherKey.AbTestRoutingKey entry -> Set.of("artifact:" + entry.artifactBase().asString());
             case AetherKey.PreviousVersionKey entry -> Set.of("artifact:" + entry.artifactBase().asString());
             case AetherKey.AppBlueprintKey entry -> blueprintScopes(entry, value);
             case AetherKey.BlueprintStreamBindingsKey entry -> Set.of("blueprint:" + entry.blueprintId().asString());
@@ -261,7 +260,7 @@ public final class WorkerMetadataIndex {
                                                                          "entity:" + entry.keyspace());
             case AetherKey.EntityCheckpointKey entry -> Set.of("entity:" + entry.keyspace());
             case AetherKey.DeploymentOutcomeKey _, AetherKey.DeploymentKey _, AetherKey.AbTestKey _, AetherKey.ApiKeyAuditKey _, AetherKey.ClusterConfigKey _, AetherKey.CapacityLedgerKey _, AetherKey.CapacityReservationKey _, AetherKey.CommunityPlacementAvailabilityKey _, AetherKey.ProvisioningSlotKey _, AetherKey.AutoHealStateKey _ -> Set.of();
-            case AetherKey.LogLevelKey _, AetherKey.ObservabilityConfigKey _, AetherKey.AlertThresholdKey _, AetherKey.SchemaVersionKey _, AetherKey.SchemaMigrationLockKey _, AetherKey.GossipKeyRotationKey _, AetherKey.StreamMetadataKey _, AetherKey.StreamConfigKey _, AetherKey.ApiKeyKey _, AetherKey.DhtPartitionOwnershipKey _, AetherKey.StreamPartitionOwnershipKey _, AetherKey.SpokesmanKey _, AetherKey.ClusterPhaseKey _, AetherKey.StreamRegistryKey _ -> Set.of(GLOBAL);
+            case AetherKey.LogLevelKey _, AetherKey.ObservabilityConfigKey _, AetherKey.AlertThresholdKey _, AetherKey.SchemaVersionKey _, AetherKey.SchemaMigrationLockKey _, AetherKey.GossipKeyRotationKey _, AetherKey.StreamConfigKey _, AetherKey.ApiKeyKey _, AetherKey.DhtPartitionOwnershipKey _, AetherKey.StreamPartitionOwnershipKey _, AetherKey.SpokesmanKey _, AetherKey.ClusterPhaseKey _, AetherKey.StreamRegistryKey _ -> Set.of(GLOBAL);
         };
     }
 

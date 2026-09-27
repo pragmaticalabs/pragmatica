@@ -335,6 +335,8 @@ public interface SystemTags {
         pin(table, 968, "org.pragmatica.aether.slice.blueprint.SecurityOverrides.Entry");
         // AetherKey  [base 1088]
         pin(table, 1088, "org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey");
+        // RETIRED 2026-09-27 (#1530): `AbTestRoutingKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1089, "org.pragmatica.aether.slice.kvstore.AetherKey.AbTestRoutingKey");
         pin(table, 1090, "org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey");
         pin(table, 1091, "org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey");
@@ -342,7 +344,7 @@ public interface SystemTags {
         pin(table, 1093, "org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey");
         pin(table, 1094, "org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey");
         pin(table, 1095, "org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey");
-        // RETIRED 2026-09-26 (S28 backup classification): `CloudCredentialsKey` was deleted — no production writer
+        // RETIRED 2026-09-26 (#1530): `CloudCredentialsKey` was deleted — no production writer
         // or reader. The pin STAYS so the tag is never reused.
         pin(table, 1096, "org.pragmatica.aether.slice.kvstore.AetherKey.CloudCredentialsKey");
         pin(table, 1097, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey");
@@ -373,13 +375,15 @@ public interface SystemTags {
         pin(table, 1122, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey");
         pin(table, 1123, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey");
         pin(table, 1124, "org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey");
-        // RETIRED 2026-09-26 (S28 backup classification): `StorageBlockKey` and `StorageRefKey` were deleted — no
+        // RETIRED 2026-09-26 (#1530): `StorageBlockKey` and `StorageRefKey` were deleted — no
         // production writer or reader. Both pins STAY so the tags are never reused.
         pin(table, 1125, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageBlockKey");
         pin(table, 1126, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageRefKey");
         pin(table, 1127, "org.pragmatica.aether.slice.kvstore.AetherKey.StorageStatusKey");
         pin(table, 1128, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey");
         pin(table, 1129, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey");
+        // RETIRED 2026-09-27 (#1530): `StreamMetadataKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1130, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey");
         pin(table, 1131, "org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey");
         pin(table, 1132, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey");
@@ -389,6 +393,8 @@ public interface SystemTags {
         pin(table, 1136, "org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey");
         pin(table, 1137, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey");
         // AetherValue  [base 1600]
+        // RETIRED 2026-09-27 (#1530): `AbTestRoutingValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1600, "org.pragmatica.aether.slice.kvstore.AetherValue.AbTestRoutingValue");
         pin(table, 1601, "org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue");
         pin(table, 1602, "org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue");
@@ -398,7 +404,7 @@ public interface SystemTags {
         pin(table, 1606, "org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue");
         pin(table, 1607, "org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue");
         pin(table, 1608, "org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress");
-        // RETIRED 2026-09-26 (S28 backup classification): `CloudCredentialsValue` was deleted — no production writer
+        // RETIRED 2026-09-26 (#1530): `CloudCredentialsValue` was deleted — no production writer
         // or reader. The pin STAYS so the tag is never reused.
         pin(table, 1609, "org.pragmatica.aether.slice.kvstore.AetherValue.CloudCredentialsValue");
         pin(table, 1610, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue");
@@ -434,7 +440,7 @@ public interface SystemTags {
         pin(table, 1640, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue");
         pin(table, 1641, "org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus");
         pin(table, 1642, "org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue");
-        // RETIRED 2026-09-26 (S28 backup classification): `StorageBlockValue` and `StorageRefValue` were deleted — no
+        // RETIRED 2026-09-26 (#1530): `StorageBlockValue` and `StorageRefValue` were deleted — no
         // production writer or reader. Both pins STAY so the tags are never reused.
         pin(table, 1643, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageBlockValue");
         pin(table, 1644, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageRefValue");
@@ -442,6 +448,8 @@ public interface SystemTags {
         pin(table, 1646, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue.TierStatus");
         pin(table, 1647, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
         pin(table, 1648, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
+        // RETIRED 2026-09-27 (#1530): `StreamMetadataValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1649, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue");
         pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue");
         pin(table, 1651, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken");
