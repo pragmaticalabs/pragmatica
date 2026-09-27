@@ -82,10 +82,7 @@ public final class ReplicaPlacement {
                                            int requestedRf) {
         var others = new ArrayList<NodeId>();
 
-        rank(streamName, partition, members).stream()
-                                            .filter(member -> !member.equals(owner))
-                                            .forEach(others::add);
-
+        rank(streamName, partition, members).stream().filter(member -> !member.equals(owner)).forEach(others::add);
         var rf = clamp(requestedRf, 1, others.size() + 1);
         var replicas = new ArrayList<NodeId>();
 

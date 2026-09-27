@@ -4842,7 +4842,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                   partition),
                                                                                                                                           StreamPartitionOwnershipValue.class),
                                                                                                   (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
-                                                                                                                                                                                                                                     partition)));
+                                                                                                                                                                                                                                         partition)));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                    config.self(),
                                                                                    placementMembers,
@@ -4864,9 +4864,9 @@ public interface AetherNode extends ManageableNode {
         // exists); the leader's writer alone judges liveness (ReplicaSetController#desiredOwner). Backfill sources
         // from, and self-elects against, the same owner.
         streamReplicaSetController.committedOwnerSource((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
-                                                                                                                                                         partition),
-                                                                                               StreamPartitionOwnershipValue.class)
-                                                                                     .map(StreamPartitionOwnershipValue::owner));
+                                                                                                                                                        partition),
+                                                                                                StreamPartitionOwnershipValue.class)
+                                                                                      .map(StreamPartitionOwnershipValue::owner));
         streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);
         // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
         // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this

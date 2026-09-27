@@ -130,7 +130,6 @@ public final class PartitionBackfill {
     /// #1505 F2: this node's quarantine record. A quarantined partition holds a divergent entry, so every path
     /// that would mark self CAUGHT_UP or ack the owner refuses instead ({@link #promoteUnlessQuarantined}).
     private final QuarantineView quarantine;
-
     /// First wall-clock instant (ms) at which each partition was observed to have NO caught-up source.
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
     /// must persist across calls — this map is that cross-call memory.
@@ -973,7 +972,9 @@ public final class PartitionBackfill {
     /// window before members are visible), where the registry / cold-start source path takes over.
     private Option<NodeId> hrwOwner(String streamName, int partition) {
         return ownerResolver.ownerOf(streamName, partition)
-                            .orElse(() -> Option.from(ReplicaPlacement.rank(streamName, partition, membersSupplier.get())
+                            .orElse(() -> Option.from(ReplicaPlacement.rank(streamName,
+                                                                            partition,
+                                                                            membersSupplier.get())
                                                                       .stream()
                                                                       .findFirst()));
     }

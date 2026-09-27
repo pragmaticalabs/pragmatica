@@ -293,8 +293,8 @@ public final class ReplicaSetController implements AutoCloseable {
                               .orElse(() -> ReplicaPlacement.place(streamName,
                                                                    partition,
                                                                    members,
-                                                                   rfFor(streamName, classify(streamName)))
-                                                            .map(Placement::owner));
+                                                                   rfFor(streamName,
+                                                                         classify(streamName))).map(Placement::owner));
     }
 
     /// Membership-tail hook: any {@link MembershipDecision} variant triggers a reconcile. Wire via
@@ -371,14 +371,10 @@ public final class ReplicaSetController implements AutoCloseable {
         for (var partition = 0; partition < spec.partitions(); partition++) {
             var p = partition;
 
-            effectivePlacement(spec.name(),
-                               partition,
-                               members,
-                               rf)
-                            .onPresent(placement -> reconcilePlacement(spec.name(),
-                                                                       p,
-                                                                       placement,
-                                                                       reconciled));
+            effectivePlacement(spec.name(), partition, members, rf).onPresent(placement -> reconcilePlacement(spec.name(),
+                                                                                                              p,
+                                                                                                              placement,
+                                                                                                              reconciled));
         }
     }
 
@@ -435,7 +431,7 @@ public final class ReplicaSetController implements AutoCloseable {
         var rf = rfFor(streamName, streamClass);
 
         return effectivePlacement(streamName, partition, members, rf).map(placement -> roleFrom(placement))
-                                                                     .or(Role.NONE);
+                                 .or(Role.NONE);
     }
 
     /// Members of the last-reconciled snapshot, or a fresh supplier read before the first reconcile.
