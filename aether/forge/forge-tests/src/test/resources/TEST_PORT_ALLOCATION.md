@@ -28,7 +28,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | SliceVersionLifecycleTest     | 12500     | 12600          | 0          | 3 nodes (shared cluster, app-http 12700; #198 §8.2/§11.3) |
 | StreamFanoutConsumerTest      | 13000     | 13100          | 0          | 5 nodes (shared cluster, app-http 13200; #265 STEP 0 streaming baseline) |
 | StreamCrashDurabilityTest     | 13500     | 13600          | 0          | 5 nodes (shared cluster, app-http 13700; streaming-persistence A6 WAL crash-durability) |
-| StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership) |
+| StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership; per-PR since #1550) |
 | StreamOwnerFailoverPinnedTest | 15000     | 15100          | 0          | 5 nodes (shared cluster, app-http 15200; #491 RF=2 owner-kill failover, pinned membership) |
 | MultiPartitionStreamTest      | 16000     | 16100          | 0          | 5 nodes (shared cluster, app-http 16200; #429 multi-partition e2e — distribution/order/read-paths) |
 | StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |

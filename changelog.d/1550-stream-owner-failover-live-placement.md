@@ -10,7 +10,9 @@
   the ownership writer, entity-ownership reconciler, consumer-group ownership, cluster-events owner gate and
   placement role read it through the controller. What consensus reads is unchanged.
 - `LivePlacementMembersSeamTest` pins what the source computes, and `LivePlacementMembersWiringTest` fails if
-  any placement consumer reads the voter set directly again. Both run per PR. The Heavy
-  `StreamOwnerFailoverTest`, which the regression escaped, passes again.
+  any placement consumer reads the voter set directly again. Both run per PR.
+- `StreamOwnerFailoverTest`, which the regression escaped because Heavy runs nightly on `main` only, is no
+  longer tagged Heavy: the per-PR forge job now builds its `test-stream-repl` blueprint and runs it (about
+  28 s).
 - **Intended behaviour:** a core replacement that joins under a fresh identity enters stream placement once
   the membership add installs it as a voter, not before.

@@ -76,6 +76,12 @@ jobs:
       - name: Install all artifacts
         run: mvn install -B -DskipTests
 
+      # StreamOwnerFailoverTest runs per PR since #1550 and deploys the standalone test-stream-repl
+      # blueprint by coordinates; nothing in the reactor installs it. `clean` for the reason build.sh
+      # gives: an incremental build re-jars stale generated factories.
+      - name: Build test-stream-repl blueprint
+        run: mvn -B -f aether/tests/blueprints/test-stream-repl/pom.xml clean install -DskipTests
+
       - name: Run Forge tests
         run: >
           mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
