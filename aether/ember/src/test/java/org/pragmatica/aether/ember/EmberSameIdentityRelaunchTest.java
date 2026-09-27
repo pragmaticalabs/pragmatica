@@ -89,11 +89,11 @@ class EmberSameIdentityRelaunchTest {
         assertThat(write(survivor, "control-before").isSuccess()).as("control: a three-core cluster commits").isTrue();
 
         partitioned.blackhole(true);
-        awaitCondition("the survivors drop the partitioned node's link",
-                       () -> !survivor.connectedPeerIds().contains(partitionedId));
+        awaitCondition("the survivor's membership stops counting the partitioned node as MEMBER",
+                       () -> !"Member".equals(survivor.membershipFsm().memberStates().get(partitionedId)));
         partitioned.blackhole(false);
-        awaitCondition("the same process, same token, heals back into the survivor's links",
-                       () -> survivor.connectedPeerIds().contains(partitionedId));
+        awaitCondition("the same process, same token, heals back to MEMBER on the survivor",
+                       () -> "Member".equals(survivor.membershipFsm().memberStates().get(partitionedId)));
 
         assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
 
@@ -125,10 +125,17 @@ class EmberSameIdentityRelaunchTest {
         assertThat(write(survivor, "control-before").isSuccess()).as("control: a three-core cluster commits").isTrue();
 
         assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
-        assertThat(relaunch(sameAddress, basePort))
-            .as("the new process itself boots; refusal is the cluster's decision")
-            .isIn("launched", "Promise is not resolved within specified timeout");
+        if (sameAddress) {
+            awaitSlotFree(basePort, 2);
+        }
+
+        var launch = cluster.relaunchNode("btk-3", sameAddress);
+        // The node is registered before its start runs; the refused process may exit within seconds.
         var relaunched = cluster.getNode("btk-3").unwrap();
+
+        assertThat(launch.await(START_BOUND).fold(Cause::message, _ -> "launched"))
+            .as("the refused process never completes a start")
+            .isNotEqualTo("launched");
 
         sleep(READMIT_WINDOW_MS);
         assertThat(relaunched.isReady()).as("the refused process must never become consensus-active").isFalse();
@@ -141,18 +148,6 @@ class EmberSameIdentityRelaunchTest {
         assertThat(write(survivor, "after-kill").isSuccess())
             .as("btk-1 plus a refused same-NodeId process must NOT form a quorum")
             .isFalse();
-    }
-
-    /// A hard kill resolves after a 1 s bound while the killed node may still hold its sockets; the
-    /// same-address relaunch waits until every port of btk-3's slot (slot 2) is free again.
-    private String relaunch(boolean sameAddress, int basePort) {
-        if (sameAddress) {
-            awaitSlotFree(basePort, 2);
-        }
-
-        return cluster.relaunchNode("btk-3", sameAddress)
-                      .await(START_BOUND)
-                      .fold(Cause::message, _ -> "launched");
     }
 
     private static org.pragmatica.lang.Result<List<Object>> write(AetherNode node, String keyId) {
@@ -171,6 +166,8 @@ class EmberSameIdentityRelaunchTest {
         }
     }
 
+    /// A hard kill resolves after a 1 s bound while the killed node may still hold its sockets; the
+    /// same-address relaunch waits until every port of btk-3's slot (slot 2) is free again.
     private static void awaitSlotFree(int base, int slot) {
         var deadline = System.currentTimeMillis() + 60_000L;
 
