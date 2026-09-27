@@ -22,34 +22,48 @@ current epoch.
 
 ## Genesis
 
-Genesis epoch zero forms only by agreement: every member of the roster must announce the identical
-roster. `cluster.genesis_voters` is optional.
+Genesis epoch zero forms by view agreement (owner design, #1526). A node's VIEW is every core it has
+seen that authenticates for this cluster — discovered cores count only once they are QUIC peers admitted
+through the cluster's TLS authority, never on a role label alone — merged (union) with every view
+another core announces to it. Views only grow. Nodes announce `(round, view)` (`GenesisAnnouncement`)
+every round; the round interval starts at 250 ms and doubles while the view is unchanged, up to the
+sync retry interval. Epoch 0 starts with view V only when:
 
-- **Candidate.** When `cluster.genesis_voters` is present it is the candidate; a malformed value (a
-  blank id) fails boot loudly (`MALFORMED_GENESIS_VOTERS`). Otherwise the discovered core membership is
-  the candidate once it names exactly the configured core count. Fewer: a core is late, keep waiting
-  (INFO with the discovered set). MORE: the choice is ambiguous, so the node refuses to choose and logs
-  a WARN with the candidate set until the operator sets `cluster.genesis_voters` or the extra candidates
-  disappear. (pinned in-JVM by `VoterGenesisResolutionTest.java`)
-- **Agreement.** A pending core announces its candidate (`GenesisAnnouncement`) every sync retry
-  interval from engine start. It installs epoch 0 only when EVERY other member of the candidate has
-  announced the identical roster; any mismatch keeps waiting. A node latches the first roster it
-  announces and never confirms a second one, so two epoch-0 configurations sharing a member cannot
-  both form. [mechanism: an epoch-0 roster needs its shared member's confirmation, and that member
-  confirms one roster] (pinned in-JVM by `RabiaReorderedDeliveryTest.java#conflictingGenesisRostersCannotBothForm`
-  and `#genesisWaitsForTheLateCoreAndFormsTheClusterWhenItArrives`)
-- **Joining a formed electorate.** A core whose electorate is already formed answers an announcement
-  with the configuration that governs it; a pending node installs that configuration (as an observer
-  when it is not a member), so a late or replacement core joins the running cluster rather than
-  starting a second one.
-- A roster of the node alone (`clusterSize` 1) needs no agreement and is installed at assembly.
+1. `|V|` equals the configured core count (the size anchor);
+2. the node announced V in its last two rounds; and
+3. every other member of V reported exactly V in two consecutive rounds.
+
+When `cluster.genesis_voters` is set it IS the view: nothing is merged, and a member reporting any other
+view blocks genesis. A malformed value (a blank id) fails boot loudly (`MALFORMED_GENESIS_VOTERS`).
+With more candidates visible than configured and no `cluster.genesis_voters`, the node does not start
+and logs a WARN with the candidate set every ten rounds. A roster of the node alone (`clusterSize` 1)
+is installed at assembly.
+
+- **Safety.** [mechanism: views only grow, so two views one node reports are nested; two started rosters
+  sharing a member X were both reported by X and have the configured size, hence are equal] Started
+  rosters can therefore differ only by being DISJOINT, which needs at least twice the configured count
+  of authenticated cores split by a partition into two exactly-count groups — see the limit below. The
+  seeded simulation (2,000 schedules with message delay and loss, partitions opening and healing during
+  genesis, flapping visibility and late nodes; universe below twice the configured count) asserts after
+  every tick that at most one epoch-0 configuration exists. Removing the size anchor or the monotone
+  merge reddens it; removing two-round stability does not — safety does not rest on it, and it is kept
+  as specified. (pinned in-JVM by `GenesisViewAgreementSimulationTest.java`)
+- **Liveness.** A view changes at most as many times as there are cores, so flapping cannot churn views
+  forever: once every member of the final view stays reachable for two consecutive rounds, genesis
+  completes (pinned by the stable-network and flap-then-stabilise simulations). A core that was seen and
+  then vanishes for good stays in the views it reached and holds genesis; the status names it. A view
+  larger than the configured count holds genesis the same way. Recovery action for both: set
+  `cluster.genesis_voters`, or restart the affected nodes (a restart clears its in-memory view).
+- **Joining a formed electorate.** A core whose electorate has formed answers an announcement with its
+  configuration; a pending node installs it (as an observer when not a member). A core that appears
+  after epoch 0 therefore joins only through a Rabia §4 add command.
 - While pending, the engine neither votes nor adopts state and holds early ballots (bounded); status
   reports `GENESIS_PENDING`.
 
-[limit: discovery-genesis] Without `cluster.genesis_voters`, fully disjoint candidate rosters — no
-shared member, which needs more cores visible than configured to different nodes — each form. The
-node refuses to choose when it sees more candidates than configured, which covers every such case
-visible to one node. [design intent — unverified]
+[limit: disjoint-genesis] With at least twice the configured count of authenticated cores and a partition
+that shows each of two groups exactly the configured count, both groups can form. No rule over what a
+partitioned node can observe closes this; `cluster.genesis_voters` does. [mechanism: disjoint rosters
+share no reporter to order them]
 
 **Replacements carry no `cluster.genesis_voters`.** A replacement joins through a Rabia §4 add
 command: it announces itself, a formed core answers, and it observes that electorate until the change

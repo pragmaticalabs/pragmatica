@@ -5837,12 +5837,12 @@ public interface AetherNode extends ManageableNode {
                      .collect(Collectors.toUnmodifiableSet());
     }
 
-    /// Genesis (#1526). A malformed `cluster.genesis_voters` fails boot loudly. A core never installs a
-    /// roster on its own: it defers genesis and its engine offers the candidate [#genesisCandidate]
-    /// computes until every member of that roster announces the identical one, or until an already
-    /// formed electorate answers. A worker does not vote and keeps the plain wait-and-retry
-    /// ([#retryGenesis]). No backup's voter configuration is consulted: a cold restart forms a fresh
-    /// genesis and restores the data under it.
+    /// Genesis (#1526). A malformed `cluster.genesis_voters` fails boot loudly. A core (other than a
+    /// single-node cluster) never installs a roster on its own: it defers genesis and its engine runs
+    /// genesis view agreement over the discovered core membership, or over `cluster.genesis_voters`, until
+    /// the agreement rules hold or an already formed electorate answers. A worker does not vote and keeps
+    /// the plain wait-and-retry ([#retryGenesis]). No backup's voter configuration is consulted: a cold
+    /// restart forms a fresh genesis and restores the data under it.
     private static Result<RabiaNode<KVCommand<AetherKey>>> initializeVoterConfiguration(RabiaNode<KVCommand<AetherKey>> node,
                                                                                         AetherNodeConfig config,
                                                                                         AtomicReference<Set<NodeId>> installedVoters,
@@ -5889,6 +5889,17 @@ public interface AetherNode extends ManageableNode {
                                                       count))
                          .filter(roster -> roster.members()
                                                  .equals(List.of(config.self())));
+    }
+
+    private static Result<Option<VoterConfiguration>> configuredGenesis(AetherNodeConfig config) {
+        return config.configProvider()
+                     .flatMap(provider -> provider.getString("cluster.genesis_voters"))
+                     .map(AetherNode::parsedGenesis)
+                     .or(Result.success(Option.none()));
+    }
+
+    private static Result<Option<VoterConfiguration>> parsedGenesis(String value) {
+        return parseGenesisVoters(value).map(Option::some);
     }
 
     private static Result<Unit> initializeWorkerVoters(RabiaNode<KVCommand<AetherKey>> node,

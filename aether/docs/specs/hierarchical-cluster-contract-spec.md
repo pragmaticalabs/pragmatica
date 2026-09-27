@@ -271,9 +271,10 @@ not a claim that any requirement is already verified.
 
 - `cluster.genesis_voters` is optional and, when present, carries the genesis voter identities
   independently of discovery addresses, current membership health and desired capacity; a blank id
-  fails boot. Genesis forms only when every member of the roster announces the identical roster; a
-  late core never aborts assembly, and more visible candidates than configured make the node wait with
-  a WARN rather than choose. Replacements carry no `cluster.genesis_voters`: they join the formed
+  fails boot. Genesis forms by view agreement: views of authenticated cores grow by union, and epoch 0
+  starts only when the view has exactly the configured count and every member reported it in two
+  consecutive rounds; a late core never aborts assembly, and more visible candidates than configured
+  make the node wait with a WARN rather than choose. Replacements carry no `cluster.genesis_voters`: they join the formed
   electorate through a Rabia §4 add command, and each command agreed at slot R governs from R+1
   ([voter-configuration-handoff-spec.md](voter-configuration-handoff-spec.md), #1526). A whole-cluster
   cold restart forms a fresh genesis and restores backup data under it.
