@@ -7,6 +7,7 @@ package org.pragmatica.aether.slice.blueprint;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -59,12 +60,6 @@ public interface StreamConfigParser {
     /// Slice declares both producer and consumer bindings for the same stream alias (spec §11.1.2).
     /// Treated as producer for version-defaulting and the producer-rejects-latest rule.
     String ROLE_BOTH = "both";
-
-    static Result<Map<String, StreamConfig>> parse(String toml) {
-        return option(toml).filter(s -> !s.isBlank())
-                     .map(StreamConfigParser::parseStreamToml)
-                     .or(success(Map.of()));
-    }
 
     /// Parse `[streams.*]` sections into [StreamResource] declarations.
     ///
@@ -225,12 +220,6 @@ public interface StreamConfigParser {
                      .or(success(Map.of()));
     }
 
-    private static Result<Map<String, StreamConfig>> parseStreamToml(String toml) {
-        return TomlParser.parse(toml)
-                         .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .map(StreamConfigParser::extractStreamConfigs);
-    }
-
     private static Result<Map<String, StreamResource>> parseResourceToml(String toml, Map<String, String> roleHints) {
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
@@ -280,8 +269,9 @@ public interface StreamConfigParser {
         }
 
         if (sourceOpt.isPresent()) {
-            return sourceOpt.fold(() -> missingStreamResource(streamName),
-                                  source -> parseExternalResource(streamName, source));
+            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
+                                                                                                                     source -> parseExternalResource(streamName,
+                                                                                                                                                     source)));
         }
         // Spec §11.1.1: shortcut form — when `version` is omitted, default per role.
         // Producer (explicit, inferred from manifest, or absent → producer-assumed) → "1.0.0".
@@ -335,10 +325,9 @@ public interface StreamConfigParser {
                                                              String section,
                                                              String streamName,
                                                              StreamVersionSpec spec) {
-        return validatePartitionCeiling(streamName,
-                                        parseStreamSection(doc, section, streamName)).flatMap(config -> validateReplication(streamName,
-                                                                                                                            config))
-                                       .map(config -> StreamResource.owned(streamName, spec, config));
+        return parseStreamConfig(StreamSection.tomlSection(doc, section, streamName)).map(config -> StreamResource.owned(streamName,
+                                                                                                                          spec,
+                                                                                                                          config));
     }
 
     /// Spec §7/§10: a blueprint declaring more than [#MAX_PARTITIONS_PER_STREAM_CEILING] partitions for one
@@ -402,29 +391,118 @@ public interface StreamConfigParser {
                          .map(doc -> extractConsumerConfigs(doc, streamName));
     }
 
-    private static Map<String, StreamConfig> extractStreamConfigs(TomlDocument doc) {
-        var result = new LinkedHashMap<String, StreamConfig>();
-
-        for (var sectionName : doc.sectionNames()) {
-            if (isStreamSection(sectionName)) {
-                var streamName = sectionName.substring(STREAMS_PREFIX.length());
-
-                if (!streamName.contains(".")) {
-                    result.put(streamName, parseStreamSection(doc, sectionName, streamName));
-                }
-            }
-        }
-
-        return Map.copyOf(result);
-    }
-
     private static boolean isStreamSection(String sectionName) {
         return sectionName.startsWith(STREAMS_PREFIX) && sectionName.length() > STREAMS_PREFIX.length();
     }
 
-    private static StreamConfig parseStreamSection(TomlDocument doc, String section, String streamName) {
-        var partitions = doc.getInt(section, "partitions").or(DEFAULT_PARTITIONS);
-        var retention = parseRetention(doc, section);
+    /// The ONE parse of a `[streams.<alias>]` section into a validated [StreamConfig] (#1549): deploy
+    /// validation calls it over the blueprint's `resources.toml`, slice activation over the slice's
+    /// configuration provider ([StreamSection]), so what validates is exactly what is provisioned. A key
+    /// it does not read is refused ([StreamDeclarationError.UnknownStreamKeys]), as is an integer key
+    /// whose value is not an integer, before any value is defaulted.
+    static Result<StreamConfig> parseStreamConfig(StreamSection section) {
+        return refuseUnknownKeys(section).flatMap(StreamConfigParser::parseStreamSection)
+                                .flatMap(config -> validatePartitionCeiling(section.alias(), config))
+                                .flatMap(config -> validateReplication(section.alias(), config));
+    }
+
+    /// Every key [#parseStreamConfig] reads directly under `[streams.<alias>]`, including the keys the
+    /// resource-level parse reads (`version`, `source`, `role`). Sub-sections are not keys of the section.
+    List<String> STREAM_SECTION_KEYS = List.of("version",
+                                               "source",
+                                               "role",
+                                               "partitions",
+                                               "retention",
+                                               "retention-value",
+                                               "retention-mode",
+                                               "max-age",
+                                               "max-count",
+                                               "max-bytes",
+                                               "auto-offset-reset",
+                                               "max-event-size",
+                                               "consistency",
+                                               "replicas",
+                                               "min-sync-replicas",
+                                               "compression",
+                                               "encryption-key-id");
+
+    private static Result<StreamSection> refuseUnknownKeys(StreamSection section) {
+        var unknown = section.keys()
+                             .stream()
+                             .filter(key -> !STREAM_SECTION_KEYS.contains(key))
+                             .sorted()
+                             .toList();
+
+        return unknown.isEmpty()
+               ? success(section)
+               : new StreamDeclarationError.UnknownStreamKeys(section.alias(),
+                                                              unknown,
+                                                              nearestKeys(unknown)).result();
+    }
+
+    private static Map<String, String> nearestKeys(List<String> unknown) {
+        var suggestions = new LinkedHashMap<String, String>();
+
+        unknown.forEach(key -> suggestions.put(key, nearestKey(key)));
+
+        return suggestions;
+    }
+
+    /// The known key a stray key most plausibly meant: identical once `_` is read as `-`, else the closest
+    /// by edit distance within `max(3, length / 2)`; empty when nothing is close.
+    private static String nearestKey(String key) {
+        var dashed = key.replace('_', '-');
+
+        if (STREAM_SECTION_KEYS.contains(dashed)) {
+            return dashed;
+        }
+
+        var threshold = Math.max(3, key.length() / 2);
+
+        return STREAM_SECTION_KEYS.stream()
+                                  .filter(known -> editDistance(dashed, known) <= threshold)
+                                  .min(Comparator.comparingInt(known -> editDistance(dashed, known)))
+                                  .orElse("");
+    }
+
+    private static int editDistance(String a, String b) {
+        var previous = new int[b.length() + 1];
+        var current = new int[b.length() + 1];
+
+        for (int j = 0; j <= b.length(); j++) {
+            previous[j] = j;
+        }
+
+        for (int i = 1; i <= a.length(); i++) {
+            current[0] = i;
+
+            for (int j = 1; j <= b.length(); j++) {
+                var cost = a.charAt(i - 1) == b.charAt(j - 1)
+                           ? 0
+                           : 1;
+
+                current[j] = Math.min(Math.min(current[j - 1] + 1, previous[j] + 1), previous[j - 1] + cost);
+            }
+
+            var swap = previous;
+            previous = current;
+            current = swap;
+        }
+
+        return previous[b.length()];
+    }
+
+    private static Result<StreamConfig> parseStreamSection(StreamSection section) {
+        return Result.all(section.integer("partitions"),
+                          section.integer("replicas"),
+                          section.integer("min-sync-replicas"))
+                     .map((partitions, replicas, minSyncReplicas) -> streamConfigOf(section,
+                                                                                    partitions.or(DEFAULT_PARTITIONS),
+                                                                                    replicas.or(StreamConfig.DEFAULT.replicas()),
+                                                                                    minSyncReplicas.or(StreamConfig.DEFAULT.minSyncReplicas())));
+    }
+
+    private static StreamConfig streamConfigOf(StreamSection section, int partitions, int replicas, int minSyncReplicas) {
         // #576: the parsed default used to be "latest", but the runtime never honored a `latest`
         // start-policy in the first place — StreamAccess#fetchFromCommitted's no-cursor path always
         // starts at offset 0 per the #478 ruling, permanently, not as a gap to be closed later.
@@ -432,41 +510,38 @@ public interface StreamConfigParser {
         // not change runtime behavior since nothing reads this field on the hot path (only
         // KVStoreSerializer round-trips it). An explicit non-"earliest" value is rejected at
         // StreamResourceValidator (aether-deployment) as inert rather than accepted silently.
-        var autoOffsetReset = doc.getString(section, "auto-offset-reset").or("earliest");
-        var maxEventSizeBytes = doc.getString(section, "max-event-size")
-                                   .map(StreamConfigParser::parseSizeBytes)
-                                   .or(1_048_576L);
-        var consistencyMode = doc.getString(section, "consistency")
-                                 .map(StreamConfigParser::parseConsistencyMode)
-                                 .or(ConsistencyMode.EVENTUAL);
-        var replicas = doc.getInt(section, "replicas").or(1);
-        var minSyncReplicas = doc.getInt(section, "min-sync-replicas").or(0);
-        var compression = doc.getString(section, "compression")
-                             .map(StreamConfigParser::parseCompression)
-                             .or(StreamCompression.NONE);
-        var encryptionKeyId = doc.getString(section, "encryption-key-id");
+        var autoOffsetReset = section.string("auto-offset-reset").or("earliest");
+        var maxEventSizeBytes = section.string("max-event-size")
+                                       .map(StreamConfigParser::parseSizeBytes)
+                                       .or(StreamConfig.DEFAULT.maxEventSizeBytes());
+        var consistencyMode = section.string("consistency")
+                                     .map(StreamConfigParser::parseConsistencyMode)
+                                     .or(ConsistencyMode.EVENTUAL);
+        var compression = section.string("compression")
+                                 .map(StreamConfigParser::parseCompression)
+                                 .or(StreamCompression.NONE);
 
-        return StreamConfig.streamConfig(streamName,
+        return StreamConfig.streamConfig(section.alias(),
                                          partitions,
-                                         retention,
+                                         parseRetention(section),
                                          autoOffsetReset,
                                          maxEventSizeBytes,
                                          consistencyMode,
                                          replicas,
                                          minSyncReplicas,
                                          compression,
-                                         encryptionKeyId);
+                                         section.string("encryption-key-id"));
     }
 
-    private static RetentionPolicy parseRetention(TomlDocument doc, String section) {
-        var retentionType = doc.getString(section, "retention").or("count");
-        var retentionValue = doc.getString(section, "retention-value").or("");
-        var mode = doc.getString(section, "retention-mode")
-                      .map(StreamConfigParser::parseRetentionMode)
-                      .or(RetentionMode.ANY);
+    private static RetentionPolicy parseRetention(StreamSection section) {
+        var retentionType = section.string("retention").or("count");
+        var retentionValue = section.string("retention-value").or("");
+        var mode = section.string("retention-mode")
+                          .map(StreamConfigParser::parseRetentionMode)
+                          .or(RetentionMode.ANY);
 
         return switch (retentionType.toLowerCase()) {
-            case "compound" -> parseCompoundRetention(doc, section, mode);
+            case "compound" -> parseCompoundRetention(section, mode);
             case "time" -> RetentionPolicy.retentionPolicy(Long.MAX_VALUE,
                                                            Long.MAX_VALUE,
                                                            parseTimeMs(retentionValue),
@@ -541,10 +616,10 @@ public interface StreamConfigParser {
         };
     }
 
-    private static RetentionPolicy parseCompoundRetention(TomlDocument doc, String section, RetentionMode mode) {
-        var maxAge = doc.getString(section, "max-age").map(StreamConfigParser::parseTimeMs).or(Long.MAX_VALUE);
-        var maxCount = doc.getString(section, "max-count").map(StreamConfigParser::parseCount).or(Long.MAX_VALUE);
-        var maxBytes = doc.getString(section, "max-bytes").map(StreamConfigParser::parseSizeBytes).or(Long.MAX_VALUE);
+    private static RetentionPolicy parseCompoundRetention(StreamSection section, RetentionMode mode) {
+        var maxAge = section.string("max-age").map(StreamConfigParser::parseTimeMs).or(Long.MAX_VALUE);
+        var maxCount = section.string("max-count").map(StreamConfigParser::parseCount).or(Long.MAX_VALUE);
+        var maxBytes = section.string("max-bytes").map(StreamConfigParser::parseSizeBytes).or(Long.MAX_VALUE);
 
         return RetentionPolicy.retentionPolicy(maxCount, maxBytes, maxAge, mode);
     }

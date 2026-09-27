@@ -41,6 +41,13 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         return REQUIRES_CONTEXT.promise();
     }
 
+    /// #1549: the `[streams.X]` section is bound by the SAME parse deploy validation runs, so the committed
+    /// config carries every declared key, and an unread key fails activation instead of defaulting.
+    @Override
+    public Option<SectionBinder<StreamConfig>> sectionBinder() {
+        return Option.some(StreamSectionBinding::bindStreamSection);
+    }
+
     /// #1040: the declared stream is materialized under its ENGINE KEY, not the bare `resources.toml`
     /// section name. Without this the publish path created `repl-failover-events` while every
     /// management route addressed `ns:repl-failover-events:1.0.0`, so `streamConfigKey(qualified)`

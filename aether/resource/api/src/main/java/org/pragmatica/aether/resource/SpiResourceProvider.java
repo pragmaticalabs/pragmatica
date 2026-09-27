@@ -334,7 +334,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                             String configSection,
                                                             Option<ProvisioningContext> contextOpt) {
         return loadConfig(configSection,
-                          factoryList.getFirst().configType(),
+                          factoryList.getFirst(),
                           contextOpt).flatMap(config -> selectAndInvoke(factoryList,
                                                                         config,
                                                                         resourceType,
@@ -385,6 +385,24 @@ public final class SpiResourceProvider implements ResourceProvider {
         return ResourceCapacityExhausted.isTransientCapacity(cause)
                ? new SliceLoadingFailure.Intermittent.ResourceUnavailable(resourceType.getSimpleName(), cause)
                : new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(), configSection, cause);
+    }
+
+    private <T, C> Promise<C> loadConfig(String section,
+                                         ResourceFactory<T, C> factory,
+                                         Option<ProvisioningContext> contextOpt) {
+        return factory.sectionBinder()
+                      .flatMap(binder -> compositeOf(contextOpt).map(composite -> binder.bind(composite, section)))
+                      .map(bound -> bound.mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
+                                                                                                             cause))
+                                         .async())
+                      .or(() -> loadConfig(section, factory.configType(), contextOpt));
+    }
+
+    /// #1549: a factory's own section binder reads the slice's configuration provider. With no provider in
+    /// the context the record-binder path below is the only one available, exactly as before #1549.
+    private static Option<ConfigurationProvider> compositeOf(Option<ProvisioningContext> contextOpt) {
+        return contextOpt.flatMap(context -> context.extension(ConfigurationProvider.class)
+                                                    .option());
     }
 
     @SuppressWarnings("unchecked")
