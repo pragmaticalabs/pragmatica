@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.stream.wal;
+package org.pragmatica.storage;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -34,13 +34,29 @@ import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Crash-durable, append-only write-ahead log for ONE `(stream, partition)`
-/// (streaming-persistence Phase A-WAL, step W2).
+/// Crash-durable, append-only log: the storage engine's single append-log component (#1567). It was
+/// the stream partition WAL (`PartitionWal`, streaming-persistence Phase A-WAL) and is relocated here
+/// unchanged in its fsync, framing, fail-stop and recovery code; a stream opens one per
+/// `(stream, partition)`.
 ///
-/// Every event is appended and **fsync'd before the publish is acked**; on recovery the log is
-/// replayed to rebuild the ring tail, and entries are truncated once they seal into segments.
-/// This class is self-contained — it owns its file, framing, group-commit and recovery, and is
-/// wired into the node/stream path by later steps (W3–W6).
+/// A [StorageInstance] opens its logs with [StorageInstance#openLog], under the instance's log root,
+/// so whatever adopts the instance's storage (#1569) adopts its logs with it. Local disk only: a log is
+/// never written behind, and never placed on a memory, DHT or remote tier. **Never used for consensus
+/// or KV state** -- KV is in-memory and restored from backup (owner ruling, #1569).
+///
+/// Every record is appended and **fsync'd before the append resolves**; on recovery the log is
+/// replayed, and records are truncated once a [StorageInstance#seal] has made a block holding them
+/// durable.
+///
+/// ## Seal-gated truncation (#1567)
+/// [#truncate] never discards past [#sealedThrough], and only [StorageInstance#seal] advances that
+/// watermark -- after the block holding the sealed range is durable on every durable tier and its ref
+/// is recorded. So no caller, whatever bound it passes, can truncate a record whose only other copy is
+/// a block still in the page cache. Block durability is enforced here; ref durability is bounded by
+/// the snapshot lag (#1345) until #1570: a ref reaches disk with the next metadata snapshot, so a
+/// caller must also bound truncation by the refs in the latest snapshot on disk, as the stream
+/// truncation tick does. The watermark is in memory and starts at `-1` on every open, so after a
+/// restart nothing is truncated -- and the log grows -- until the first seal of the new process.
 ///
 /// ## On-disk record format (fixed framing + payload), BIG_ENDIAN
 /// ```
@@ -113,8 +129,8 @@ import static org.pragmatica.lang.Unit.unit;
 /// observed regardless of the caller's `afterOffset`. The watermark is in-memory: after a crash it
 /// resets and previously-truncated records reappear, but recovery filters them out via the durable
 /// last-sealed offset (W4), so no double-apply — the watermark is purely a reclamation hint.
-public final class PartitionWal implements AutoCloseable {
-    private static final Logger log = LoggerFactory.getLogger(PartitionWal.class);
+public final class AppendLog implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(AppendLog.class);
     /// Fixed framing header: u32 payloadLen + u64 offset + u64 timestampMillis + u32 crc32.
     private static final int HEADER_BYTES = 4 + 8 + 8 + 4;
     /// CRC pre-image header (offset + timestampMillis); payload is appended after it.
@@ -141,6 +157,7 @@ public final class PartitionWal implements AutoCloseable {
     private volatile long lastOffset;  // last appended offset (-1 when none)
     private volatile long syncedOffset;  // last offset covered by a successful force (#1234); guarded by syncLock
     private volatile long truncatedUpto = -1;  // in-memory discard watermark
+    private final AtomicLong sealedThrough = new AtomicLong(-1);  // highest offset a durable seal covers; advanced only by StorageInstance.seal
     private volatile long lastCompactedUpto = -1;  // last physical compaction point
     private final AtomicLong commitRequests = new AtomicLong();  // group commits requested, any thread
     private volatile long fsyncCount;  // group commits completed; guarded by syncLock
@@ -149,7 +166,7 @@ public final class PartitionWal implements AutoCloseable {
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
 
-    private PartitionWal(Path file, FileChannel channel, long writePosition, long lastOffset) {
+    private AppendLog(Path file, FileChannel channel, long writePosition, long lastOffset) {
         this.file = file;
         this.channel = channel;
         this.writePosition = writePosition;
@@ -157,10 +174,37 @@ public final class PartitionWal implements AutoCloseable {
         this.syncedOffset = lastOffset;
     }
 
-    /// Open-or-create the WAL for `file`, positioned for further appends AFTER its last VALID
+    /// Open-or-create the log at `file`, positioned for further appends AFTER its last VALID
     /// record (a torn trailing record is physically truncated). Creates parent directories.
-    public static Result<PartitionWal> open(Path file) {
-        return FileOps.createDirectories(file.toAbsolutePath().getParent()).flatMap(_ -> recover(file));
+    ///
+    /// Creation is durable (#1567): missing parent directories are created with their entries forced
+    /// ([FileOps#createDirectoriesDurable]), and a log file this call CREATES has its directory forced
+    /// before the log is returned. The group-commit `force(false)` covers the file's bytes, never the
+    /// directory entry naming it, so without this a power loss after the first acked appends could lose
+    /// the whole file.
+    ///
+    /// A storage instance's logs are opened through [StorageInstance#openLog]; this is the standalone
+    /// entry for a reader of a known file (a verification or tool). Its truncation is seal-gated all
+    /// the same.
+    public static Result<AppendLog> open(Path file) {
+        var absolute = file.toAbsolutePath();
+
+        return FileOps.createDirectoriesDurable(absolute.getParent()).flatMap(_ -> openDurably(absolute,
+                                                                                               Files.exists(absolute)));
+    }
+
+    private static Result<AppendLog> openDurably(Path file, boolean existed) {
+        return existed
+               ? recover(file)
+               : recover(file).flatMap(AppendLog::forceCreatedEntry);
+    }
+
+    /// A failed force closes the log it just opened: its file may not survive a power loss, so it is
+    /// not handed out.
+    private static Result<AppendLog> forceCreatedEntry(AppendLog log) {
+        return FileOps.forceDirectory(log.file.getParent())
+                      .onFailure(_ -> log.close())
+                      .map(_ -> log);
     }
 
     /// Append a record and GROUP-COMMIT fsync: [#write] in the caller's thread, then [#commit]. The
@@ -209,8 +253,9 @@ public final class PartitionWal implements AutoCloseable {
                : readRegion().map(buf -> replayScan(buf, afterOffset, consumer));
     }
 
-    /// Discard all records with `offset <= uptoOffset`; records with `offset > uptoOffset` remain
-    /// replayable. Threshold-lazy: O(1) watermark bump until the file grows past the compaction
+    /// Discard all records with `offset <= min(uptoOffset, sealedThrough())`; later records remain
+    /// replayable. The seal bound is not the caller's to lift (see the class doc): a `uptoOffset` past
+    /// it discards only up to it, and before any seal nothing is discarded. Threshold-lazy: O(1) watermark bump until the file grows past the compaction
     /// threshold, then a single survivors-rewrite reclaims disk. Refused once fail-stopped:
     /// compaction re-reads the file through a page cache the failed fsync may have desynchronized
     /// from disk, and its `syncedSeq = writtenSeq` publication would un-freeze the fail-stop for an
@@ -218,7 +263,22 @@ public final class PartitionWal implements AutoCloseable {
     public Result<Unit> truncate(long uptoOffset) {
         return closed
                ? WalError.General.WAL_CLOSED.result()
-               : syncFailure.fold(() -> advanceWatermark(uptoOffset), Cause::result);
+               : syncFailure.fold(() -> advanceWatermark(Math.min(uptoOffset, sealedThrough.get())),
+                                  Cause::result);
+    }
+
+    /// Highest offset covered by a seal of this process whose block is durable and whose ref is
+    /// recorded (#1567); `-1` before the first seal since open. The ceiling of [#truncate].
+    public long sealedThrough() {
+        return sealedThrough.get();
+    }
+
+    /// Called by [StorageInstance#seal] only, after the sealed block is durable and its ref recorded --
+    /// package-private so the ordering stays inside the storage engine. Never lowers the watermark.
+    Unit markSealed(long toOffset) {
+        sealedThrough.accumulateAndGet(toOffset, Math::max);
+
+        return unit();
     }
 
     /// Flush + fsync + close the channel. Best-effort: a close-time I/O fault is logged, not
@@ -232,7 +292,7 @@ public final class PartitionWal implements AutoCloseable {
         syncFailure.fold(this::closeTimeSync, _ -> unit());
         Result.lift(CLOSE_FAILED,
                     () -> channel.close())
-              .onFailure(cause -> log.warn("PartitionWal close issue for {}: {}",
+              .onFailure(cause -> log.warn("AppendLog close issue for {}: {}",
                                            file,
                                            cause.message()));
     }
@@ -240,7 +300,7 @@ public final class PartitionWal implements AutoCloseable {
     private Unit closeTimeSync() {
         Result.lift(CLOSE_FAILED,
                     () -> channel.force(false))
-              .onFailure(cause -> log.warn("PartitionWal close-time fsync issue for {}: {}",
+              .onFailure(cause -> log.warn("AppendLog close-time fsync issue for {}: {}",
                                            file,
                                            cause.message()));
 
@@ -391,7 +451,7 @@ public final class PartitionWal implements AutoCloseable {
     /// truncate) is refused with the stored cause.
     private void failStop(Cause cause) {
         syncFailure = Option.some(new WalError.FailStopped(cause.message()));
-        log.error("PartitionWal fail-stopped for {} — appends refused; "
+        log.error("AppendLog fail-stopped for {} — appends refused; "
                  + "reopen (node restart) recovers the valid prefix: {}",
                   file,
                   cause.message());
@@ -410,7 +470,7 @@ public final class PartitionWal implements AutoCloseable {
 
     // === replay path ===
     private Result<ByteBuffer> readRegion() {
-        return FileOps.readBytes(file).map(PartitionWal::wrapBigEndian);
+        return FileOps.readBytes(file).map(AppendLog::wrapBigEndian);
     }
 
     private Unit replayScan(ByteBuffer buf, long afterOffset, Consumer<WalRecord> consumer) {
@@ -494,25 +554,25 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     // === open / recovery ===
-    private static Result<PartitionWal> recover(Path file) {
+    private static Result<AppendLog> recover(Path file) {
         return openChannel(file).flatMap(channel -> recoverFrom(file, channel));
     }
 
-    private static Result<PartitionWal> recoverFrom(Path file, FileChannel channel) {
+    private static Result<AppendLog> recoverFrom(Path file, FileChannel channel) {
         return FileOps.readBytes(file)
-                      .map(PartitionWal::wrapBigEndian)
+                      .map(AppendLog::wrapBigEndian)
                       .map(buf -> scan(buf, Long.MIN_VALUE, NO_OP))
                       .flatMap(result -> truncateAndBuild(file, channel, result));
     }
 
-    private static Result<PartitionWal> truncateAndBuild(Path file, FileChannel channel, ScanResult result) {
+    private static Result<AppendLog> truncateAndBuild(Path file, FileChannel channel, ScanResult result) {
         return Result.lift(t -> new WalError.OpenFailed(file,
                                                         t.getMessage()),
                            () -> channel.truncate(result.validEnd()))
-                     .map(_ -> new PartitionWal(file,
-                                                channel,
-                                                result.validEnd(),
-                                                result.lastOffset()));
+                     .map(_ -> new AppendLog(file,
+                                             channel,
+                                             result.validEnd(),
+                                             result.lastOffset()));
     }
 
     private static Result<FileChannel> openChannel(Path file) {
@@ -622,6 +682,19 @@ public final class PartitionWal implements AutoCloseable {
         }
 
         return unit();
+    }
+
+    /// Opens a log by name: [StorageInstance#openLog] is the production opener, so a caller holding one
+    /// never learns where the storage instance keeps its logs.
+    @FunctionalInterface
+    public interface Opener {
+        Result<AppendLog> open(String name);
+
+        /// A standalone opener laying logs out as `<root>/<name>.wal` -- the layout of
+        /// [StorageInstance#openLog] -- for wiring that has no storage instance (tests, tools).
+        static Opener directory(Path root) {
+            return name -> AppendLog.open(root.resolve(name + ".wal"));
+        }
     }
 
     /// A single replayable event: caller-supplied `offset`, append `timestampMillis`, opaque `payload`.

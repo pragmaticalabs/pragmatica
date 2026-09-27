@@ -1,9 +1,11 @@
 package org.pragmatica.storage;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
@@ -150,6 +152,39 @@ public interface StorageInstance {
         return delete(orphan.blockId()).map(_ -> true);
     }
 
+    /// The directory under which [#openLog] places this instance's append logs, when it has one. It
+    /// belongs to the instance, so whatever adopts the instance's storage adopts its logs (#1569).
+    default Option<Path> logRoot() {
+        return none();
+    }
+
+    /// Open-or-create the append log `name` under [#logRoot], as `<logRoot>/<name>.wal` -- a stream
+    /// names its partition logs `<stream>/<partition>`. Fails with [StorageError.InvalidLogName] for a
+    /// name that is blank or resolves outside the root, and with [StorageError.LogsUnsupported] on an
+    /// instance without a log root. See [AppendLog] for what a log is, and what it is never used for.
+    default Result<AppendLog> openLog(String name) {
+        return StorageError.LogsUnsupported.logsUnsupported(name()).result();
+    }
+
+    /// Seal offsets `[fromOffset, toOffset]` of `log`: store `block` -- the caller's encoding of that
+    /// range -- under `refName`, and only then let `log` be truncated through `toOffset` (#1567).
+    ///
+    /// The order is the guarantee, and it is enforced here rather than by callers:
+    ///   1. the block is written to every durable tier ([StorageTier#isDurable]) -- and to the instance's
+    ///      last tier -- and each of those writes must succeed; for [LocalDiskTier] that is a forced file
+    ///      and a forced directory. Other tiers are best-effort cache. The write policy is ignored: a seal
+    ///      is never written behind. A block already stored is written to those tiers again, because its
+    ///      existing record may belong to a write still in flight;
+    ///   2. `refName` is pointed at the block, with [#putRef]'s counting;
+    ///   3. [AppendLog#sealedThrough] advances to `toOffset`, which is what lets [AppendLog#truncate] pass it.
+    /// A failure at any step leaves the log's seal bound where it was, so its records stay. "Durable" here
+    /// means the local-disk tier: an in-memory DHT tier never counts (#1544), and an instance with no
+    /// durable tier refuses with [StorageError.NoDurableTier]. The ref itself reaches disk only with the
+    /// next metadata snapshot (#1345) -- see [AppendLog]'s class doc.
+    default Promise<BlockId> seal(AppendLog log, long fromOffset, long toOffset, String refName, byte[] block) {
+        return StorageError.NoDurableTier.noDurableTier(name()).promise();
+    }
+
     /// Instance name.
     String name();
     /// Tier utilization info.
@@ -185,7 +220,17 @@ public interface StorageInstance {
                                            List<StorageTier> tiers,
                                            MetadataStore metadataStore,
                                            WritePolicy writePolicy) {
-        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy);
+        return storageInstance(name, tiers, metadataStore, writePolicy, none());
+    }
+
+    /// Create a storage instance with a custom metadata store, write policy and append-log root
+    /// ([#openLog]).
+    static StorageInstance storageInstance(String name,
+                                           List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           WritePolicy writePolicy,
+                                           Option<Path> logRoot) {
+        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy, logRoot);
     }
 }
 
@@ -195,8 +240,16 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private final String name;
     private final List<StorageTier> tiers;
+    /// Tiers a write-through put must land on, in write order: the last tier, then every durable tier
+    /// ([StorageTier#isDurable]) before it. A failure on any of them fails the put (#1567). Before
+    /// #1567 only the last tier was required -- on the `streams` instance that is the in-memory DHT
+    /// tier, so a local-disk failure was absorbed as a cache miss (#910) and the block lived in memory.
+    private final List<StorageTier> requiredTiers;
+    /// Every other tier: best-effort cache, a failure there is absorbed (#910).
+    private final List<StorageTier> cacheTiers;
     private final MetadataStore metadataStore;
     private final WritePolicy writePolicy;
+    private final Option<Path> logRoot;
     private final Option<WriteBehindQueue> writeBehindQueue;
     /// Non-capacity promotion failures per cache tier, for the WARN-once-then-every-N policy (#910).
     private final Map<TierLevel, AtomicLong> promotionFailures = new ConcurrentHashMap<>();
@@ -210,11 +263,18 @@ final class DefaultStorageInstance implements StorageInstance {
     /// rather than replace it.
     private final Map<BlockId, Promise<Unit>> collecting = new ConcurrentHashMap<>();
 
-    DefaultStorageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore, WritePolicy writePolicy) {
+    DefaultStorageInstance(String name,
+                           List<StorageTier> tiers,
+                           MetadataStore metadataStore,
+                           WritePolicy writePolicy,
+                           Option<Path> logRoot) {
         this.name = name;
         this.tiers = List.copyOf(tiers);
+        this.requiredTiers = requiredTiersOf(this.tiers);
+        this.cacheTiers = this.tiers.stream().filter(tier -> !requiredTiers.contains(tier)).toList();
         this.metadataStore = metadataStore;
         this.writePolicy = writePolicy;
+        this.logRoot = logRoot;
         this.writeBehindQueue = writePolicy == WritePolicy.WRITE_BEHIND
                                 ? some(WriteBehindQueue.writeBehindQueue())
                                 : none();
@@ -349,6 +409,28 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
+    public Option<Path> logRoot() {
+        return logRoot;
+    }
+
+    @Override
+    public Result<AppendLog> openLog(String logName) {
+        return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
+                      .flatMap(root -> logFile(root, logName))
+                      .flatMap(AppendLog::open);
+    }
+
+    /// Steps 1-3 of the interface doc, as a data dependency: the ref is repointed only in a continuation
+    /// of the durable write, and the log's bound moves only in a continuation of the repoint.
+    @Override
+    public Promise<BlockId> seal(AppendLog log, long fromOffset, long toOffset, String refName, byte[] block) {
+        return checkSealable(fromOffset, toOffset).async()
+                            .flatMap(_ -> storeDurably(block))
+                            .map(id -> repointRef(refName, id).current())
+                            .map(id -> markSealed(log, toOffset, id));
+    }
+
+    @Override
     public String name() {
         return name;
     }
@@ -431,12 +513,42 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private Promise<BlockId> writeToAllTiers(BlockId id, byte[] content) {
-        var durableTier = tiers.getLast();
+        var lastLevel = tiers.getLast().level();
 
-        return durableTier.put(id, content)
-                          .flatMap(_ -> promoteToCacheTiers(id, content, durableTier))
-                          .map(_ -> trackNewBlock(id,
-                                                  durableTier.level()));
+        return writeRequiredTiers(id, content, 0).flatMap(_ -> promoteToCacheTiers(id, content))
+                                 .map(_ -> trackNewBlock(id, lastLevel));
+    }
+
+    /// Sequential and fail-fast: a required tier that fails ends the put with its cause, and the caller
+    /// releases the claim ([#handlePut]). Presence is recorded as a dependent step of each write.
+    private Promise<Unit> writeRequiredTiers(BlockId id, byte[] content, int index) {
+        if (index >= requiredTiers.size()) {
+            return Promise.success(unit());
+        }
+
+        var tier = requiredTiers.get(index);
+
+        return tier.put(id, content)
+                   .map(_ -> recordRequiredPresence(id, tier))
+                   .flatMap(_ -> writeRequiredTiers(id, content, index + 1));
+    }
+
+    /// The last tier's presence is the claim record itself ([#trackNewBlock]); the others are added to it.
+    private Unit recordRequiredPresence(BlockId id, StorageTier tier) {
+        if (tier != tiers.getLast()) {
+            recordTierPresence(id, tier.level());
+        }
+
+        return unit();
+    }
+
+    private static List<StorageTier> requiredTiersOf(List<StorageTier> tiers) {
+        var last = tiers.getLast();
+        var durableBefore = tiers.stream().filter(tier -> tier != last && tier.isDurable());
+
+        return Stream.concat(Stream.of(last),
+                             durableBefore)
+                     .toList();
     }
 
     private Promise<BlockId> writeBehindToTiers(BlockId id, byte[] content) {
@@ -470,9 +582,7 @@ final class DefaultStorageInstance implements StorageInstance {
                     .flatMap(_ -> enqueueNextTier(queue, id, content, remaining, index + 1));
     }
 
-    private Promise<Unit> promoteToCacheTiers(BlockId id, byte[] content, StorageTier durableTier) {
-        var cacheTiers = tiers.stream().filter(t -> t != durableTier).toList();
-
+    private Promise<Unit> promoteToCacheTiers(BlockId id, byte[] content) {
         if (cacheTiers.isEmpty()) {
             return Promise.success(unit());
         }
@@ -568,6 +678,84 @@ final class DefaultStorageInstance implements StorageInstance {
                                        lc -> lc.withTierAdded(initialTier))
                      .onEmpty(() -> metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id, initialTier)));
         log.debug("Block {} stored in tier {}", id, initialTier);
+
+        return id;
+    }
+
+    // --- Log / seal flow ---
+    /// `name` resolves strictly under `root`: relative, and never climbing out of it with `..`.
+    private static Result<Path> logFile(Path root, String logName) {
+        var invalid = StorageError.InvalidLogName.invalidLogName(logName);
+
+        return Result.lift(_ -> invalid,
+                           () -> root.resolve(logName + ".wal"))
+                     .filter(invalid,
+                             file -> isStrictlyUnder(root, file, logName));
+    }
+
+    private static boolean isStrictlyUnder(Path root, Path file, String logName) {
+        var normalizedRoot = root.toAbsolutePath().normalize();
+        var normalizedFile = file.toAbsolutePath().normalize();
+
+        return ! logName.isBlank()
+               && !Path.of(logName).isAbsolute()
+               && normalizedFile.startsWith(normalizedRoot)
+               && !normalizedFile.equals(normalizedRoot);
+    }
+
+    private Result<Unit> checkSealable(long fromOffset, long toOffset) {
+        if (fromOffset < 0 || toOffset < fromOffset) {
+            return StorageError.InvalidSealRange.invalidSealRange(fromOffset, toOffset).result();
+        }
+
+        return tiers.stream()
+                    .anyMatch(StorageTier::isDurable)
+               ? Result.unitResult()
+               : StorageError.NoDurableTier.noDurableTier(name).result();
+    }
+
+    /// A write-through put whatever the instance's policy. A block this instance already holds is
+    /// credited and then written to the required tiers again: its record may be the claim of a write
+    /// still in flight, which dedup does not wait for, and a seal must not name a block it has not
+    /// itself seen become durable.
+    private Promise<BlockId> storeDurably(byte[] content) {
+        return BlockId.blockId(content)
+                      .async()
+                      .flatMap(id -> handleDurablePut(id, content));
+    }
+
+    private Promise<BlockId> handleDurablePut(BlockId id, byte[] content) {
+        var sentinel = BlockLifecycle.blockLifecycle(id,
+                                                     tiers.getLast().level());
+
+        return metadataStore.claimBlock(id, sentinel)
+               ? afterCollection(id).flatMap(_ -> writeToAllTiers(id, content))
+                                .onFailure(_ -> metadataStore.releaseClaim(id, sentinel))
+               : rewriteDeduplicated(id, content);
+    }
+
+    /// The credit is taken first so GC cannot collect the block under the rewrite (#801); if the rewrite
+    /// fails the credit is given back as a dependent step, before the caller sees the failure -- BER:
+    /// the increment's inverse restores the count, and no ref names the block. An empty increment means
+    /// GC removed the record meanwhile; the put goes round again as a fresh claim, as [#deduplicateBlock]
+    /// does.
+    private Promise<BlockId> rewriteDeduplicated(BlockId id, byte[] content) {
+        return metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented)
+                            .fold(() -> handleDurablePut(id, content),
+                                  _ -> rewriteRequiredTiers(id, content));
+    }
+
+    private Promise<BlockId> rewriteRequiredTiers(BlockId id, byte[] content) {
+        return writeRequiredTiers(id, content, 0).withFailure(_ -> giveBackCredit(id))
+                                 .map(_ -> id);
+    }
+
+    private void giveBackCredit(BlockId id) {
+        metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented);
+    }
+
+    private static BlockId markSealed(AppendLog log, long toOffset, BlockId id) {
+        log.markSealed(toOffset);
 
         return id;
     }

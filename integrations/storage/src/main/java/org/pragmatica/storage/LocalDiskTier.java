@@ -27,6 +27,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Filesystem-backed storage tier with two-level directory sharding.
 /// Files stored at: {basePath}/{hex[0:2]}/{hex[2:4]}/{fullHex}
 /// Uses Promise.lift for non-blocking I/O on virtual threads.
+///
+/// **Every block is durable before [#put] resolves (#1567).** The partial file is written and forced
+/// with its metadata, renamed over the block path, and then the block's directory is forced so the
+/// renamed entry survives a power loss; a shard directory the write had to create is made durable in
+/// its parent the same way. Durable for EVERY block, not only for blocks some ref names: blocks are
+/// content-addressed and deduplicated, so a later put of the same content -- a sealed segment, a cursor,
+/// an entity checkpoint whose id is committed to KV -- returns the existing id without rewriting it,
+/// and whether a block will ever be reachable from a published ref cannot be known when it is written.
+/// Cost: two fsyncs per block written (file, directory), plus one per shard directory created.
 public final class LocalDiskTier implements StorageTier {
     private static final Logger log = LoggerFactory.getLogger(LocalDiskTier.class);
 
@@ -59,17 +68,20 @@ public final class LocalDiskTier implements StorageTier {
     private final TimeSpan readTimeout;
     private final Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride;
     private final Fn2<Result<Unit>, Path, byte[]> writer;
+    private final Fn1<Result<Unit>, Path> directoryForcer;
 
     private LocalDiskTier(Path basePath,
                           long maxBytes,
                           TimeSpan readTimeout,
                           Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
-                          Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride) {
+                          Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride,
+                          Option<Fn1<Result<Unit>, Path>> directoryForcerOverride) {
         this.basePath = basePath;
         this.maxBytes = maxBytes;
         this.readTimeout = readTimeout;
         this.readerOverride = readerOverride;
-        this.writer = writerOverride.or(FileOps::writeBytes);
+        this.writer = writerOverride.or(FileOps::writeBytesForced);
+        this.directoryForcer = directoryForcerOverride.or(FileOps::forceDirectory);
     }
 
     public static Result<LocalDiskTier> localDiskTier(Path basePath, long maxBytes) {
@@ -95,8 +107,25 @@ public final class LocalDiskTier implements StorageTier {
                                                TimeSpan readTimeout,
                                                Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
                                                Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride) {
-        return FileOps.createDirectories(basePath)
-                      .map(_ -> new LocalDiskTier(basePath, maxBytes, readTimeout, readerOverride, writerOverride))
+        return localDiskTier(basePath, maxBytes, readTimeout, readerOverride, writerOverride, none());
+    }
+
+    /// Variant that also injects the directory force issued after the rename, for tests that record
+    /// the order of forces against the steps that follow a write (#1567). The writer override
+    /// replaces the partial write INCLUDING its file force.
+    static Result<LocalDiskTier> localDiskTier(Path basePath,
+                                               long maxBytes,
+                                               TimeSpan readTimeout,
+                                               Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
+                                               Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride,
+                                               Option<Fn1<Result<Unit>, Path>> directoryForcerOverride) {
+        return FileOps.createDirectoriesDurable(basePath)
+                      .map(_ -> new LocalDiskTier(basePath,
+                                                  maxBytes,
+                                                  readTimeout,
+                                                  readerOverride,
+                                                  writerOverride,
+                                                  directoryForcerOverride))
                       .onSuccess(LocalDiskTier::calculateUsedBytes);
     }
 
@@ -164,6 +193,12 @@ public final class LocalDiskTier implements StorageTier {
         return TierLevel.LOCAL_DISK;
     }
 
+    /// See the class doc: a resolved [#put] has forced the block and the entry naming it.
+    @Override
+    public boolean isDurable() {
+        return true;
+    }
+
     @Override
     public long usedBytes() {
         return usedBytes.get();
@@ -190,14 +225,20 @@ public final class LocalDiskTier implements StorageTier {
         var path = blockPath(id);
         var partial = partialPath(path);
 
-        return FileOps.createDirectories(path.getParent())
+        return FileOps.createDirectoriesDurable(path.getParent())
                       .flatMap(_ -> existingSize(path))
                       .flatMap(previousSize -> writeThenRename(partial, path, content, previousSize));
     }
 
+    /// The directory force comes AFTER the rename: forcing it before would sync the partial's entry,
+    /// which the rename replaces. A failed directory force fails the put although the block file is in
+    /// place -- its survival across a power loss is unknown, and the caller must not publish a ref to
+    /// it. The file stays on disk as an unreferenced copy that the next successful write of the same
+    /// content replaces; it is counted only when it replaced a previous copy (same id, same size).
     private Result<Unit> writeThenRename(Path partial, Path path, byte[] content, long previousSize) {
         return writer.apply(partial, content)
                      .flatMap(_ -> FileOps.moveAtomic(partial, path))
+                     .flatMap(_ -> directoryForcer.apply(path.getParent()))
                      .onSuccess(_ -> correctUsedBytes(previousSize))
                      .onFailure(_ -> discardFailedWrite(partial))
                      .mapToUnit();

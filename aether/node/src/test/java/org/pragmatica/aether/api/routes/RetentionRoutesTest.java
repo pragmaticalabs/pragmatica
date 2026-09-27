@@ -33,8 +33,8 @@ import org.pragmatica.aether.stream.StreamPartitionManager.PartitionWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.WalSnapshot;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
-import org.pragmatica.aether.stream.wal.PartitionWal;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalStats;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.WalStats;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
@@ -281,7 +281,7 @@ class RetentionRoutesTest {
         /// report the node-wide count — forcing it to 0 there used to leave every test green.
         @Test
         void assembleRetention_productionOverload_reportsTheRealRecoveryCounter(@TempDir Path walDir) {
-            var wal = PartitionWal.open(walDir.resolve("gapped").resolve("0.wal")).unwrap();
+            var wal = AppendLog.open(walDir.resolve("gapped").resolve("0.wal")).unwrap();
 
             wal.append(5L, new byte[]{1}, 1L).await().onFailure(cause -> fail(cause.message()));
             wal.close();

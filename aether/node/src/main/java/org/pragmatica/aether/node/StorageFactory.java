@@ -43,6 +43,7 @@ import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
 import org.pragmatica.storage.StorageTier;
+import org.pragmatica.storage.WritePolicy;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -502,9 +503,20 @@ public final class StorageFactory {
     /// memory+DHT when `streamDataDir` is not writable (mirrors `createOne`'s
     /// `handleDiskTierUnavailable`), so node boot never fails on an unmountable data dir.
     static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
+        return plainStreamStorage(dhtClient, streamDataDir, nodeId, Option.none());
+    }
+
+    private static Result<StorageSetup> plainStreamStorage(Option<DHTClient> dhtClient,
+                                                           Path streamDataDir,
+                                                           String nodeId,
+                                                           Option<Path> logRoot) {
         var build = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
 
-        return assembleStreamSetup(build.tiers(), streamDataDir.resolve("snapshots"), nodeId, build.dhtMarkerCheck());
+        return assembleStreamSetup(build.tiers(),
+                                   streamDataDir.resolve("snapshots"),
+                                   nodeId,
+                                   build.dhtMarkerCheck(),
+                                   logRoot);
     }
 
     /// #253 — encrypted counterpart to the three-arg overload above. Streams has no per-instance
@@ -549,9 +561,10 @@ public final class StorageFactory {
 
         return request.keyring()
                       .fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(segmentsDir, STREAMS_NAME)
-                                                       .flatMap(_ -> defaultStreamStorage(request.dhtClient(),
-                                                                                          request.streamDataDir(),
-                                                                                          request.nodeId()))
+                                                       .flatMap(_ -> plainStreamStorage(request.dhtClient(),
+                                                                                        request.streamDataDir(),
+                                                                                        request.nodeId(),
+                                                                                        request.logRoot()))
                                                        .map(setup -> new PendingSetup(setup,
                                                                                       Option.none())),
                             ring -> armEncryptedStreamTiers(request.dhtClient(),
@@ -559,17 +572,29 @@ public final class StorageFactory {
                                                             ring).flatMap(build -> assembleStreamSetup(build.tiers(),
                                                                                                        snapshotDir,
                                                                                                        request.nodeId(),
-                                                                                                       build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
-                                                                                                                                                             build.armedDisk()))));
+                                                                                                       build.dhtMarkerCheck(),
+                                                                                                       request.logRoot()).map(setup -> new PendingSetup(setup,
+                                                                                                                                                        build.armedDisk()))));
     }
 
     /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
     /// per-instance [StorageConfig] to carry it -- gathered so [#createAll] can take them as one
     /// argument. `keyring` is that already-resolved decision, empty when streams is not encrypted.
+    /// `logRoot` is the stream WAL base directory -- the `streams` instance's append-log root (#1567), so its
+    /// partition logs open through [StorageInstance#openLog] under the instance; [Option#none] when streams
+    /// run without a WAL.
     record StreamSetupRequest(Option<DHTClient> dhtClient,
                               Path streamDataDir,
                               String nodeId,
-                              Option<EncryptionKeyring> keyring) {}
+                              Option<EncryptionKeyring> keyring,
+                              Option<Path> logRoot) {
+        StreamSetupRequest(Option<DHTClient> dhtClient,
+                           Path streamDataDir,
+                           String nodeId,
+                           Option<EncryptionKeyring> keyring) {
+            this(dhtClient, streamDataDir, nodeId, keyring, Option.none());
+        }
+    }
 
     /// #849: the streams DHT tier goes through [#maybeEncryptDht] like every `<name>-blocks`
     /// namespace -- gated on a `readGate` and carrying the [DhtMarkerCheck] that
@@ -617,9 +642,14 @@ public final class StorageFactory {
     private static Result<StorageSetup> assembleStreamSetup(List<StorageTier> tiers,
                                                             Path snapshotDir,
                                                             String nodeId,
-                                                            Option<DhtMarkerCheck> dhtMarkerCheck) {
+                                                            Option<DhtMarkerCheck> dhtMarkerCheck,
+                                                            Option<Path> logRoot) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
-        var instance = StorageInstance.storageInstance(STREAMS_NAME, tiers, metadataStore);
+        var instance = StorageInstance.storageInstance(STREAMS_NAME,
+                                                       tiers,
+                                                       metadataStore,
+                                                       WritePolicy.WRITE_THROUGH,
+                                                       logRoot);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
                                                            STREAM_SNAPSHOT_MUTATION_THRESHOLD,
                                                            STREAM_SNAPSHOT_INTERVAL_MILLIS,

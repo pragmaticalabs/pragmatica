@@ -154,6 +154,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -1023,6 +1024,14 @@ public interface AetherNode extends ManageableNode {
         return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
     }
 
+    /// The stream partition logs open through the `streams` storage instance (#1567), under its log root —
+    /// the WAL dir [#resolveStreamWalDir] resolved when the instance was built; none when that dir was
+    /// unusable and streams degraded to no WAL.
+    private static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
+        return streamStorage.logRoot()
+                            .<AppendLog.Opener> map(_ -> streamStorage::openLog);
+    }
+
     /// #634 item 2 — the boot gate, exposed for [org.pragmatica.aether.Main]'s verification chain (the
     /// same `verify* -> abortBoot` idiom as the cluster-name and dev-mode gates). An unwritable WAL dir
     /// without the explicit non-durable opt-in REFUSES BOOT: the old behaviour — one WARN, then every
@@ -1614,7 +1623,8 @@ public interface AetherNode extends ManageableNode {
                                                            new StorageFactory.StreamSetupRequest(dhtClientOption,
                                                                                                  streamDataDir(config),
                                                                                                  config.self().id(),
-                                                                                                 streamsKeyring));
+                                                                                                 streamsKeyring,
+                                                                                                 resolveStreamWalDir(config)));
 
         if (storageSetupsResult.isFailure()) {
             return storageSetupsResult.map(ignored -> null);
@@ -4518,7 +4528,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
-                                                                                   resolveStreamWalDir(config),
+                                                                                   streamLogs(streamStorage),
                                                                                    streamSegmentIndex::lastSealedOffset,
                                                                                    DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
 

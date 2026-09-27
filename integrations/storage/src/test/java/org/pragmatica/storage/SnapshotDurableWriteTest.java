@@ -177,6 +177,24 @@ class SnapshotDurableWriteTest {
         assertThat(manager.restoreFromLatest().unwrap().isPresent()).as("the counted write is a real one").isTrue();
     }
 
+    /// #1567: each rename is followed by a force of the snapshot directory, so the entry the rename
+    /// installed survives a power loss -- the partial first, then its directory, for the snapshot and
+    /// then for `LATEST`. Read from the JDK's own `jdk.FileForce` events, not from an injected seam.
+    @Test
+    void forceSnapshot_forcesTheSnapshotDirectory_afterEachRename() {
+        var manager = new DefaultSnapshotManager(store, config);
+
+        mutate("first");
+        var forced = FileForceRecording.forcedFilesDuring(manager::forceSnapshot)
+                                       .stream()
+                                       .map(FileForceRecording.ForcedFile::path)
+                                       .map(path -> path.getFileName().toString())
+                                       .toList();
+        var dirName = tempDir.toAbsolutePath().getFileName().toString();
+
+        assertThat(forced).containsSubsequence("snapshot.partial", dirName, "LATEST.partial", dirName);
+    }
+
     /// rev1365 B1: `forceSnapshot()` is called from the scheduler tick (via `maybeSnapshot`) and
     /// from the HTTP route on different threads. Both write through the same fixed partial names,
     /// so two writers at once tear each other's files. The sync step is inside the write, so its

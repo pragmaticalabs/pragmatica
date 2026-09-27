@@ -126,29 +126,33 @@ class CacheTierPartialWriteTest {
     }
 
     /// r3 (b), the mid-write shape on the real `LocalDiskTier`: the disk takes N bytes of the block
-    /// and fails. The partial file is discarded, the reservation released exactly once, and the
-    /// instance-level delete that follows finds nothing to subtract — `usedBytes` ends at zero,
-    /// never below it.
+    /// and fails. The partial file is discarded and the reservation released exactly once --
+    /// `usedBytes` ends at zero, never below it.
+    ///
+    /// #1567 changed the outcome, and the fixture was what was wrong: it placed the disk BEFORE an
+    /// in-memory tier and called the in-memory one "durable" because it came last. The local disk is
+    /// the only tier here that survives a power loss ([StorageTier#isDurable]), so its failure now fails
+    /// the put, and the claim is released -- the caller is never told a block is stored that lives in
+    /// memory alone.
     @Test
-    void localDiskTier_midWriteFailure_discardsThePartial_usedBytesEndsAtZero() {
+    void localDiskTier_midWriteFailure_failsThePut_discardsThePartial_usedBytesEndsAtZero() {
         var disk = new FillingDisk();
         var dir = tempDir.resolve("filling");
         var tier = diskTier(dir, disk);
-        var durable = MemoryTier.memoryTier(1024 * 1024, TierLevel.REMOTE);
-        var instance = StorageInstance.storageInstance("filling", List.of(tier, durable));
+        var memoryLast = MemoryTier.memoryTier(1024 * 1024, TierLevel.REMOTE);
+        var instance = StorageInstance.storageInstance("filling", List.of(tier, memoryLast));
         var content = block(4096);
+        var id = BlockId.blockId(content).unwrap();
 
         disk.bytesBeforeFailure.set(1024);
-        var id = instance.put(content)
-                         .await()
-                         .fold(cause -> fail("the durable write succeeded; the put must succeed: " + cause.message()),
-                               v -> v);
+        instance.put(content)
+                .await()
+                .onSuccess(_ -> fail("the only durable tier failed; the put must fail"));
 
         assertThat(disk.partialBytesSeen.get()).as("the fixture left N bytes on disk before failing").isEqualTo(1024);
         assertThat(partialFiles(dir)).as("the partial file is discarded").isEmpty();
         assertThat(tier.exists(id).await().unwrap()).isFalse();
         assertThat(tier.usedBytes()).as("reservation released once, nothing else subtracted").isZero();
-        assertThat(instance.get(id).await().unwrap().unwrap()).as("the read reaches the durable copy").isEqualTo(content);
     }
 
     /// r3 (c): the previous copy at the block path survives a failed overwrite whatever stage

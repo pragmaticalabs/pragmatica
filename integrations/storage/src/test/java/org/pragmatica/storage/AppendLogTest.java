@@ -3,14 +3,14 @@
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
 
-package org.pragmatica.aether.stream.wal;
+package org.pragmatica.storage;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.storage.AppendLog.WalRecord;
 import org.pragmatica.lang.Unit;
 
 import java.io.IOException;
@@ -39,7 +39,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-class PartitionWalTest {
+class AppendLogTest {
 
     @TempDir
     Path dir;
@@ -175,6 +175,7 @@ class PartitionWalTest {
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
 
             var sizeBefore = Files.size(file("truncate.wal"));
+            wal.markSealed(2L);
             wal.truncate(2L).onFailure(c -> fail(c.message()));
 
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(3L, 4L);
@@ -191,6 +192,7 @@ class PartitionWalTest {
             IntStream.range(0, 200).forEach(i -> appendSync(wal, i, big, 1L));
 
             var sizeBefore = Files.size(file("compact.wal"));
+            wal.markSealed(99L);
             wal.truncate(99L).onFailure(c -> fail(c.message()));
 
             var survivors = offsetsOf(replayAll(wal, -1L));
@@ -200,6 +202,95 @@ class PartitionWalTest {
             wal.close();
 
             assertThat(offsetsOf(replayAll(open("compact.wal"), -1L))).hasSize(100);
+        }
+    }
+
+    /// #1567: the seal gate. Only `StorageInstance.seal` advances `sealedThrough`, and `truncate`
+    /// never discards past it, whatever bound the caller passes.
+    @Nested
+    class SealGate {
+
+        @Test
+        void truncate_discardsNothing_beforeAnySeal() {
+            var wal = open("unsealed.wal");
+            IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
+            wal.truncate(4L).onFailure(c -> fail(c.message()));
+
+            assertThat(wal.sealedThrough()).isEqualTo(-1L);
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L, 1L, 2L, 3L, 4L);
+            wal.close();
+        }
+
+        @Test
+        void truncate_stopsAtSealedThrough_whenCallerBoundIsHigher() {
+            var wal = open("partly-sealed.wal");
+            IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
+            wal.markSealed(1L);
+            wal.truncate(4L).onFailure(c -> fail(c.message()));
+
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(2L, 3L, 4L);
+            wal.close();
+        }
+
+        @Test
+        void markSealed_neverLowersTheBound() {
+            var wal = open("monotonic.wal");
+
+            wal.markSealed(7L);
+            wal.markSealed(3L);
+
+            assertThat(wal.sealedThrough()).isEqualTo(7L);
+            wal.close();
+        }
+
+        /// The bound is in memory: a reopened log truncates nothing until the first seal of the new
+        /// process -- the safe direction, at the price of the log growing until then.
+        @Test
+        void sealedThrough_resetsOnReopen_soNothingTruncatesBeforeTheFirstSeal() {
+            var wal = open("reopen-seal.wal");
+            IntStream.range(0, 3).forEach(i -> appendSync(wal, i, payload(i), 1L));
+            wal.markSealed(2L);
+            wal.close();
+
+            var reopened = open("reopen-seal.wal");
+            reopened.truncate(2L).onFailure(c -> fail(c.message()));
+
+            assertThat(reopened.sealedThrough()).isEqualTo(-1L);
+            assertThat(offsetsOf(replayAll(reopened, -1L))).containsExactly(0L, 1L, 2L);
+            reopened.close();
+        }
+    }
+
+    /// #1567: the group-commit `force(false)` covers a log's bytes, never the directory entry that
+    /// names the file, so `open` forces the directory when it CREATES the file.
+    @Nested
+    class CreationDurability {
+
+        @Test
+        void open_forcesTheDirectory_whenItCreatesTheLogFile() {
+            var logDir = dir.resolve("fresh");
+            var created = logDir.resolve("p.wal");
+
+            var forced = FileForceRecording.forcedFilesDuring(() -> AppendLog.open(created).onSuccess(AppendLog::close)
+                                                                                    .onFailure(c -> fail(c.message())));
+
+            assertThat(forced.stream().map(FileForceRecording.ForcedFile::path).toList())
+                .as("the directory holding the created log file is forced")
+                .contains(logDir.toAbsolutePath());
+        }
+
+        @Test
+        void open_doesNotForceTheDirectory_whenTheLogFileExists() {
+            var logDir = dir.resolve("existing");
+            var existing = logDir.resolve("p.wal");
+            AppendLog.open(existing).onSuccess(AppendLog::close);
+
+            var forced = FileForceRecording.forcedFilesDuring(() -> AppendLog.open(existing).onSuccess(AppendLog::close)
+                                                                                           .onFailure(c -> fail(c.message())));
+
+            assertThat(forced.stream().map(FileForceRecording.ForcedFile::path).toList()).doesNotContain(logDir.toAbsolutePath());
         }
     }
 
@@ -263,6 +354,7 @@ class PartitionWalTest {
 
             assertThat(wal.stats().truncatedUpto()).as("nothing truncated yet — else the bump below proves nothing")
                                                    .isEqualTo(-1L);
+            wal.markSealed(2L);
             wal.truncate(2L).onFailure(c -> fail(c.message()));
 
             var stats = wal.stats();
@@ -342,7 +434,7 @@ class PartitionWalTest {
         }
 
         /// The write-side inverse of recovery's duplicate refusal: a non-increasing offset is refused
-        /// with [PartitionWal.WalError.OffsetRegression] and nothing is written.
+        /// with [AppendLog.WalError.OffsetRegression] and nothing is written.
         @Test
         void append_refusesNonIncreasingOffset_withoutWriting() {
             var wal = open("regression.wal");
@@ -362,7 +454,7 @@ class PartitionWalTest {
         private static void assertRefusedAsRegression(Promise<Unit> append, long offset) {
             append.await()
                   .onSuccess(_ -> fail("offset %d does not follow 5 and must be refused".formatted(offset)))
-                  .onFailure(cause -> assertThat(cause).isEqualTo(new PartitionWal.WalError.OffsetRegression(offset, 5L)));
+                  .onFailure(cause -> assertThat(cause).isEqualTo(new AppendLog.WalError.OffsetRegression(offset, 5L)));
         }
     }
 
@@ -386,7 +478,7 @@ class PartitionWalTest {
             wal.append(2L, payload(2), 1L)
                .await()
                .onSuccess(_ -> fail("a frame after a failed write would leave a hole at offset 1"))
-               .onFailure(cause -> assertThat(cause).isInstanceOf(PartitionWal.WalError.FailStopped.class));
+               .onFailure(cause -> assertThat(cause).isInstanceOf(AppendLog.WalError.FailStopped.class));
             assertThat(wal.stats().failStopped()).isTrue();
             assertThat(wrapper.forceCalls).as("a failed write never reaches the fsync").hasValue(0);
             wal.close();
@@ -553,6 +645,7 @@ class PartitionWalTest {
             wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("fsync was injected to fail"));
             restoreChannel(wal, wrapper);
 
+            wal.markSealed(0L);
             wal.truncate(0L)
                .onSuccess(_ -> fail("a fail-stopped WAL must refuse truncate"))
                .onFailure(cause -> assertThat(cause.message()).contains("fail-stopped"));
@@ -572,6 +665,7 @@ class PartitionWalTest {
 
             var sizeBefore = Files.size(file("compact-fail.wal"));
 
+            wal.markSealed(99L);
             wal.truncate(99L)
                .onSuccess(_ -> fail("compaction with an unwritable temp must fail"))
                .onFailure(cause -> assertThat(cause.message()).contains("WAL truncate failed"));
@@ -638,6 +732,7 @@ class PartitionWalTest {
             IntStream.range(0, 200).forEach(i -> appendSync(wal, i, big, 1L));
             Files.write(file("stale-then-compact.wal.compact"), new byte[]{0x0A, 0x0B});
 
+            wal.markSealed(99L);
             wal.truncate(99L).onFailure(c -> fail(c.message()));
 
             assertThat(Files.notExists(file("stale-then-compact.wal.compact"))).as("temp consumed by the rename").isTrue();
@@ -657,6 +752,7 @@ class PartitionWalTest {
             var wal = open("window3.wal");
 
             IntStream.range(0, 200).forEach(i -> appendSync(wal, i, big, 1L));
+            wal.markSealed(99L);
             wal.truncate(99L).onFailure(c -> fail(c.message()));
 
             var independent = open("window3.wal");
@@ -674,8 +770,8 @@ class PartitionWalTest {
 
     private static final int WAL_HEADER_BYTES = 24;
 
-    private PartitionWal open(String name) {
-        return PartitionWal.open(file(name)).unwrap();
+    private AppendLog open(String name) {
+        return AppendLog.open(file(name)).unwrap();
     }
 
     private Path file(String name) {
@@ -690,11 +786,11 @@ class PartitionWalTest {
         }
     }
 
-    private static void appendSync(PartitionWal wal, long offset, byte[] payload, long ts) {
+    private static void appendSync(AppendLog wal, long offset, byte[] payload, long ts) {
         wal.append(offset, payload, ts).await().onFailure(c -> fail(c.message()));
     }
 
-    private static void fireOrdered(PartitionWal wal,
+    private static void fireOrdered(AppendLog wal,
                                     ReentrantLock section,
                                     long[] nextOffset,
                                     int count,
@@ -706,7 +802,7 @@ class PartitionWalTest {
         done.countDown();
     }
 
-    private static Promise<Unit> appendInSection(PartitionWal wal, ReentrantLock section, long[] nextOffset) {
+    private static Promise<Unit> appendInSection(AppendLog wal, ReentrantLock section, long[] nextOffset) {
         section.lock();
         try {
             var offset = nextOffset[0]++;
@@ -726,7 +822,7 @@ class PartitionWalTest {
         }
     }
 
-    private static List<WalRecord> replayAll(PartitionWal wal, long afterOffset) {
+    private static List<WalRecord> replayAll(AppendLog wal, long afterOffset) {
         var records = new ArrayList<WalRecord>();
         wal.replay(afterOffset, records::add).onFailure(c -> fail(c.message()));
         return records;
@@ -768,15 +864,15 @@ class PartitionWalTest {
 
     // === fsync-failure injection (reflection: the channel is the WAL's only I/O seam) ===
 
-    private static ForceFailingChannel injectForceFailingChannel(PartitionWal wal) {
+    private static ForceFailingChannel injectForceFailingChannel(AppendLog wal) {
         return injectChannel(wal, false);
     }
 
-    private static ForceFailingChannel injectGatedForceFailingChannel(PartitionWal wal) {
+    private static ForceFailingChannel injectGatedForceFailingChannel(AppendLog wal) {
         return injectChannel(wal, true);
     }
 
-    private static ForceFailingChannel injectChannel(PartitionWal wal, boolean gated) {
+    private static ForceFailingChannel injectChannel(AppendLog wal, boolean gated) {
         try {
             var field = channelField();
             var wrapper = new ForceFailingChannel((FileChannel) field.get(wal), gated);
@@ -788,7 +884,7 @@ class PartitionWalTest {
         }
     }
 
-    private static void restoreChannel(PartitionWal wal, ForceFailingChannel wrapper) {
+    private static void restoreChannel(AppendLog wal, ForceFailingChannel wrapper) {
         try {
             channelField().set(wal, wrapper.delegate);
         } catch (ReflectiveOperationException e) {
@@ -797,7 +893,7 @@ class PartitionWalTest {
     }
 
     private static java.lang.reflect.Field channelField() throws NoSuchFieldException {
-        var field = PartitionWal.class.getDeclaredField("channel");
+        var field = AppendLog.class.getDeclaredField("channel");
 
         field.setAccessible(true);
         return field;
