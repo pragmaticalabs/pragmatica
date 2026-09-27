@@ -1189,13 +1189,20 @@ public interface AetherNode extends ManageableNode {
     /// `PARTITION_NOT_LOCAL`, leaving RF≥2 structurally unreachable. Before the controller is bound / its
     /// first reconcile it falls back to the live placement projection ([#livePlacementMembers]), the SAME
     /// pre-reconcile fallback `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
-    private static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
-                                                       ClusterTopologyManager topologyManager,
-                                                       MembershipFsm membershipFsm) {
+    static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
+                                               Supplier<List<NodeId>> placementMembers) {
         return Option.option(controllerRef.get())
                      .map(ReplicaSetController::reconciledMembers)
-                     .or(() -> livePlacementMembers(topologyManager.observer().coreNodes(),
-                                                    membershipFsm));
+                     .or(placementMembers::get);
+    }
+
+    /// #1550 SINGLE SOURCE of the stream placement member set. Built once per node and handed to the
+    /// stream `ReplicaSetController` and the backfill orchestrator; every other placement consumer
+    /// (ownership writer, entity-ownership reconciler, consumer-group ownership, cluster-events owner gate,
+    /// placement-role supplier) reads it through that controller. `LivePlacementMembersWiringTest` fails if
+    /// any consumer reads the voter set directly again.
+    static Supplier<List<NodeId>> livePlacementMembers(Supplier<Set<NodeId>> voters, MembershipFsm membershipFsm) {
+        return () -> livePlacementMembers(voters.get(), membershipFsm);
     }
 
     /// #1550: the HRW stream-placement member set — the installed voters narrowed to the FSM's counted
@@ -1204,7 +1211,7 @@ public interface AetherNode extends ManageableNode {
     /// killed voter stays in it. Placing over that set kept a dead owner as the HRW winner forever, so no
     /// survivor was ever promoted. Before #1390 the same read returned the live membership projection;
     /// this restores liveness for placement without changing what consensus reads. Voters are kept as the
-    /// outer bound so a counted-but-not-installed core never enters placement.
+    /// outer bound: a fresh-identity core enters placement once the membership add installs it as a voter.
     static List<NodeId> livePlacementMembers(Set<NodeId> voters, MembershipFsm membershipFsm) {
         return voters.stream()
                      .filter(membershipFsm.coreCountedMembers()::contains)
@@ -4761,6 +4768,7 @@ public interface AetherNode extends ManageableNode {
         var streamOwnershipViews = StreamOwnershipViews.streamOwnershipViews(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore),
                                                                              membershipFsm);
         var streamCommittedOwnerSource = streamOwnershipViews.routing();
+        var placementMembers = livePlacementMembers(clusterTopologyManager.observer()::coreNodes, membershipFsm);
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamAlignedRecovery,
                                                                           streamCatchupTransport,
@@ -4770,16 +4778,15 @@ public interface AetherNode extends ManageableNode {
                                                                           config.self(),
                                                                           streamingConfig.backfillSourceWaitBound(),
                                                                           () -> streamPlacementMembers(clusterEventsControllerRef,
-                                                                                                       clusterTopologyManager,
-                                                                                                       membershipFsm),
+                                                                                                       placementMembers),
                                                                           streamCommittedOwnerSource,
                                                                           streamPartitionManager::syncReplicated,
                                                                           streamPartitionManager.quarantineView());
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
-        // against the HRW-derived desired replica set on every membership change. Members are the live
-        // placement projection (#1550, livePlacementMembers); cluster size comes from the consensus topology
+        // against the HRW-derived desired replica set on every membership change. Members are the single
+        // live placement source (#1550, placementMembers); cluster size comes from the consensus topology
         // observer; the stream catalog (name/partitions/
         // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
         // catch-up seam now runs backfill off the reconcile thread on a dedicated executor.
@@ -4808,9 +4815,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                      partition)));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                    config.self(),
-                                                                                   () -> livePlacementMembers(clusterTopologyManager.observer()
-                                                                                                                                    .coreNodes(),
-                                                                                                              membershipFsm),
+                                                                                   placementMembers,
                                                                                    clusterTopologyManager.observer()::clusterSize,
                                                                                    streamPartitionManager.replicaCatalog(),
                                                                                    (streamName, partition) -> streamBackfillExecutor.execute(() -> materializeThenBackfill(streamPartitionManager,

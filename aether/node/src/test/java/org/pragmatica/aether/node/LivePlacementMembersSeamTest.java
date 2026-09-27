@@ -6,9 +6,13 @@ package org.pragmatica.aether.node;
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.replication.StreamCatalog;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.FsmObserver;
@@ -29,6 +33,8 @@ class LivePlacementMembersSeamTest {
     private static final Set<NodeId> VOTERS = Set.of(SELF, PEER_B, PEER_C);
     private static final String STREAM = "orders";
     private static final int RF = 2;
+    private static final int PARTITIONS = 16;
+    private static final StreamCatalog CATALOG = () -> List.of(new StreamCatalog.StreamSpec(STREAM, PARTITIONS, RF, 0));
 
     private static final long NO_HINT_DECAY = Long.MAX_VALUE;
     private static final TimeSpan BACKSTOP = TimeSpan.timeSpan(40).millis();
@@ -109,5 +115,64 @@ class LivePlacementMembersSeamTest {
     void livePlacementMembers_countedButNotInstalled_excludesIt() {
         assertThat(AetherNode.livePlacementMembers(Set.of(SELF, PEER_B), healthyFsm())).containsExactlyInAnyOrder(SELF,
                                                                                                                    PEER_B);
+    }
+
+    /// The single source reads voters and FSM on every call, so a departure is visible to the next read
+    /// without rebuilding the supplier.
+    @Test
+    void livePlacementMembersSupplier_ownerDeparted_nextReadExcludesIt() {
+        var fsm = healthyFsm();
+        var source = AetherNode.livePlacementMembers(() -> VOTERS, fsm);
+
+        assertThat(source.get()).contains(PEER_C);
+
+        fsm.onSwimDeparted(PEER_C, 2L);
+
+        assertThat(source.get()).containsExactlyInAnyOrder(SELF, PEER_B);
+    }
+
+    /// Backfill orchestrator, pre-reconcile: with no controller bound it reads the single source.
+    @Test
+    void streamPlacementMembers_controllerUnbound_readsTheLiveSource() {
+        var fsm = healthyFsm();
+
+        fsm.onSwimDeparted(PEER_C, 2L);
+
+        assertThat(AetherNode.streamPlacementMembers(new AtomicReference<>(),
+                                                     AetherNode.livePlacementMembers(() -> VOTERS, fsm)))
+            .containsExactlyInAnyOrder(SELF, PEER_B);
+    }
+
+    /// The controller-derived consumers (ownership writer's HrwOwner, entity-ownership reconciler, consumer-group
+    /// ownership, cluster-events owner gate, placement role, backfill once bound) all read the controller built
+    /// on the single source: after the owner departs, the next reconcile drops it from reconciledMembers and
+    /// moves ownerFor to a survivor.
+    @Test
+    void controllerOnLiveSource_ownerDeparted_reconcileMovesOwnershipToSurvivor() {
+        var fsm = healthyFsm();
+        var controller = ReplicaSetController.replicaSetController(ReplicaRegistry.replicaRegistry(),
+                                                                   SELF,
+                                                                   AetherNode.livePlacementMembers(() -> VOTERS, fsm),
+                                                                   VOTERS::size,
+                                                                   CATALOG,
+                                                                   (_, _) -> {},
+                                                                   Runnable::run);
+
+        controller.reconcile();
+
+        var partition = partitionOwnedByPeer(controller.reconciledMembers());
+        var deadOwner = controller.ownerFor(STREAM, partition).or(SELF);
+
+        assertThat(deadOwner).as("arming: the partition is owned by a peer before the kill").isNotEqualTo(SELF);
+
+        fsm.onSwimDeparted(deadOwner, 2L);
+        controller.reconcile();
+
+        assertThat(controller.reconciledMembers()).doesNotContain(deadOwner);
+        assertThat(AetherNode.streamPlacementMembers(new AtomicReference<>(controller),
+                                                     AetherNode.livePlacementMembers(() -> VOTERS, fsm)))
+            .as("backfill orchestrator once the controller is bound")
+            .doesNotContain(deadOwner);
+        assertThat(controller.ownerFor(STREAM, partition).or(deadOwner)).isNotEqualTo(deadOwner);
     }
 }
