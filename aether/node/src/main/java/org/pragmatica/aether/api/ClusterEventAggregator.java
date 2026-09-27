@@ -63,6 +63,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.WarningLevel;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -151,12 +153,34 @@ public final class ClusterEventAggregator {
     /// Per-`(streamName, phase)` last-emit timestamp (HLC physical millis) for the budget-exhaustion
     /// rate-limiter (spec §4.5c / reconciliation #15). A saturated growing stream fires exhaustion on
     /// every append; this throttles to at most one `StreamMemoryExceeded` event per key per
-    /// {@link #STREAM_MEMORY_EVENT_THROTTLE_MS}. Create-phase exhaustion is naturally infrequent but
+    /// {@link #EVENT_THROTTLE_MS}. Create-phase exhaustion is naturally infrequent but
     /// shares the same key space (keyed by phase), so it is never starved by growth-phase noise.
-    private final ConcurrentHashMap<String, Long> streamMemoryEventThrottle = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ThrottleWindow> streamMemoryEventThrottle = new ConcurrentHashMap<>();
 
-    /// Throttle window for {@link #onStreamMemoryExceeded}: 60s per `(streamName, phase)` (spec §4.5c).
-    private static final long STREAM_MEMORY_EVENT_THROTTLE_MS = 60_000L;
+    /// Per-`(code, subject)` window for {@link #onOperatorWarning} (#1574). The same mechanism as the
+    /// stream-memory throttle, with its own key space, so a flood of one kind cannot starve the other.
+    /// The key is `code:subject`. It is unambiguous because a code is kebab-case and never contains `:`,
+    /// which `OperatorWarningCodeTest` enforces.
+    private final ConcurrentHashMap<String, ThrottleWindow> operatorWarningThrottle = new ConcurrentHashMap<>();
+
+    /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
+    /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
+    private static final long EVENT_THROTTLE_MS = 60_000L;
+
+    /// One throttle key's current window. `suppressed` counts the calls held back since `openedAt`.
+    /// `admitted` records whether the call that produced this state was let through, and for an
+    /// admitted call `suppressedBefore` is the count held back in the window it closed.
+    private record ThrottleWindow(long openedAt, long suppressed, boolean admitted, long suppressedBefore) {
+        /// A new window opened at `now` by an admitted call, closing one that held back `suppressedBefore`.
+        static ThrottleWindow throttleWindow(long now, long suppressedBefore) {
+            return new ThrottleWindow(now, 0, true, suppressedBefore);
+        }
+
+        /// The same window with one more suppressed call.
+        ThrottleWindow held() {
+            return new ThrottleWindow(openedAt, suppressed + 1, false, 0);
+        }
+    }
 
     private final IntSupplier clusterSizeSupplier;
 
@@ -489,7 +513,7 @@ public final class ClusterEventAggregator {
     /// `StreamPartitionManager` by `AetherNode` (reconciliation #14). Stamps THIS node's id, builds a
     /// `StreamMemoryExceeded` event, and emits it through the un-gated {@link #emitLocal} path
     /// (per-node fact). Rate-limited per `(streamName, phase)` to one event per
-    /// {@link #STREAM_MEMORY_EVENT_THROTTLE_MS} so a saturated growing stream cannot flood the log.
+    /// {@link #EVENT_THROTTLE_MS} so a saturated growing stream cannot flood the log.
     @Contract
     public void onStreamMemoryExceeded(Exhaustion exhaustion) {
         if (!shouldEmitStreamMemoryEvent(exhaustion)) {
@@ -506,35 +530,80 @@ public final class ClusterEventAggregator {
     }
 
     /// Throttle decision: emit iff no event for this `(streamName, phase)` key fired within the window.
-    /// The window check + timestamp update run atomically inside `compute` (the remapping function holds
-    /// the bin lock), so concurrent growth-phase appends from multiple partitions cannot both pass the
-    /// gate within the same window. The admit decision is captured in a thread-confined holder set
-    /// inside the remapping function — robust even when two calls land on the same physical millisecond.
     private boolean shouldEmitStreamMemoryEvent(Exhaustion exhaustion) {
-        var key = exhaustion.streamName() + ":" + exhaustion.phase().name();
-        var now = hlcClock.now().physicalMillis();
-        var admitted = new boolean[1];
-
-        streamMemoryEventThrottle.compute(key, (_, previous) -> advanceWindow(previous, now, admitted));
-
-        return admitted[0];
+        return admit(streamMemoryEventThrottle,
+                     exhaustion.streamName() + ":" + exhaustion.phase().name()).admitted();
     }
 
-    /// Advance the throttle window for one key: when the previous emit is absent or older than the
-    /// window, stamp `now` and record admission; otherwise keep the previous stamp and suppress.
+    /// Operator-warning sink entry point (#1574). Bound into lower modules by `AetherNode` as their
+    /// `OperatorWarningSink`, and reached only through `OperatorWarnings.raise`, which has already
+    /// logged the warning. So this method only decides whether to emit. It stamps THIS node's id and
+    /// emits through the ungated {@link #emitLocal} path, because a warning is a per-node fact. It is
+    /// throttled per `(code, subject)` to one event per {@link #EVENT_THROTTLE_MS}, and the next
+    /// admitted event carries the number held back as `suppressedSince`.
+    @Contract
+    public void onOperatorWarning(OperatorWarning warning) {
+        var window = admit(operatorWarningThrottle,
+                           warning.code().code() + ":" + warning.subject());
+
+        if (!window.admitted()) {
+            LOG.debug("ClusterEventAggregator: suppressing throttled OperatorWarning {} for {}",
+                      warning.code().code(),
+                      warning.subject());
+
+            return;
+        }
+
+        emitLocal(new ClusterEvent.OperatorWarning(hlcClock.now(),
+                                                   severityOf(warning.code().level()),
+                                                   warning.message(),
+                                                   operatorWarningDetails(warning, window.suppressedBefore())));
+    }
+
+    private static Severity severityOf(WarningLevel level) {
+        return switch (level) {
+            case WARNING -> Severity.WARNING;
+            case CRITICAL -> Severity.CRITICAL;
+        };
+    }
+
+    private Map<String, String> operatorWarningDetails(OperatorWarning warning, long suppressedSince) {
+        return withNodeId(Map.of("code",
+                                 warning.code().code(),
+                                 "subsystem",
+                                 warning.code().subsystem(),
+                                 "subject",
+                                 warning.subject(),
+                                 "suppressedSince",
+                                 Long.toString(suppressedSince)));
+    }
+
+    /// Advance `key`'s window in `throttle` and report the outcome. The window check and update run
+    /// atomically inside `compute`, because the remapping function holds the bin lock. So concurrent
+    /// callers on the same key cannot both pass the gate within one window, even when they land on the
+    /// same physical millisecond.
+    private ThrottleWindow admit(ConcurrentHashMap<String, ThrottleWindow> throttle, String key) {
+        var now = hlcClock.now().physicalMillis();
+
+        return throttle.compute(key, (_, previous) -> advanceWindow(previous, now));
+    }
+
+    /// Advance the throttle window for one key. When the previous window is absent or older than
+    /// {@link #EVENT_THROTTLE_MS}, open a new one at `now`, admit the call, and carry the closed window's
+    /// suppressed count. Otherwise keep the window open and count one more suppressed call.
     // RET-06: `previous` is the nullable prior value supplied by JDK Map.compute (absent key → null) —
     // a framework boundary, not a business optional.
     @SuppressWarnings("JBCT-RET-06")
-    private static long advanceWindow(Long previous, long now, boolean[] admitted) {
-        if (previous != null && now - previous < STREAM_MEMORY_EVENT_THROTTLE_MS) {
-            admitted[0] = false;
-
-            return previous;
+    private static ThrottleWindow advanceWindow(ThrottleWindow previous, long now) {
+        if (previous == null) {
+            return ThrottleWindow.throttleWindow(now, 0);
         }
 
-        admitted[0] = true;
+        if (now - previous.openedAt() < EVENT_THROTTLE_MS) {
+            return previous.held();
+        }
 
-        return now;
+        return ThrottleWindow.throttleWindow(now, previous.suppressed());
     }
 
     private Map<String, String> withNodeId(Map<String, String> details) {

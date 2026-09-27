@@ -48,6 +48,8 @@ import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -595,6 +597,40 @@ class SwimDeathPathCoConfirmationTest {
                 context.updateLoggers();
                 appender.stop();
             }
+        }
+
+        /// #1574: the kill-gate hold is reported to the event log through the wired sink, naming the
+        /// held peer. Before this it existed only as a log line on the one node that held it.
+        @Test
+        void killGateHold_raisesSwimKillGateOperatorWarning_namingThePeer() {
+            var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+            var shortWindow = swimConfig(timeSpan(40).millis(),
+                                         timeSpan(20).millis(),
+                                         3,
+                                         timeSpan(500).millis(),
+                                         8,
+                                         timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
+            var held = SwimProtocol.swimProtocol(shortWindow, transport, listener, SELF_ID, SELF_ADDR, () -> false, liveTransport::contains)
+                                   .unwrap();
+
+            held.setOperatorWarningSink(warnings::add);
+            seenHealthy(held, NODE_A, ADDR_A);
+            held.start();
+            try {
+                await().atMost(Duration.ofSeconds(10))
+                       .until(() -> warnings.stream().anyMatch(warning -> warning.subject().equals(NODE_A.id())));
+            } finally {
+                held.stop();
+            }
+
+            var warning = warnings.stream()
+                                  .filter(candidate -> candidate.subject().equals(NODE_A.id()))
+                                  .findFirst()
+                                  .orElseThrow();
+
+            assertThat(warning.code()).isEqualTo(OperatorWarningCode.SWIM_KILL_GATE_HELD);
+            assertThat(warning.message()).startsWith("SWIM co-confirmation kill-gate (#336): holding terminal DepartedObserved "
+                                                     + "for ever-HEALTHY peer node-a");
         }
 
         private boolean isAliveAfterAckingLatestProbe(NodeId peer, InetSocketAddress addr) {

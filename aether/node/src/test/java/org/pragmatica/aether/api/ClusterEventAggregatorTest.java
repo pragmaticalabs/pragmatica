@@ -26,10 +26,13 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
@@ -68,6 +71,14 @@ class ClusterEventAggregatorTest {
                               BooleanSupplier ownerCheck,
                               BooleanSupplier replayingCheck,
                               BooleanSupplier leaderCheck) {
+            return create(retention, ownerCheck, replayingCheck, leaderCheck, HlcClock.hlcClock(SELF));
+        }
+
+        static Harness create(RetentionPolicy retention,
+                              BooleanSupplier ownerCheck,
+                              BooleanSupplier replayingCheck,
+                              BooleanSupplier leaderCheck,
+                              HlcClock hlc) {
             // Generous memory budget so calculateStreamBytes (64 + 24*maxCount + maxBytes) fits.
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
             var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
@@ -88,7 +99,6 @@ class ClusterEventAggregatorTest {
                                                                                     config).unwrap();
             var pubRef = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(publisher);
             var conRef = new AtomicReference<FrameworkStreamConsumer<ClusterEvent>>(consumer);
-            var hlc = HlcClock.hlcClock(SELF);
             var aggregator = ClusterEventAggregator.clusterEventAggregator(pubRef::get,
                                                                            conRef::get,
                                                                            ownerCheck,
@@ -476,6 +486,84 @@ class ClusterEventAggregatorTest {
         h.aggregator().onStreamMemoryExceeded(createFloorExhaustion("mixed"));
 
         assertThat(h.events()).hasSize(2);
+    }
+
+    // --- operator warnings (#1574) ---------------------------------------------------------------
+
+    private static OperatorWarning fsyncFailed(String subject) {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.REPLICA_FSYNC_FAILED,
+                                               subject,
+                                               "durability sync failed for " + subject);
+    }
+
+    /// A warning is a per-node fact, so a NON-OWNER still publishes it. The event carries the code
+    /// catalogue's severity, the logged message as its summary, and the filterable details.
+    @Test
+    void onOperatorWarning_notOwner_emitsEventCarryingCodeAndSubject() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.CORE_ABSENCE_FENCE,
+                                                                         "core",
+                                                                         "CORE ABSENCE fence firing"));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getFirst().type()).isEqualTo("OPERATOR_WARNING");
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(events.getFirst().summary()).isEqualTo("CORE ABSENCE fence firing");
+        assertThat(events.getFirst().details()).containsExactlyInAnyOrderEntriesOf(Map.of("code", "core-absence-fence",
+                                                                                          "subsystem", "worker-isolation",
+                                                                                          "subject", "core",
+                                                                                          "nodeId", SELF.id(),
+                                                                                          "suppressedSince", "0"));
+    }
+
+    /// The flood test. A thousand raises of one `(code, subject)` inside a window publish ONE event, a
+    /// different subject is not starved by the flood, and the first event after the window closes
+    /// reports how many were held back.
+    @Test
+    void onOperatorWarning_flood_emitsOncePerWindow_andReportsTheSuppressedCount() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 1_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        }
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[4]"));
+
+        assertThat(h.events()).hasSize(2);
+
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        var events = h.events();
+        assertThat(events).hasSize(3);
+        assertThat(events.stream().map(event -> event.details().get("subject")).toList())
+            .containsExactly("orders[3]", "orders[4]", "orders[3]");
+        assertThat(events.getLast().details()).containsEntry("suppressedSince", "999");
+        assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
+    }
+
+    /// One millisecond short of the window is still inside it.
+    @Test
+    void onOperatorWarning_justInsideTheWindow_isStillSuppressed() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(59_999L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        assertThat(h.events()).hasSize(1);
     }
 
     // --- production retention -------------------------------------------------------------------

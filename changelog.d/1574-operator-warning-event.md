@@ -1,0 +1,11 @@
+### Added (2026-09-27 — #1574: operator warnings reach the cluster event log, step 1)
+- **New `OPERATOR_WARNING` cluster event (wire tag 292).** Its `details` carry `code`, `subsystem`, `subject`, `nodeId` and `suppressedSince`. Operators can now filter `GET /api/events` on a stable `code` for conditions that were previously only in one node's log. [verified: aether/node/src/test/java/org/pragmatica/aether/api/ClusterEventAggregatorTest.java] (unit-level, through the real cluster-events stream partition and codec)
+- **`OperatorWarnings.raise` (`integrations/utility`) logs and emits from one call site.** The log line is always written first, prefixed with `[code]`. If emitting throws, the throw is logged and dropped and never reaches the caller. Components reach their own node's event log through a per-instance `OperatorWarningSink` bound by `AetherNode`, so Ember's in-JVM nodes never cross-attribute. Codes come from the single `OperatorWarningCode` catalogue, which is tested for uniqueness. [verified: integrations/utility/src/test/java/org/pragmatica/utility/warning/OperatorWarningsTest.java]
+- **Emits are throttled to one per `(code, subject)` per 60 s window. Log lines are not throttled.** The next emitted event reports how many were held back as `suppressedSince`. [verified: `ClusterEventAggregatorTest.onOperatorWarning_flood_emitsOncePerWindow_andReportsTheSuppressedCount`]
+- **Three proof sites converted:**
+  - SWIM co-confirmation kill-gate hold (`swim-kill-gate-held`, WARNING).
+  - Worker core-absence fence (`core-absence-fence`, CRITICAL). Its log line moves from WARN to ERROR.
+  - Replica fsync failure that withholds an ack (`replica-fsync-failed`, WARNING).
+  - Each site has a test that its warning reaches the sink. [verified: the site tests in `SwimDeathPathCoConfirmationTest`, `CoreAbsenceDetectorTest`, `ReplicationReceiveHandlerTest`]
+  - The `AetherNode` bindings for all three are [design intent — unverified]. No test constructs `AetherNode`'s wiring.
+- About 230 remaining WARN/ERROR sites (per the audit) are still log-only and will be converted by their owners.

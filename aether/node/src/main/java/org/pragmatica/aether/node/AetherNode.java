@@ -3534,6 +3534,8 @@ public interface AetherNode extends ManageableNode {
         var bootTokens = BootTokens.bootTokens(bootToken);
 
         swimHealthDetector.setBootTokens(bootTokens);
+        // #1574: SWIM's operator warnings reach THIS node's event log, never another Ember node's.
+        swimHealthDetector.setOperatorWarningSink(eventAggregator::onOperatorWarning);
         clusterNode.network().setBootTokens(bootTokens);
         bootTokens.onSelfRefused(reason -> exitRefusedIdentity(config.self(), reason, jvmExit));
         // Process evidence carries the per-process random boot token (equality only); SWIM keeps its
@@ -4104,6 +4106,7 @@ public interface AetherNode extends ManageableNode {
                                                                       nodeReportedStateHolder,
                                                                       DrainReason.CORE_ABSENCE));
         coreAbsenceDetector.setFenceSuppressor(() -> !configuredWorker(config));
+        coreAbsenceDetector.setOperatorWarningSink(eventAggregator::onOperatorWarning);
         metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
         coreAbsenceDetector.start();
         // Assigned workers use challenge-bound governor evidence. Report expiry blocks new
@@ -5174,7 +5177,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
                                                                                                                                                                                                    partition)),
                                                                                                   streamPartitionManager::syncReplicated,
-                                                                                                  streamOwnershipViews.writeAuthority());
+                                                                                                  streamOwnershipViews.writeAuthority(),
+                                                                                                  eventAggregator::onOperatorWarning);
 
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));

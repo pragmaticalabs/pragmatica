@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -13,10 +14,14 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Result;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -151,6 +156,36 @@ class ReplicationReceiveHandlerTest {
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
 
         assertThat(acks).as("a replica whose fsync failed must not be counted as a durable copy").isEmpty();
+    }
+
+    /// #1574: the withheld ack is reported to the event log through the wired sink, naming the
+    /// partition and the highest offset left un-fsynced. Before this it existed only as a log line.
+    @Test
+    void failedDurabilityBarrier_raisesReplicaFsyncOperatorWarning() {
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> Result.success(0L);
+        var handler = ReplicationReceiveHandler.replicationReceiveHandler(SELF,
+                                                                          appender,
+                                                                          (_, _) -> 10L,
+                                                                          (_, _) -> {},
+                                                                          (_, _) -> {},
+                                                                          (_, _) -> Causes.cause("fsync failed").promise(),
+                                                                          CommittedStreamOwnerSource.none(),
+                                                                          warnings::add);
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
+
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (warnings.isEmpty() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.REPLICA_FSYNC_FAILED);
+        assertThat(warnings.getFirst().subject()).isEqualTo(STREAM + "[" + PARTITION + "]");
+        assertThat(warnings.getFirst().message())
+            .isEqualTo("ReplicationReceiveHandler: durability sync failed for events[0] up to 12 — "
+                       + "WITHHOLDING ack (applied but not fsynced): fsync failed");
     }
 
     /// The ack rides the barrier promise's resolution, which may land on another thread — bounded wait,
