@@ -26,6 +26,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Serializer;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -50,7 +53,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class StreamSectionBindingTest {
     private static final String SECTION = "streams.orders";
     private static final String ALIAS = "orders";
-    private static final long DEFAULT_COUNT = RetentionPolicy.retentionPolicy().maxCount();
+    private static final RetentionPolicy DEFAULTS = RetentionPolicy.retentionPolicy();
 
     private static final String EVERY_KEY = """
             [streams.orders]
@@ -108,7 +111,7 @@ class StreamSectionBindingTest {
                     retention-value = "5m"
                     """);
 
-            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULT_COUNT, Long.MAX_VALUE, 300_000L, RetentionMode.ANY));
+            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 300_000L, RetentionMode.ANY));
         }
 
         @Test
@@ -119,7 +122,7 @@ class StreamSectionBindingTest {
                     retention-value = "2MB"
                     """);
 
-            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULT_COUNT, 2L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY));
+            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), 2L * 1024 * 1024, DEFAULTS.maxAgeMs(), RetentionMode.ANY));
         }
 
         private static void assertEveryKeyBound(StreamConfig config) {
@@ -170,6 +173,25 @@ class StreamSectionBindingTest {
                     """);
         }
 
+        /// The shipped example, read from the repository, not copied: its `retention = "time"`, `"5m"` must
+        /// resolve to 5 minutes with the default count and byte caps, and its stream must create.
+        @Test
+        void notificationHubExample_streamsResolveAndCreate() throws IOException {
+            var service = Files.readString(Path.of("../../examples/notification-hub/notification-service/src/main/resources/resources.toml"));
+            var expected = RetentionPolicy.retentionPolicy(DEFAULTS.maxCount(), DEFAULTS.maxBytes(), 300_000L, RetentionMode.ANY);
+            var config = bindWith(new StreamPublisherFactory(), service, "streams.notifications");
+
+            System.out.println("#1549 notification-hub resolved retention: " + config.retention() + " maxEventSizeBytes=" + config.maxEventSizeBytes());
+            assertThat(config.retention()).isEqualTo(expected);
+            assertThat(config.maxEventSizeBytes()).isEqualTo(64L * 1024);
+            assertCreates(service, "streams.notifications", "notifications");
+
+            for (var consumer : List.of("notification-analytics", "notification-emailer")) {
+                var toml = Files.readString(Path.of("../../examples/notification-hub/" + consumer + "/src/main/resources/resources.toml"));
+                assertThat(bindWith(new StreamAccessFactory(), toml, "streams.notifications").retention()).isEqualTo(expected);
+            }
+        }
+
         @Test
         void unindexableCount_isRefusedTyped_notThrown() {
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
@@ -189,11 +211,15 @@ class StreamSectionBindingTest {
         }
 
         private static void assertCreates(String toml) {
+            assertCreates(toml, SECTION, ALIAS);
+        }
+
+        private static void assertCreates(String toml, String section, String alias) {
             var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
             try {
-                manager.createStream(bindWith(new StreamPublisherFactory(), toml))
+                manager.createStream(bindWith(new StreamPublisherFactory(), toml, section))
                        .onFailure(cause -> fail("stream creation failed: " + cause.message()));
-                assertThat(manager.streamInfo(ALIAS).isPresent()).isTrue();
+                assertThat(manager.streamInfo(alias).isPresent()).isTrue();
             } finally {
                 manager.close();
             }
@@ -303,8 +329,12 @@ class StreamSectionBindingTest {
     }
 
     private static StreamConfig bindWith(ResourceFactory<?, StreamConfig> factory, String toml) {
+        return bindWith(factory, toml, SECTION);
+    }
+
+    private static StreamConfig bindWith(ResourceFactory<?, StreamConfig> factory, String toml, String section) {
         return factory.sectionBinder()
-                      .map(binder -> binder.bind(providerOf(toml), SECTION))
+                      .map(binder -> binder.bind(providerOf(toml), section))
                       .or(() -> fail("stream factories must bind their own section"))
                       .onFailure(cause -> fail(cause.message()))
                       .unwrap();
