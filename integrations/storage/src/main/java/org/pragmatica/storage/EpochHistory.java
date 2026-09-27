@@ -14,6 +14,7 @@ import org.pragmatica.lang.io.FileOps;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// The durable owner-epoch history of one [AppendLog] (#1567 A11, the KIP-101 leader-epoch checkpoint): the
 /// offset at which each owner epoch began writing the log. Ranking replicas by `(last owner epoch, head)`
 /// rather than by head alone is what keeps a deposed owner's unacknowledged tail from winning after an
@@ -45,7 +46,8 @@ final class EpochHistory {
     static Path sidecarOf(Path logFile) {
         var name = logFile.getFileName().toString();
         var stem = name.endsWith(".wal")
-                   ? name.substring(0, name.length() - ".wal".length())
+                   ? name.substring(0,
+                                    name.length() - ".wal".length())
                    : name;
 
         return logFile.resolveSibling(stem + ".epochs");
@@ -115,10 +117,12 @@ final class EpochHistory {
     private Result<Unit> persist(List<AppendLog.EpochStart> next) {
         var temp = sidecar.resolveSibling(sidecar.getFileName() + ".tmp");
 
-        return writer.apply(temp, encode(next))
+        return writer.apply(temp,
+                            encode(next))
                      .flatMap(_ -> FileOps.moveAtomic(temp, sidecar))
                      .flatMap(_ -> FileOps.forceDirectory(sidecar.toAbsolutePath().getParent()))
-                     .mapError(cause -> new AppendLog.WalError.EpochWriteFailed(sidecar, cause.message()))
+                     .mapError(cause -> new AppendLog.WalError.EpochWriteFailed(sidecar,
+                                                                                cause.message()))
                      .map(_ -> install(next));
     }
 
@@ -131,7 +135,10 @@ final class EpochHistory {
     static byte[] encode(List<AppendLog.EpochStart> history) {
         var body = new StringBuilder(HEADER).append('\n');
 
-        history.forEach(entry -> body.append(entry.ownerEpoch()).append(' ').append(entry.startOffset()).append('\n'));
+        history.forEach(entry -> body.append(entry.ownerEpoch())
+                                     .append(' ')
+                                     .append(entry.startOffset())
+                                     .append('\n'));
 
         return (body + CRC_PREFIX + Long.toHexString(crc(body.toString())) + "\n").getBytes(StandardCharsets.UTF_8);
     }
@@ -142,7 +149,9 @@ final class EpochHistory {
 
         return crcAt < 0 || !text.endsWith("\n")
                ? corrupt(sidecar, "no checksum line")
-               : decodeChecked(sidecar, text.substring(0, crcAt), text.substring(crcAt + CRC_PREFIX.length()).trim());
+               : decodeChecked(sidecar,
+                               text.substring(0, crcAt),
+                               text.substring(crcAt + CRC_PREFIX.length()).trim());
     }
 
     private static Result<List<AppendLog.EpochStart>> decodeChecked(Path sidecar, String body, String storedCrc) {
@@ -154,9 +163,7 @@ final class EpochHistory {
 
         return lines.length == 0 || !lines[0].equals(HEADER)
                ? corrupt(sidecar, "unknown header")
-               : Result.allOf(Arrays.stream(lines, 1, lines.length)
-                                              .map(line -> parseEntry(sidecar, line))
-                                              .toList());
+               : Result.allOf(Arrays.stream(lines, 1, lines.length).map(line -> parseEntry(sidecar, line)).toList());
     }
 
     private static Result<AppendLog.EpochStart> parseEntry(Path sidecar, String line) {

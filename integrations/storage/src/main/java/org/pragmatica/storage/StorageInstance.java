@@ -493,7 +493,12 @@ final class DefaultStorageInstance implements StorageInstance {
 
     // --- Write flow ---
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
-        return claimOrAwait(id, content, sentinelFor(id), this::writeThroughTiers, this::deduplicateBlock, this::handlePut);
+        return claimOrAwait(id,
+                            content,
+                            sentinelFor(id),
+                            this::writeThroughTiers,
+                            this::deduplicateBlock,
+                            this::handlePut);
     }
 
     /// #1567: one writer per id at a time. The caller registers its own promise in [#writing] before it
@@ -510,7 +515,12 @@ final class DefaultStorageInstance implements StorageInstance {
                                           Fn2<Promise<BlockId>, BlockId, byte[]> again) {
         var mine = Promise.<Unit> promise();
 
-        return option(writing.putIfAbsent(id, mine)).fold(() -> claimAndWrite(id, content, sentinel, mine, write, deduplicate),
+        return option(writing.putIfAbsent(id, mine)).fold(() -> claimAndWrite(id,
+                                                                              content,
+                                                                              sentinel,
+                                                                              mine,
+                                                                              write,
+                                                                              deduplicate),
                                                           inFlight -> inFlight.fold(_ -> again.apply(id, content)));
     }
 
@@ -529,12 +539,15 @@ final class DefaultStorageInstance implements StorageInstance {
         }
 
         return afterCollection(id).flatMap(_ -> write.apply(id, content))
-                                  .fold(result -> claimantDone(id, sentinel, mine, result));
+                              .fold(result -> claimantDone(id, sentinel, mine, result));
     }
 
     /// The claim is released BEFORE the waiters are resumed, as a dependent step rather than an `onFailure`
     /// callback, so a waiter going round again finds the id free and claims it itself.
-    private Promise<BlockId> claimantDone(BlockId id, BlockLifecycle sentinel, Promise<Unit> mine, Result<BlockId> result) {
+    private Promise<BlockId> claimantDone(BlockId id,
+                                          BlockLifecycle sentinel,
+                                          Promise<Unit> mine,
+                                          Result<BlockId> result) {
         result.onFailure(_ -> metadataStore.releaseClaim(id, sentinel));
         finishWriting(id, mine, result.mapToUnit());
 
@@ -657,7 +670,7 @@ final class DefaultStorageInstance implements StorageInstance {
                       : RequiredTierFailed.requiredTierFailed(0, cause);
 
         return deleteWritten(id, failure.written() - 1).flatMap(_ -> failure.origin()
-                                                                             .<Unit> promise());
+                                                                            .<Unit> promise());
     }
 
     private Promise<Unit> deleteWritten(BlockId id, int index) {
@@ -847,11 +860,14 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private static List<String> logNames(Path root, List<Path> files) {
         return files.stream()
-                    .map(file -> root.relativize(file).toString())
-                    .map(relative -> relative.substring(0, relative.length() - LOG_SUFFIX.length()))
+                    .map(file -> root.relativize(file)
+                                     .toString())
+                    .map(relative -> relative.substring(0,
+                                                        relative.length() - LOG_SUFFIX.length()))
                     .sorted()
                     .toList();
     }
+
     /// `name` resolves strictly under `root`: relative, and never climbing out of it with `..`.
     private static Result<Path> logFile(Path root, String logName) {
         var invalid = StorageError.InvalidLogName.invalidLogName(logName);
@@ -898,7 +914,12 @@ final class DefaultStorageInstance implements StorageInstance {
         var sentinel = BlockLifecycle.blockLifecycle(id,
                                                      tiers.getLast().level());
 
-        return claimOrAwait(id, content, sentinel, this::writeToAllTiers, this::rewriteDeduplicated, this::handleDurablePut);
+        return claimOrAwait(id,
+                            content,
+                            sentinel,
+                            this::writeToAllTiers,
+                            this::rewriteDeduplicated,
+                            this::handleDurablePut);
     }
 
     /// The credit is taken first so GC cannot collect the block under the rewrite (#801); if the rewrite

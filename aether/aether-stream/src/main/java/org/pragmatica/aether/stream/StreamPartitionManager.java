@@ -4159,9 +4159,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         @Contract
         private static void deleteWalFile(Option<AppendLog> wal) {
-            wal.onPresent(w -> w.deleteFiles().onFailure(cause -> log.warn("Failed to delete WAL files of {}: {}",
-                                                                           w.path(),
-                                                                           cause.message())));
+            wal.onPresent(w -> w.deleteFiles()
+                                .onFailure(cause -> log.warn("Failed to delete WAL files of {}: {}",
+                                                             w.path(),
+                                                             cause.message())));
         }
     }
 }

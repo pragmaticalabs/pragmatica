@@ -167,7 +167,6 @@ public final class AppendLog implements AutoCloseable {
     private volatile long fsyncMaxNanos;  // guarded by syncLock
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
-
     private final EpochHistory epochs;
 
     private AppendLog(Path file, FileChannel channel, long writePosition, long lastOffset, EpochHistory epochs) {
@@ -222,7 +221,9 @@ public final class AppendLog implements AutoCloseable {
 
     private static LogExtent extentOf(byte[] bytes) {
         var low = new AtomicLong(-1);
-        var result = scan(wrapBigEndian(bytes), Long.MIN_VALUE, record -> low.compareAndSet(-1, record.offset()));
+        var result = scan(wrapBigEndian(bytes),
+                          Long.MIN_VALUE,
+                          record -> low.compareAndSet(-1, record.offset()));
 
         return new LogExtent(low.get(), result.lastOffset(), result.validEnd(), bytes.length);
     }
@@ -654,13 +655,15 @@ public final class AppendLog implements AutoCloseable {
                       .onSuccess(extent -> reportTornTail(file, extent, listener))
                       .flatMap(extent -> truncateAndBuild(file,
                                                           channel,
-                                                          new ScanResult(extent.validBytes(), extent.headOffset()),
+                                                          new ScanResult(extent.validBytes(),
+                                                                         extent.headOffset()),
                                                           history));
     }
 
     private static void closeQuietly(Path file, FileChannel channel) {
-        Result.lift(CLOSE_FAILED, channel::close)
-              .onFailure(cause -> log.warn("AppendLog close issue for {}: {}", file, cause.message()));
+        Result.lift(CLOSE_FAILED, channel::close).onFailure(cause -> log.warn("AppendLog close issue for {}: {}",
+                                                                              file,
+                                                                              cause.message()));
     }
 
     /// #1569 A10: cutting a torn tail discards bytes, so it is never silent -- a WARN naming the log, the
@@ -836,7 +839,6 @@ public final class AppendLog implements AutoCloseable {
     @FunctionalInterface
     public interface TornTailListener {
         TornTailListener NONE = _ -> Unit.unit();
-
         Unit tornTail(TornTail tornTail);
     }
 
@@ -909,9 +911,9 @@ public final class AppendLog implements AutoCloseable {
             @Override
             public String message() {
                 return "Epoch start refused: epoch %d at offset %d does not follow epoch %d at offset %d".formatted(ownerEpoch,
-                                                                                                                  startOffset,
-                                                                                                                  lastEpoch,
-                                                                                                                  lastStart);
+                                                                                                                    startOffset,
+                                                                                                                    lastEpoch,
+                                                                                                                    lastStart);
             }
         }
 

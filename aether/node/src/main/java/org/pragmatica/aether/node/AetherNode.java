@@ -1069,8 +1069,8 @@ public interface AetherNode extends ManageableNode {
         return probe.fold(cause -> allowNonDurable
                                    ? Result.unitResult()
                                    : StorageFactory.StreamDiskTierUnavailable.streamDiskTierUnavailable(segmentsDir,
-                                                                                                       cause.message())
-                                                                              .result(),
+                                                                                                        cause.message())
+                                                                             .result(),
                           _ -> Result.unitResult());
     }
 

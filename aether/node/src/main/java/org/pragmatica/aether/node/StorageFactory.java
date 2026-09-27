@@ -610,7 +610,8 @@ public final class StorageFactory {
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
 
         return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
-                                                                                    warnNoDurableStreamTier(segmentsDir, cause);
+                                                                                    warnNoDurableStreamTier(segmentsDir,
+                                                                                                            cause);
 
                                                                                     return Result.success(withDht(dhtBuild,
                                                                                                                   List.of(memoryTier)));
@@ -628,7 +629,8 @@ public final class StorageFactory {
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
 
         return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
-                                                                                    warnNoDurableStreamTier(segmentsDir, cause);
+                                                                                    warnNoDurableStreamTier(segmentsDir,
+                                                                                                            cause);
 
                                                                                     return withDht(dhtBuild,
                                                                                                    List.of(memoryTier));
@@ -659,10 +661,11 @@ public final class StorageFactory {
 
         @Override
         public String message() {
-            return "stream segment directory " + segmentsDir + " cannot be created (" + detail
-                   + ") -- refusing to boot: sealed stream segments would have no durable tier, so no segment could "
-                   + "be sealed and every WAL would grow without bound. Fix the mount, or opt in to non-durable "
-                   + "streams explicitly with -Daether.allowNonDurableStreams=true";
+            return "stream segment directory " + segmentsDir
+                 + " cannot be created (" + detail
+                 + ") -- refusing to boot: sealed stream segments would have no durable tier, so no segment could "
+                 + "be sealed and every WAL would grow without bound. Fix the mount, or opt in to non-durable "
+                 + "streams explicitly with -Daether.allowNonDurableStreams=true";
         }
     }
 
