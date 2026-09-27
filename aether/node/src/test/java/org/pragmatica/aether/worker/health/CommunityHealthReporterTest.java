@@ -33,8 +33,8 @@ class CommunityHealthReporterTest {
         assertThat(reporter.respond(core, request).unwrap().members().getFirst().incarnation()).isEqualTo(42L);
         reporter.recordPong(worker, "DRAINING", 43L, observation(7, 1));
         assertThat(reporter.respond(core, request).unwrap().members().getFirst().ready())
-            .as("a different boot token is a new process and supersedes (equality only)").isFalse();
-        assertThat(reporter.respond(core, request).unwrap().members().getFirst().incarnation()).isEqualTo(43L);
+            .as("a different boot token is another process claiming the NodeId and is ignored").isTrue();
+        assertThat(reporter.respond(core, request).unwrap().members().getFirst().incarnation()).isEqualTo(42L);
         clock.addAndGet(100_000_000);
         assertThat(reporter.respond(core, request).unwrap().members().getFirst().alive()).isFalse();
         assertThat(reporter.respond(worker, request).isEmpty()).isTrue();

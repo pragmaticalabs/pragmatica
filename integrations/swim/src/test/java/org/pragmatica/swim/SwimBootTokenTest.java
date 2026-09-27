@@ -9,11 +9,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimAnnounceClusterGateTest.RecordingListener;
 import org.pragmatica.swim.SwimAnnounceClusterGateTest.RecordingTransport;
 import org.pragmatica.swim.SwimMember.MemberState;
+import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
@@ -130,6 +132,86 @@ class SwimBootTokenTest {
                                                                                                     SELF_ADDR,
                                                                                                     TOKEN))));
         assertThat(protocol.selfIncarnation()).as("control: a suspicion of THIS process is refuted").isEqualTo(11);
+    }
+
+    /// A NodeId retired in the shared registry (e.g. by the QUIC handshake) is never re-seeded from a
+    /// channel reconnect. Control: an unrelated id is seeded.
+    @Test
+    void seedMember_forRetiredIdentity_isNotAdmitted() {
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        protocol.setBootTokens(tokens);
+        tokens.admit(NODE_A, TOKEN);
+        tokens.admit(NODE_A, OTHER_TOKEN);
+
+        protocol.addSeedMember(NODE_A, ADDR_A);
+        protocol.addSeedMember(NODE_B, ADDR_B);
+
+        assertThat(protocol.members()).as("a retired identity is not re-seeded").doesNotContainKey(NODE_A);
+        assertThat(protocol.members()).as("control: an unrelated seed is admitted").containsKey(NODE_B);
+    }
+
+    /// Retirement seen by ANOTHER layer (the QUIC handshake) marks the resident member FAULTY, and a
+    /// probe ack answered by the new process at the same address must not revive it.
+    @Test
+    void probeAck_fromRetiredIdentity_doesNotReviveMember() {
+        var transport = new RecordingTransport();
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+        var probing = SwimProtocol.swimProtocol(probingConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+                                  .unwrap();
+
+        probing.setBootTokens(tokens);
+        probing.addSeedMember(NODE_A, ADDR_A);
+        probing.start();
+        try {
+            var sequence = awaitPingSequence(transport);
+
+            tokens.admit(NODE_A, TOKEN);
+            tokens.admit(NODE_A, OTHER_TOKEN);
+            assertThat(probing.members().get(NODE_A).state()).as("the retirement listener marks the member FAULTY")
+                                                             .isEqualTo(MemberState.FAULTY);
+
+            probing.onMessage(ADDR_A, Ack.ack(NODE_A, sequence, List.of()));
+
+            assertThat(probing.members().get(NODE_A).state()).as("an ack from the retired identity revives nothing")
+                                                             .isEqualTo(MemberState.FAULTY);
+        } finally {
+            probing.stop();
+        }
+    }
+
+    private static long awaitPingSequence(RecordingTransport transport) {
+        var deadline = System.currentTimeMillis() + 5_000;
+
+        while (System.currentTimeMillis() < deadline) {
+            var ping = transport.sentMessages.stream()
+                                             .filter(Ping.class::isInstance)
+                                             .map(Ping.class::cast)
+                                             .findFirst();
+
+            if (ping.isPresent()) {
+                return ping.get().sequence();
+            }
+            sleep(10);
+        }
+        throw new AssertionError("the protocol never probed the seeded member");
+    }
+
+    private static void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static SwimConfig probingConfig() {
+        return swimConfig(timeSpan(20).millis(),
+                          timeSpan(5).seconds(),
+                          3,
+                          timeSpan(10).seconds(),
+                          8,
+                          timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis());
     }
 
     private void announce(long incarnation, long bootToken) {

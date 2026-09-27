@@ -291,6 +291,7 @@ SHAPE org.pragmatica.consensus.StateMachine$Batch$Id (id:java.lang.String)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$DiscoverNodes (self:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$DiscoveredNodes (target:org.pragmatica.consensus.NodeId,nodes:java.util.List<org.pragmatica.consensus.net.NodeInfo>)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$Hello (sender:org.pragmatica.consensus.NodeId,address:org.pragmatica.net.tcp.NodeAddress,labels:java.util.Map<java.lang.String, java.lang.String>,bootToken:long)
+SHAPE org.pragmatica.consensus.net.NetworkMessage$HelloRefused (sender:org.pragmatica.consensus.NodeId,refused:org.pragmatica.consensus.NodeId,reason:java.lang.String)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncRequest (sender:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KVSyncResponse (target:org.pragmatica.consensus.NodeId,snapshot:byte[])
 SHAPE org.pragmatica.consensus.net.NetworkMessage$KeepAlive (sender:org.pragmatica.consensus.NodeId)
@@ -344,6 +345,7 @@ SHAPE org.pragmatica.swim.SwimConfig (period:org.pragmatica.lang.io.TimeSpan,pro
 SHAPE org.pragmatica.swim.SwimMember (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,labels:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.swim.SwimMessage$Ack (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
 SHAPE org.pragmatica.swim.SwimMessage$Announce (nodeInfo:org.pragmatica.consensus.net.NodeInfo,clusterName:java.lang.String,incarnation:long,bootToken:long)
+SHAPE org.pragmatica.swim.SwimMessage$IdentityRefused (from:org.pragmatica.consensus.NodeId,refused:org.pragmatica.consensus.NodeId,reason:java.lang.String)
 SHAPE org.pragmatica.swim.SwimMessage$MembershipUpdate (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,bootToken:long)
 SHAPE org.pragmatica.swim.SwimMessage$Ping (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
 SHAPE org.pragmatica.swim.SwimMessage$PingReq (from:org.pragmatica.consensus.NodeId,target:org.pragmatica.consensus.NodeId,sequence:long)
@@ -639,6 +641,7 @@ TAG  org.pragmatica.consensus.StateMachine$Batch$Id 23
 TAG  org.pragmatica.consensus.net.NetworkMessage$DiscoverNodes 37
 TAG  org.pragmatica.consensus.net.NetworkMessage$DiscoveredNodes 36
 TAG  org.pragmatica.consensus.net.NetworkMessage$Hello 38
+TAG  org.pragmatica.consensus.net.NetworkMessage$HelloRefused 1705
 TAG  org.pragmatica.consensus.net.NetworkMessage$KVSyncRequest 40
 TAG  org.pragmatica.consensus.net.NetworkMessage$KVSyncResponse 41
 TAG  org.pragmatica.consensus.net.NetworkMessage$KeepAlive 39
@@ -697,6 +700,7 @@ TAG  org.pragmatica.swim.SwimMember 45
 TAG  org.pragmatica.swim.SwimMember$MemberState 46
 TAG  org.pragmatica.swim.SwimMessage$Ack 47
 TAG  org.pragmatica.swim.SwimMessage$Announce 48
+TAG  org.pragmatica.swim.SwimMessage$IdentityRefused 1706
 TAG  org.pragmatica.swim.SwimMessage$MembershipUpdate 49
 TAG  org.pragmatica.swim.SwimMessage$Ping 50
 TAG  org.pragmatica.swim.SwimMessage$PingReq 51

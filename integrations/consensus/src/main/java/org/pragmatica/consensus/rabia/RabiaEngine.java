@@ -1954,7 +1954,16 @@ public class RabiaEngine<C extends Command> {
                  reason,
                  state.lastCommittedPhase(),
                  currentPhase.get());
-        restoreState(state);
+        restoreState(state, this::recordOwnRestoreFailure);
+    }
+
+    /// #1468 — a node that cannot restore its OWN persisted history reports it as the authority
+    /// failure (visible through [#voterReconfigurationStatus]), not only in the log, and the
+    /// `authorityFailure` fence keeps it from activating on a later sync round. A responder-snapshot
+    /// restore failure is NOT recorded here: another sync round may adopt a readable snapshot.
+    private void recordOwnRestoreFailure(Cause cause) {
+        authorityFailure = Option.some(cause);
+        logRestoreFailure(cause);
     }
 
     private void activateOnLiveState(String reason) {
@@ -2041,6 +2050,10 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void restoreState(SavedState<C> state) {
+        restoreState(state, this::logRestoreFailure);
+    }
+
+    private void restoreState(SavedState<C> state, Consumer<Cause> onRestoreFailure) {
         observeClusterPhase(state.lastCommittedPhase());
         syncResponses.clear();
         // Always carry forward the source's lastCommittedPhase + pendingBatches even when
@@ -2065,7 +2078,7 @@ public class RabiaEngine<C extends Command> {
                     .onSuccessRun(this::activate)
                     .onSuccessRun(this::replayStateNotifications)
                     .onSuccessRun(this::notifyStateRestored)
-                    .onFailure(cause -> logRestoreFailure(cause));
+                    .onFailure(onRestoreFailure);
     }
 
     /// #1020 — the ONE operator signal on a failed restore, so it names the CONSEQUENCE and not only

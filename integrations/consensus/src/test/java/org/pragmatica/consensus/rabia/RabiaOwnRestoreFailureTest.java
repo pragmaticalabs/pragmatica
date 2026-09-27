@@ -65,7 +65,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// restored never activates. #1390's boot recovery, which also kept such a node out of every sync
 /// round, is removed with the vote WAL (owner ruling, session 28: cores run in-memory Rabia), so the
 /// own-restore arm is again `activateWithoutAdoption` → `restoreState`: a failed restore skips
-/// `activate()`, the node stays `Syncing` and serves nothing, and `logRestoreFailure` reports it.
+/// `activate()`, records the cause as the authority failure (reported by `voterReconfigurationStatus()`
+/// and fencing activation on later sync rounds), and `logRestoreFailure` reports it at ERROR.
 /// **#1468 stays OPEN** for whether that stop is bounded (wedge) or terminal (exit), and what the start
 /// promise and readiness surface report meanwhile.
 ///
@@ -132,6 +133,9 @@ class RabiaOwnRestoreFailureTest {
                                            record it.\
                                            """)
                   .isFalse();
+        assertThat(engine.voterReconfigurationStatus().failure())
+            .as("#1468: the own-restore failure is reported as the authority failure, not only logged")
+            .contains(UNREADABLE_SNAPSHOT.message());
     }
 
     /// Pins the diagnostic itself. The ERROR is the ONLY operator signal on this path — the periodic

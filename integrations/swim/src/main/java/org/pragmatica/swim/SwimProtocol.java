@@ -53,6 +53,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.Announce;
+import org.pragmatica.swim.SwimMessage.IdentityRefused;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
@@ -756,7 +757,23 @@ public final class SwimProtocol implements SwimMessageHandler {
             case Announce announce -> handleAnnounce(sender, announce);
             case WhoAmI w -> handleWhoAmI(sender, w);
             case WhoAmIReply r -> handleWhoAmIReply(r);
+            case IdentityRefused refused -> handleIdentityRefused(refused);
         }
+    }
+
+    /// A peer refused THIS process's ANNOUNCE: our NodeId belongs to a retired or different process
+    /// (terminal removal). Hand it to the shared registry, whose self-refusal listener makes the node
+    /// log ERROR and exit. A refusal about some other NodeId is not ours and is ignored.
+    private void handleIdentityRefused(IdentityRefused refused) {
+        if (!selfId.equals(refused.refused())) {
+            return;
+        }
+
+        LOG.error("SWIM: peer {} refused this process's identity {}: {}",
+                  refused.from().id(),
+                  selfId.id(),
+                  refused.reason());
+        bootTokens.selfRefused(refused.reason());
     }
 
     // -- Internal tick --
@@ -1519,6 +1536,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// P2 reconnection: a verified probe-ack is genuine proof this node is no longer isolated;
     /// the isolation latch clear + isolation-era FAULTY backlog expiry happen in
     /// [#recordHealthyAndEmit] (the single HEALTHY-edge chokepoint this routes through).
+    /// A retired identity (boot-token conflict) is refused here, the single entry for probe-ack alive
+    /// evidence: a same-address new process answering a probe must never revive the retired member.
     private void acceptAliveEvidence(NodeId peer) {
         if (!inMembershipScope(peer) || isRetired(peer)) {
             return;
@@ -1618,6 +1637,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         // runs BEFORE the tombstone clear so a refused process can never reopen the identity.
         if (!admitsBootToken(announce.nodeInfo().id(),
                              announce.bootToken())) {
+            refuseAnnounce(sender, announce.nodeInfo().id());
+
             return;
         }
 
@@ -1840,6 +1861,15 @@ public final class SwimProtocol implements SwimMessageHandler {
         };
     }
 
+    /// Tell the refused announcer explicitly, so it exits instead of announcing forever.
+    private void refuseAnnounce(InetSocketAddress sender, NodeId refused) {
+        transport.send(sender,
+                       IdentityRefused.identityRefused(selfId,
+                                                       refused,
+                                                       "NodeId " + refused.id()
+                                                       + " belongs to a retired process; start with a fresh identity"));
+    }
+
     private boolean refuseRetired(NodeId peer, long token) {
         LOG.debug("SWIM refused evidence for {} carrying boot token {}: identity already retired by a boot-token conflict",
                   peer.id(),
@@ -1993,7 +2023,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// a real return arrives via self-ANNOUNCE (clears the tombstone) or a higher
     /// incarnation (supersedes). A non-tombstoned member is promoted normally.
     private void markAliveIfNeeded(NodeId nodeId) {
-        if (blockedByTombstone(nodeId, 0L) || isRetired(nodeId)) {
+        if (blockedByTombstone(nodeId, 0L)) {
             return;
         }
 

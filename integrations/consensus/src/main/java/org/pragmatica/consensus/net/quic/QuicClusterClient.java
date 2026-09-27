@@ -601,6 +601,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
             if (message instanceof NetworkMessage.Hello hello) {
                 completePeerConnection(ctx, hello);
+            } else if (message instanceof NetworkMessage.HelloRefused refused) {
+                onHelloRefused(ctx, refused);
             } else {
                 log.warn("Expected Hello response from peer {} but received: {}",
                          peerId,
@@ -608,6 +610,18 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                 promise.fail(UNEXPECTED_MESSAGE);
                 ctx.close();
             }
+        }
+
+        /// The acceptor refused THIS process's identity (terminal removal). Hand it to the shared registry,
+        /// whose self-refusal listener makes the node log ERROR and exit, and fail the dial.
+        private void onHelloRefused(ChannelHandlerContext ctx, NetworkMessage.HelloRefused refused) {
+            if (refused.refused().equals(selfId)) {
+                log.error("QUIC peer {} refused this process's identity {}: {}", refused.sender(), selfId, refused.reason());
+                bootTokens.selfRefused(refused.reason());
+            }
+
+            promise.fail(QuicTransportError.BootTokenRefused.FACTORY.apply(selfId, "SELF_REFUSED"));
+            ctx.close();
         }
 
         private Object decodeMessage(ByteBuf buf) {

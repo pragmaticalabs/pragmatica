@@ -40,6 +40,11 @@ public sealed interface NetworkMessage extends Message.Wired {
     /// receiver admits through [BootTokens] before attaching the connection (terminal removal).
     record Hello(NodeId sender, NodeAddress address, Map<String, String> labels, long bootToken) implements NetworkMessage {}
 
+    /// Explicit refusal of a Hello by the boot-token gate (terminal removal): the acceptor tells the
+    /// dialing process that its NodeId belongs to a retired or different process, so the refused
+    /// process can exit instead of retrying forever. Sent in place of the Hello response.
+    record HelloRefused(NodeId sender, NodeId refused, String reason) implements NetworkMessage {}
+
     /// Topology discovery request - asks recipient to share their known nodes
     record DiscoverNodes(NodeId self) implements NetworkMessage {}
 

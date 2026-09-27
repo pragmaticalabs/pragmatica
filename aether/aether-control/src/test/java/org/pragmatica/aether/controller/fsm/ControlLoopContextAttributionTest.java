@@ -150,15 +150,16 @@ class ControlLoopContextAttributionTest {
     }
 
     /// The snapshot `incarnation` is the source's boot token — equality only (owner ruling, session 28).
-    /// A different token is a new process and supersedes, even at a lower sequence or a numerically
-    /// lower token; this replaced #1390's "old incarnation is rejected" ordering.
+    /// The first token pins the source; a different token (lower or higher) is another process claiming
+    /// the NodeId and never supersedes. This replaced #1390's "old incarnation is rejected" ordering.
     @Test
-    void sourceSnapshotWithDifferentBootToken_supersedesRegardlessOfOrder() {
-        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 10));
-        var restarted = new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 1);
+    void sourceSnapshotWithDifferentBootToken_neverSupersedes() {
+        var pinned = new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 10);
 
-        ctx.storeCommunitySnapshot(restarted);
-        assertThat(ctx.communitySnapshots().get(WORKER.id())).isEqualTo(restarted);
+        ctx.storeCommunitySnapshot(pinned);
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 99));
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 3, 99));
+        assertThat(ctx.communitySnapshots().get(WORKER.id())).isEqualTo(pinned);
     }
 
     @Test

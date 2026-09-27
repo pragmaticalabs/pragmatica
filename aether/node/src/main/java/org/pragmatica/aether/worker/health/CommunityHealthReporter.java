@@ -111,8 +111,9 @@ public final class CommunityHealthReporter {
         }
 
         var previous = Option.option(direct.get(sender));
-        // Boot token, equality only: a different token is a new process and supersedes.
-        if (previous.filter(value -> value.incarnation() == incarnation && value.sequence() >= sequence).isPresent()) {
+        // Boot token, equality only: the first token pins the sender; a different token is another
+        // process claiming the NodeId (terminal removal) and is ignored, as is a non-newer sequence.
+        if (previous.filter(value -> value.incarnation() != incarnation || value.sequence() >= sequence).isPresent()) {
             return;
         }
 

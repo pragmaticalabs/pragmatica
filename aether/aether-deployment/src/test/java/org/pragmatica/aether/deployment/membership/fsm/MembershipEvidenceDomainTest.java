@@ -27,7 +27,7 @@ class MembershipEvidenceDomainTest {
     private static final MemberDescriptor DESCRIPTOR = new MemberDescriptor(Option.none(), "worker", "source");
     private static final long SWIM_BOOT = 1_790_018_000_000L;
     private static final long TOKEN = 0x5eed_0001L;
-    private static final long OTHER_TOKEN = -0x5eed_0002L;
+    private static final long OTHER_TOKEN = 0x5eed_0002L;
 
     enum Evidence {
         GOVERNOR, ADMISSION;

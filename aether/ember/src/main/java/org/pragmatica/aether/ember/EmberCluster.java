@@ -419,9 +419,10 @@ public final class EmberCluster {
         dataBaseDir.set(Option.option(baseDir));
     }
 
-    /// Enable production consensus persistence in pre-created per-node directories before the first start.
-    /// The caller provisions <baseDir>/<nodeId> for initial and future nodes, as production provisioning does.
-    /// The participation marker remains durable; this never reasserts newness on restart.
+    /// Enable the git-backed `[backup]` consensus snapshot in pre-created per-node directories before the
+    /// first start. Consensus itself runs in memory (owner ruling, session 28); the backup is what a
+    /// whole-cluster restart restores from. The caller provisions <baseDir>/<nodeId> for initial and
+    /// future nodes. The participation marker remains durable; this never reasserts newness on restart.
     @Contract
     public Unit withConsensusBaseDir(Path baseDir) {
         consensusBaseDir.set(Option.some(baseDir));

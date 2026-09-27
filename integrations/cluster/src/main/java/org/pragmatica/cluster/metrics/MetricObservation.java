@@ -11,8 +11,9 @@ import org.pragmatica.serialization.Codec;
 
 /// Producer identity is the containing map key (or pong sender). Forwarding preserves this
 /// envelope unchanged. `incarnation` is the producer's per-process random BOOT TOKEN — equality
-/// only, never ordered: sequence is monotonic within one token, and a different token is a new
-/// process whose first sample supersedes the old one. Observation time is UTC.
+/// only, never ordered: sequence is monotonic within one token. The first token seen for a producer
+/// pins it; a sample from a different token is another process claiming the NodeId (terminal
+/// removal) and never supersedes. Observation time is UTC.
 @Codec
 public record MetricObservation(long incarnation, long sequence, long observedAtMs, Map<String, Double> values) {
     public static final long MAX_AGE_MS = 30_000;
@@ -35,9 +36,9 @@ public record MetricObservation(long incarnation, long sequence, long observedAt
         return age >= -CLOCK_SKEW_ALLOWANCE_MS && age <= MAX_AGE_MS;
     }
 
-    /// A different boot token is a new producer process and always supersedes; within one token the
-    /// higher sequence wins.
+    /// Within the pinned boot token the higher sequence wins. A different token is a different process
+    /// for the same NodeId — refused under terminal removal — so it is never "after" the pinned one.
     public boolean isAfter(MetricObservation previous) {
-        return incarnation != previous.incarnation() || sequence > previous.sequence();
+        return incarnation == previous.incarnation() && sequence > previous.sequence();
     }
 }

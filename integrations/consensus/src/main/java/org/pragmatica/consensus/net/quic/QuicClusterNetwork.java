@@ -20,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1005,8 +1006,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
+    /// QUIC transport counters plus `boot_token_refusals_total` — every admission the shared boot-token
+    /// registry refused (SWIM and QUIC Hello together; terminal removal, #1528).
     public Map<String, Number> transportMetrics() {
-        return quicMetrics.snapshot();
+        var metrics = new HashMap<String, Number>(quicMetrics.snapshot());
+
+        metrics.put("boot_token_refusals_total", bootTokens.refusals());
+
+        return Map.copyOf(metrics);
     }
 
     /// Get the typed QUIC transport metrics collector.

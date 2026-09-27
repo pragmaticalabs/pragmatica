@@ -80,6 +80,15 @@ public sealed interface SwimMessage {
         }
     }
 
+    /// Explicit refusal of an ANNOUNCE by the boot-token gate (terminal removal): tells the announcing
+    /// process that its NodeId belongs to a retired or different process, so it can exit instead of
+    /// announcing forever. `refused` is the NodeId the refusal is about.
+    record IdentityRefused(NodeId from, NodeId refused, String reason) implements SwimMessage {
+        public static IdentityRefused identityRefused(NodeId from, NodeId refused, String reason) {
+            return new IdentityRefused(from, refused, reason);
+        }
+    }
+
     /// A single membership update disseminated via piggyback. `bootToken` is the subject's
     /// per-process random boot token as known to the sender (`0` = unknown; equality only).
     @Codec

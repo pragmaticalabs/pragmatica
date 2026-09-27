@@ -24,7 +24,8 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
-/// #1528 / #1545 — a NEW process launched under a killed core's NodeId must not restore quorum.
+/// #1528 / #1545 — a NEW process launched under a killed core's NodeId must not restore quorum, and a
+/// partitioned-but-live process (same boot token) still heals.
 ///
 /// The verifier's scenario on real transport, SWIM and Rabia: three cores `btk-1..3`; kill `btk-3`;
 /// start a new process as `btk-3` (fresh boot token); kill `btk-2`. Without the boot-token gate at the
@@ -48,6 +49,7 @@ class EmberSameIdentityRelaunchTest {
     private static final TimeSpan WRITE_BOUND = TimeSpan.timeSpan(20).seconds();
     /// Longer than the ~65 s the verifier measured between the SWIM refusal and the QUIC re-admission.
     private static final long READMIT_WINDOW_MS = 90_000L;
+    private static final long HEAL_BOUND_MS = 180_000L;
 
     private EmberCluster cluster;
 
@@ -70,6 +72,50 @@ class EmberSameIdentityRelaunchTest {
         relaunchedProcessNeverRestoresQuorum(true);
     }
 
+    /// The positive arm on the same transport: a partitioned-but-LIVE process keeps its boot token, so
+    /// when the partition heals (higher SWIM incarnation, same token) it is re-admitted over QUIC and
+    /// counts toward quorum again — btk-1 plus the healed btk-3 commit after btk-2 is killed. No
+    /// boot-token refusal may be recorded anywhere on the path.
+    @Test
+    @Timeout(480)
+    void partitionedLiveProcess_sameToken_healsAndRestoresQuorum() {
+        var basePort = freeBasePort();
+        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
+        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        var survivor = cluster.getNode("btk-1").unwrap();
+        var partitioned = cluster.getNode("btk-3").unwrap();
+        var partitionedId = partitioned.self();
+
+        assertThat(write(survivor, "control-before").isSuccess()).as("control: a three-core cluster commits").isTrue();
+
+        partitioned.blackhole(true);
+        awaitCondition("the survivors drop the partitioned node's link",
+                       () -> !survivor.connectedPeerIds().contains(partitionedId));
+        partitioned.blackhole(false);
+        awaitCondition("the same process, same token, heals back into the survivor's links",
+                       () -> survivor.connectedPeerIds().contains(partitionedId));
+
+        assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
+
+        assertThat(write(survivor, "after-heal").isSuccess())
+            .as("btk-1 plus the healed btk-3 (same process) form a quorum")
+            .isTrue();
+        assertThat(survivor.transportMetrics().get("boot_token_refusals_total").longValue())
+            .as("a same-token heal is never refused")
+            .isZero();
+    }
+
+    private static void awaitCondition(String what, java.util.function.BooleanSupplier condition) {
+        var deadline = System.currentTimeMillis() + HEAL_BOUND_MS;
+
+        while (!condition.getAsBoolean()) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("timed out waiting: " + what);
+            }
+            sleep(250);
+        }
+    }
+
     private void relaunchedProcessNeverRestoresQuorum(boolean sameAddress) {
         var basePort = freeBasePort();
         cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
@@ -86,6 +132,9 @@ class EmberSameIdentityRelaunchTest {
 
         sleep(READMIT_WINDOW_MS);
         assertThat(relaunched.isReady()).as("the refused process must never become consensus-active").isFalse();
+        assertThat(cluster.getNode("btk-3").isEmpty())
+            .as("the refused process learns it was refused (explicit HelloRefused/IdentityRefused) and exits")
+            .isTrue();
 
         assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
 

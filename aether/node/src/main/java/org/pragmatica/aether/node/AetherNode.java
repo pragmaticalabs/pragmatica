@@ -699,6 +699,23 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// Terminal removal (#1528): a peer refused this process's identity — its NodeId belongs to a retired or
+    /// different process, so this process can never be admitted. Log ERROR naming the NodeId and exit
+    /// through the node's exit hook (production: `halt(2)`, a non-zero exit orchestration/CTM sees as a
+    /// failed node; Ember: stop and remove the node). Runs off the transport thread that delivered the
+    /// refusal, so stopping the node cannot block on its own event loop.
+    private static Unit exitRefusedIdentity(NodeId self, String reason, Runnable jvmExit) {
+        LOG.error("FATAL: this node's identity {} was refused by the cluster: {}. This NodeId belongs to a retired"
+                 + " process; start with a fresh identity. Exiting.",
+                  self.id(),
+                  reason);
+        Thread.ofVirtual()
+              .name("refused-identity-exit")
+              .start(jvmExit);
+
+        return Unit.unit();
+    }
+
     /// #957/#969 — the node's alert config, or the shipped defaults when no `[alerts]` section was
     /// loaded. Validation already happened at boot in `Main.resolveAlertConfig`, so anything arriving
     /// here has passed [org.pragmatica.aether.config.AlertConfig#check]; an absent section needs none.
@@ -2197,9 +2214,16 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            /// Transport counters (incl. `quic_boot_token_drops_total`, `boot_token_refusals_total`) plus
+            /// `membership_process_evidence_refusals_total` — governor/admission evidence the membership
+            /// FSM refused under terminal removal (#1528).
             public Map<String, Number> transportMetrics() {
-                return clusterNode.network()
-                                  .transportMetrics();
+                var metrics = new HashMap<String, Number>(clusterNode.network()
+                                                                     .transportMetrics());
+
+                metrics.put("membership_process_evidence_refusals_total", membershipFsm.refusedProcessEvidenceCount());
+
+                return Map.copyOf(metrics);
             }
 
             @Override
@@ -3514,6 +3538,7 @@ public interface AetherNode extends ManageableNode {
 
         swimHealthDetector.setBootTokens(bootTokens);
         clusterNode.network().setBootTokens(bootTokens);
+        bootTokens.onSelfRefused(reason -> exitRefusedIdentity(config.self(), reason, jvmExit));
         // Process evidence carries the per-process random boot token (equality only); SWIM keeps its
         // independent refutation counter, seeded from wall-clock time, and also carries the token.
         var bootIncarnation = System.currentTimeMillis();

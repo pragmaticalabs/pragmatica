@@ -189,18 +189,20 @@ class ClusterSyncObservationAuthorityTest {
         assertThat(collector.allObservations().get(WORKER)).isEqualTo(current);
     }
 
-    /// A different boot token is a new producer process: its first sample supersedes regardless of
-    /// its sequence or of how the two tokens compare numerically.
+    /// The first boot token pins the producer. A sample from a different token is another process
+    /// claiming the NodeId (terminal removal) and never replaces the pinned one — whatever its
+    /// sequence, and however the two tokens compare numerically.
     @Test
-    void differentBootToken_supersedesRegardlessOfSequenceOrNumericOrder() {
+    void differentBootToken_neverSupersedesThePinnedProducer() {
         var collector = ClusterSyncCollector.clusterSyncCollector(SELF, new NoopNetwork());
 
         collector.setMetricsProducerEligibility(_ -> true);
-        var restarted = sample(6, 1);
+        var pinned = sample(7, 10);
 
-        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, sample(7, 100)), false));
-        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, restarted), false));
-        assertThat(collector.allObservations().get(WORKER)).isEqualTo(restarted);
+        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, pinned), false));
+        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, sample(6, 100)), false));
+        collector.onClusterSyncPing(ping(CORE, 1, Map.of(WORKER, sample(8, 100)), false));
+        assertThat(collector.allObservations().get(WORKER)).isEqualTo(pinned);
     }
 
     @Test

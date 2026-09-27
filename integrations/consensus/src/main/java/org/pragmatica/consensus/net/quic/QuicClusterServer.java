@@ -586,13 +586,25 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                          hello.bootToken(),
                          admission,
                          bootTokens.refusals());
-                ctx.channel().parent().close();
+                refuseHello(ctx, hello.sender());
 
                 return;
             }
 
             sendHelloResponse(ctx);
             registerPeerConnection(ctx, hello);
+        }
+
+        /// Answer a refused Hello with an explicit [NetworkMessage.HelloRefused] — in place of the Hello
+        /// response — so the refused process learns it can never be admitted and exits, then close.
+        private void refuseHello(ChannelHandlerContext ctx, NodeId refused) {
+            var refusal = serializer.encode(new NetworkMessage.HelloRefused(selfId,
+                                                                            refused,
+                                                                            "NodeId " + refused.id()
+                                                                            + " belongs to a retired process; start with a fresh identity"));
+
+            ctx.writeAndFlush(Unpooled.wrappedBuffer(refusal))
+               .addListener(_ -> ctx.channel().parent().close());
         }
 
         private Object decodeMessage(ByteBuf buf) {

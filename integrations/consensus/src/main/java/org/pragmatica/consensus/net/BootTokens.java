@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -64,12 +65,21 @@ public interface BootTokens {
     /// process dead even when the transport saw the new process first.
     Unit onRetired(Consumer<NodeId> listener);
 
+    /// A peer told THIS process its own NodeId belongs to a retired (or different) process: this process
+    /// can never be admitted. Notifies the self-refusal listeners exactly once, with the peer's reason.
+    Unit selfRefused(String reason);
+
+    /// Register a listener for [#selfRefused] — the node logs ERROR and exits (terminal removal).
+    Unit onSelfRefused(Consumer<String> listener);
+
     static BootTokens bootTokens(long self) {
         record registry(long self,
                         Map<NodeId, Long> tokens,
                         Set<NodeId> retired,
                         AtomicLong refusalCount,
-                        List<Consumer<NodeId>> retirementListeners) implements BootTokens {
+                        List<Consumer<NodeId>> retirementListeners,
+                        List<Consumer<String>> selfRefusalListeners,
+                        AtomicBoolean refusedSelf) implements BootTokens {
             @Override
             public Admission admit(NodeId peer, long token) {
                 if (retired.contains(peer)) {
@@ -126,12 +136,30 @@ public interface BootTokens {
 
                 return Unit.unit();
             }
+
+            @Override
+            public Unit selfRefused(String reason) {
+                if (refusedSelf.compareAndSet(false, true)) {
+                    selfRefusalListeners.forEach(listener -> listener.accept(reason));
+                }
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit onSelfRefused(Consumer<String> listener) {
+                selfRefusalListeners.add(listener);
+
+                return Unit.unit();
+            }
         }
 
         return new registry(self,
                             new ConcurrentHashMap<>(),
                             ConcurrentHashMap.newKeySet(),
                             new AtomicLong(),
-                            new CopyOnWriteArrayList<>());
+                            new CopyOnWriteArrayList<>(),
+                            new CopyOnWriteArrayList<>(),
+                            new AtomicBoolean());
     }
 }
