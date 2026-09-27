@@ -275,9 +275,16 @@ class QuicClusterNetworkReconcilerTest {
         network.connect(NodeInfo.nodeInfo(retiredPeer, addressOf("127.0.0.1", 1)));
         network.connect(NodeInfo.nodeInfo(livePeer, addressOf("127.0.0.1", 1)));
 
+        // The dial state appears only after the asynchronous address resolution; the live peer, dialed
+        // AFTER the retired one, is the clock: once it has a dial state, an unblocked retired dial would too.
+        var deadline = System.currentTimeMillis() + 5_000;
+
+        while (network.peerPhaseForTests(livePeer).isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(network.peerPhaseForTests(livePeer).isPresent()).as("control: a live identity is dialed").isTrue();
         assertThat(network.peerPhaseForTests(retiredPeer)).as("no dial state for a retired identity").isEqualTo(Option.none());
-        assertThat(network.peerPhaseForTests(livePeer)).as("control: a live identity is dialed")
-                                                       .isEqualTo(Option.some(PeerState.Phase.CONNECTING));
     }
 
     private static BootTokens retiredRegistry(NodeId peer) {
