@@ -246,34 +246,34 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         // #1551: no operator source document (absent, or the BootstrapModule seed) → no operator sources to
         // list, so the inventory completes empty, the same "no operator config" reading the registry uses.
         return SourceComputeRegistry.operatorConfig(store.getTyped(AetherKey.ClusterConfigKey.CURRENT,
-                                                                   AetherValue.ClusterConfigValue.class))
-                                    .fold(this::markInventoryComplete, this::inventoryOperatorSources);
+                                                                   AetherValue.ClusterConfigValue.class)).fold(this::markInventoryComplete,
+                                                                                                               this::inventoryOperatorSources);
     }
 
     private Promise<Unit> inventoryOperatorSources(AetherValue.ClusterConfigValue config) {
         return ClusterBootstrapConfigParser.parse(config.tomlContent())
-                                                                .async()
-                                                                .flatMap(parsed -> {
-                                                                             var pass = Promise.unitPromise();
+                                           .async()
+                                           .flatMap(parsed -> {
+                                                        var pass = Promise.unitPromise();
 
-                                                                             for (var source : parsed.sources()
-                                                                                                     .values()
-                                                                                                     .stream()
-                                                                                                     .filter(value -> value.type() != SourceType.SSH)
-                                                                                                     .sorted(java.util.Comparator.comparing(value -> value.name()
-                                                                                                                                                          .value()))
-                                                                                                     .toList()) {
-                                                                             pass = pass.flatMap(_ -> listInstances(Map.of("aether-source",
-                                                                                                                           source.name()
-                                                                                                                                 .value(),
-                                                                                                                           "aether-cluster",
-                                                                                                                           parsed.cluster()
-                                                                                                                                 .name()
-                                                                                                                                 .value())).mapToUnit());
-                                                                         }
+                                                        for (var source : parsed.sources()
+                                                                                .values()
+                                                                                .stream()
+                                                                                .filter(value -> value.type() != SourceType.SSH)
+                                                                                .sorted(java.util.Comparator.comparing(value -> value.name()
+                                                                                                                                     .value()))
+                                                                                .toList()) {
+                                                        pass = pass.flatMap(_ -> listInstances(Map.of("aether-source",
+                                                                                                      source.name()
+                                                                                                            .value(),
+                                                                                                      "aether-cluster",
+                                                                                                      parsed.cluster()
+                                                                                                            .name()
+                                                                                                            .value())).mapToUnit());
+                                                    }
 
-                                                                             return pass.flatMap(_ -> markInventoryComplete());
-                                                                         });
+                                                        return pass.flatMap(_ -> markInventoryComplete());
+                                                    });
     }
 
     private Promise<Unit> markInventoryComplete() {
