@@ -2865,6 +2865,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                    .clusterSize()),
                                                                           GENESIS_RETRY_INTERVAL));
         }
+
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode,
                                                                  kvStore,
@@ -5849,28 +5850,58 @@ public interface AetherNode extends ManageableNode {
                                                                                         AtomicReference<MembershipFsm> membershipFsmRef) {
         node.onVoterConfiguration(configuration -> installVoterConfiguration(node, installedVoters, configuration));
 
-        return configuredGenesis(config).flatMap(configured -> configuredWorker(config)
-                                                              ? initializeWorkerVoters(node, config, configured)
-                                                              : node.deferGenesis(() -> genesisCandidate(configured,
-                                                                                                         discoveredCores(membershipFsmRef),
-                                                                                                         config.topology()
-                                                                                                               .clusterSize())))
-                                        .map(ignored -> node);
+        return configuredGenesis(config).flatMap(configured -> initializeRoleVoters(node,
+                                                                                    config,
+                                                                                    configured,
+                                                                                    membershipFsmRef))
+                                .map(ignored -> node);
+    }
+
+    private static Result<Unit> initializeRoleVoters(RabiaNode<KVCommand<AetherKey>> node,
+                                                     AetherNodeConfig config,
+                                                     Option<VoterConfiguration> configured,
+                                                     AtomicReference<MembershipFsm> membershipFsmRef) {
+        if (configuredWorker(config)) {
+            return initializeWorkerVoters(node, config, configured);
+        }
+
+        return initializeCoreVoters(node, config, configured, membershipFsmRef);
+    }
+
+    /// A roster of this node alone needs no agreement — there is no other member to announce — so it is
+    /// installed at assembly. Every other core roster waits for agreement in the engine.
+    private static Result<Unit> initializeCoreVoters(RabiaNode<KVCommand<AetherKey>> node,
+                                                     AetherNodeConfig config,
+                                                     Option<VoterConfiguration> configured,
+                                                     AtomicReference<MembershipFsm> membershipFsmRef) {
+        var count = config.topology().clusterSize();
+
+        return genesisCandidate(configured,
+                                configuredVoters(config),
+                                count).filter(roster -> roster.members()
+                                                              .equals(List.of(config.self())))
+                               .map(roster -> node.initializeVoters(new VoterConfiguration(0, roster)))
+                               .or(() -> node.deferGenesis(() -> genesisCandidate(configured,
+                                                                                  discoveredCores(membershipFsmRef),
+                                                                                  count)));
     }
 
     private static Result<Option<VoterConfiguration>> configuredGenesis(AetherNodeConfig config) {
         return config.configProvider()
                      .flatMap(provider -> provider.getString("cluster.genesis_voters"))
-                     .map(value -> parseGenesisVoters(value).map(Option::some))
+                     .map(AetherNode::parsedGenesis)
                      .or(Result.success(Option.none()));
+    }
+
+    private static Result<Option<VoterConfiguration>> parsedGenesis(String value) {
+        return parseGenesisVoters(value).map(Option::some);
     }
 
     private static Result<Unit> initializeWorkerVoters(RabiaNode<KVCommand<AetherKey>> node,
                                                        AetherNodeConfig config,
                                                        Option<VoterConfiguration> configured) {
         return configured.orElse(() -> completeRoster(List.copyOf(configuredVoters(config)),
-                                                       config.topology()
-                                                             .clusterSize()))
+                                                      config.topology().clusterSize()))
                          .fold(node::deferGenesis, node::initializeVoters);
     }
 
@@ -5899,7 +5930,7 @@ public interface AetherNode extends ManageableNode {
 
         if (discovered.size() > configuredCount) {
             LOG.warn("Genesis roster NOT chosen: {} core candidates are visible for {} configured cores: {}. "
-                     + "Set cluster.genesis_voters, or remove the extra candidates; this node waits and votes nowhere until then.",
+                    + "Set cluster.genesis_voters, or remove the extra candidates; this node waits and votes nowhere until then.",
                      discovered.size(),
                      configuredCount,
                      discovered);
@@ -5907,11 +5938,12 @@ public interface AetherNode extends ManageableNode {
             return Option.none();
         }
 
-        return completeRoster(List.copyOf(discovered), configuredCount).map(VoterConfiguration::roster)
-                                                                     .onEmpty(() -> LOG.info("Genesis roster pending: {} of {} configured cores discovered: {}",
-                                                                                             discovered.size(),
-                                                                                             configuredCount,
-                                                                                             discovered));
+        return completeRoster(List.copyOf(discovered),
+                              configuredCount).map(VoterConfiguration::roster)
+                             .onEmpty(() -> LOG.info("Genesis roster pending: {} of {} configured cores discovered: {}",
+                                                     discovered.size(),
+                                                     configuredCount,
+                                                     discovered));
     }
 
     static Option<VoterConfiguration> completeRoster(List<NodeId> knownCores, int configuredCount) {
@@ -5937,14 +5969,15 @@ public interface AetherNode extends ManageableNode {
 
         var discovered = discoveredCores.get();
 
-        return completeRoster(List.copyOf(discovered), configuredCount).toResult(VoterBootstrapError.GENESIS_ROSTER_INCOMPLETE)
-                                                                     .flatMap(initializeVoters::apply)
-                                                                     .onFailure(cause -> LOG.info("Genesis voter roster pending ({} of {} cores discovered: {}): {}",
-                                                                                                  discovered.size(),
-                                                                                                  configuredCount,
-                                                                                                  discovered,
-                                                                                                  cause.message()))
-                                                                     .or(Unit.unit());
+        return completeRoster(List.copyOf(discovered),
+                              configuredCount).toResult(VoterBootstrapError.GENESIS_ROSTER_INCOMPLETE)
+                             .flatMap(initializeVoters::apply)
+                             .onFailure(cause -> LOG.info("Genesis voter roster pending ({} of {} cores discovered: {}): {}",
+                                                          discovered.size(),
+                                                          configuredCount,
+                                                          discovered,
+                                                          cause.message()))
+                             .or(Unit.unit());
     }
 
     static Result<VoterConfiguration> parseGenesisVoters(String value) {

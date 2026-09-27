@@ -113,6 +113,8 @@ public final class EmberCluster {
     /// let a leader lookup answer from a node that has no consensus state. Empty in every production
     /// and existing-test path (plain [#start] holds nothing back).
     private final Map<String, AetherNode> heldBackNodes = new ConcurrentHashMap<>();
+    /// Initial node ids left out of the genesis roster: the ones [#start] holds back.
+    private volatile Set<String> genesisExcluded = Set.of();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
     /// Immutable provider identity. Initial/manual nodes use the harness prefix as cluster name,
     /// their explicit source (or default), and configured role. Provider-created nodes retain the
@@ -640,6 +642,7 @@ public final class EmberCluster {
                  heldBackNodeIds);
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
 
+        genesisExcluded = Set.copyOf(heldBackNodeIds);
         availableSlots.clear();
         for (int i = 0; i < poolSize; i++) {
             availableSlots.offer(i);
@@ -1450,19 +1453,23 @@ public final class EmberCluster {
         }
     }
 
-    /// Only the initial nodes carry `cluster.genesis_voters` (#1526): a node added later joins the formed
-    /// electorate through a Rabia §4 add command and must not carry a genesis roster. Consensus state is
+    /// Only the initial nodes that [#start] actually starts carry `cluster.genesis_voters` (#1526):
+    /// genesis forms only when every member of its roster announces it, so a held-back node is not a
+    /// genesis member. Like a node added later, it joins the formed electorate (it announces itself, a
+    /// formed core answers) and is voted in through a Rabia §4 add command. Consensus state is
     /// in-memory (owner ruling, session 28), so no consensus storage path is injected.
     private ConfigurationProvider nodeConfiguration(NodeId nodeId) {
         var genesisIds = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
                                                    .mapToObj(index -> nodeIdPrefix + "-" + index)
+                                                   .filter(id -> !genesisExcluded.contains(id))
                                                    .toList();
         var builder = ConfigurationProvider.builder();
 
         if (genesisIds.contains(nodeId.id())) {
             builder = builder.withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
                                                                                           Map.of("cluster.genesis_voters",
-                                                                                                 String.join(",", genesisIds)),
+                                                                                                 String.join(",",
+                                                                                                             genesisIds)),
                                                                                           Integer.MAX_VALUE));
         }
 

@@ -313,7 +313,7 @@ public class RabiaEngine<C extends Command> {
 
         genesisCandidate.filter(latched -> !latched.sameMembership(normalized))
                         .onPresent(latched -> log.warn("Node {} keeps its announced genesis roster {}; the newly offered {} "
-                                                       + "is ignored, because announcing a second roster could form two electorates",
+                                                      + "is ignored, because announcing a second roster could form two electorates",
                                                        self,
                                                        latched.members(),
                                                        normalized.members()));
@@ -325,9 +325,7 @@ public class RabiaEngine<C extends Command> {
         var recipients = new HashSet<>(network.connectedPeers());
 
         genesisCandidate.onPresent(roster -> recipients.addAll(roster.members()));
-        recipients.stream()
-                  .filter(node -> !node.equals(self))
-                  .forEach(node -> network.send(node, announcement));
+        recipients.stream().filter(node -> !node.equals(self)).forEach(node -> network.send(node, announcement));
     }
 
     private void completeGenesisIfAgreed() {
@@ -339,13 +337,19 @@ public class RabiaEngine<C extends Command> {
         return roster.members()
                      .stream()
                      .filter(member -> !member.equals(self))
-                     .allMatch(member -> Option.option(genesisAnnouncements.get(member))
-                                               .map(roster::sameMembership)
-                                               .or(false));
+                     .allMatch(member -> announcedSameRoster(member, roster));
+    }
+
+    private boolean announcedSameRoster(NodeId member, ClusterConfig roster) {
+        return Option.option(genesisAnnouncements.get(member))
+                     .map(roster::sameMembership)
+                     .or(false);
     }
 
     private void installAgreedGenesis(VoterConfiguration configuration) {
-        log.info("Node {} installs genesis roster {}: every member announced the same roster", self, configuration.members());
+        log.info("Node {} installs genesis roster {}: every member announced the same roster",
+                 self,
+                 configuration.members());
         installGenesis(configuration);
     }
 
@@ -365,8 +369,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         if (genesisPending) {
-            announcement.roster()
-                        .onPresent(roster -> genesisAnnouncements.put(announcement.sender(), roster));
+            announcement.roster().onPresent(roster -> genesisAnnouncements.put(announcement.sender(), roster));
             completeGenesisIfAgreed();
 
             return;
@@ -385,8 +388,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void cancelGenesisTimer() {
-        Option.option(genesisTimer.getAndSet(null))
-              .onPresent(task -> task.cancel(false));
+        Option.option(genesisTimer.getAndSet(null)).onPresent(task -> task.cancel(false));
     }
 
     public boolean isGenesisPending() {
@@ -397,7 +399,6 @@ public class RabiaEngine<C extends Command> {
         var resolvesPending = genesisPending;
 
         cancelGenesisTimer();
-
         genesis = Option.some(configuration);
         authorityFailure = Option.none();
         voterHistory.clear();
@@ -546,12 +547,14 @@ public class RabiaEngine<C extends Command> {
         recipients.stream().filter(node -> !node.equals(self)).forEach(node -> network.send(node, message));
     }
 
+    /// A genesis-pending engine has no voter configuration yet; its state is saved without one rather
+    /// than failing (a pending node must still stop cleanly).
     private Result<Unit> saveState() {
         if (passiveClient) {
             return Result.success(Unit.unit());
         }
 
-        return voters.fold(() -> ReconfigurationError.INCOMPATIBLE_EPOCH.result(),
+        return voters.fold(() -> persistence.save(stateMachine, currentPhase.get(), pendingBatches.values()),
                            configuration -> persistence.save(stateMachine,
                                                              currentPhase.get(),
                                                              pendingBatches.values(),
@@ -1315,6 +1318,7 @@ public class RabiaEngine<C extends Command> {
         if (joins) {
             safeExecute(this::openSlotAfterChange);
         }
+
         log.info("Node {} adopted voter epoch {} {} from synchronized state",
                  self,
                  configuration.epoch(),

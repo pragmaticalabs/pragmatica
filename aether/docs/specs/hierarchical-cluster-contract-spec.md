@@ -271,10 +271,12 @@ not a claim that any requirement is already verified.
 
 - `cluster.genesis_voters` is optional and, when present, carries the genesis voter identities
   independently of discovery addresses, current membership health and desired capacity; a blank id
-  fails boot. Without it, genesis waits and retries until the discovered core membership names
-  exactly the configured core count — a late core never aborts assembly. Replacements are rendered
-  the leader's bootstrap roster; later electorates are learned from the log, where each Rabia §4
-  command agreed at slot R governs from R+1 ([voter-configuration-handoff-spec.md](voter-configuration-handoff-spec.md), #1526).
+  fails boot. Genesis forms only when every member of the roster announces the identical roster; a
+  late core never aborts assembly, and more visible candidates than configured make the node wait with
+  a WARN rather than choose. Replacements carry no `cluster.genesis_voters`: they join the formed
+  electorate through a Rabia §4 add command, and each command agreed at slot R governs from R+1
+  ([voter-configuration-handoff-spec.md](voter-configuration-handoff-spec.md), #1526). A whole-cluster
+  cold restart forms a fresh genesis and restores backup data under it.
 - Consensus state is in memory; there is no local consensus journal and no
   `cluster.consensus_path` (owner ruling, session 28). A restarted process carries a new random
   boot token and is refused under its old NodeId; recovery is a fresh node identity.

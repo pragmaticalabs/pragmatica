@@ -22,29 +22,42 @@ current epoch.
 
 ## Genesis
 
-Genesis epoch zero is the complete configured roster. `cluster.genesis_voters` is optional:
+Genesis epoch zero forms only by agreement: every member of the roster must announce the identical
+roster. `cluster.genesis_voters` is optional.
 
-- When present it is authoritative. A malformed value (a blank id) fails boot loudly
-  (`MALFORMED_GENESIS_VOTERS`). (pinned in-JVM by `VoterGenesisResolutionTest.java`)
-- When absent, a voter configuration persisted with a `[backup]` snapshot is used; otherwise the
-  roster is the known core membership, complete only when it names exactly the configured core count.
-- An incomplete roster never aborts assembly. The engine defers genesis: it neither votes nor adopts
-  state, holds early ballots (bounded), and the node re-reads its discovered core membership every
-  two seconds until the roster is complete, then installs it once. The wait is logged at INFO with
-  the discovered and required counts. (pinned in-JVM by `VoterGenesisResolutionTest.java`)
-  (pinned in-JVM by `RabiaReorderedDeliveryTest.java#genesisWaitsForTheLateCoreAndFormsTheClusterWhenItArrives`)
-- Agreement is enforced at adoption: a sync response carrying a different roster at the same epoch
-  is refused and reported at WARN, so a node never adopts state from a second electorate.
-  (pinned in-JVM by `RabiaVoterReconfigurationTest.java#syncResponse_withADifferentRosterAtTheSameEpoch_isRefused`)
+- **Candidate.** When `cluster.genesis_voters` is present it is the candidate; a malformed value (a
+  blank id) fails boot loudly (`MALFORMED_GENESIS_VOTERS`). Otherwise the discovered core membership is
+  the candidate once it names exactly the configured core count. Fewer: a core is late, keep waiting
+  (INFO with the discovered set). MORE: the choice is ambiguous, so the node refuses to choose and logs
+  a WARN with the candidate set until the operator sets `cluster.genesis_voters` or the extra candidates
+  disappear. (pinned in-JVM by `VoterGenesisResolutionTest.java`)
+- **Agreement.** A pending core announces its candidate (`GenesisAnnouncement`) every sync retry
+  interval from engine start. It installs epoch 0 only when EVERY other member of the candidate has
+  announced the identical roster; any mismatch keeps waiting. A node latches the first roster it
+  announces and never confirms a second one, so two epoch-0 configurations sharing a member cannot
+  both form. [mechanism: an epoch-0 roster needs its shared member's confirmation, and that member
+  confirms one roster] (pinned in-JVM by `RabiaReorderedDeliveryTest.java#conflictingGenesisRostersCannotBothForm`
+  and `#genesisWaitsForTheLateCoreAndFormsTheClusterWhenItArrives`)
+- **Joining a formed electorate.** A core whose electorate is already formed answers an announcement
+  with the configuration that governs it; a pending node installs that configuration (as an observer
+  when it is not a member), so a late or replacement core joins the running cluster rather than
+  starting a second one.
+- A roster of the node alone (`clusterSize` 1) needs no agreement and is installed at assembly.
+- While pending, the engine neither votes nor adopts state and holds early ballots (bounded); status
+  reports `GENESIS_PENDING`.
 
-[limit: discovery-genesis] Without `cluster.genesis_voters`, two nodes that discover different sets
-of exactly the configured count would each resolve a genesis roster. The same-epoch adoption refusal
-keeps each from adopting the other's state, but two disjoint majorities are not excluded by this
-mechanism. Configure `cluster.genesis_voters` wherever more cores than the configured count can be
-discovered at first boot. [design intent — unverified]
+[limit: discovery-genesis] Without `cluster.genesis_voters`, fully disjoint candidate rosters — no
+shared member, which needs more cores visible than configured to different nodes — each form. The
+node refuses to choose when it sees more candidates than configured, which covers every such case
+visible to one node. [design intent — unverified]
 
-Replacements are provisioned with `cluster.genesis_voters` rendered from the leader's bootstrap
-roster; they boot as observers of it and learn later epochs from the log.
+**Replacements carry no `cluster.genesis_voters`.** A replacement joins through a Rabia §4 add
+command: it announces itself, a formed core answers, and it observes that electorate until the change
+adding it is applied. A whole-cluster cold restart forms a FRESH genesis from the currently configured
+or discovered cores and restores backup data under it; a backup's voter configuration is data, never
+authority, so it neither overrides genesis nor travels in a COLD sync answer (owner ruling, #1526).
+(pinned in-JVM by `RabiaVoterReconfigurationTest.java#backupConfiguration_neitherOverridesGenesisNorTravelsInAColdSyncAnswer`
+and `ClusterTopologyManagerRenderUserDataTest.java#provisionReplacement_cloudConfig_rendersNoGenesisVoters`)
 
 ## Reconfiguration (Rabia §4)
 
@@ -117,8 +130,10 @@ An applied change is not permission to terminate removed or dead instances by it
 reports the installed roster as retirement-safe (`retirementSafeVoters`) only when no reconfiguration
 is requested or awaiting its slot and every member added by the last applied change has been observed
 voting past R. The same value gates `CoreVoterReconciler`: it requests a new target only while the
-installed roster is settled. Catch-up evidence arrives with traffic, so a quiet cluster defers the next
-change until the added member votes. (pinned in-JVM by `RabiaVoterReconfigurationTest.java#reconfigure_completesWhenApplied_andRetirementWaitsForAddedMemberCatchUp`)
+installed roster is settled. The requester of an applied change (the leader's reconciler) opens slot
+R+1 with an empty proposal, and an added voter does the same when it joins; every voter answers an
+empty proposal with its own, so the evidence arrives in a cluster with no other traffic. (pinned
+in-JVM by `RabiaReorderedDeliveryTest.java#quietClusterClearsTheRetirementGateAfterAReplacement`) (pinned in-JVM by `RabiaVoterReconfigurationTest.java#reconfigure_completesWhenApplied_andRetirementWaitsForAddedMemberCatchUp`)
 
 ## Operator surface
 

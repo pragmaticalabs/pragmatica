@@ -113,9 +113,7 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
         /// Genesis agreement (#1526). A core whose genesis is pending offers its candidate epoch-0
         /// `roster` (absent while it cannot choose one); a core whose electorate is already formed answers
         /// with the configuration that governs it in `formed`.
-        record GenesisAnnouncement(NodeId sender,
-                                   Option<ClusterConfig> roster,
-                                   Option<VoterConfiguration> formed) implements Asynchronous {}
+        record GenesisAnnouncement(NodeId sender, Option<ClusterConfig> roster, Option<VoterConfiguration> formed) implements Asynchronous {}
 
         /// State synchronization request. Travels on the dedicated SYNC lane (not CONSENSUS) so a
         /// far-behind joiner's SyncRequest retries do not flood the consensus round traffic.
