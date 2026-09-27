@@ -34,13 +34,16 @@
   them in order (3 of 3 runs on a 5-node Ember cluster). Ownership was observed to move only after the
   replacement joined; with no membership event after the kill it does not move (#1550).
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamAckedRecordsOwnerKillTest.java`]
-- **Retention forms that declare no count now keep the default count.** `retention = "time"`, `"size"`,
-  and `"compound"` without `max-count` built a policy with an unbounded count; they never reached the
-  runtime before this fix, and once they did, stream creation THREW (the ring's index is sized from the
-  count). They now evict at the default 100,000 events per partition as well, and a count the ring cannot
-  index is refused as `StreamError.RetentionCountUnindexable` instead of throwing. This matters to the
-  shipped `examples/notification-hub` (`retention = "time"`, `"5m"`), whose stream would otherwise have
-  failed to create. [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamSectionBindingTest.java`]
+- **Behaviour clarification — time/size retention also cap at the default count/bytes unless declared;
+  eviction at whichever limit is hit first.** `retention = "time"`, `"size"` and `"compound"` built a policy
+  with every undeclared bound at `Long.MAX_VALUE`; they never reached the runtime before this fix, and once
+  they did, stream creation THREW (the ring's index is sized from the count). Every bound they do not
+  declare is now the `RetentionPolicy` default (100,000 events, 256 MB, 24 h), and a count the ring cannot
+  index is refused as `StreamError.RetentionCountUnindexable` instead of throwing. The shipped
+  `examples/notification-hub` (`retention = "time"`, `"5m"`) now resolves to
+  `RetentionPolicy[maxCount=100000, maxBytes=268435456, maxAgeMs=300000, mode=ANY]` and its stream
+  creates; before this fix it silently ran at the 24 h default, and with the binder fixed alone it would
+  have failed to create. [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamSectionBindingTest.java`]
 - **Keys the streaming spec documented but nothing ever read — `backpressure`, `storage`,
   `storage-instance` — are now refused** as `unknown-stream-key` instead of being ignored.
 - A dedicated `test-stream-acked` blueprint (`replicas = 3, min-sync-replicas = 3`) carries the Forge
