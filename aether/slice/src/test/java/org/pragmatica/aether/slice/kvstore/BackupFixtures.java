@@ -13,6 +13,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.ArtifactCodecsSlice;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.SliceCodecsSlice;
@@ -44,6 +45,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ObservabilityConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -65,6 +67,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ObservabilityConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -218,7 +221,12 @@ final class BackupFixtures {
                        new Fixture(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(owner),
                                    BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of(NamedAddress.namedAddress("stock", topic)))),
                        new Fixture(EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5),
-                                   EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab")));
+                                   EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab")),
+                       new Fixture(ScheduledTaskPauseKey.scheduledTaskPauseKey("orders.cleanup",
+                                                                               artifact("org.example:orders-slice:1.2.3"),
+                                                                               MethodName.methodName("purgeExpired")
+                                                                                         .unwrap()),
+                                   ScheduledTaskPauseValue.scheduledTaskPauseValue(1_700_000_000_000L)));
     }
 
     private static Artifact artifact(String coordinates) {

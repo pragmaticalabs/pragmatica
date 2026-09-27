@@ -526,14 +526,33 @@ class BackupEntryCodecTest {
                                 .allMatch(BackupError.ValueEncodingFailed.class::isInstance);
         }
 
-        /// A cluster-wide config key named like a node-scoped one renders to a string that parses as the
-        /// node-scoped key. Taking that backup would restore a different key, so it is refused up front.
+        /// The generic guard: a key whose canonical string does not parse back to it is refused at
+        /// encode. An empty config key renders as `config/`, which no parser accepts.
         @Test
         void encode_keyThatDoesNotParseBackToItself_isRefused() {
-            var key = ConfigKey.forKey("node/node-1/orders.banner");
+            var key = ConfigKey.forKey("");
 
-            assertThat(failures(CODEC.encode(HEADER, Map.of(key, ConfigValue.configValue("k", "v"))))).singleElement()
-                                                                                                    .isInstanceOf(BackupError.KeyNotRoundTrippable.class);
+            assertThat(failures(CODEC.encode(HEADER, Map.of(key, ConfigValue.configValue("", "v"))))).singleElement()
+                                                                                                   .isInstanceOf(BackupError.KeyNotRoundTrippable.class);
+        }
+
+        /// Cluster-wide and node-scoped config keys use disjoint prefixes, so a cluster-wide key named
+        /// like a node-scoped one — `node/a/b`, or even `config-node/a/b` — round-trips as itself.
+        @Test
+        void configKey_everyNonEmptyName_roundTripsThroughTheBackup() {
+            var names = List.of("node/a/b", "node/node-1/orders.banner", "config-node/a/b", "config/x", "a", AWKWARD);
+            var entries = names.stream()
+                               .collect(Collectors.toMap(ConfigKey::forKey,
+                                                         name -> (AetherValue) ConfigValue.configValue(name, "v")));
+
+            CODEC.encode(HEADER, Map.copyOf(entries))
+                 .flatMap(CODEC::decode)
+                 .onFailure(cause -> Assertions.fail(cause.message()))
+                 .onSuccess(document -> assertThat(document.entries()).containsExactlyInAnyOrderEntriesOf(entries));
+            assertThat(names).allMatch(name -> ConfigKey.configKey(ConfigKey.forKey(name)
+                                                                            .asString())
+                                                        .map(ConfigKey.forKey(name)::equals)
+                                                        .or(false));
         }
     }
 

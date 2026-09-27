@@ -590,8 +590,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     }
 
     /// Runtime: republished by slice activation, and its value names the registering node
-    /// (`ScheduledTaskValue.registeredBy`). Known gap: the operator's `paused` flag lives in the same value,
-    /// so a cold restart loses it — keeping it needs a separate cluster-state key.
+    /// (`ScheduledTaskValue.registeredBy`). The operator's pause is NOT here — it is cluster state and
+    /// lives in [ScheduledTaskPauseKey], so a cold restart keeps it.
     record ScheduledTaskKey(String configSection, Artifact artifact, MethodName methodName) implements RuntimeKey {
         private static final String PREFIX = "scheduled-task/";
 
@@ -641,6 +641,50 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
                          .map((artifact, method) -> new ScheduledTaskKey(configSection, artifact, method));
+        }
+    }
+
+    /// Cluster state: the operator's intent that a scheduled task NOT fire. Present = paused; resume
+    /// removes it. Kept apart from [ScheduledTaskKey], which slice activation rewrites and which names a
+    /// node, so the pause survives both a republish and a whole-cluster cold restart. The identity is
+    /// the task's `(configSection, artifact, method)`, rendered exactly like [ScheduledTaskKey]'s under
+    /// its own prefix.
+    record ScheduledTaskPauseKey(String configSection, Artifact artifact, MethodName methodName) implements ClusterStateKey {
+        private static final String PREFIX = "scheduled-task-pause/";
+
+        @Override
+        public String asString() {
+            return PREFIX + configSection + "/" + artifact.asString() + "/" + methodName.name();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ScheduledTaskPauseKey scheduledTaskPauseKey(String configSection,
+                                                                  Artifact artifact,
+                                                                  MethodName methodName) {
+            return new ScheduledTaskPauseKey(configSection, artifact, methodName);
+        }
+
+        public static ScheduledTaskPauseKey scheduledTaskPauseKey(ScheduledTaskKey task) {
+            return new ScheduledTaskPauseKey(task.configSection(), task.artifact(), task.methodName());
+        }
+
+        /// The task this pause applies to.
+        public ScheduledTaskKey task() {
+            return ScheduledTaskKey.scheduledTaskKey(configSection, artifact, methodName);
+        }
+
+        public static Result<ScheduledTaskPauseKey> scheduledTaskPauseKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SCHEDULED_TASK_PAUSE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return ScheduledTaskKey.scheduledTaskKey(ScheduledTaskKey.PREFIX + key.substring(PREFIX.length()))
+                                   .mapError(_ -> SCHEDULED_TASK_PAUSE_KEY_FORMAT_ERROR.apply(key))
+                                   .map(ScheduledTaskPauseKey::scheduledTaskPauseKey);
         }
     }
 
@@ -820,7 +864,10 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     record ConfigKey(String key, Option<NodeId> nodeScope) implements ClusterStateKey {
         private static final String CLUSTER_PREFIX = "config/";
-        private static final String NODE_PREFIX = "config/node/";
+        /// A node-scoped override lives under its own top-level prefix, never under [#CLUSTER_PREFIX]:
+        /// the two prefixes differ at their first segment, so no cluster-wide key — whatever it
+        /// contains, `node/...` included — can render to or parse as a node-scoped one.
+        private static final String NODE_PREFIX = "config-node/";
 
         @Override
         public String asString() {
@@ -1278,6 +1325,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid gossip-key-rotation key format: %s");
 
     Fn1<Cause, String> SCHEDULED_TASK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task key format: %s");
+
+    Fn1<Cause, String> SCHEDULED_TASK_PAUSE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-pause key format: %s");
 
     Fn1<Cause, String> SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-state key format: %s");
 
@@ -2082,6 +2131,10 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     ///
     /// `keyspace` is the RAW name from `resources.toml`, matching [EntityKeyspaceRegistrationKey]; the
     /// `entity:` arc prefix belongs to `EntityPartitionArc` and is not stored here.
+    ///
+    /// Cluster state, backed up (owner ruling on #1541): losing the pointer makes the fold refuse a log
+    /// that retention has already trimmed below it. A restored pointer is validated on restore (#1533)
+    /// — applied only if its block exists and the local log covers its offset.
     record EntityCheckpointKey(String keyspace, int partition) implements ClusterStateKey {
         private static final String PREFIX = "entity-checkpoint/";
         private static final String SEP = "/";

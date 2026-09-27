@@ -472,23 +472,15 @@ public sealed interface AetherValue {
         }
     }
 
-    record ScheduledTaskValue(NodeId registeredBy,
-                              String interval,
-                              String cron,
-                              ExecutionMode executionMode,
-                              boolean paused) implements AetherValue {
+    record ScheduledTaskValue(NodeId registeredBy, String interval, String cron, ExecutionMode executionMode) implements AetherValue {
         public static ScheduledTaskValue intervalTask(NodeId registeredBy,
                                                       String interval,
                                                       ExecutionMode executionMode) {
-            return new ScheduledTaskValue(registeredBy, interval, "", executionMode, false);
+            return new ScheduledTaskValue(registeredBy, interval, "", executionMode);
         }
 
         public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, ExecutionMode executionMode) {
-            return new ScheduledTaskValue(registeredBy, "", cron, executionMode, false);
-        }
-
-        public ScheduledTaskValue withPaused(boolean paused) {
-            return new ScheduledTaskValue(registeredBy, interval, cron, executionMode, paused);
+            return new ScheduledTaskValue(registeredBy, "", cron, executionMode);
         }
 
         public boolean isInterval() {
@@ -497,6 +489,14 @@ public sealed interface AetherValue {
 
         public boolean isCron() {
             return ! cron.isEmpty();
+        }
+    }
+
+    /// The operator's pause of one scheduled task, stored under [AetherKey.ScheduledTaskPauseKey]. Its
+    /// presence is the pause; `pausedAt` records when, for the operator.
+    record ScheduledTaskPauseValue(long pausedAt) implements AetherValue {
+        public static ScheduledTaskPauseValue scheduledTaskPauseValue(long pausedAt) {
+            return new ScheduledTaskPauseValue(pausedAt);
         }
     }
 

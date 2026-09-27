@@ -7433,6 +7433,10 @@ public interface AetherNode extends ManageableNode {
                                                          scheduledTaskRegistry::onScheduledTaskPut)
                                                   .onRemove(AetherKey.ScheduledTaskKey.class,
                                                             scheduledTaskRegistry::onScheduledTaskRemove)
+                                                  .onPut(AetherKey.ScheduledTaskPauseKey.class,
+                                                         scheduledTaskRegistry::onScheduledTaskPausePut)
+                                                  .onRemove(AetherKey.ScheduledTaskPauseKey.class,
+                                                            scheduledTaskRegistry::onScheduledTaskPauseRemove)
                                                   .onPut(AetherKey.ScheduledTaskStateKey.class,
                                                          scheduledTaskStateRegistry::onStatePut)
                                                   .onRemove(AetherKey.ScheduledTaskStateKey.class,

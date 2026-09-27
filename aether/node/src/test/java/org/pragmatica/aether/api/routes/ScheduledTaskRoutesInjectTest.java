@@ -469,6 +469,8 @@ class ScheduledTaskRoutesInjectTest {
 
         @Override public void onScheduledTaskPut(ValuePut<ScheduledTaskKey, AetherValue.ScheduledTaskValue> valuePut) {}
         @Override public void onScheduledTaskRemove(ValueRemove<ScheduledTaskKey, AetherValue.ScheduledTaskValue> valueRemove) {}
+        @Override public void onScheduledTaskPausePut(ValuePut<AetherKey.ScheduledTaskPauseKey, AetherValue.ScheduledTaskPauseValue> valuePut) {}
+        @Override public void onScheduledTaskPauseRemove(ValueRemove<AetherKey.ScheduledTaskPauseKey, AetherValue.ScheduledTaskPauseValue> valueRemove) {}
         @Override public List<ScheduledTask> allTasks() { return List.copyOf(tasks); }
         @Override public List<ScheduledTask> singleModeTasks() { return List.of(); }
         @Override public List<ScheduledTask> localTasks(NodeId self) { return List.copyOf(tasks); }

@@ -249,6 +249,7 @@ public final class WorkerMetadataIndex {
             case AetherKey.CommunityPlacementOperationKey entry -> Set.of(community(entry.communityId()));
             case AetherKey.WorkerSliceDirectiveKey entry -> Set.of(entry.communityId().map(WorkerMetadataIndex::community).or(GLOBAL));
             case AetherKey.ScheduledTaskKey entry -> Set.of(artifact(entry.artifact()));
+            case AetherKey.ScheduledTaskPauseKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.ScheduledTaskStateKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.TopicSubscriptionKey entry -> Set.of(GLOBAL, artifact(entry.artifact()));
             case AetherKey.StreamRegistrationKey entry -> Set.of(artifact(entry.artifact()),

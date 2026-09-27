@@ -49,7 +49,7 @@ class ScheduledTaskRegistryTest {
     private void putTask(String configSection, Artifact artifact, MethodName method,
                          NodeId node, String interval, String cron, ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
-        var value = new ScheduledTaskValue(node, interval, cron, executionMode, false);
+        var value = new ScheduledTaskValue(node, interval, cron, executionMode);
         var put = new KVCommand.Put<>(key, value);
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }

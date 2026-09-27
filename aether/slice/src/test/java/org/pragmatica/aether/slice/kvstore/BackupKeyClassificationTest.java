@@ -20,10 +20,12 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityKeyspaceRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.RuntimeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
@@ -110,7 +112,7 @@ class BackupKeyClassificationTest {
                            ScheduledTaskKey.class,
                            WorkerSliceDirectiveKey.class,
                            GossipKeyRotationKey.class)).allMatch(RuntimeKey.class::isAssignableFrom);
-        assertThat(ClusterStateKey.class.isAssignableFrom(DeploymentKey.class)).isTrue();
+        assertThat(List.of(DeploymentKey.class, ScheduledTaskPauseKey.class, EntityCheckpointKey.class)).allMatch(ClusterStateKey.class::isAssignableFrom);
     }
 
     private static List<Class<?>> concreteKeyTypes() {

@@ -35,6 +35,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ObservabilityConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -55,6 +56,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ObservabilityConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -183,7 +185,10 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                                                    BlueprintStreamBindingsKey::blueprintStreamBindingsKey),
                                                              KeyBinding.keyBinding(EntityCheckpointKey.class,
                                                                                    EntityFoldCheckpointValue.class,
-                                                                                   EntityCheckpointKey::entityCheckpointKey));
+                                                                                   EntityCheckpointKey::entityCheckpointKey),
+                                                             KeyBinding.keyBinding(ScheduledTaskPauseKey.class,
+                                                                                   ScheduledTaskPauseValue.class,
+                                                                                   ScheduledTaskPauseKey::scheduledTaskPauseKey));
 
     private static final Map<Class<?>, Class<?>> VALUE_TYPES = BINDINGS.stream().collect(Collectors.toMap(KeyBinding::keyType,
                                                                                                           KeyBinding::valueType));
