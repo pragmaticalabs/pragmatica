@@ -799,6 +799,36 @@ class QuorumLossDetectorTest {
             assertThat(listener.events()).hasSize(1);
         }
 
+        /// #1560 × A6: a co-confirmation re-check that lands inside the cold-boot convergence window must
+        /// not fence — the lifted gate still hands the intent to the cold-boot gate, which defers it — and
+        /// the deferred fence fires only once the window closes.
+        @Test
+        void suppressedFiringCheck_reCheckInsideColdBootWindow_neverFences_firesAfterWindow() {
+            var coldBoot = new AtomicBoolean(true);
+            var coConfirmation = new AtomicReference<>(
+                QuorumCoConfirmation.quorumCoConfirmation(1, 3, List.of(new NodeId("a"), new NodeId("b")), List.of()));
+            detector.setColdBootSupplier(coldBoot::get);
+            detector.setCoConfirmationSupplier(coConfirmation::get);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            scheduler.fireAll();
+            assertThat(listener.events()).as("suppressed by co-confirmation at T").isEmpty();
+
+            coConfirmation.set(QuorumCoConfirmation.quorumCoConfirmation(1, 1, List.of(), List.of()));
+            scheduler.fireAll();
+            scheduler.fireAll();
+            assertThat(listener.events()).as("gate lifted inside the cold-boot window: still deferred").isEmpty();
+            assertThat(liveTasks()).as("the cold-boot deferral keeps exactly one re-check").hasSize(1);
+            assertThat(liveTasks().getFirst().delay()).isEqualTo(membershipConfig().splitTimeout());
+
+            coldBoot.set(false);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+
         /// A persistent stuck-promotion artifact stays suppressed across re-checks, keeps exactly one
         /// re-check in flight, and recovery cancels it — the re-check never outlives the window.
         @Test

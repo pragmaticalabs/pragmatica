@@ -4,16 +4,27 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Delayed;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.ntt.NttTimerScheduler;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.swim.SwimHealth;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 
 /// #1560 wiring pin for `AetherNode.buildQuorumCoConfirmation`, the snapshot the quorum-loss self-fence
 /// consults before it drains. #1390 made its counted set the installed voter set, which is health-blind:
@@ -60,6 +71,52 @@ class QuorumCoConfirmationSeamTest {
         assertThat(snapshot.swimAliveStuckMembers()).isEmpty();
     }
 
+    /// #1560 race, deterministically: the isolated core's `T` check lands BEFORE the FSM's down-hysteresis
+    /// demotions (SUSPECT → DEPARTING) are applied, so the gate reads every peer as a SWIM-alive stuck member
+    /// and suppresses. The demotions land afterwards. Without the suppressed check's re-arm the fence is
+    /// stranded there (the rc4 log: one SUPPRESSED line, no second check); with it the next re-check fences.
+    @Test
+    void isolatedCore_firstCheckBeforeFsmDemotions_reCheckFencesOnceDemotionsLand() {
+        var fsm = MembershipFsm.membershipFsm(FsmObserver.noop(),
+                                              System::currentTimeMillis,
+                                              Long.MAX_VALUE,
+                                              TimeSpan.timeSpan(40).millis());
+        var scheduler = new ManualScheduler();
+        var intents = new ArrayList<QuorumLossIntent>();
+        var detector = QuorumLossDetector.quorumLossDetector(membershipConfig(),
+                                                             VOTERS::size,
+                                                             TimeSource.system(),
+                                                             scheduler);
+
+        detector.setQuorumLossListener(intents::add);
+        detector.setCoConfirmationSupplier(() -> AetherNode.buildQuorumCoConfirmation(fsm,
+                                                                                      _ -> SwimHealth.SUSPECTED,
+                                                                                      VOTERS));
+        fsm.seed(VOTERS);
+        detector.onMemberCountChanged(strictVoterCount(fsm));
+        assertThat(detector.isArmed()).as("arming: a formed five-core cluster").isTrue();
+
+        List.of(PEER_B, PEER_C, PEER_D, PEER_E).forEach(peer -> fsm.onSwimSuspect(peer, 1L));
+        detector.onMemberCountChanged(strictVoterCount(fsm));
+        scheduler.fireAll();
+
+        assertThat(intents).as("at T every peer is still FSM-SUSPECT and SWIM-SUSPECTED: suppressed").isEmpty();
+
+        List.of(PEER_B, PEER_C, PEER_D).forEach(fsm::onDownHysteresisMet);
+        assertThat(fsm.coreCountedMembers()).as("arming: the demotions landed after the first check")
+                                            .containsExactlyInAnyOrder(SELF, PEER_E);
+        scheduler.fireAll();
+
+        assertThat(intents).as("the re-check fences once the FSM demotions land").hasSize(1);
+    }
+
+    private static int strictVoterCount(MembershipFsm fsm) {
+        return (int) fsm.strictCoreMembers()
+                        .stream()
+                        .filter(VOTERS::contains)
+                        .count();
+    }
+
     private static MembershipFsm isolatedCoreFsm() {
         var fsm = MembershipFsm.membershipFsm(FsmObserver.noop(),
                                               System::currentTimeMillis,
@@ -73,5 +130,80 @@ class QuorumCoConfirmationSeamTest {
         fsm.onSwimSuspect(PEER_E, 1L);
 
         return fsm;
+    }
+
+    /// Captures scheduled checks; tests run them explicitly. `fireAll` runs a snapshot, so a check that
+    /// re-arms schedules its successor for the NEXT `fireAll`.
+    private static final class ManualScheduler implements NttTimerScheduler {
+        private final List<ManualTask> tasks = new ArrayList<>();
+
+        @Override
+        public ScheduledFuture<?> schedule(Runnable runnable, TimeSpan delay) {
+            var task = new ManualTask(runnable);
+
+            tasks.add(task);
+
+            return task;
+        }
+
+        @Contract
+        void fireAll() {
+            List.copyOf(tasks).forEach(ManualTask::runIfLive);
+        }
+    }
+
+    private static final class ManualTask implements ScheduledFuture<Object> {
+        private final Runnable runnable;
+        private boolean cancelled;
+        private boolean done;
+
+        ManualTask(Runnable runnable) {
+            this.runnable = runnable;
+        }
+
+        @Contract
+        void runIfLive() {
+            if (cancelled || done) {
+                return;
+            }
+            done = true;
+            runnable.run();
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
+            return true;
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return cancelled;
+        }
+
+        @Override
+        public boolean isDone() {
+            return done || cancelled;
+        }
+
+        @Override
+        public Object get() {
+            return null;
+        }
+
+        @Override
+        public Object get(long timeout, TimeUnit unit) {
+            return null;
+        }
+
+        @Override
+        public long getDelay(TimeUnit unit) {
+            return 0L;
+        }
+
+        @Override
+        public int compareTo(Delayed other) {
+            return 0;
+        }
     }
 }
