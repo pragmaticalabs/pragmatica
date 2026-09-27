@@ -179,6 +179,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
     }
 
+    default boolean isGenesisPending() {
+        return false;
+    }
+
     default Option<VoterConfiguration> retirementSafeVoters() {
         return Option.none();
     }
@@ -753,6 +757,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Result<Unit> deferGenesis() {
                 return consensus().deferGenesis();
+            }
+
+            @Override
+            public boolean isGenesisPending() {
+                return consensus().isGenesisPending();
             }
 
             @Override

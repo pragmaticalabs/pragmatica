@@ -268,9 +268,18 @@ public class RabiaEngine<C extends Command> {
             observerMode = !configuration.contains(self);
             genesisPending = false;
             safeExecute(this::drainDeferredBallots);
+            safeExecute(this::resynchronizeAfterGenesis);
         }
 
         return Unit.unit();
+    }
+
+    /// Responses collected while genesis was pending were all ineligible, so a syncing engine asks
+    /// again at once instead of waiting a full retry interval.
+    private void resynchronizeAfterGenesis() {
+        if (engineState.get() instanceof EngineState.Syncing) {
+            doSynchronize();
+        }
     }
 
     private void installVoters(VoterConfiguration configuration) {
@@ -1208,9 +1217,12 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    /// Records that a member added by the last applied change has voted past its slot R.
-    private void recordCatchUp(NodeId sender, Phase phase) {
-        voters.flatMap(this::changeGoverning)
+    /// Records that a member added by the last applied change has voted past its slot R. A ballot of the
+    /// current epoch for any slot after R — even one that arrives after that slot completed — proves
+    /// the member applied R, so it is recorded before the past-slot repair branch.
+    private void recordCatchUp(NodeId sender, long epoch, Phase phase) {
+        voters.filter(configuration -> configuration.epoch() == epoch)
+              .flatMap(this::changeGoverning)
               .filter(change -> change.added()
                                       .contains(sender) && phase.compareTo(change.slot()) > 0)
               .onPresent(_ -> caughtUp.add(sender));
@@ -2746,6 +2758,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
+        recordCatchUp(propose.sender(), propose.epoch(), propose.phase());
         var currentPhaseValue = currentPhase.get();
 
         if (isPastPhase(propose.phase(), currentPhaseValue)) {
@@ -2764,7 +2777,6 @@ public class RabiaEngine<C extends Command> {
 
         log.trace("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
         observeClusterPhase(propose.phase());
-        recordCatchUp(propose.sender(), propose.phase());
 
         if (isFarFuturePhase(propose.phase(), currentPhaseValue)) {
             log.warn("Node {} behind by {} phases (current: {}, received: {}). Triggering resync.",
@@ -2906,6 +2918,8 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
+        recordCatchUp(vote.sender(), vote.epoch(), vote.phase());
+
         if (isPastPhase(vote.phase(), currentPhase.get())) {
             repairPastSlot(vote.sender(), vote.phase());
 
@@ -2922,7 +2936,6 @@ public class RabiaEngine<C extends Command> {
                   vote.phase(),
                   vote.stateValue());
         observeClusterPhase(vote.phase());
-        recordCatchUp(vote.sender(), vote.phase());
 
         if (vote.round() < 0) {
             return;
@@ -3048,6 +3061,8 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
+        recordCatchUp(vote.sender(), vote.epoch(), vote.phase());
+
         if (isPastPhase(vote.phase(), currentPhase.get())) {
             repairPastSlot(vote.sender(), vote.phase());
 
@@ -3064,7 +3079,6 @@ public class RabiaEngine<C extends Command> {
                   vote.phase(),
                   vote.stateValue());
         observeClusterPhase(vote.phase());
-        recordCatchUp(vote.sender(), vote.phase());
 
         if (vote.round() < 0) {
             return;

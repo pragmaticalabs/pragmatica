@@ -225,6 +225,39 @@ class RabiaReorderedDeliveryTest {
         assertThat(lateReplicaAppliedR).as("the late replica applied R itself in at least one schedule").isPositive();
     }
 
+    /// #1526 acceptance 4 (engine side) — genesis waits for the full roster. While the roster is
+    /// unresolved no engine activates, votes or adopts. Two cores resolving first cannot wedge the
+    /// third: once the late core's roster resolves, the three form the cluster and decide. Sync
+    /// retries run on a short real-time interval here, as they would in production.
+    @Test
+    void genesisWaitsForTheLateCoreAndFormsTheClusterWhenItArrives() {
+        for (int seed = 0; seed < 4; seed++) {
+            var cluster = new ScheduledCluster(3, seed, 3, timeSpan(100).millis());
+            clusters.add(cluster);
+            var genesis = new VoterConfiguration(0, new ClusterConfig(cluster.members));
+            cluster.engines.forEach(engine -> assertThat(engine.deferGenesis().isSuccess()).isTrue());
+            cluster.engines.forEach(engine -> engine.clusterState(ClusterStateNotification.active()));
+            cluster.pumpUntil(() -> cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+            assertThat(cluster.engines).noneMatch(RabiaEngine::isActive);
+            assertThat(cluster.sent).as("no ballot while genesis is pending").isEmpty();
+
+            cluster.engines.subList(0, 2).forEach(engine -> assertThat(engine.initializeVoters(genesis).isSuccess()).isTrue());
+            cluster.pumpUntil(() -> cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+            assertThat(cluster.engines.get(2).isActive()).isFalse();
+            assertThat(cluster.engines.get(2).isGenesisPending()).isTrue();
+
+            assertThat(cluster.engines.get(2).initializeVoters(genesis).isSuccess()).isTrue();
+            cluster.pumpUntil(() -> cluster.engines.stream().allMatch(RabiaEngine::isActive));
+            var formed = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after-late-core")));
+            cluster.engines.forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), formed)));
+            cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 1));
+            for (var engine : cluster.engines) {
+                assertThat(engine.voterConfiguration().unwrap()).isEqualTo(genesis);
+            }
+            cluster.stop();
+        }
+    }
+
     @Test
     void growThenShrinkInstallsTwoEpochsAndGatesRetirementOnCatchUp() {
         for (int seed = 0; seed < 4; seed++) {
@@ -235,9 +268,18 @@ class RabiaReorderedDeliveryTest {
             cluster.pumpUntil(grow::isResolved);
             assertThat(grow.await().isSuccess()).isTrue();
             cluster.pumpUntil(() -> cluster.engines.stream().allMatch(engine -> engine.voterConfiguration().unwrap().epoch() == 1));
-            var first = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after-grow")));
-            cluster.engines.subList(0, 5).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), first)));
-            cluster.pumpUntil(() -> cluster.engines.get(2).retirementSafeVoters().isPresent());
+            // Catch-up evidence is an added member's ballot past R, so it arrives with traffic: keep
+            // committing until both added members have been seen voting in the new epoch.
+            var committed = 0;
+            while (cluster.engines.get(2).retirementSafeVoters().isEmpty()) {
+                assertThat(committed).as("seed %s: added members never observed voting past R", seed).isLessThan(10);
+                var next = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after-grow-" + committed)));
+                cluster.engines.subList(0, 5).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), next)));
+                var expected = ++committed;
+                cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == expected)
+                                        && cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+            }
+            assertThat(cluster.engines.get(2).voterReconfigurationStatus().awaitingCatchUp()).isEmpty();
             var shrink = cluster.engines.get(2).reconfigure(new ClusterConfig(cluster.members.subList(2, 5)));
             cluster.pumpUntil(shrink::isResolved);
             assertThat(shrink.await().isSuccess()).as("shrink result %s; epoch %s; active %s", shrink.await(), cluster.engines.get(2).voterConfiguration(), cluster.engines.get(2).isActive()).isTrue();
@@ -246,7 +288,8 @@ class RabiaReorderedDeliveryTest {
             assertThat(cluster.engines.get(2).genesisVoters().unwrap().members()).containsExactlyElementsOf(cluster.members.subList(0, 3));
             var batch = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("after-two-epochs")));
             cluster.engines.subList(2, 5).forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.get(2), batch)));
-            cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 2));
+            var total = committed + 1;
+            cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == total));
             cluster.stop();
         }
     }
@@ -308,7 +351,9 @@ class RabiaReorderedDeliveryTest {
 
         ScheduledCluster(int size, int seed) { this(size, seed, size); }
 
-        ScheduledCluster(int size, int seed, int initialVoters) {
+        ScheduledCluster(int size, int seed, int initialVoters) { this(size, seed, initialVoters, timeSpan(60).seconds()); }
+
+        ScheduledCluster(int size, int seed, int initialVoters, org.pragmatica.lang.io.TimeSpan syncRetryInterval) {
             random = new Random(seed);
             members = IntStream.range(0, size).mapToObj(index -> nodeId("voter-" + index).unwrap()).toList();
             for (int index = 0; index < size; index++) {
@@ -346,7 +391,7 @@ class RabiaReorderedDeliveryTest {
                 };
                 machines.add(machine);
                 var engine = new RabiaEngine<>(topology, network, machine,
-                                              ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()));
+                                              ProtocolConfig.consensusConfig(timeSpan(60).seconds(), syncRetryInterval));
                 assertThat(engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(members.subList(0, initialVoters)))).isSuccess()).isTrue();
                 if (index >= initialVoters) { engine.authorizeObservation(); }
                 engines.add(engine);

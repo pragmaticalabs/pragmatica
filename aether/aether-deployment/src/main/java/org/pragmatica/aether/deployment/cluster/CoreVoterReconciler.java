@@ -23,25 +23,29 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 
-/// Turns admitted, synchronized CORE candidates into a concrete consensus handoff.
+/// Turns admitted, synchronized CORE candidates into a concrete Rabia §4 reconfiguration command.
 /// Capacity intent cannot change the electorate until enough actual candidates exist.
+///
+/// Leader-driven and serial: a new target is requested only while the installed roster is settled —
+/// `settled` (the engine's retirement-safe roster) reports it only when no reconfiguration is pending
+/// and every member added by the last applied change has caught up past that change's slot R.
 public interface CoreVoterReconciler {
     Promise<Unit> reconcile();
 
     static CoreVoterReconciler coreVoterReconciler(NodeId self,
                                                    BooleanSupplier leader,
                                                    Supplier<Option<VoterConfiguration>> installed,
-                                                   Supplier<Option<VoterConfiguration>> retirementSafe,
+                                                   Supplier<Option<VoterConfiguration>> settled,
                                                    IntSupplier desired,
                                                    Supplier<Set<NodeId>> readyCoreCandidates,
-                                                   Function<ClusterConfig, Promise<Unit>> handoff) {
+                                                   Function<ClusterConfig, Promise<Unit>> reconfigure) {
         record reconciler(NodeId self,
                           BooleanSupplier leader,
                           Supplier<Option<VoterConfiguration>> installed,
-                          Supplier<Option<VoterConfiguration>> retirementSafe,
+                          Supplier<Option<VoterConfiguration>> settled,
                           IntSupplier desired,
                           Supplier<Set<NodeId>> readyCoreCandidates,
-                          Function<ClusterConfig, Promise<Unit>> handoff,
+                          Function<ClusterConfig, Promise<Unit>> reconfigure,
                           AtomicBoolean running) implements CoreVoterReconciler {
             @Override
             public Promise<Unit> reconcile() {
@@ -58,23 +62,26 @@ public interface CoreVoterReconciler {
             private Promise<Unit> reconcileInstalled(VoterConfiguration current) {
                 var target = selectVoters(self, current, readyCoreCandidates.get(), desired.getAsInt());
 
-                if (target.isEmpty() || (retirementSafe.get().filter(current::equals).isPresent() && Set.copyOf(target).equals(Set.copyOf(current.members())))) {
+                if (target.isEmpty() || Set.copyOf(target)
+                                           .equals(Set.copyOf(current.members())) || settled.get()
+                                                                                            .filter(current::equals)
+                                                                                            .isEmpty()) {
                     return Promise.unitPromise();
                 }
 
                 return ClusterConfig.clusterConfig(target)
                                     .async()
-                                    .flatMap(handoff::apply);
+                                    .flatMap(reconfigure::apply);
             }
         }
 
         return new reconciler(self,
                               leader,
                               installed,
-                              retirementSafe,
+                              settled,
                               desired,
                               readyCoreCandidates,
-                              handoff,
+                              reconfigure,
                               new AtomicBoolean());
     }
 

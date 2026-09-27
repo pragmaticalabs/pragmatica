@@ -2856,6 +2856,16 @@ public interface AetherNode extends ManageableNode {
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
         // NTT-side `LeaderReconciler` (wired below) is the sole provisioning driver.
         periodicTasks.defer(phaseChangeWatcherArmer(effectivePhaseSupplier, clusterTopologyManager));
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> retryGenesis(clusterNode::isGenesisPending,
+                                                                                         clusterNode::initializeVoters,
+                                                                                         config.configProvider()
+                                                                                               .flatMap(provider -> provider.getString("cluster.genesis_voters")),
+                                                                                         () -> Option.option(membershipFsmRef.get())
+                                                                                                     .map(MembershipFsm::coreCountedMembers)
+                                                                                                     .or(Set.of()),
+                                                                                         config.topology()
+                                                                                               .clusterSize()),
+                                                                      GENESIS_RETRY_INTERVAL));
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode,
                                                                  kvStore,
@@ -5839,40 +5849,80 @@ public interface AetherNode extends ManageableNode {
         return persistence.loadVerified()
                           .flatMap(saved -> resolveGenesis(config.configProvider()
                                                                  .flatMap(provider -> provider.getString("cluster.genesis_voters")),
-                                                           saved.flatMap(RabiaPersistence.SavedState::authority)
-                                                                .map(AetherNode::recoveredGenesis),
+                                                           saved.flatMap(RabiaPersistence.SavedState::configuration),
                                                            List.copyOf(initialRoster),
                                                            config.topology().clusterSize()))
-                          .flatMap(node::initializeVoters)
+                          .flatMap(resolved -> resolved.fold(node::deferGenesis, node::initializeVoters))
                           .map(ignored -> node);
     }
 
-    private static VoterConfiguration recoveredGenesis(org.pragmatica.consensus.rabia.VoterAuthority<KVCommand<AetherKey>> authority) {
-        return authority.history()
-                        .stream()
-                        .findFirst()
-                        .map(org.pragmatica.consensus.rabia.ConfigurationCertificate::previous)
-                        .orElse(authority.configuration());
+    /// Genesis wait-and-retry period (#1526): how often a node whose genesis roster is incomplete
+    /// re-reads its discovered core membership.
+    static final TimeSpan GENESIS_RETRY_INTERVAL = TimeSpan.timeSpan(2).seconds();
+
+    /// Resolves the genesis voter roster, or `none` when it must be waited for (#1526).
+    ///
+    /// `cluster.genesis_voters` is optional. When present it is authoritative, and a malformed value
+    /// (a blank id) fails boot loudly. When absent, a persisted voter configuration (backup) is used;
+    /// otherwise the roster is the known core membership, and it is complete only when it names exactly
+    /// `configuredCount` cores. An incomplete roster no longer aborts assembly: the engine defers
+    /// genesis, and [#retryGenesis] completes it once every configured core has been discovered.
+    /// Agreement with peers is enforced by the engine, which refuses sync state from a different roster
+    /// at the same epoch.
+    static Result<Option<VoterConfiguration>> resolveGenesis(Option<String> configured,
+                                                             Option<VoterConfiguration> recovered,
+                                                             List<NodeId> knownCores,
+                                                             int configuredCount) {
+        return configured.fold(() -> Result.success(recovered.orElse(() -> completeRoster(knownCores, configuredCount))),
+                               value -> parseGenesisVoters(value).map(Option::some));
     }
 
-    static Result<VoterConfiguration> resolveGenesis(Option<String> configured,
-                                                     Option<VoterConfiguration> recovered,
-                                                     List<NodeId> initialRoster,
-                                                     int configuredCount) {
-        return configured.fold(() -> recovered.fold(() -> VoterConfiguration.voterConfiguration(0, initialRoster).filter(VoterBootstrapError.INCOMPLETE_ROSTER,
-                                                                                                                         value -> value.members()
-                                                                                                                                       .size() == configuredCount),
-                                                    Result::success),
-                               value -> parseGenesisVoters(value).filter(VoterBootstrapError.GENESIS_MISMATCH,
-                                                                         parsed -> recovered.map(parsed::equals)
-                                                                                            .or(true)));
+    static Option<VoterConfiguration> completeRoster(java.util.Collection<NodeId> knownCores, int configuredCount) {
+        return Option.some(knownCores)
+                     .filter(cores -> cores.size() == configuredCount)
+                     .flatMap(cores -> VoterConfiguration.voterConfiguration(0,
+                                                                             List.copyOf(cores))
+                                                         .option());
+    }
+
+    /// One genesis wait-and-retry tick. A no-op once genesis is resolved. While it is pending, the
+    /// discovered core membership completes it as soon as it names exactly the configured core count;
+    /// until then the tick logs what it is waiting for and tries again. It never refuses: a node only
+    /// fails boot for malformed configuration, never for a core that is late.
+    ///
+    /// FER (degrade forward): a failed tick is absorbed — the node stays genesis-pending, votes nowhere
+    /// and adopts nothing ([RabiaEngine#deferGenesis]), and the next tick retries. The logged line is
+    /// the operator surface for the wait.
+    static Unit retryGenesis(BooleanSupplier genesisPending,
+                             Function<VoterConfiguration, Result<Unit>> initializeVoters,
+                             Option<String> configured,
+                             Supplier<Set<NodeId>> discoveredCores,
+                             int configuredCount) {
+        if (!genesisPending.getAsBoolean()) {
+            return Unit.unit();
+        }
+
+        var discovered = discoveredCores.get();
+
+        return resolveGenesis(configured, Option.none(), List.copyOf(discovered), configuredCount)
+                     .flatMap(resolved -> resolved.toResult(VoterBootstrapError.GENESIS_ROSTER_INCOMPLETE))
+                     .flatMap(initializeVoters::apply)
+                     .onSuccessRun(() -> LOG.info("Genesis voter roster resolved from {} discovered cores: {}",
+                                                  discovered.size(),
+                                                  discovered))
+                     .onFailure(cause -> LOG.info("Genesis voter roster pending ({} of {} cores discovered: {}): {}",
+                                                  discovered.size(),
+                                                  configuredCount,
+                                                  discovered,
+                                                  cause.message()))
+                     .or(Unit.unit());
     }
 
     static Result<VoterConfiguration> parseGenesisVoters(String value) {
         var ids = java.util.Arrays.stream(value.split(",", -1)).map(String::strip).toList();
 
         if (ids.stream().anyMatch(String::isBlank)) {
-            return VoterBootstrapError.INCOMPLETE_ROSTER.result();
+            return VoterBootstrapError.MALFORMED_GENESIS_VOTERS.result();
         }
 
         return VoterConfiguration.voterConfiguration(0,
@@ -5887,13 +5937,15 @@ public interface AetherNode extends ManageableNode {
     }
 
     enum VoterBootstrapError implements Cause {
-        INCOMPLETE_ROSTER,
-        GENESIS_MISMATCH;
+        MALFORMED_GENESIS_VOTERS("cluster.genesis_voters must list non-blank core node ids separated by commas"),
+        GENESIS_ROSTER_INCOMPLETE("the discovered core membership does not yet name exactly the configured core count");
+        private final String message;
+        VoterBootstrapError(String message) {
+            this.message = message;
+        }
         @Override
         public String message() {
-            return this == GENESIS_MISMATCH
-                   ? "Configured genesis differs from verified persisted voter history"
-                   : "Bootstrap requires the complete configured core voter roster";
+            return message;
         }
     }
 
