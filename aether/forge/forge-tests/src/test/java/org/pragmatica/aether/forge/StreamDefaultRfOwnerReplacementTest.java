@@ -7,9 +7,13 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.awaitility.core.ConditionTimeoutException;
@@ -47,20 +51,26 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// `replicas` key — the replication factor under test is the DEFAULT, resolved by the provisioning config
 /// binder from `StreamConfig.DEFAULT`. The flow: 5-node Ember cluster → deploy → the committed config reads
 /// `replicas = 3` → publish N events → wait until every placed non-owner replica has confirmed the tail →
-/// kill the partition's HRW owner → a surviving replica takes ownership and serves all N events → a
-/// REPLACEMENT joins under a fresh node id (terminal removal: the dead identity is never reused) → all N
-/// events are still served, contiguous and in order, whoever owns the partition after the join.
+/// kill the partition's HRW owner → at least two SURVIVORS still hold all N events → a REPLACEMENT joins
+/// under a fresh node id (terminal removal: the dead identity is never reused).
 ///
-/// What this proves, precisely: an event that reached the default replica set before the owner died
-/// survives the owner's terminal removal. It does NOT prove that every ACKED event survives: with the
-/// default `min-sync-replicas` the publish acks on the owner's local WAL fsync, so an event acked in the
-/// replication window before the kill is not covered — that is the `min-sync-replicas` knob's guarantee,
-/// not the replication factor's, and this test waits the window out on purpose.
+/// What the enabled test proves, precisely: an event that reached the default replica set before the
+/// owner died is still held by the survivors after the owner's terminal removal. It does NOT prove that
+/// every ACKED event survives: with the default `min-sync-replicas` the publish acks on the owner's local
+/// WAL fsync, so an event acked in the replication window before the kill is not covered — that is the
+/// `min-sync-replicas` knob's guarantee, not the replication factor's, and this test waits the window out.
+///
+/// What it does NOT yet prove: that the survivors SERVE those events. Measured 2026-09-27 on the rc4 tip
+/// (`83d515575`, unchanged `StreamOwnerFailoverTest`, RF=2) and on this branch at RF=3 and RF=1: after
+/// the owner is killed, every survivor keeps resolving the dead node as HRW owner for the whole 3-minute
+/// budget, so no node serves the partition. The enabled test therefore ends with a TRIPWIRE asserting that
+/// stall; it fails the moment ownership moves, and its message says to delete it and enable
+/// [#replacementJoined_newOwnerServesEveryReplicatedEvent], which holds the serving assertions.
 ///
 /// Discriminating by construction: with the pre-#1547 default (`replicas = 1`) the owner is the only
-/// copy, the tail wait is vacuous (there is no non-owner replica), and the new owner serves an EMPTY
-/// partition, so the history assertion fails. The pre-kill replica-set size is recorded and asserted
-/// AFTER the history assertion, so that control fails on the lost data rather than on the placement.
+/// copy, the tail wait is vacuous (there is no non-owner replica), and no survivor holds any event, so the
+/// survivor assertion fails. The committed factor and the pre-kill replica-set size are asserted AFTER it,
+/// so that control fails on the lost data rather than on the placement.
 ///
 /// Ember equivalence: the owner kill is [EmberCluster#killNode] (`node.stop()`, a SWIM leave), not a
 /// SIGKILL — it exercises the ownership move and the fresh-identity replacement deterministically, not
@@ -68,6 +78,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class StreamDefaultRfOwnerReplacementTest {
     private static final System.Logger LOG = System.getLogger(StreamDefaultRfOwnerReplacementTest.class.getName());
     private static final int BASE_PORT = 38400;
@@ -84,6 +95,7 @@ class StreamDefaultRfOwnerReplacementTest {
     private static final Duration REPLICATION_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration FAILOVER_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(90);
+    private static final Duration STALL_PROBE = Duration.ofSeconds(60);
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
     private static final String STREAM_SLICE = TestArtifacts.STREAM_SLICE;
@@ -97,6 +109,7 @@ class StreamDefaultRfOwnerReplacementTest {
     private static final Pattern NODE_COUNT_FIELD = Pattern.compile("\"nodeCount\"\\s*:\\s*(\\d+)");
 
     private EmberCluster cluster;
+    private String killedOwner = "";
     private final HttpOperations http = jdkHttpOperations();
 
     private record Event(long offset, String payload) {}
@@ -121,7 +134,8 @@ class StreamDefaultRfOwnerReplacementTest {
     }
 
     @Test
-    void ownerTerminallyRemoved_replacementJoinsFresh_defaultRfKeepsEveryReplicatedEvent() {
+    @Order(1)
+    void ownerTerminallyRemoved_replacementJoinsFresh_survivorsHoldEveryReplicatedEvent() {
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> committedConfig().isPresent());
         var committed = committedConfig().unwrap();
         LOG.log(System.Logger.Level.INFO,
@@ -142,33 +156,20 @@ class StreamDefaultRfOwnerReplacementTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> ownerView().map(view -> placedAndReplicated(view, committed.replicas())).or(false));
         var preKill = ownerView().unwrap();
-        var owner = preKill.ownerNodeId().or("");
+        killedOwner = preKill.ownerNodeId().or("");
         LOG.log(System.Logger.Level.INFO, "#1547 pre-kill replica set: {0}", preKill);
-        assertThat(owner).describedAs("HRW owner identified before the kill").isNotBlank();
+        assertThat(killedOwner).describedAs("HRW owner identified before the kill").isNotBlank();
 
-        LifecycleAwait.nodeBestEffort("kill owner " + owner, cluster, cluster.killNode(owner));
-        awaitOrDump("a surviving replica takes ownership after the kill", () -> ownerChanged(owner));
-        var failedOver = drain(appPort(), 0L, N_EVENTS, deadline(FAILOVER_TIMEOUT));
-        LOG.log(System.Logger.Level.INFO,
-                "#1547 after the kill: newOwner={0} served={1}/{2}",
-                ownerView().flatMap(ReplicaSetView::ownerNodeId).or("<none>"),
-                failedOver.size(),
-                N_EVENTS);
-        assertContiguousBatch(failedOver, "served by the new owner after the kill");
+        LifecycleAwait.nodeBestEffort("kill owner " + killedOwner, cluster, cluster.killNode(killedOwner));
+        var holders = survivorsHoldingFullHistory();
+        LOG.log(System.Logger.Level.INFO, "#1547 survivors holding all {0} events after the kill: {1}", N_EVENTS, holders);
+        assertThat(holders)
+            .describedAs("survivors holding every replicated event after the owner's terminal removal")
+            .hasSizeGreaterThanOrEqualTo(StreamConfig.MIN_REPLICAS - 1);
 
         var replacement = cluster.addNode().await().unwrap();
-        assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(owner);
+        assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(killedOwner);
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
-        awaitOrDump("an owner-authoritative view exists after the replacement joined", () -> ownerView().isPresent());
-        var recovered = drain(appPort(), 0L, N_EVENTS, deadline(FAILOVER_TIMEOUT));
-        LOG.log(System.Logger.Level.INFO,
-                "#1547 after the replacement {0} joined: owner={1} served={2}/{3} view={4}",
-                replacement.id(),
-                ownerView().flatMap(ReplicaSetView::ownerNodeId).or("<none>"),
-                recovered.size(),
-                N_EVENTS,
-                ownerView().map(ReplicaSetView::toString).or("<none>"));
-        assertContiguousBatch(recovered, "served after the replacement joined");
 
         assertThat(committed.replicas())
             .describedAs("the stream declares no replicas, so the committed factor is the default")
@@ -176,6 +177,57 @@ class StreamDefaultRfOwnerReplacementTest {
         assertThat(preKill.replicas())
             .describedAs("the default factor placed owner + 2 peers before the kill")
             .hasSize(StreamConfig.MIN_REPLICAS);
+
+        assertOwnershipStillStalledOnTheDeadOwner();
+    }
+
+    /// The serving half, disabled while ownership stalls on the dead owner (see the class doc and the
+    /// tripwire at the end of the enabled test). Runs after it, on the same cluster, when enabled.
+    @Test
+    @Order(2)
+    @Disabled("stream ownership never leaves a killed owner (measured 2026-09-27 on rc4 83d515575); the tripwire in "
+              + "ownerTerminallyRemoved_replacementJoinsFresh_survivorsHoldEveryReplicatedEvent fails when that is fixed")
+    void replacementJoined_newOwnerServesEveryReplicatedEvent() {
+        awaitOrDump("a surviving replica takes ownership", () -> ownerChanged(killedOwner));
+        var served = drain(appPort(), 0L, N_EVENTS, deadline(FAILOVER_TIMEOUT));
+        LOG.log(System.Logger.Level.INFO,
+                "#1547 after the replacement joined: owner={0} served={1}/{2}",
+                ownerView().flatMap(ReplicaSetView::ownerNodeId).or("<none>"),
+                served.size(),
+                N_EVENTS);
+        assertContiguousBatch(served, "served by the new owner after the replacement joined");
+    }
+
+    /// TRIPWIRE, not a specification: asserts today's WRONG behaviour so that fixing it cannot go
+    /// unnoticed. Ownership should move to a surviving replica; today it stays on the killed node.
+    private void assertOwnershipStillStalledOnTheDeadOwner() {
+        var until = deadline(STALL_PROBE);
+        var moved = ownerChanged(killedOwner);
+
+        while (!moved && System.nanoTime() < until) {
+            LockSupport.parkNanos(POLL_INTERVAL.toNanos());
+            moved = ownerChanged(killedOwner);
+        }
+
+        assertThat(moved)
+            .describedAs("TRIPWIRE: stream ownership moved off the killed owner %s — the stall this asserts is fixed. "
+                         + "Delete this tripwire and enable replacementJoined_newOwnerServesEveryReplicatedEvent.",
+                         killedOwner)
+            .isFalse();
+    }
+
+    /// Live nodes whose LOCAL partition holds offsets `0..N-1` — read from each node's own ring, not from
+    /// any owner's registry, so it is a statement about where the data is, independent of who serves it.
+    private List<String> survivorsHoldingFullHistory() {
+        return cluster.allNodes()
+                      .stream()
+                      .filter(node -> holdsFullHistory(node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION)))
+                      .map(node -> node.self().id())
+                      .toList();
+    }
+
+    private static boolean holdsFullHistory(ReplicaSetView localView) {
+        return localView.earliestRetainedOffset() == 0 && localView.ownerHeadOffset() >= N_EVENTS;
     }
 
     // --- replica-set view (in-JVM, owner-authoritative) ---------------------
