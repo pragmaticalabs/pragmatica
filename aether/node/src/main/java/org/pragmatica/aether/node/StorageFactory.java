@@ -609,34 +609,36 @@ public final class StorageFactory {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
 
-        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
-                                                                                    warnNoDurableStreamTier(segmentsDir,
-                                                                                                            cause);
+        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES)
+                            .flatMap(LocalDiskTier::open)
+                            .fold(cause -> {
+                                      warnNoDurableStreamTier(segmentsDir, cause);
 
-                                                                                    return Result.success(withDht(dhtBuild,
-                                                                                                                  List.of(memoryTier)));
-                                                                                },
-                                                                                disk -> EncryptingStorageTier.armLocalDisk(disk,
-                                                                                                                           segmentsDir,
-                                                                                                                           keyring).map(armed -> withDht(dhtBuild,
-                                                                                                                                                         List.of(memoryTier,
-                                                                                                                                                                 armed.tier()),
-                                                                                                                                                         Option.some(armed))));
+                                      return Result.success(withDht(dhtBuild,
+                                                                    List.of(memoryTier)));
+                                  },
+                                  disk -> EncryptingStorageTier.armLocalDisk(disk, segmentsDir, keyring).map(armed -> withDht(dhtBuild,
+                                                                                                                              List.of(memoryTier,
+                                                                                                                                      armed.tier()),
+                                                                                                                              Option.some(armed))));
     }
 
+    /// The disk tier is constructed read-only and then OPENED (#1569 A3): this node owns its stream data
+    /// directory, and opening is the step that creates it and sweeps stale partial blocks.
     private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
 
-        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
-                                                                                    warnNoDurableStreamTier(segmentsDir,
-                                                                                                            cause);
+        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES)
+                            .flatMap(LocalDiskTier::open)
+                            .fold(cause -> {
+                                      warnNoDurableStreamTier(segmentsDir, cause);
 
-                                                                                    return withDht(dhtBuild,
-                                                                                                   List.of(memoryTier));
-                                                                                },
-                                                                                disk -> withDht(dhtBuild,
-                                                                                                List.of(memoryTier, disk)));
+                                      return withDht(dhtBuild,
+                                                     List.of(memoryTier));
+                                  },
+                                  disk -> withDht(dhtBuild,
+                                                  List.of(memoryTier, disk)));
     }
 
     /// #1567 F12: the fallback is loud because it stops sealing -- every seal on a tier list without a durable
@@ -738,9 +740,10 @@ public final class StorageFactory {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
         var dhtKeyPrefix = name + "-blocks";
         var diskPath = Path.of(config.diskPath());
-
+        // #1569 A3: the tier is constructed read-only; this node owns the volume, so it opens it.
         return LocalDiskTier.localDiskTier(diskPath,
                                            config.diskMaxBytes())
+                            .flatMap(LocalDiskTier::open)
                             .fold(cause -> handleDiskTierUnavailable(name,
                                                                      cause,
                                                                      memoryTier,

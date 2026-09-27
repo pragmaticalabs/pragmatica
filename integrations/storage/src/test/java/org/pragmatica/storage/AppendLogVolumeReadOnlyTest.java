@@ -40,13 +40,25 @@ class AppendLogVolumeReadOnlyTest {
 
     /// A node that loses its claim on a volume must leave it byte-identical. Building the tiers and the
     /// instance, listing its logs, inspecting a log with a torn tail and reading its epoch history must not
-    /// change the size, the timestamp or the contents of any file or directory on the volume.
+    /// change the size, the timestamp or the contents of any file or directory on the volume -- with a
+    /// leftover partial block on it (the tier's OPEN sweeps those, construction must not), and with a tier
+    /// whose base directory and an instance whose log root do not exist yet (construction must not create
+    /// them).
     @Test
     void constructListAndInspect_leaveTheVolumeByteIdentical() throws Exception {
         prepareVolumeWithTornLog();
+        leaveAPartialBlock();
         var before = snapshot();
 
         var disk = LocalDiskTier.localDiskTier(volume.resolve("blocks"), 1 << 20).unwrap();
+        var unopened = LocalDiskTier.localDiskTier(volume.resolve("missing-blocks"), 1 << 20).unwrap();
+        var rootless = StorageInstance.storageInstance("other",
+                                                       List.of(MemoryTier.memoryTier(1 << 20), unopened),
+                                                       MetadataStore.inMemoryMetadataStore("other"),
+                                                       WritePolicy.WRITE_THROUGH,
+                                                       some(volume.resolve("missing-logs")));
+
+        assertThat(rootless.listLogs().unwrap()).isEmpty();
         var storage = StorageInstance.storageInstance("streams",
                                                       List.of(MemoryTier.memoryTier(1 << 20), disk),
                                                       MetadataStore.inMemoryMetadataStore("streams"),
@@ -95,6 +107,14 @@ class AppendLogVolumeReadOnlyTest {
                                    .contains(logFile().toAbsolutePath().toString())
                                    .contains("[" + extent.validBytes() + ", " + extent.fileBytes() + ")")
                                    .contains("offset 2");
+    }
+
+    /// What a write the process did not survive leaves behind: a `<hex>.<n>.partial` beside the shards.
+    private void leaveAPartialBlock() throws IOException {
+        var shard = volume.resolve("blocks").resolve("ab").resolve("cd");
+
+        Files.createDirectories(shard);
+        Files.write(shard.resolve("abcd0000.7.partial"), new byte[]{9, 9, 9});
     }
 
     private void prepareVolumeWithTornLog() throws IOException {

@@ -119,14 +119,26 @@ public final class LocalDiskTier implements StorageTier {
                                                Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
                                                Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride,
                                                Option<Fn1<Result<Unit>, Path>> directoryForcerOverride) {
+        return Result.success(new LocalDiskTier(basePath,
+                                                maxBytes,
+                                                readTimeout,
+                                                readerOverride,
+                                                writerOverride,
+                                                directoryForcerOverride)).onSuccess(LocalDiskTier::countUsedBytes);
+    }
+
+    /// Take the tier's directory into use: create the base directory durably if it is missing, remove the
+    /// partial files a write the process did not survive left behind, and recount the bytes in use.
+    ///
+    /// The only step that changes the volume (#1569 A3): construction reads it and nothing more, so a node
+    /// that builds a tier for a volume and then loses its claim on it leaves the volume byte-identical. The
+    /// node that owns the volume opens the tier before using it. A put creates the directories it needs on
+    /// its own, so an unopened tier still writes correctly; it only keeps any stale partials.
+    public Result<LocalDiskTier> open() {
         return FileOps.createDirectoriesDurable(basePath)
-                      .map(_ -> new LocalDiskTier(basePath,
-                                                  maxBytes,
-                                                  readTimeout,
-                                                  readerOverride,
-                                                  writerOverride,
-                                                  directoryForcerOverride))
-                      .onSuccess(LocalDiskTier::calculateUsedBytes);
+                      .flatMap(_ -> FileOps.walk(basePath, FileOps::isRegularFile))
+                      .onSuccess(LocalDiskTier::removeLeftoverPartials)
+                      .map(_ -> countUsedBytes());
     }
 
     @Override
@@ -291,21 +303,35 @@ public final class LocalDiskTier implements StorageTier {
                        .resolve(hex);
     }
 
-    /// A partial file left by a write the process did not survive is removed here rather than
-    /// counted: it is never served (reads use the block path) and nothing else would ever delete it.
-    private void calculateUsedBytes() {
+    /// Read-only: a partial file left by a write the process did not survive is never counted -- it is never
+    /// served (reads use the block path) -- and it is left where it is; [#open] removes it, since nothing else
+    /// would ever delete it.
+    private LocalDiskTier countUsedBytes() {
+        if (FileOps.exists(basePath)) {
+            recount();
+        } else {
+            recordUsedBytes(0);
+        }
+
+        return this;
+    }
+
+    private Unit recount() {
         FileOps.walk(basePath, FileOps::isRegularFile)
-               .onSuccess(LocalDiskTier::removeLeftoverPartials)
                .map(LocalDiskTier::blockBytes)
                .onSuccess(this::recordUsedBytes)
                .onFailure(cause -> log.warn("Failed to calculate used bytes at {}: {}",
                                             basePath,
                                             cause.message()));
+
+        return unit();
     }
 
-    private void recordUsedBytes(long total) {
+    private Unit recordUsedBytes(long total) {
         usedBytes.set(total);
         log.info("LocalDiskTier at {} initialized: {} bytes in use", basePath, total);
+
+        return unit();
     }
 
     private static long fileSizeOrZero(Path path) {
