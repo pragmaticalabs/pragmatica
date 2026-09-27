@@ -12,6 +12,7 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -209,6 +210,44 @@ class RabiaVoterReconfigurationTest {
                                                       ResponderState.COLD));
         settle();
         assertThat(engine.isActive()).isTrue();
+    }
+
+    /// #1526: a pending node installs the NEWEST formed configuration it saw in the round, in either
+    /// arrival order, so a lagging member's older answer cannot win over a current one.
+    @Test void pendingGenesis_installsTheNewestFormedConfigurationSeenInTheRound() {
+        var older = new VoterConfiguration(0, GENESIS_ROSTER);
+        var newer = new VoterConfiguration(1, REPLACED);
+        for (var newerFirst : List.of(true, false)) {
+            engine = create(B);
+            assertThat(engine.deferGenesis(() -> Set.of(B), 3, Option.none(), Set.of(A, B, C)).isSuccess()).isTrue();
+            var first = newerFirst ? new GenesisAnnouncement(A, 0, Option.some(newer.roster()), Option.some(newer))
+                                   : new GenesisAnnouncement(C, 0, Option.some(older.roster()), Option.some(older));
+            var second = newerFirst ? new GenesisAnnouncement(C, 0, Option.some(older.roster()), Option.some(older))
+                                    : new GenesisAnnouncement(A, 0, Option.some(newer.roster()), Option.some(newer));
+            engine.genesisAnnouncement(first);
+            engine.genesisAnnouncement(second);
+            settle();
+            assertThat(engine.isGenesisPending()).as("installed only at the next genesis round").isTrue();
+
+            engine.runGenesisRoundForTesting();
+            settle();
+
+            assertThat(engine.voterConfiguration().unwrap()).as("newer first: %s", newerFirst).isEqualTo(newer);
+            engine.stop().await();
+        }
+    }
+
+    /// A `formed` answer is accepted only from a member of the configuration it carries.
+    @Test void pendingGenesis_ignoresAFormedAnswerFromANonMember() {
+        engine = create(B);
+        assertThat(engine.deferGenesis(() -> Set.of(B), 3, Option.none(), Set.of(A, B, C)).isSuccess()).isTrue();
+        var formed = new VoterConfiguration(1, REPLACED);
+        engine.genesisAnnouncement(new GenesisAnnouncement(C, 0, Option.some(formed.roster()), Option.some(formed)));
+        settle();
+        engine.runGenesisRoundForTesting();
+        settle();
+
+        assertThat(engine.isGenesisPending()).isTrue();
     }
 
     private void assertRefused(org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> result, ReconfigurationError expected) {

@@ -140,6 +140,19 @@ R+1, and it joins every later slot as a fresh participant, which Weak-MVC tolera
 response quorum here would wedge exactly the #1526 case: a replacement whose only live peer in the new
 roster is the voter that decided R. Same-epoch adoption keeps its existing quorum rules.
 
+[limit: amnesiac-same-id-excluded-by-boot-token] Single-responder adoption of a newer epoch is safe only
+because a same-NodeId restart is refused at transport (#1528/#1545); a fresh ULID has never balloted. A
+process restarted under a NodeId that balloted past R, having lost its memory, could otherwise adopt from
+one responder and vote in a slot it already voted in. Peers hold the original process's boot token and drop
+every message from a different process under that id before it reaches consensus. A responder-quorum fence
+would instead recreate the #1526 wedge for a replacement that must adopt a snapshot. (pinned on real
+transport by `EmberAmnesiacRestartTest`; demonstrated at the engine layer, with the gate absent, by the
+disabled `V1554AmnesiaProbeTest`)
+
+A pending node joins a formed electorate by the newest configuration it has seen: it gathers every
+`formed` answer from a member of that configuration, and every LIVE sync response carrying one, until its
+next genesis round, then installs the newest — never an epoch older than a live responder showed it.
+
 ## Retirement
 
 An applied change is not permission to terminate removed or dead instances by itself. The engine

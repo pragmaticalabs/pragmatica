@@ -139,6 +139,8 @@ public class RabiaEngine<C extends Command> {
     private volatile boolean genesisPending;
     private volatile Option<Supplier<Set<NodeId>>> genesisDiscovery = Option.none();
     private volatile Set<NodeId> genesisConfiguredCores = Set.of();
+    /// Executor-confined. The newest formed configuration seen since the last genesis round.
+    private Option<VoterConfiguration> newestFormed = Option.none();
     /// Executor-confined after [#start]. Genesis view agreement while genesis is pending.
     private volatile Option<GenesisViewAgreement> genesisAgreement = Option.none();
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
@@ -314,6 +316,12 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
+        if (newestFormed.isPresent()) {
+            newestFormed.onPresent(this::joinFormedElectorate);
+
+            return;
+        }
+
         genesisAgreement.onPresent(agreement -> announceGenesisRound(agreement, agreement.tick(authenticatedDiscovery())));
     }
 
@@ -403,8 +411,8 @@ public class RabiaEngine<C extends Command> {
     private void handleGenesisAnnouncement(GenesisAnnouncement announcement) {
         if (announcement.formed().isPresent()) {
             announcement.formed()
-                        .filter(formed -> genesisPending && formed.contains(announcement.sender()))
-                        .onPresent(this::joinFormedElectorate);
+                        .filter(formed -> formed.contains(announcement.sender()))
+                        .onPresent(this::noteFormedElectorate);
 
             return;
         }
@@ -429,6 +437,17 @@ public class RabiaEngine<C extends Command> {
                                                          announcement.round(),
                                                          Set.copyOf(view.members())));
         completeGenesisIfAgreed(agreement);
+    }
+
+    /// Rule for joining a formed electorate (#1526): a pending node gathers every `formed` configuration
+    /// answered by one of that configuration's own members — and every LIVE sync response carrying one —
+    /// until its next genesis round, then installs the NEWEST. It never installs an epoch older than one
+    /// a live responder has shown it, so a lagging member's older answer cannot win over a current one
+    /// that arrived in the same round.
+    private void noteFormedElectorate(VoterConfiguration formed) {
+        if (genesisPending && newestFormed.filter(seen -> seen.epoch() >= formed.epoch()).isEmpty()) {
+            newestFormed = Option.some(formed);
+        }
     }
 
     private void joinFormedElectorate(VoterConfiguration formed) {
@@ -2244,6 +2263,13 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a synchronization response from another node.
     private void handleSyncResponse(SyncResponse<C> response) {
+        if (genesisPending && response.responder() == ResponderState.LIVE) {
+            response.state()
+                    .configuration()
+                    .filter(configuration -> configuration.contains(response.sender()))
+                    .onPresent(this::noteFormedElectorate);
+        }
+
         if (!eligibleSyncResponse(response) || response.sender().equals(self)) {
             return;
         }
@@ -2880,6 +2906,15 @@ public class RabiaEngine<C extends Command> {
     /// replacement voter whose only live peer in the new roster is the one that decided R (#1526's
     /// {A,B,C} → {A,B,D} with B lost after R). Responses whose claimed configurations disagree are
     /// refused — under crash faults that cannot happen, so it is reported as an inconsistency.
+    ///
+    /// [limit: amnesiac-same-id-excluded-by-boot-token] Safe only because a same-NodeId restart is refused
+    /// at transport (#1528/#1545); a fresh ULID has never balloted. The second bullet above assumes the
+    /// adopting process is the one that held this NodeId's ballots, or a new identity. A process restarted
+    /// under a NodeId that DID ballot past R, with its memory lost, breaks that assumption: it can adopt
+    /// from one responder and vote again (`V1554AmnesiaProbeTest` demonstrates it at this layer). Peers
+    /// keep the original process's boot token and drop everything from a different process under that id
+    /// before it reaches this engine, which is what excludes the case. A responder-quorum fence here would
+    /// recreate the #1526 wedge for a replacement that must adopt a snapshot.
     private Option<List<SyncResponse<C>>> newerEpochCandidates(List<SyncResponse<C>> responses) {
         var live = responses.stream().filter(response -> response.responder() == ResponderState.LIVE).toList();
         var claimed = live.stream().map(response -> response.state()
