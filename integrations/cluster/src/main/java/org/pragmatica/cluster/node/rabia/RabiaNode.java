@@ -55,6 +55,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequ
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRejected;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
@@ -181,6 +182,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     default boolean isGenesisPending() {
         return false;
+    }
+
+    /// Genesis by agreement: defer genesis and offer the roster `candidates` supplies until every
+    /// member announces the identical one. Default refusal for implementations without a Rabia engine.
+    default Result<Unit> deferGenesis(Supplier<Option<ClusterConfig>> candidates) {
+        return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
     }
 
     default Option<VoterConfiguration> retirementSafeVoters() {
@@ -627,6 +634,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                              consensus::handleRoundRequest),
                                                                        route(ReconfigurationRequest.class,
                                                                              consensus::reconfigurationRequest),
+                                                                       route(GenesisAnnouncement.class,
+                                                                             consensus::genesisAnnouncement),
                                                                        route(SyncRequest.class,
                                                                              consensus::handleSyncRequest),
                                                                        route(NewBatch.class,
@@ -762,6 +771,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public boolean isGenesisPending() {
                 return consensus().isGenesisPending();
+            }
+
+            @Override
+            public Result<Unit> deferGenesis(Supplier<Option<ClusterConfig>> candidates) {
+                return consensus().deferGenesis(candidates);
             }
 
             @Override

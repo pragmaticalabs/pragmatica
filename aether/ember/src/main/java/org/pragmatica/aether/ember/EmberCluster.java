@@ -1450,16 +1450,21 @@ public final class EmberCluster {
         }
     }
 
-    /// Genesis identity survives all in-process restarts of this cluster. Consensus state is
+    /// Only the initial nodes carry `cluster.genesis_voters` (#1526): a node added later joins the formed
+    /// electorate through a Rabia §4 add command and must not carry a genesis roster. Consensus state is
     /// in-memory (owner ruling, session 28), so no consensus storage path is injected.
     private ConfigurationProvider nodeConfiguration(NodeId nodeId) {
-        var genesis = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
-                                                .mapToObj(index -> nodeIdPrefix + "-" + index)
-                                                .collect(java.util.stream.Collectors.joining(","));
-        var builder = ConfigurationProvider.builder().withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
-                                                                                                                  Map.of("cluster.genesis_voters",
-                                                                                                                         genesis),
-                                                                                                                  Integer.MAX_VALUE));
+        var genesisIds = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
+                                                   .mapToObj(index -> nodeIdPrefix + "-" + index)
+                                                   .toList();
+        var builder = ConfigurationProvider.builder();
+
+        if (genesisIds.contains(nodeId.id())) {
+            builder = builder.withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
+                                                                                          Map.of("cluster.genesis_voters",
+                                                                                                 String.join(",", genesisIds)),
+                                                                                          Integer.MAX_VALUE));
+        }
 
         configProvider.onPresent(builder::withSource);
 

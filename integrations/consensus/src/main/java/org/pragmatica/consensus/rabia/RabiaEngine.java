@@ -19,6 +19,7 @@ import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -37,6 +38,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.Command;
@@ -135,6 +137,12 @@ public class RabiaEngine<C extends Command> {
     /// is rendered from. Not a history: later epochs are learned from the log, never from this value.
     private volatile Option<VoterConfiguration> genesis = Option.none();
     private volatile boolean genesisPending;
+    private volatile Option<Supplier<Option<ClusterConfig>>> genesisCandidates = Option.none();
+    /// Executor-confined. The genesis roster this node has announced; latched once set.
+    private Option<ClusterConfig> genesisCandidate = Option.none();
+    /// Executor-confined. The latest genesis roster each pending peer announced.
+    private final Map<NodeId, ClusterConfig> genesisAnnouncements = new HashMap<>();
+    private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
     private volatile Option<Cause> authorityFailure = Option.none();
     private final List<Consumer<VoterConfiguration>> voterListeners = new CopyOnWriteArrayList<>();
     private final Map<Set<NodeId>, Promise<Unit>> reconfigurationPromises = new ConcurrentHashMap<>();
@@ -232,19 +240,16 @@ public class RabiaEngine<C extends Command> {
                      .toList();
     }
 
-    /// Installs the complete bootstrap electorate, never a discovery seed subset. A configuration
-    /// persisted with the application state takes precedence over `initial`. Allowed before
-    /// participation starts, or once while genesis is pending ([#deferGenesis]).
+    /// Installs the complete bootstrap electorate, never a discovery seed subset. Allowed before
+    /// participation starts, or once while genesis is pending ([#deferGenesis]). A voter configuration
+    /// persisted with a backup is deliberately NOT consulted: a cold restart forms a fresh genesis and
+    /// restores backup data under it (owner ruling, #1526).
     public synchronized Result<Unit> initializeVoters(VoterConfiguration initial) {
         if (!genesisPending && (participationStarted || stopping.get() || !(engineState.get() instanceof EngineState.Stopped))) {
             return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
         }
 
-        return persistence.loadVerified()
-                          .map(saved -> saved.flatMap(SavedState::configuration)
-                                             .or(initial))
-                          .map(this::installGenesis)
-                          .onFailure(cause -> authorityFailure = Option.some(cause));
+        return Result.success(installGenesis(initial));
     }
 
     /// Genesis wait-and-retry: withdraws the provisional roster so this engine neither votes nor
@@ -263,12 +268,135 @@ public class RabiaEngine<C extends Command> {
         return Result.success(Unit.unit());
     }
 
+    /// Genesis by agreement (#1526): as [#deferGenesis], and from [#start] on, every sync retry interval
+    /// this engine offers the candidate `candidates` supplies ([#proposeGenesis]). The supplier returns
+    /// none while no roster can be chosen; the engine still announces itself so an already formed
+    /// electorate can answer.
+    public synchronized Result<Unit> deferGenesis(Supplier<Option<ClusterConfig>> candidates) {
+        return deferGenesis().onSuccess(_ -> genesisCandidates = Option.some(candidates));
+    }
+
+    /// Offers `candidate` as the epoch-0 roster. Epoch 0 is installed only once EVERY other member of the
+    /// candidate has announced the identical roster; any mismatch keeps waiting. The first candidate
+    /// offered is latched: a node never confirms two different rosters, so no two epoch-0
+    /// configurations sharing a member can both form. An answer from an already formed electorate that
+    /// includes its sender is installed instead, so a late or replacement core joins the running
+    /// cluster rather than starting a second one.
+    public Result<Unit> proposeGenesis(ClusterConfig candidate) {
+        return ClusterConfig.clusterConfig(candidate.members())
+                            .onSuccess(valid -> safeExecute(() -> offerGenesis(Option.some(valid))))
+                            .mapToUnit();
+    }
+
+    private void offerGenesisFromSupplier() {
+        if (!genesisPending) {
+            cancelGenesisTimer();
+
+            return;
+        }
+
+        genesisCandidates.onPresent(supplier -> offerGenesis(supplier.get()));
+    }
+
+    private void offerGenesis(Option<ClusterConfig> offered) {
+        if (!genesisPending) {
+            return;
+        }
+
+        offered.onPresent(this::latchGenesisCandidate);
+        announceGenesis();
+        completeGenesisIfAgreed();
+    }
+
+    private void latchGenesisCandidate(ClusterConfig offered) {
+        var normalized = new VoterConfiguration(0, offered).roster();
+
+        genesisCandidate.filter(latched -> !latched.sameMembership(normalized))
+                        .onPresent(latched -> log.warn("Node {} keeps its announced genesis roster {}; the newly offered {} "
+                                                       + "is ignored, because announcing a second roster could form two electorates",
+                                                       self,
+                                                       latched.members(),
+                                                       normalized.members()));
+        genesisCandidate = Option.some(genesisCandidate.or(normalized));
+    }
+
+    private void announceGenesis() {
+        var announcement = new GenesisAnnouncement(self, genesisCandidate, Option.none());
+        var recipients = new HashSet<>(network.connectedPeers());
+
+        genesisCandidate.onPresent(roster -> recipients.addAll(roster.members()));
+        recipients.stream()
+                  .filter(node -> !node.equals(self))
+                  .forEach(node -> network.send(node, announcement));
+    }
+
+    private void completeGenesisIfAgreed() {
+        genesisCandidate.filter(this::everyMemberAnnounced)
+                        .onPresent(roster -> installAgreedGenesis(new VoterConfiguration(0, roster)));
+    }
+
+    private boolean everyMemberAnnounced(ClusterConfig roster) {
+        return roster.members()
+                     .stream()
+                     .filter(member -> !member.equals(self))
+                     .allMatch(member -> Option.option(genesisAnnouncements.get(member))
+                                               .map(roster::sameMembership)
+                                               .or(false));
+    }
+
+    private void installAgreedGenesis(VoterConfiguration configuration) {
+        log.info("Node {} installs genesis roster {}: every member announced the same roster", self, configuration.members());
+        installGenesis(configuration);
+    }
+
+    @Contract
+    @MessageReceiver
+    public void genesisAnnouncement(GenesisAnnouncement announcement) {
+        safeExecute(() -> handleGenesisAnnouncement(announcement));
+    }
+
+    private void handleGenesisAnnouncement(GenesisAnnouncement announcement) {
+        if (announcement.formed().isPresent()) {
+            announcement.formed()
+                        .filter(formed -> genesisPending && formed.contains(announcement.sender()))
+                        .onPresent(this::joinFormedElectorate);
+
+            return;
+        }
+
+        if (genesisPending) {
+            announcement.roster()
+                        .onPresent(roster -> genesisAnnouncements.put(announcement.sender(), roster));
+            completeGenesisIfAgreed();
+
+            return;
+        }
+
+        voters.filter(configuration -> configuration.contains(self))
+              .onPresent(configuration -> network.send(announcement.sender(),
+                                                       new GenesisAnnouncement(self,
+                                                                               Option.some(configuration.roster()),
+                                                                               Option.some(configuration))));
+    }
+
+    private void joinFormedElectorate(VoterConfiguration formed) {
+        log.info("Node {} joins the formed electorate: epoch {} {}", self, formed.epoch(), formed.members());
+        installGenesis(formed);
+    }
+
+    private void cancelGenesisTimer() {
+        Option.option(genesisTimer.getAndSet(null))
+              .onPresent(task -> task.cancel(false));
+    }
+
     public boolean isGenesisPending() {
         return genesisPending;
     }
 
     private Unit installGenesis(VoterConfiguration configuration) {
         var resolvesPending = genesisPending;
+
+        cancelGenesisTimer();
 
         genesis = Option.some(configuration);
         authorityFailure = Option.none();
@@ -1145,10 +1273,29 @@ public class RabiaEngine<C extends Command> {
 
         for (var target : List.copyOf(reconfigurationPromises.keySet())) {
             if (target.equals(Set.copyOf(installed.members()))) {
-                Option.option(reconfigurationPromises.remove(target)).onPresent(promise -> promise.succeed(Unit.unit()));
+                Option.option(reconfigurationPromises.remove(target)).onPresent(this::completeRequestedChange);
             } else if (!requested.map(target::equals).or(false)) {
                 Option.option(reconfigurationPromises.remove(target)).onPresent(promise -> promise.fail(ReconfigurationError.SUPERSEDED));
             }
+        }
+    }
+
+    /// The requester of an applied change — the leader's reconciler — completes its promise and opens slot
+    /// R+1 with an empty proposal. Every voter answers it, so the first ballots past R, which are the
+    /// catch-up evidence [#retirementSafeVoters] waits for, arrive even in a cluster with no traffic.
+    /// An added voter does the same when it joins ([#promoteAddedVoter], [#adoptSyncedConfiguration]):
+    /// if the slot the leader opened completed before it joined, its own proposal past R is still
+    /// recorded as evidence by the leader, which answers it with the completed slot's decision.
+    private void completeRequestedChange(Promise<Unit> promise) {
+        promise.succeed(Unit.unit());
+        safeExecute(this::openSlotAfterChange);
+    }
+
+    private void openSlotAfterChange() {
+        var current = engineState.get();
+
+        if (current instanceof EngineState.Idle && isVoter(self) && pendingBatches.isEmpty() && requestedConfiguration.isEmpty()) {
+            startPhaseWithBatch(current, Batch.emptyBatch());
         }
     }
 
@@ -1160,9 +1307,14 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
+        var joins = configuration.contains(self) && !isVoter(self);
+
         installVoters(configuration);
         observerMode = !configuration.contains(self);
         settleRequests();
+        if (joins) {
+            safeExecute(this::openSlotAfterChange);
+        }
         log.info("Node {} adopted voter epoch {} {} from synchronized state",
                  self,
                  configuration.epoch(),
@@ -1459,8 +1611,26 @@ public class RabiaEngine<C extends Command> {
 
     public synchronized Promise<Unit> start() {
         participationStarted = true;
+        armGenesisTimer();
 
         return startPromise.get();
+    }
+
+    /// Genesis agreement runs before consensus can start, so it owns its own timer: armed at [#start]
+    /// while genesis is pending with a candidate supplier, cancelled once genesis is installed or on stop.
+    private void armGenesisTimer() {
+        if (!genesisPending || genesisCandidates.isEmpty() || genesisTimer.get() != null) {
+            return;
+        }
+
+        var task = SharedScheduler.scheduleAtFixedRate(() -> safeExecute(this::offerGenesisFromSupplier),
+                                                       config.syncRetryInterval());
+
+        if (!genesisTimer.compareAndSet(null, task)) {
+            task.cancel(false);
+        }
+
+        safeExecute(this::offerGenesisFromSupplier);
     }
 
     public synchronized Promise<Unit> stop() {
@@ -1484,6 +1654,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void performStop(Promise<Unit> promise) {
+        cancelGenesisTimer();
         Option.option(cleanupTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
 
@@ -1652,9 +1823,16 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        Option.option(pendingBatches.firstEntry()).onPresent(batchEntry -> broadcastOwnProposal(phase,
-                                                                                                phaseData,
-                                                                                                batchEntry.getValue()));
+        broadcastOwnProposal(phase, phaseData, nextProposal());
+    }
+
+    /// The batch this voter proposes when it joins a slot: its oldest pending batch, or an empty one. An
+    /// empty proposal still counts toward the slot's proposal quorum, so a slot another voter opened with
+    /// nothing to carry (see [#openSlotAfterChange]) decides V0 instead of stalling.
+    private Batch<C> nextProposal() {
+        return Option.option(pendingBatches.firstEntry())
+                     .map(Map.Entry::getValue)
+                     .or(Batch::emptyBatch);
     }
 
     /// Starts a new phase with pending commands.
@@ -1890,7 +2068,7 @@ public class RabiaEngine<C extends Command> {
                  reason,
                  state.lastCommittedPhase(),
                  currentPhase.get());
-        restoreState(state, this::recordOwnRestoreFailure);
+        restoreState(withoutConfiguration(state), this::recordOwnRestoreFailure);
     }
 
     /// #1468 — a node that cannot restore its OWN persisted history reports it as the authority
@@ -1900,6 +2078,13 @@ public class RabiaEngine<C extends Command> {
     private void recordOwnRestoreFailure(Cause cause) {
         authorityFailure = Option.some(cause);
         logRestoreFailure(cause);
+    }
+
+    /// A backup's voter configuration is not authority: a cold restart forms a fresh genesis and restores
+    /// only the data under it (owner ruling, #1526). Own restores and COLD sync answers therefore carry
+    /// no configuration.
+    private static <C extends Command> SavedState<C> withoutConfiguration(SavedState<C> state) {
+        return new SavedState<>(state.snapshot(), state.lastCommittedPhase(), state.pendingBatches(), Option.none());
     }
 
     private void activateOnLiveState(String reason) {
@@ -2466,7 +2651,9 @@ public class RabiaEngine<C extends Command> {
         } else {
             log.trace("Node {} is inactive, trying to share saved (or empty) state for request: {}", self, request);
             var response = new SyncResponse<>(self,
-                                              persistence.load().or(SavedState.empty()),
+                                              persistence.load()
+                                                         .map(RabiaEngine::withoutConfiguration)
+                                                         .or(SavedState.empty()),
                                               ResponderState.COLD);
 
             sendSyncResponse(request.sender(), response);
@@ -2849,9 +3036,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         notifyConsensusStateTransition();
-        Option.option(pendingBatches.firstEntry()).onPresent(batchEntry -> broadcastOwnProposal(proposalPhase,
-                                                                                                phaseData,
-                                                                                                batchEntry.getValue()));
+        broadcastOwnProposal(proposalPhase, phaseData, nextProposal());
         driveBinaryRound(phaseData);
     }
 
@@ -3323,6 +3508,7 @@ public class RabiaEngine<C extends Command> {
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         log.info("Node {} joined the voter roster at phase {}", self, currentPhase.get());
+        safeExecute(this::openSlotAfterChange);
     }
 
     private void advancePhaseAsObserver(Phase nextPhase) {

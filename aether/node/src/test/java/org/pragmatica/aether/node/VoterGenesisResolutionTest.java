@@ -16,54 +16,48 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #1526 genesis: full roster with wait-and-retry, `cluster.genesis_voters` optional.
+/// #1526 genesis: the candidate a core offers for agreement, and the worker wait-and-retry.
+/// Agreement itself is pinned at the engine level (`RabiaReorderedDeliveryTest`).
 class VoterGenesisResolutionTest {
     private static final NodeId A = new NodeId("a");
     private static final NodeId B = new NodeId("b");
     private static final NodeId C = new NodeId("c");
+    private static final NodeId D = new NodeId("d");
     private static final List<NodeId> GENESIS_IDS = List.of(A, B, C);
     private static final VoterConfiguration GENESIS = new VoterConfiguration(0, new ClusterConfig(GENESIS_IDS));
 
-    @Test void resolveGenesis_incompleteKnownRoster_waitsInsteadOfRefusing() {
-        var result = AetherNode.resolveGenesis(Option.none(), Option.none(), List.of(A, B), 3);
-
-        assertThat(result.isSuccess()).as("a late core must never fail assembly").isTrue();
-        assertThat(result.unwrap().isEmpty()).isTrue();
+    @Test void genesisCandidate_lateCore_offersNothingAndWaits() {
+        assertThat(AetherNode.genesisCandidate(Option.none(), Set.of(A, B), 3).isEmpty()).isTrue();
     }
 
-    @Test void resolveGenesis_completeKnownRoster_resolvesWithoutGenesisVoters() {
-        assertThat(AetherNode.resolveGenesis(Option.none(), Option.none(), GENESIS_IDS, 3).unwrap().unwrap())
-            .isEqualTo(GENESIS);
+    @Test void genesisCandidate_everyConfiguredCoreDiscovered_offersThatRoster() {
+        assertThat(AetherNode.genesisCandidate(Option.none(), Set.of(A, B, C), 3).unwrap()
+                             .sameMembership(GENESIS.roster())).isTrue();
     }
 
-    @Test void resolveGenesis_moreKnownCoresThanConfigured_keepsWaiting() {
-        assertThat(AetherNode.resolveGenesis(Option.none(), Option.none(), List.of(A, B, C, new NodeId("d")), 3)
-                             .unwrap()
-                             .isEmpty()).isTrue();
+    @Test void genesisCandidate_moreCandidatesThanConfigured_refusesToChoose() {
+        assertThat(AetherNode.genesisCandidate(Option.none(), Set.of(A, B, C, D), 3).isEmpty())
+            .as("an ambiguous candidate set must never be narrowed by the node itself").isTrue();
     }
 
-    @Test void resolveGenesis_explicitGenesisVoters_areAuthoritativeInAnyOrder() {
-        assertThat(AetherNode.resolveGenesis(Option.some("c,b,a"), Option.none(), List.of(A), 5).unwrap().unwrap())
-            .isEqualTo(GENESIS);
+    @Test void genesisCandidate_genesisVoters_areAuthoritativeWhateverIsDiscovered() {
+        assertThat(AetherNode.genesisCandidate(Option.some(GENESIS), Set.of(A, B, C, D), 3).unwrap())
+            .isEqualTo(GENESIS.roster());
+        assertThat(AetherNode.genesisCandidate(Option.some(GENESIS), Set.of(A), 3).unwrap())
+            .isEqualTo(GENESIS.roster());
     }
 
-    @Test void resolveGenesis_persistedConfiguration_isUsedWhenGenesisVotersAreAbsent() {
-        var persisted = new VoterConfiguration(2, new ClusterConfig(List.of(A, B, new NodeId("d"))));
-
-        assertThat(AetherNode.resolveGenesis(Option.none(), Option.some(persisted), List.of(A), 3).unwrap().unwrap())
-            .isEqualTo(persisted);
-    }
-
-    @Test void resolveGenesis_blankGenesisVoterId_failsBootLoudly() {
+    @Test void parseGenesisVoters_blankId_failsBootLoudly() {
         for (var malformed : List.of("a,,c", "a, ,c", "", "a,b,")) {
-            var result = AetherNode.resolveGenesis(Option.some(malformed), Option.none(), GENESIS_IDS, 3);
+            var result = AetherNode.parseGenesisVoters(malformed);
 
             assertThat(result.isFailure()).as(malformed).isTrue();
             result.onFailure(cause -> assertThat(cause).isEqualTo(AetherNode.VoterBootstrapError.MALFORMED_GENESIS_VOTERS));
         }
+        assertThat(AetherNode.parseGenesisVoters("c,b,a").unwrap()).isEqualTo(GENESIS);
     }
 
-    @Test void retryGenesis_lateCore_completesGenesisOnceItIsDiscovered() {
+    @Test void retryGenesis_workerWithALateCore_completesOnceItIsDiscovered() {
         var pending = new AtomicBoolean(true);
         var installed = new ArrayList<VoterConfiguration>();
         var discovered = new LinkedHashSet<>(List.of(A, B));
@@ -73,14 +67,12 @@ class VoterGenesisResolutionTest {
             return Result.success(Unit.unit());
         };
 
-        AetherNode.retryGenesis(pending::get, install, Option.none(), () -> Set.copyOf(discovered), 3);
-        AetherNode.retryGenesis(pending::get, install, Option.none(), () -> Set.copyOf(discovered), 3);
+        AetherNode.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
         assertThat(installed).as("two of three cores discovered: keep waiting").isEmpty();
-        assertThat(pending.get()).isTrue();
 
         discovered.add(C);
-        AetherNode.retryGenesis(pending::get, install, Option.none(), () -> Set.copyOf(discovered), 3);
-        AetherNode.retryGenesis(pending::get, install, Option.none(), () -> Set.copyOf(discovered), 3);
+        AetherNode.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
+        AetherNode.retryGenesis(pending::get, install, () -> Set.copyOf(discovered), 3);
 
         assertThat(installed).containsExactly(GENESIS);
         assertThat(pending.get()).isFalse();

@@ -141,6 +141,7 @@ public class TestCluster {
                 case Asynchronous.SyncRejected rejected -> engine.handleSyncRejected(rejected);
                 case Asynchronous.RoundRequest request -> engine.handleRoundRequest(request);
                 case Asynchronous.ReconfigurationRequest request -> engine.reconfigurationRequest(request);
+                case Asynchronous.GenesisAnnouncement announcement -> engine.genesisAnnouncement(announcement);
                 case Asynchronous.NewBatch<?> newBatch -> engine.handleNewBatch(newBatch);
             }
         };

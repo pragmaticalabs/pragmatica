@@ -153,15 +153,20 @@ class RabiaVoterReconfigurationTest {
         assertThat(network.getMessages()).noneMatch(ReconfigurationRequest.class::isInstance);
     }
 
-    @Test void persistedConfigurationOverridesTheDiscoveryRoster() {
-        var installed = new VoterConfiguration(1, REPLACED);
-        assertThat(persistence.save(machine, Phase.phase(12), List.of(), installed).isSuccess()).isTrue();
+    /// Cold restart forms a fresh genesis (owner ruling, #1526): a backup's voter configuration is data,
+    /// never authority, so it neither overrides the genesis roster nor travels in a COLD sync answer.
+    @Test void backupConfiguration_neitherOverridesGenesisNorTravelsInAColdSyncAnswer() {
+        assertThat(persistence.save(machine, Phase.phase(12), List.of(), new VoterConfiguration(1, REPLACED)).isSuccess()).isTrue();
         engine = create(B);
 
         assertThat(engine.initializeVoters(new VoterConfiguration(0, GENESIS_ROSTER)).isSuccess()).isTrue();
+        assertThat(engine.voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(0, GENESIS_ROSTER));
 
-        assertThat(engine.voterConfiguration().unwrap()).isEqualTo(installed);
-        assertThat(engine.verifiedVoterHistoryIds()).containsExactlyInAnyOrder(A, B, D);
+        engine.handleSyncRequest(new SyncRequest(A));
+        settle();
+        assertThat(network.getMessages()).anyMatch(message -> message instanceof SyncResponse<?> response
+                                                              && response.state().lastCommittedPhase().equals(Phase.phase(12))
+                                                              && response.state().configuration().isEmpty());
     }
 
     @Test void deferredGenesis_neitherVotesNorAdopts_untilTheCompleteRosterIsInstalled() {

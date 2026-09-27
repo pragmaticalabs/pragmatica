@@ -180,6 +180,9 @@ public interface SystemTags {
         pin(table, 86, "org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot");
         pin(table, 87, "org.pragmatica.aether.worker.metrics.PerMethodMetrics");
         pin(table, 88, "org.pragmatica.aether.worker.metrics.PerSliceMetrics");
+        // #1526: genesis agreement. Consensus-prefixed, so it must sit in the one-byte window; 89 was
+        // the next free slot in it (blocks are advisory).
+        pin(table, 89, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement");
         // stream replication and forwarding  [base 91]
         pin(table, 91, "org.pragmatica.aether.stream.consensus.StreamConsensusCommand");
         pin(table, 92, "org.pragmatica.aether.stream.forward.RawEventDto");
