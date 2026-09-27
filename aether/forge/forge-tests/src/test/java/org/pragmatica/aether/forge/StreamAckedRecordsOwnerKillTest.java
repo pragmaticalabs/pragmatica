@@ -51,21 +51,19 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// flow: 5-node Ember cluster → deploy → the committed config reads `replicas = 3, minSyncReplicas = 3` →
 /// publish N events, each acked → kill the partition's HRW owner IMMEDIATELY after the last ack, with no
 /// wait for replication → at least two SURVIVORS hold all N acked events → a REPLACEMENT joins under a
-/// fresh node id (terminal removal: the dead identity is never reused).
+/// fresh node id (terminal removal: the dead identity is never reused) → ownership moves to a surviving
+/// replica, which serves all N acked events, contiguous and in order.
 ///
-/// What the enabled test proves: an acked event is held by the surviving replicas at the moment its owner
-/// dies. It does NOT prove the survivors SERVE it: after an owner is killed every survivor keeps resolving
-/// the dead node as HRW owner and no node serves the partition (#1550, measured on the rc4 tip). The test
-/// ends with a TRIPWIRE asserting that stall; it fails the moment ownership moves, and its message says to
-/// delete it and enable [#replacementJoined_newOwnerServesEveryAckedEvent].
+/// Scope: ownership is observed to move here only AFTER the replacement joins. Without a membership event
+/// after the kill it does not move (#1550, `StreamOwnerFailoverTest`); this test does not claim otherwise.
 ///
 /// What discriminates, stated because the obvious control does not: with the #1549 binding reverted the
-/// committed config reads `minSyncReplicas = 0`, and the final assertion fails on it. The survivor
-/// assertion alone would NOT reliably fail in that arm — in-JVM replication usually beats the kill, so an
-/// owner-only ack is usually replicated anyway. The acked-record guarantee is therefore carried by the
-/// committed `min-sync-replicas` plus the barrier's mechanism (a publish resolves only after
-/// `min-sync − 1` distinct peer acks), and this test pins both that the knob reaches the runtime and that
-/// the data is where the barrier says it is.
+/// committed config reads `minSyncReplicas = 0`, and the committed-config assertion fails. The data
+/// assertions alone would NOT reliably fail in that arm — in-JVM replication usually beats the kill, so an
+/// owner-only ack is usually replicated anyway (measured: the reverted arm still found 20/20 on two
+/// survivors). The acked-record guarantee is therefore carried by the committed `min-sync-replicas` plus
+/// the barrier's mechanism (a publish resolves only after `min-sync − 1` distinct peer acks); this test
+/// pins that the knob reaches the runtime and that the data is where the barrier says it is.
 ///
 /// Ember equivalence: the owner kill is [EmberCluster#killNode] (`node.stop()`, a SWIM leave), not a
 /// SIGKILL.

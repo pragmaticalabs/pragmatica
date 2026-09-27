@@ -28,10 +28,11 @@
   is refused under `stream-key-not-integer`. `consistency_mode`, which #1262 pinned because the record
   binder read it, is now one of these unknown keys.
   [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/validation/StreamResourceValidatorPartitionTest.java`]
-- With `replicas = 3, min-sync-replicas = 3` a publish now acks only after both replicas hold the event,
-  and the two surviving replicas hold every acked event when the owner is killed immediately after the
-  last ack. Serving that data after the owner's loss is still blocked by #1550 (ownership never leaves the
-  killed node); the Forge test asserts that stall as a tripwire.
+- With `replicas = 3, min-sync-replicas = 3` a publish now acks only after both replicas hold the event.
+  Killing the owner immediately after the last ack, then joining a fresh-id replacement, loses no acked
+  event: both survivors hold all of them, and the surviving replica that takes ownership serves all of
+  them in order (3 of 3 runs on a 5-node Ember cluster). Ownership was observed to move only after the
+  replacement joined; with no membership event after the kill it does not move (#1550).
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamAckedRecordsOwnerKillTest.java`]
 - `test-stream-repl` now declares `replicas = 3, min-sync-replicas = 3`. The unused
   `StreamConfigParser.parse(String)`, a second, unvalidated section parse with no caller, is removed.
