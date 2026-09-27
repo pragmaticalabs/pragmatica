@@ -39,6 +39,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
 | CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |
 | EmberAddNodeRoleLabelTest     | 21500     | 21600          | 0          | 3+2 nodes (shared cluster, app-http 21700; #590 addWorkerNode role-label guard, Heavy) |
+| LeaderTermFailoverTest        | 37400     | 37500          | 0          | 5 nodes (single method, app-http 37600; #1527 leader term strictly increases across two leader kills) |
 
 ## Per-Method Offset Pattern
 
