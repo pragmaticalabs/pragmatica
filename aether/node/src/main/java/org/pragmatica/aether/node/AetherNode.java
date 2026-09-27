@@ -1194,8 +1194,7 @@ public interface AetherNode extends ManageableNode {
                                                        MembershipFsm membershipFsm) {
         return Option.option(controllerRef.get())
                      .map(ReplicaSetController::reconciledMembers)
-                     .or(() -> livePlacementMembers(topologyManager.observer()
-                                                                   .coreNodes(),
+                     .or(() -> livePlacementMembers(topologyManager.observer().coreNodes(),
                                                     membershipFsm));
     }
 
