@@ -295,14 +295,14 @@ wait_for_stream_config_committed() {
         if [ "$served" = "true" ] && [ -n "$owner" ] && [ "$owner" != "none" ]; then
             nreplicas=$(printf '%s' "$body" | grep -oE '\{[^{}]*"nodeId"[^{}]*\}' | grep -c .)
             nonowner=$(printf '%s' "$body" | grep -oE '"isHrwOwner"[[:space:]]*:[[:space:]]*false' | grep -c .)
-            # Gate on the RF=3 replica set being PLACED (owner + >=1 non-owner), NOT on the
+            # Gate on the FULL RF=3 replica set being PLACED (owner + 2 non-owners), NOT on the
             # non-owner being CAUGHT_UP: on an EMPTY stream the replica stays SYNCING until
             # the first write, and the replication barrier is state-agnostic (a SYNCING
             # replica both receives writes and acks them — proven end-to-end), so placement
             # is the correct pre-publish proof that the reconcile-on-config-Put edge
             # established RF=3. Requiring CAUGHT_UP here would deadlock the very publish
             # that promotes the replica.
-            if [ "${nreplicas:-0}" -ge 2 ] && [ "${nonowner:-0}" -ge 1 ]; then
+            if [ "${nreplicas:-0}" -ge 3 ] && [ "${nonowner:-0}" -ge 2 ]; then
                 log_info "Stream config in effect: owner=${owner}, replicas=${nreplicas}, non-owner replica placed (RF=3/min-sync=2)"
                 return 0
             fi

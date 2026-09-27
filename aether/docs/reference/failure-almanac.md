@@ -44,7 +44,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Provisioning stall under churn | fix landed; budget cloud-pending | **pending validation (#362)** |
 | Per-node deployment failure (`ALL_OR_NOTHING` rollback) | n/a — permanent until cause is fixed | `DurableEntityForgeTest` |
 | `BEST_EFFORT` slice failure (durable `PARTIAL`) | n/a — durable until redeployed | `BlueprintStatusAggregationTest` |
-| Stream owner failover (`min-sync-replicas ≥ 2`) | owner view ≤180 s; complete history ≤120 s | 02-chaos C17–C20 |
+| Stream owner failover (`min-sync-replicas ≥ 2`) | none today (#1550); ≤180 s / ≤120 s measured at RF=2 before #1547 | 02-chaos C17–C20 (RF=2) |
 | Stream owner loss (RF = 3, default `min-sync-replicas`) | none today — ownership stays on the dead owner; replicated history held on survivors | `StreamDefaultRfOwnerReplacementTest` |
 | Core network partition | eviction ~3 s; heal to N ≤30 s | 12-network C9/C10 |
 | QUIC connection churn | missing-peer reconcile 5–60 s | 12-network connectedPeerCount |
@@ -128,12 +128,12 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Stream owner failover — `min-sync-replicas ≥ 2`
 
-- **Symptom:** a partition's owner dies; a brief read unavailability, then a caught-up replica serves the complete history.
+- **Symptom (intended):** a partition's owner dies; a brief read unavailability, then a caught-up replica serves the complete history. **Today** ownership does not leave a killed owner without a later membership event (#1550) — see the section below; the budget and the "no operator action" line describe the RF=2 behaviour 02-chaos measured before #1547, not the current one.
 - **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes, `servedByOwner` returns true on the new owner, `replicas[].state` shows a CAUGHT_UP replica.
-- **Automatic response:** HRW ownership reseats to a CAUGHT_UP replica; the epoch fence rejects the deposed owner's late appends; the new owner serves **every** pre-kill event in order.
-- **Budget:** new owner-authoritative view ≤180 s; complete history (all N events) settled ≤120 s (02-chaos C18/C19/C20).
-- **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `min-sync-replicas = replicas` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events). At `2 ≤ min-sync-replicas < replicas` an acked event is on the owner and `min-sync − 1` peers, and promotion catches up from a single survivor, so a lossless promotion is not yet guaranteed (#411). The 02-chaos proof below ran at RF=2 with `min-sync-replicas = replicas`; its fixture is RF=3 with `min-sync-replicas = 2` since #1547.
-- **Operator action:** none.
+- **Automatic response (intended, `[design intent — unverified]` at RF=3):** HRW ownership reseats to a CAUGHT_UP replica; the epoch fence rejects the deposed owner's late appends; the new owner serves **every** pre-kill event in order.
+- **Budget:** measured at RF=2 before #1547 — new owner-authoritative view ≤180 s; complete history settled ≤120 s (02-chaos C18/C19/C20). None today (#1550).
+- **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `min-sync-replicas = replicas` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events). At `2 ≤ min-sync-replicas < replicas` an acked event is on the owner and `min-sync − 1` peers, and promotion catches up from a single survivor, so a lossless promotion is not yet guaranteed (#411). The 02-chaos proof below ran at RF=2 with `min-sync-replicas = replicas`; its fixture is RF=3 with `min-sync-replicas = 2` since #1547, and a blueprint's declared `min-sync-replicas` does not reach the runtime until #1549.
+- **Operator action:** none is known to move ownership off a killed owner today (#1550); replacing the lost core is the only membership event that has been observed to.
 - **Proof anchor:** `02-chaos/test-stream-replica-failover.sh` (C17–C20); `PartitionBackfillTest`.
 
 ### Stream owner loss — RF = 3, default `min-sync-replicas` (the default stream)

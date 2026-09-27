@@ -2,8 +2,10 @@
 - **App streams defaulted to `replicas = 1`, and a declared value below 1 was the only one refused.**
   Under terminal removal a dead owner never returns, so at RF=1 losing one node lost every partition it
   owned: the next HRW-ranked node became owner at an empty watermark. The default is now 3, and 3 is the
-  minimum: a `[streams.X]` section declaring `replicas` below 3 is refused at deploy under the new rule
-  `replicas-below-minimum` (typed `StreamDeclarationError.ReplicasBelowMinimum`, naming the stream, the
+  minimum: a `[streams.X]` section declaring `replicas` below 3 is refused as a binding at blueprint publish
+  under the new rule `replicas-below-minimum` (per #1336 the blueprint still publishes with the alias under
+  `rejected`; a slice using the alias then fails to load with `UnboundStreamAlias`, an unused alias is
+  silently unbound) (typed `StreamDeclarationError.ReplicasBelowMinimum`, naming the stream, the
   declared value and the minimum), never clamped.
   [verified: `aether/slice/src/test/java/org/pragmatica/aether/slice/blueprint/StreamConfigParserTest.java`]
   [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/validation/StreamResourceValidatorPartitionTest.java`]
@@ -28,8 +30,14 @@
 - The same minimum now applies to every app-class stream: durable topics default to `replicas = 3` and
   refuse fewer (`min_sync_replicas == replicas` still required), durable entities refuse
   `replication_factor` below 3, and `StreamPartitionManager.createStream` refuses an app stream below 3
-  whichever path minted its config (`StreamError.ReplicasBelowMinimum`, pre-commit). System streams keep
+  whichever path minted its config (`StreamError.ReplicasBelowMinimum`), checked on every config commit
+  path including the republish of an uncommitted entry. System streams keep
   RF = cluster size. `test-durable-topic` moves to `replicas = min_sync_replicas = 3`.
+- **Availability cost, stated so it is not a surprise:** durable topics now need all three replicas for
+  every publish (`replicas = min_sync_replicas = 3`). On a 3-node cluster, losing ANY core fails EVERY
+  durable-topic publish with `NOT_ENOUGH_REPLICAS` until the core is replaced; before, at RF = min-sync = 2,
+  only partitions whose replica set held the lost node failed. [mechanism: `ensureReplicaFloor` refuses
+  below min-sync − 1 available peers]
   [verified: `aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java`]
   [verified: `aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/DurableEntityConfigTest.java`]
   [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionCapTest.java`] `test-stream-repl` and `test-stream-multipart` move

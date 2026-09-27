@@ -13,10 +13,10 @@
 #     spreads events over all four partitions and HRW places their owners across the cluster.
 #   - replicas          = 3  -> replication factor (RF): copies incl owner (owner + 2 replicas),
 #     so every partition has a promotable CAUGHT_UP non-owner replica for owner-kill failover.
-#     3 is the stream replication minimum (#1547); a value below it is refused at deploy.
-#   - min-sync-replicas = 2  -> owner + 1 in-sync per write: each publish AWAITs a replica
-#     ack before it returns, so an ACKED write is on >=2 nodes and survives loss of one owner
-#     (synchronous replication). This is the durability guarantee #430 asserts.
+#     3 is the stream replication minimum (#1547); a value below it is refused as a binding at publish.
+#   - min-sync-replicas = 2  -> DECLARED: owner + 1 in-sync peer per write, the durability #430 means
+#     to assert. Until #1549 this key does not reach the runtime (the provisioning binder reads
+#     min_sync_replicas and defaults to 0), so every publish actually acks on the owner alone.
 #   - retention  = count     -> count-based eviction (never time-based) so a slow consumer is
 #     never evicted mid-test; retention-value is far larger than any test event count, so
 #     nothing is ever dropped (no spurious CursorExpired).
