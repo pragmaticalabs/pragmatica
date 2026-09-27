@@ -1,4 +1,3 @@
-
 package org.pragmatica.storage;
 
 import org.junit.jupiter.api.Nested;
