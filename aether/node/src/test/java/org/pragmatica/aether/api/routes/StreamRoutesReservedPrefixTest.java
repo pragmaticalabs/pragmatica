@@ -240,7 +240,7 @@ class StreamRoutesReservedPrefixTest {
                                                                           null);
 
         try {
-            substrate.ensureLog("ledger", 2, 1, 1)
+            substrate.ensureLog("ledger", 2, 3, 1)
                      .onFailure(cause -> fail("internal entity provisioning must succeed: " + cause.message()));
 
             assertThat(manager.streamInfo(EntityPartitionArc.arcName("ledger")).isPresent()).isTrue();
@@ -301,7 +301,7 @@ class StreamRoutesReservedPrefixTest {
             legacyRoutes(manager, store).ensureStreamExists(committed.name())
                                         .onFailure(cause -> fail("a committed real-resource config must be adopted: " + cause.message()));
 
-            assertThat(manager.minSyncReplicasFor(committed.name())).isEqualTo(2);
+            assertThat(manager.minSyncReplicasFor(committed.name())).isEqualTo(3);
         } finally {
             manager.close();
         }
