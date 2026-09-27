@@ -87,8 +87,8 @@ class DlqStreamSinkTest {
         DurableTopicSubstrate.durableTopicSubstrate(manager)
                              .activateTopic(ADDRESS,
                                             org.pragmatica.aether.resource.DurableTopicSpec.durableTopicSpec(1,
-                                                                                                             2,
-                                                                                                             2,
+                                                                                                             3,
+                                                                                                             3,
                                                                                                              org.pragmatica.lang.parse.TimeSpan.timeSpan("7d")
                                                                                                                                                .unwrap())
                                                                                            .unwrap())
@@ -307,8 +307,8 @@ class DlqStreamSinkTest {
         DurableTopicSubstrate.durableTopicSubstrate(manager)
                              .activateTopic(ADDRESS,
                                             org.pragmatica.aether.resource.DurableTopicSpec.durableTopicSpec(1,
-                                                                                                             2,
-                                                                                                             2,
+                                                                                                             3,
+                                                                                                             3,
                                                                                                              org.pragmatica.lang.parse.TimeSpan.timeSpan("7d")
                                                                                                                                                .unwrap())
                                                                                            .unwrap())

@@ -34,7 +34,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// replayed the phantom as `head + 1`, shifting every later offset.
 ///
 /// The drop must FAIL the publish for anything with durability semantics — `minSyncReplicas >= 2`
-/// (durable topics and their DLQs are parse-enforced to `min-sync == replicas >= 2`) OR a partition WAL.
+/// (durable topics and their DLQs are parse-enforced to `min-sync == replicas >= 3`) OR a partition WAL.
 /// So is any entity keyspace log (`entity:`) or durable-topic / DLQ stream (`topic:`), identified by name.
 /// Each disjunct is pinned by its own test so none can be weakened unnoticed. Any other stream is
 /// best-effort: the drop is absorbed, counted and logged, and never stored.
@@ -219,7 +219,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     // === helpers ===
 
     private static StreamConfig durableTopicConfig() {
-        var spec = DurableTopicSpec.durableTopicSpec(1, 2, 2, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
+        var spec = DurableTopicSpec.durableTopicSpec(1, 3, 3, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
 
         return DurableTopicSubstrate.topicStreamConfig("orders-1233", spec);
     }
@@ -231,7 +231,7 @@ class StreamPartitionManagerFrozenRingDropTest {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
-                                         1,
+                                         3,
                                          1,
                                          StreamCompression.NONE,
                                          Option.none());

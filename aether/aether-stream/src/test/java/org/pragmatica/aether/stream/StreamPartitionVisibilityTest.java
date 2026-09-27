@@ -85,7 +85,7 @@ class StreamPartitionVisibilityTest {
         void publish_staysInvisibleAndSilent_whilePeerAckIsPending_thenBecomesVisibleOnce() {
             var replication = replicationWithPeer();
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             var notifications = listen(manager);
 
             var offset = publish(manager, "e0");
@@ -111,7 +111,7 @@ class StreamPartitionVisibilityTest {
         void ackedPublish_isVisibleToTheContinuationOfItsOwnAwait() {
             var replication = replicationWithPeer();
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
 
             var offset = publish(manager, "e0");
             var seenByContinuation = manager.awaitReplication(STREAM, PARTITION, offset, 1)
@@ -156,7 +156,7 @@ class StreamPartitionVisibilityTest {
         void ack_exposesOnlyTheAcknowledgedPrefix() {
             var replication = replicationWithPeer();
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
 
             var first = publish(manager, "e0");
             publish(manager, "e1");
@@ -170,7 +170,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void pendingEvent_isServedToReplicationReads() {
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replicationWithPeer());
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
 
             publish(manager, "e0");
 
@@ -187,7 +187,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void appendRecovered_withoutWal_isVisibleAtOnce() {
             manager = streamPartitionManager(Long.MAX_VALUE);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             var notifications = listen(manager);
 
             manager.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1L);
@@ -199,7 +199,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void appendRecovered_withWal_isVisibleOnceItsWalWriteIsDurable() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
 
             manager.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1L);
 
@@ -214,7 +214,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void appendRecovered_withWal_requestsNoCommitPerRecord_theBarrierRequestsOne() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             var wal = walOf(manager);
 
             appendRecovered(manager, RECORDS);
@@ -234,7 +234,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void appendRecovered_withWal_visibleOffsetAdvancesOnlyWhenTheBarrierResolves() throws Exception {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             var gate = GatedWalFsync.inject(walOf(manager));
 
             appendRecovered(manager, RECORDS);
@@ -250,7 +250,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void appendRecovered_failedWalWrite_neverBecomesVisible() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             var notifications = listen(manager);
             var channel = FailingChannel.inject(walOf(manager));
 
@@ -273,7 +273,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void failedFrameWrite_eventNeverBecomesVisible() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 1, 0);
+            createStream(manager, 3, 0);
             var notifications = listen(manager);
             var channel = FailingChannel.inject(walOf(manager));
 
@@ -290,7 +290,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void failedFsync_eventNeverBecomesVisible() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 1, 0);
+            createStream(manager, 3, 0);
             var notifications = listen(manager);
             var channel = FailingChannel.inject(walOf(manager));
 
@@ -308,7 +308,7 @@ class StreamPartitionVisibilityTest {
         void failedFsyncAfterReplication_peerAckDoesNotExposeIt() {
             var replication = replicationWithPeer();
             manager = replicatingWalManager(replication, walDir);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             var notifications = listen(manager);
             var channel = FailingChannel.inject(walOf(manager));
 
@@ -334,7 +334,7 @@ class StreamPartitionVisibilityTest {
         void ackReadBeforeDurable_fsyncReadBeforeRegistry_eventStillBecomesVisible() throws InterruptedException {
             var gated = new GatedAckReplication(replicationWithPeer());
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, gated);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
 
             var acker = Thread.ofVirtual().start(() -> gated.handleAck(replicateAck(PEER, STREAM, PARTITION, 0L)));
 
@@ -358,7 +358,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void publishLocal_neverRunsTheListenerOnThePublishingThread() {
             manager = streamPartitionManager(Long.MAX_VALUE);
-            createStream(manager, 1, 1);
+            createStream(manager, 3, 1);
             var listenerThreads = listenThreads(manager);
 
             publish(manager, "e0");
@@ -372,7 +372,7 @@ class StreamPartitionVisibilityTest {
         void replicaAck_neverRunsTheListenerOnTheAckingThread() {
             var replication = replicationWithPeer();
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             var listenerThreads = listenThreads(manager);
             var offset = publish(manager, "e0");
 
@@ -392,7 +392,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void publish_isVisibleAndAnnouncedOnce_whenPublishReturns() {
             manager = streamPartitionManager(Long.MAX_VALUE);
-            createStream(manager, 1, 1);
+            createStream(manager, 3, 1);
             var notifications = listen(manager);
 
             publish(manager, "e0");
@@ -404,7 +404,7 @@ class StreamPartitionVisibilityTest {
         @Test
         void walPublish_isVisibleWhenPublishReturns() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
-            createStream(manager, 1, 0);
+            createStream(manager, 3, 0);
 
             publish(manager, "e0");
 
@@ -427,7 +427,7 @@ class StreamPartitionVisibilityTest {
         void walReplay_leavesUnacknowledgedTailInvisible_untilThePeerAcksIt() {
             var replication = replicationWithPeer();
             manager = replicatingWalManager(replication, walDir);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             publishMany(manager, 5);
             replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 2L));
             assertThat(visibleOffset(manager)).as("before the restart").isEqualTo(2L);
@@ -435,7 +435,7 @@ class StreamPartitionVisibilityTest {
 
             var restarted = replicationWithPeer();
             manager = replicatingWalManager(restarted, walDir, sealedUpTo(2L));
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
 
             assertThat(durableOffset(manager)).as("the replayed tail is durable").isEqualTo(4L);
             assertThat(visibleOffset(manager)).as("after the restart: no ack is persisted, so visible is the sealed bound")
@@ -453,7 +453,7 @@ class StreamPartitionVisibilityTest {
         void walReplay_withNothingSealed_exposesNothing_untilThePeerAcks() {
             var replication = replicationWithPeer();
             manager = replicatingWalManager(replication, walDir);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             publishMany(manager, 3);
             replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 1L));
             assertThat(readAll(manager)).as("before the restart").containsExactly("e0", "e1");
@@ -461,7 +461,7 @@ class StreamPartitionVisibilityTest {
 
             var restarted = replicationWithPeer();
             manager = replicatingWalManager(restarted, walDir);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
 
             assertThat(visibleOffset(manager)).isEqualTo(-1L);
             assertThat(readAll(manager)).as("read(0) after the restart").isEmpty();
@@ -476,12 +476,12 @@ class StreamPartitionVisibilityTest {
         @Test
         void walReplay_ownerOnly_isVisibleAtOnce() {
             manager = replicatingWalManager(ReplicationManager.NONE, walDir);
-            createStream(manager, 1, 1);
+            createStream(manager, 3, 1);
             publishMany(manager, 3);
             manager.close();
 
             manager = replicatingWalManager(ReplicationManager.NONE, walDir);
-            createStream(manager, 1, 1);
+            createStream(manager, 3, 1);
 
             assertThat(readAll(manager)).containsExactly("e0", "e1", "e2");
         }
@@ -491,12 +491,12 @@ class StreamPartitionVisibilityTest {
         @Test
         void walReplay_onHydration_isVisibleAtOnce() {
             manager = replicatingWalManager(ReplicationManager.NONE, walDir);
-            createStream(manager, 1, 1);
+            createStream(manager, 3, 1);
             publishMany(manager, 3);
             manager.close();
 
             manager = replicatingWalManager(ReplicationManager.NONE, walDir);
-            manager.onStreamConfigPut(streamConfigPut(streamConfig(1, 1)));
+            manager.onStreamConfigPut(streamConfigPut(streamConfig(3, 1)));
 
             assertThat(readAll(manager)).containsExactly("e0", "e1", "e2");
         }
@@ -506,14 +506,14 @@ class StreamPartitionVisibilityTest {
         @Test
         void walReplay_onLazyMaterialize_isVisibleAtOnce() {
             manager = replicatingWalManager(ReplicationManager.NONE, walDir);
-            createStream(manager, 1, 1);
+            createStream(manager, 3, 1);
             publishMany(manager, 3);
             manager.close();
 
             var role = new AtomicReference<>(ReplicaSetController.Role.NONE);
             manager = replicatingWalManager(ReplicationManager.NONE, walDir);
             manager.placementRoleSupplier((_, _) -> role.get());
-            manager.onStreamConfigPut(streamConfigPut(streamConfig(1, 1)));
+            manager.onStreamConfigPut(streamConfigPut(streamConfig(3, 1)));
             assertThat(manager.partitionBuffer(STREAM, PARTITION).isPresent()).as("metadata-only until the role resolves")
                                                                               .isFalse();
             role.set(ReplicaSetController.Role.OWNER);
@@ -528,14 +528,14 @@ class StreamPartitionVisibilityTest {
         void walReplay_onAReplica_isVisibleAtOnce() {
             manager = replicatingWalManager(replicationWithPeer(), walDir);
             manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
             appendRecovered(manager, 3);
             manager.syncReplicated(STREAM, PARTITION).await().onFailure(cause -> fail(cause.message()));
             manager.close();
 
             manager = replicatingWalManager(replicationWithPeer(), walDir);
             manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
-            createStream(manager, 2, 2);
+            createStream(manager, 3, 2);
 
             assertThat(readAll(manager)).containsExactly("r0", "r1", "r2");
         }
