@@ -39,7 +39,6 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
 | CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |
 | EmberAddNodeRoleLabelTest     | 21500     | 21600          | 0          | 3+2 nodes (shared cluster, app-http 21700; #590 addWorkerNode role-label guard, Heavy) |
-| StreamOwnerHealBackTest       | 26000     | 26100          | 0          | 5 nodes (shared cluster, app-http 26200; #1555 healed ex-owner must not act on a stale view or short ring) |
 | LeaderTermFailoverTest        | 37400     | 37500          | 0          | 5 nodes (single method, app-http 37600; #1527 leader term strictly increases across two leader kills) |
 
 ## Per-Method Offset Pattern
@@ -95,5 +94,4 @@ When adding a new test class:
 - 18500+ / 18600+: Allocated to DeclarativeConsumerPlacementTest (app-http 18700)
 - 19000+ / 19100+: Allocated to DurableTopicDeliveryForgeTest (app-http 19200) — the #386 composed
   durable pub/sub path
-- 26000+ / 26100+: Allocated to StreamOwnerHealBackTest (app-http 26200)
 - 19500+: Reserved for future tests
