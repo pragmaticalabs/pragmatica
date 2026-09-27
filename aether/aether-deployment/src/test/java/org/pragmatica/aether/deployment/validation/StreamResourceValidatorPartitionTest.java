@@ -165,6 +165,55 @@ class StreamResourceValidatorPartitionTest {
                                             .doesNotContain("[streams]");
         }
 
+        /// #1549: every value refusal the parser raises lands at DEPLOY validation, per section, under
+        /// `stream-key-invalid` — none of them waits for activation or stream creation to fail.
+        @Test
+        void everyValueRefusal_rejectsItsSectionAtDeploy_asStreamKeyInvalid() {
+            var partition = partition("""
+                                      [streams.orders]
+                                      version = "1.0.0"
+
+                                      [streams.zero-event-size]
+                                      version = "1.0.0"
+                                      max-event-size = "0"
+
+                                      [streams.zero-count]
+                                      version = "1.0.0"
+                                      retention = "count"
+                                      retention-value = "0"
+
+                                      [streams.fractional-size]
+                                      version = "1.0.0"
+                                      retention = "size"
+                                      retention-value = "1.5MB"
+
+                                      [streams.overflowing-age]
+                                      version = "1.0.0"
+                                      retention = "time"
+                                      retention-value = "999999999999999d"
+
+                                      [streams.zero-partitions]
+                                      version = "1.0.0"
+                                      partitions = 0
+
+                                      [streams.bad-checkpoint]
+                                      version = "1.0.0"
+
+                                      [streams.bad-checkpoint.consumers.billing]
+                                      checkpoint-interval = "5 min"
+                                      """,
+                                      APP_ARTIFACT);
+
+            assertThat(partition.accepted()).containsOnlyKeys("orders");
+            assertThat(fieldsAndRules(partition.rejected()))
+                    .containsExactlyInAnyOrder("[streams.zero-event-size]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.zero-count]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.fractional-size]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.overflowing-age]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.zero-partitions]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID,
+                                               "[streams.bad-checkpoint]::" + StreamResourceValidator.RULE_STREAM_KEY_INVALID);
+        }
+
         @Test
         void aCleanDocument_rejectsNothing() {
             var partition = partition("""

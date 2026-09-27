@@ -16,3 +16,19 @@
   [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamSectionBindingTest.java`]
 - **Keys the streaming spec documented but nothing ever read — `backpressure`, `storage`,
   `storage-instance` — are now refused** as `unknown-stream-key` instead of being ignored.
+- **A durable topic's `retention` under 1 ms (`"0s"`, `"500us"`) is refused at declaration**
+  (`TopicConfigError.RetentionBelowOneMillisecond`); its stream refuses such a bound at creation, so it
+  previously declared cleanly and failed later.
+  [mechanism: `DurableTopicSpec.durableTopicSpec` refuses it; pinned by `TopicConfigTest`]
+- **`CLUSTER_EVENTS_MAX_COUNT` / `_BYTES` / `_AGE_MS` / `_EVENT_SIZE_BYTES` are checked at boot.** A set
+  value must be a whole number from 1 to the bound's maximum (the count at most the ring's indexable
+  capacity); otherwise the node refuses to boot naming the variable (`ClusterEventsLimits.InvalidLimit`).
+  Before, an unparseable value fell back to the default silently, and `0` reached the stream engine, which
+  refused the system stream while its registrar kept retrying. Unset or blank still means the default.
+  Recovery: unset the variable or set it in range.
+  [mechanism: `AetherNode.createNode` binds `ClusterEventsLimits` before building anything; the values are
+  pinned by `ClusterEventsLimitsTest`, the boot wiring by no test — it reads the process environment]
+- **A consumer's `checkpoint-interval` that is not a duration of at least 1 ms is refused at deploy** as
+  `stream-key-invalid` on its stream's section; before, `"5 min"` threw `NumberFormatException` out of
+  deploy validation.
+  [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/validation/StreamResourceValidatorPartitionTest.java`]

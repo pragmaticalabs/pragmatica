@@ -290,6 +290,24 @@ class StreamConfigParserTest {
         }
 
         @Test
+        void rejectsZeroMaxEventSize() {
+            assertValueRefused("max-event-size = \"0\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "max-event-size", "0", 1));
+        }
+
+        @Test
+        void rejectsZeroMaxEventSizeWithUnit() {
+            assertValueRefused("max-event-size = \"0KB\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "max-event-size", "0KB", 1));
+        }
+
+        @Test
+        void rejectsNegativeMaxEventSize() {
+            assertValueRefused("max-event-size = \"-1\"",
+                               new StreamDeclarationError.MalformedValue("orders", "max-event-size", "-1", StreamValues.SIZE_FORM));
+        }
+
+        @Test
         void rejectsNegativeCount() {
             assertValueRefused("retention = \"count\"\nretention-value = \"-5\"",
                                new StreamDeclarationError.MalformedValue("orders", "retention-value", "-5", StreamValues.COUNT_FORM));
@@ -480,6 +498,54 @@ class StreamConfigParserTest {
 
             var owned = (StreamResource.Owned) result.get("inventory");
             assertThat(owned.version()).isSameAs(StreamVersionSpec.Latest.INSTANCE);
+        }
+    }
+
+    /// #1549: `checkpoint-interval` threw `NumberFormatException` out of deploy validation; it is refused typed now.
+    @Nested
+    class ConsumerValues {
+        @Test
+        void parseConsumers_refusesCheckpointIntervalThatIsNotADuration() {
+            assertCheckpointRefused("5 min",
+                                    new StreamDeclarationError.MalformedValue("orders",
+                                                                              "consumers.billing.checkpoint-interval",
+                                                                              "5 min",
+                                                                              StreamValues.DURATION_FORM));
+        }
+
+        @Test
+        void parseConsumers_refusesZeroCheckpointInterval() {
+            assertCheckpointRefused("0s",
+                                    new StreamDeclarationError.ValueOutOfRange("orders",
+                                                                               "consumers.billing.checkpoint-interval",
+                                                                               "0s",
+                                                                               1));
+        }
+
+        @Test
+        void parseConsumers_refusesOverflowingCheckpointInterval() {
+            assertCheckpointRefused("999999999999999d",
+                                    new StreamDeclarationError.ValueOverflows("orders",
+                                                                              "consumers.billing.checkpoint-interval",
+                                                                              "999999999999999d"));
+        }
+
+        @Test
+        void parseConsumers_bindsDeclaredCheckpointInterval() {
+            StreamConfigParser.parseConsumers(consumerToml("5s"), "orders")
+                              .onFailure(cause -> fail(cause.message()))
+                              .onSuccess(consumers -> assertThat(consumers.get("billing").checkpointInterval().millis()).isEqualTo(5_000L));
+        }
+
+        private static void assertCheckpointRefused(String raw, StreamDeclarationError expected) {
+            StreamConfigParser.parseConsumers(consumerToml(raw), "orders")
+                              .onSuccess(consumers -> fail("expected " + expected + ", parsed " + consumers))
+                              .onFailure(cause -> assertThat(cause).isEqualTo(expected));
+        }
+
+        private static String consumerToml(String checkpointInterval) {
+            return "[streams.orders]\nversion = \"1.0.0\"\n\n[streams.orders.consumers.billing]\ncheckpoint-interval = \""
+                   + checkpointInterval + "\"\n";
         }
     }
 

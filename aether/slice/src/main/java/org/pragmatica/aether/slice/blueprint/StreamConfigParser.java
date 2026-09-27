@@ -9,6 +9,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -391,7 +393,7 @@ public interface StreamConfigParser {
     private static Result<Map<String, ConsumerConfig>> parseConsumerToml(String toml, String streamName) {
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
-                         .map(doc -> extractConsumerConfigs(doc, streamName));
+                         .flatMap(doc -> extractConsumerConfigs(doc, streamName));
     }
 
     private static boolean isStreamSection(String sectionName) {
@@ -641,24 +643,45 @@ public interface StreamConfigParser {
                                                                                                                  mode));
     }
 
-    private static Map<String, ConsumerConfig> extractConsumerConfigs(TomlDocument doc, String streamName) {
+    private static Result<Map<String, ConsumerConfig>> extractConsumerConfigs(TomlDocument doc, String streamName) {
         var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
-        var result = new LinkedHashMap<String, ConsumerConfig>();
+        var consumers = doc.sectionNames()
+                           .stream()
+                           .filter(sectionName -> sectionName.startsWith(consumerPrefix))
+                           .filter(sectionName -> !sectionName.substring(consumerPrefix.length())
+                                                              .contains("."))
+                           .map(sectionName -> parseConsumerSection(doc,
+                                                                    streamName,
+                                                                    sectionName,
+                                                                    sectionName.substring(consumerPrefix.length())))
+                           .toList();
 
-        for (var sectionName : doc.sectionNames()) {
-            if (sectionName.startsWith(consumerPrefix)) {
-                var groupName = sectionName.substring(consumerPrefix.length());
-
-                if (!groupName.contains(".")) {
-                    result.put(groupName, parseConsumerSection(doc, sectionName, groupName));
-                }
-            }
-        }
-
-        return Map.copyOf(result);
+        return firstFailure(List.copyOf(consumers)).map(failure -> failure.<Map<String, ConsumerConfig>> map(_ -> Map.of()))
+                           .or(() -> byGroup(consumers));
     }
 
-    private static ConsumerConfig parseConsumerSection(TomlDocument doc, String section, String groupName) {
+    private static Result<Map<String, ConsumerConfig>> byGroup(List<Result<ConsumerConfig>> consumers) {
+        return Result.allOf(consumers).map(configs -> configs.stream()
+                                                             .collect(Collectors.toUnmodifiableMap(ConsumerConfig::groupId,
+                                                                                                   Function.identity())));
+    }
+
+    /// `checkpoint-interval` is read as a duration of at least 1 ms, refused typed like every stream key (#1549);
+    /// before, a value such as `5 min` threw `NumberFormatException` out of deploy validation.
+    private static Result<ConsumerConfig> parseConsumerSection(TomlDocument doc,
+                                                               String streamName,
+                                                               String section,
+                                                               String groupName) {
+        return doc.getString(section, "checkpoint-interval")
+                  .map(raw -> StreamValues.duration(streamName, "consumers." + groupName + ".checkpoint-interval", raw))
+                  .or(success(1000L))
+                  .map(checkpointIntervalMs -> consumerConfig(doc, section, groupName, checkpointIntervalMs));
+    }
+
+    private static ConsumerConfig consumerConfig(TomlDocument doc,
+                                                 String section,
+                                                 String groupName,
+                                                 long checkpointIntervalMs) {
         var batchSize = doc.getInt(section, "batch-size").or(1);
         var processing = doc.getString(section, "processing")
                             .map(StreamConfigParser::parseProcessingMode)
@@ -666,9 +689,6 @@ public interface StreamConfigParser {
         var onFailure = doc.getString(section, "on-failure")
                            .map(StreamConfigParser::parseErrorStrategy)
                            .or(ErrorStrategy.RETRY);
-        var checkpointIntervalMs = doc.getString(section, "checkpoint-interval")
-                                      .map(StreamConfigParser::parseTimeMs)
-                                      .or(1000L);
         var maxRetries = doc.getInt(section, "max-retries").or(3);
         var deadLetterStream = doc.getString(section, "dead-letter").or("");
         var readPreference = doc.getString(section, "read-preference")
@@ -729,31 +749,5 @@ public interface StreamConfigParser {
             case "stall" -> ErrorStrategy.STALL;
             default -> ErrorStrategy.RETRY;
         };
-    }
-
-    private static long parseTimeMs(String value) {
-        if (value.isEmpty()) {
-            return 24 * 60 * 60 * 1000L;
-        }
-
-        var trimmed = value.trim().toLowerCase();
-
-        if (trimmed.endsWith("h")) {
-            return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 3_600_000L;
-        }
-
-        if (trimmed.endsWith("m")) {
-            return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 60_000L;
-        }
-
-        if (trimmed.endsWith("s")) {
-            return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 1_000L;
-        }
-
-        if (trimmed.endsWith("d")) {
-            return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 86_400_000L;
-        }
-
-        return Long.parseLong(trimmed);
     }
 }

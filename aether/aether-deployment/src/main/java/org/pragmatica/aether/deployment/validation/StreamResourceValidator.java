@@ -412,11 +412,21 @@ public sealed interface StreamResourceValidator {
         }
     }
 
+    /// A consumer key the parser refuses (#1549: `checkpoint-interval` that is not a duration of at least 1 ms)
+    /// rejects the section under the same per-cause rule as a stream key, instead of throwing out of validation.
     private static void guardConsumerConfigs(String alias, String toml, List<StreamValidationFailure> failures) {
-        StreamConfigParser.parseConsumers(toml, alias).onSuccess(consumers -> consumers.forEach((group, config) -> guardConsumerConfig(alias,
-                                                                                                                                       group,
-                                                                                                                                       config,
-                                                                                                                                       failures)));
+        StreamConfigParser.parseConsumers(toml, alias)
+                          .onFailure(cause -> failures.add(consumerFailure(alias, cause)))
+                          .onSuccess(consumers -> consumers.forEach((group, config) -> guardConsumerConfig(alias,
+                                                                                                           group,
+                                                                                                           config,
+                                                                                                           failures)));
+    }
+
+    private static StreamValidationFailure consumerFailure(String alias, Cause cause) {
+        return StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
+                                                               ruleFor(cause),
+                                                               cause.message());
     }
 
     private static void guardConsumerConfig(String alias,
