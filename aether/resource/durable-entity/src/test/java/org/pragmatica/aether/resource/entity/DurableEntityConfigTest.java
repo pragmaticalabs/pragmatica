@@ -39,11 +39,21 @@ class DurableEntityConfigTest {
                                .onSuccess(config -> assertThat(config.replicationFactor()).isEqualTo(3));
         }
 
+        /// #1547: below the stream replication minimum of 3 is refused, never clamped — under terminal
+        /// removal a dead owner never returns, so fewer copies lose its partitions.
         @Test
-        void durableEntityConfig_honoursReplicationFactor_forSingleReplica() {
+        void durableEntityConfig_refusesInvalidReplicationFactor_forSingleReplica() {
             DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 1)
-                               .onFailure(DurableEntityConfigTest::failCause)
-                               .onSuccess(config -> assertThat(config.replicationFactor()).isEqualTo(1));
+                               .onSuccess(DurableEntityConfigTest::failAccepted)
+                               .onFailure(DurableEntityConfigTest::assertInvalidReplicationFactor);
+        }
+
+        @Test
+        void durableEntityConfig_refusesInvalidReplicationFactor_forTwoReplicas() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 2)
+                               .onSuccess(DurableEntityConfigTest::failAccepted)
+                               .onFailure(DurableEntityConfigTest::assertInvalidReplicationFactor)
+                               .onFailure(cause -> assertThat(cause.message()).contains("must be at least 3"));
         }
 
         /// Zero copies has no meaning — a partition with no replicas has no owner to write to.
@@ -69,24 +79,11 @@ class DurableEntityConfigTest {
         }
     }
 
-    /// The derivation is the whole difference between "survives owner restart" and "survives owner
-    /// death", so it is pinned per value rather than assumed from the formula.
+    /// The derivation is pinned per value rather than assumed from the formula. Factors below 3 are
+    /// refused at bind (#1547), so every admitted factor waits for the owner plus exactly one peer —
+    /// `awaitReplication` blocks on `minSyncReplicas - 1` distinct non-self acks.
     @Nested
     class MinSyncReplicas {
-        /// One copy waits for no peer: the write is acked once it is fsync-durable on the owner alone.
-        /// State survives a restart of that node and does NOT survive its death.
-        @Test
-        void minSyncReplicas_isOne_forSingleReplica() {
-            assertMinSyncReplicas(1, 1);
-        }
-
-        /// Two or more copies wait for the owner plus exactly one peer — `awaitReplication` blocks on
-        /// `minSyncReplicas - 1` distinct non-self acks, so this is one peer ack, not two.
-        @Test
-        void minSyncReplicas_isTwo_forTwoReplicas() {
-            assertMinSyncReplicas(2, 2);
-        }
-
         /// Raising the replica count raises durability and availability, NOT the write barrier: a higher
         /// factor must not silently make every write wait on more peers.
         @Test
@@ -110,21 +107,21 @@ class DurableEntityConfigTest {
     class PartitionCount {
         @Test
         void durableEntityConfig_refusesInvalidPartitionCount_forZero() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, 0, 1)
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, 0, 3)
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(DurableEntityConfigTest::assertInvalidPartitionCount);
         }
 
         @Test
         void durableEntityConfig_refusesInvalidPartitionCount_forNegative() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, -1, 1)
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, -1, 3)
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(DurableEntityConfigTest::assertInvalidPartitionCount);
         }
 
         @Test
         void durableEntityConfig_succeeds_forSinglePartition() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, 1, 1)
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, 1, 3)
                                .onFailure(DurableEntityConfigTest::failCause)
                                .onSuccess(config -> assertThat(config.partitionCount()).isEqualTo(1));
         }
@@ -134,7 +131,7 @@ class DurableEntityConfigTest {
     class Keyspace {
         @Test
         void durableEntityConfig_refuses_forBlankKeyspace() {
-            DurableEntityConfig.durableEntityConfig("  ", PARTITIONS, 1)
+            DurableEntityConfig.durableEntityConfig("  ", PARTITIONS, 3)
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(DurableEntityConfigTest::assertInvalidKeyspace);
         }
@@ -147,14 +144,14 @@ class DurableEntityConfigTest {
         /// the rule can hold.
         @Test
         void durableEntityConfig_refusesKeyspaceContainingSlash() {
-            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, 1)
+            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, 3)
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(DurableEntityConfigTest::assertInvalidKeyspace);
         }
 
         @Test
         void durableEntityConfig_namesTheRejectedKeyspace_inTheRefusal() {
-            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, 1)
+            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, 3)
                                .onSuccess(DurableEntityConfigTest::failAccepted)
                                .onFailure(cause -> assertThat(cause.message()).contains("orders/eu"));
         }

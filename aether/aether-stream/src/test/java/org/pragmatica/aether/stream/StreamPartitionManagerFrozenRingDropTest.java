@@ -219,7 +219,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     // === helpers ===
 
     private static StreamConfig durableTopicConfig() {
-        var spec = DurableTopicSpec.durableTopicSpec(1, 2, 2, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
+        var spec = DurableTopicSpec.durableTopicSpec(1, 3, 3, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
 
         return DurableTopicSubstrate.topicStreamConfig("orders-1233", spec);
     }
@@ -231,7 +231,7 @@ class StreamPartitionManagerFrozenRingDropTest {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
-                                         1,
+                                         3,
                                          1,
                                          StreamCompression.NONE,
                                          Option.none());

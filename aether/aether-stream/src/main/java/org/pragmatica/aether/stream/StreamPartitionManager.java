@@ -805,7 +805,19 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> createFreshStream(StreamConfig config, CommitMode commitMode) {
-        return checkPartitionCaps(config).flatMap(_ -> materializeFreshStream(config, commitMode));
+        return checkReplicationMinimum(config).flatMap(_ -> checkPartitionCaps(config))
+                                              .flatMap(_ -> materializeFreshStream(config, commitMode));
+    }
+
+    /// #1547 engine backstop: an APP stream is never created below `StreamConfig.MIN_REPLICAS` copies,
+    /// whichever path minted its config. System streams are exempt — their factor is the cluster size.
+    /// Applied on the create path only; a config already committed is adopted as-is.
+    private static Result<Unit> checkReplicationMinimum(StreamConfig config) {
+        return isSystemStream(config.name()) || config.replicas() >= StreamConfig.MIN_REPLICAS
+               ? success(unit())
+               : new StreamError.ReplicasBelowMinimum(config.name(),
+                                                      config.replicas(),
+                                                      StreamConfig.MIN_REPLICAS).result();
     }
 
     /// Create-time admission gate (#265 increment 4, spec §7): reject a fresh stream that breaches the

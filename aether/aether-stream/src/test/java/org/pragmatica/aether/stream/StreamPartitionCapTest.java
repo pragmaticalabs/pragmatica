@@ -96,6 +96,56 @@ class StreamPartitionCapTest {
         }
     }
 
+    /// #1547 engine backstop: whatever path minted the config, an APP stream is never created below the
+    /// stream replication minimum; a system stream's factor is the cluster size, so it is exempt.
+    @Nested
+    class ReplicationMinimum {
+
+        @Test
+        void createStream_rejected_whenAppStreamDeclaresFewerThanThreeReplicas() {
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            manager.placementRoleSupplier((_, _) -> Role.NONE);
+            try {
+                manager.createStream(replicasConfig("thin", 2))
+                       .onSuccess(_ -> fail("Expected ReplicasBelowMinimum"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ReplicasBelowMinimum("thin", 2, 3)));
+
+                assertThat(manager.hydrationSnapshot().streams()).isEmpty();
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void createStream_accepted_atTheMinimum_andForSystemStreamsBelowIt() {
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            manager.placementRoleSupplier((_, _) -> Role.NONE);
+            try {
+                manager.createStream(replicasConfig("app", 3)).onFailure(cause -> fail(cause.message()));
+                manager.createStream(replicasConfig("system:audit", 1)).onFailure(cause -> fail(cause.message()));
+
+                assertThat(manager.hydrationSnapshot().streams()).hasSize(2);
+            } finally {
+                manager.close();
+            }
+        }
+
+        private static StreamConfig replicasConfig(String name, int replicas) {
+            var defaults = capConfig(name, 1);
+
+            return StreamConfig.streamConfig(name,
+                                             defaults.partitions(),
+                                             defaults.retention(),
+                                             defaults.autoOffsetReset(),
+                                             defaults.maxEventSizeBytes(),
+                                             defaults.consistencyMode(),
+                                             replicas,
+                                             0,
+                                             defaults.compression(),
+                                             defaults.encryptionKeyId());
+        }
+    }
+
     @Nested
     class ClusterAggregateGuard {
 

@@ -470,7 +470,7 @@ class HonestPublishOutcomeTest {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          ConsistencyMode.EVENTUAL,
-                                         MIN_SYNC,
+                                         3,
                                          MIN_SYNC,
                                          StreamCompression.NONE,
                                          Option.none());

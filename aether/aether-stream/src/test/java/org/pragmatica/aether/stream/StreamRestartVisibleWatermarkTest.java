@@ -194,7 +194,7 @@ class StreamRestartVisibleWatermarkTest {
                                          "earliest",
                                          1_048_576L,
                                          ConsistencyMode.EVENTUAL,
-                                         2,
+                                         3,
                                          minSyncReplicas,
                                          StreamCompression.NONE,
                                          Option.none());
