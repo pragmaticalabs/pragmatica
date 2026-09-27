@@ -50,17 +50,27 @@ is installed at assembly.
   merge reddens it; removing two-round stability does not. Safety rests on monotone views plus the
   size anchor; the two-round rule is a robustness margin, kept as specified, and nothing pins it for
   safety. (pinned in-JVM by `GenesisViewAgreementSimulationTest.java`)
+  [limit: amnesiac-same-id-excluded-by-boot-token] "Views only grow" holds for one process: a process
+  relaunched under a NodeId that already announced a view has forgotten it and can announce another. The
+  argument therefore also rests on a same-NodeId relaunch being terminal (#1528/#1545 — peers refuse the new
+  process by its boot token). With same-id relaunches allowed, the verifier formed two overlapping epoch-0
+  configurations in 11 of 20,000 chaos seeds.
 - **Liveness.** A view changes at most as many times as there are cores, so flapping cannot churn views
   forever: once every member of the final view stays reachable for two consecutive rounds, genesis
   completes (pinned by the stable-network and flap-then-stabilise simulations). A core that was seen and
   then vanishes for good stays in the views it reached and holds genesis; the status names it. A view
   larger than the configured count holds genesis the same way. Recovery action for both: set
-  `cluster.genesis_voters`, or restart the affected nodes (a restart clears its in-memory view).
+  `cluster.genesis_voters`, lower the configured core count, stop the extra candidates, or replace a stuck
+  node with a node under a FRESH identity. Relaunching a node under its old NodeId clears nothing: under
+  #1545 that identity is retired for good.
 - **Joining a formed electorate.** A core whose electorate has formed answers an announcement with its
   configuration; a pending node installs it (as an observer when not a member). A core that appears
   after epoch 0 therefore joins only through a Rabia §4 add command.
 - While pending, the engine neither votes nor adopts state and holds early ballots (bounded); status
   reports `GENESIS_PENDING`.
+- A one-node roster can never grow: 1→2 and 1→3 both retain one voter, below the target's majority, and are
+  refused with `INSUFFICIENT_RETAINED_VOTERS`. Moot under the minimum-three-cores ruling; stated so nobody
+  relies on it. [mechanism: an admitted change retains a majority of the target]
 
 [limit: disjoint-genesis] With at least twice the configured count of authenticated cores and a partition
 that shows each of two groups exactly the configured count, both groups can form. No rule over what a

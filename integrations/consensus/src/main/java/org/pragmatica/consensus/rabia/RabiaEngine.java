@@ -361,8 +361,8 @@ public class RabiaEngine<C extends Command> {
 
         if (status.stage() == GenesisViewAgreement.Stage.EXCEEDS_COUNT) {
             log.warn("Node {} will NOT start genesis: {} core candidates are visible, more than the configured core count: {}. "
-                    + "Operator action: set cluster.genesis_voters to the intended roster, or remove the extra candidates "
-                    + "(restarting a node clears its view).",
+                    + "Operator action: set cluster.genesis_voters to the intended roster, or stop the extra candidates. "
+                    + "Relaunching a node under its old NodeId retires that identity; replace it with a fresh-identity node instead.",
                      self,
                      status.view().size(),
                      status.view());
@@ -373,7 +373,8 @@ public class RabiaEngine<C extends Command> {
         if (status.stage() == GenesisViewAgreement.Stage.WAITING) {
             log.warn("Node {} genesis pending: view {} ({} cores); configured cores not yet visible: {}; members not yet "
                     + "reporting this view stably: {}. Genesis needs every configured core. Operator action: start or "
-                    + "reconnect the missing cores, or lower the cluster core count to the cores that exist, or set "
+                    + "reconnect the missing cores; replace a lost core with a fresh-identity node (relaunching under its "
+                    + "old NodeId retires it); lower the cluster core count to the cores that exist; or set "
                     + "cluster.genesis_voters to the intended roster.",
                      self,
                      status.view(),

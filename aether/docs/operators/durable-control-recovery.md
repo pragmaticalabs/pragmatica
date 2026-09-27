@@ -31,6 +31,16 @@ rounds naming the configured cores not yet visible and the members not yet repor
 **Recovery action:** start or reconnect the missing cores; or lower the cluster core count to the cores
 that exist; or set `cluster.genesis_voters` to the intended roster on every node. With more core
 candidates visible than configured and no `cluster.genesis_voters`, the node refuses to choose and logs a
-WARN with the candidate set: set `cluster.genesis_voters`, or remove the extra candidates (restarting a
-node clears its in-memory view). A configured core that comes back after genesis joins as an observer and
-is voted in through a Rabia §4 add.
+WARN with the candidate set: set `cluster.genesis_voters`, or stop the extra candidates. Do not relaunch a
+node under its old NodeId to clear its view: under #1545 that identity is retired for good; replace it
+with a node under a fresh identity. A configured core that comes back after genesis joins as an observer
+and is voted in through a Rabia §4 add.
+
+**Cold restart after a replacement.** If a core was replaced through a §4 swap and the retired old core is
+still running and visible when the whole cluster cold-restarts, the view holds more candidates than the
+configured count: every node waits in `GENESIS_PENDING` with the EXCEEDS WARN. Recovery action: stop the
+retired core, or set `cluster.genesis_voters` to the intended roster.
+
+*Test-harness note (Ember only):* Ember gives the initial nodes a fixed `cluster.genesis_voters`. A
+harness cold restart after swapping out an initial node therefore waits for that fixed roster (the
+swapped-out node is part of it). Production renders no `cluster.genesis_voters` for replacements.
