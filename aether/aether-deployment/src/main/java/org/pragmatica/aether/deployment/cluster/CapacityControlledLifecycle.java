@@ -273,7 +273,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                          }
 
                                                                              return pass.flatMap(_ -> markInventoryComplete());
-                                                                         }));
+                                                                         });
     }
 
     private Promise<Unit> markInventoryComplete() {
