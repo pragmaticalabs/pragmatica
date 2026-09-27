@@ -231,6 +231,18 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A retention count the ring cannot index (#1549): the ring's index is sized from `maxCount`, and a count
+    /// past [OffHeapRingBuffer#MAX_CAPACITY] overflows the allocation size. Rejected PRE-COMMIT on create
+    /// rather than built over a truncated index; a fatal config error, never retried.
+    record RetentionCountUnindexable(String streamName, long maxCount, long maxCapacity) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' retention max-count %d exceeds the indexable ring capacity %d".formatted(streamName,
+                                                                                                         maxCount,
+                                                                                                         maxCapacity);
+        }
+    }
+
     /// Cluster-wide aggregate partition-cap breach (#265 increment 4, spec §7/§10/§11): admitting this stream
     /// would push the cluster's total materialized-ring count (Σ `partitions × replicas` across every committed
     /// stream plus this one) past the aggregate guard `100 × nodes × maxDeclaredReplicas` — the Kafka-style

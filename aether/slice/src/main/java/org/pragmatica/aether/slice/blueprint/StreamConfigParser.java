@@ -41,6 +41,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
 public interface StreamConfigParser {
     String STREAMS_PREFIX = "streams.";
     int DEFAULT_PARTITIONS = 4;
+    /// The count bound a retention form gets when it declares none (#1549) — the `RetentionPolicy` default.
+    long DEFAULT_RETENTION_COUNT = RetentionPolicy.retentionPolicy().maxCount();
     /// Per spec §7/§10: the absolute per-stream partition ceiling, enforced at BUILD time (a blueprint
     /// declaring more partitions than this fails to build) and re-checked pre-commit at runtime
     /// (`StreamPartitionManager.createFreshStream`). A fixed absolute guard — NOT the RAM-derived cap. Spec
@@ -549,13 +551,17 @@ public interface StreamConfigParser {
         var retentionValue = section.string("retention-value").or("");
         var mode = section.string("retention-mode").map(StreamConfigParser::parseRetentionMode).or(RetentionMode.ANY);
 
+        // #1549: a form that declares no count keeps the DEFAULT count, never Long.MAX_VALUE — the ring's
+        // index is sized from the count, and an unbounded one cannot be allocated (stream creation threw
+        // once these forms first reached the runtime). `time`/`size` therefore also evict at the default
+        // count; declare `compound` with `max-count` to raise it.
         return switch (retentionType.toLowerCase()) {
             case "compound" -> parseCompoundRetention(section, mode);
-            case "time" -> RetentionPolicy.retentionPolicy(Long.MAX_VALUE,
+            case "time" -> RetentionPolicy.retentionPolicy(DEFAULT_RETENTION_COUNT,
                                                            Long.MAX_VALUE,
                                                            parseTimeMs(retentionValue),
                                                            mode);
-            case "size" -> RetentionPolicy.retentionPolicy(Long.MAX_VALUE,
+            case "size" -> RetentionPolicy.retentionPolicy(DEFAULT_RETENTION_COUNT,
                                                            parseSizeBytes(retentionValue),
                                                            Long.MAX_VALUE,
                                                            mode);
@@ -627,7 +633,7 @@ public interface StreamConfigParser {
 
     private static RetentionPolicy parseCompoundRetention(StreamSection section, RetentionMode mode) {
         var maxAge = section.string("max-age").map(StreamConfigParser::parseTimeMs).or(Long.MAX_VALUE);
-        var maxCount = section.string("max-count").map(StreamConfigParser::parseCount).or(Long.MAX_VALUE);
+        var maxCount = section.string("max-count").map(StreamConfigParser::parseCount).or(DEFAULT_RETENTION_COUNT);
         var maxBytes = section.string("max-bytes").map(StreamConfigParser::parseSizeBytes).or(Long.MAX_VALUE);
 
         return RetentionPolicy.retentionPolicy(maxCount, maxBytes, maxAge, mode);

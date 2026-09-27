@@ -805,7 +805,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> createFreshStream(StreamConfig config, CommitMode commitMode) {
-        return checkPartitionCaps(config).flatMap(_ -> materializeFreshStream(config, commitMode));
+        return checkRetentionCapacity(config).flatMap(_ -> checkPartitionCaps(config))
+                                             .flatMap(_ -> materializeFreshStream(config, commitMode));
+    }
+
+    /// #1549: the ring's index is sized from the retention count, so a count it cannot index is refused
+    /// before anything is reserved, instead of building the ring over an overflowed allocation size.
+    private static Result<Unit> checkRetentionCapacity(StreamConfig config) {
+        return config.retention()
+                     .maxCount() <= OffHeapRingBuffer.MAX_CAPACITY
+               ? success(unit())
+               : new StreamError.RetentionCountUnindexable(config.name(),
+                                                           config.retention()
+                                                                 .maxCount(),
+                                                           OffHeapRingBuffer.MAX_CAPACITY).result();
     }
 
     /// Create-time admission gate (#265 increment 4, spec §7): reject a fresh stream that breaches the

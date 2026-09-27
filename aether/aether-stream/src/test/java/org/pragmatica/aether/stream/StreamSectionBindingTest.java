@@ -50,6 +50,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class StreamSectionBindingTest {
     private static final String SECTION = "streams.orders";
     private static final String ALIAS = "orders";
+    private static final long DEFAULT_COUNT = RetentionPolicy.retentionPolicy().maxCount();
 
     private static final String EVERY_KEY = """
             [streams.orders]
@@ -107,7 +108,7 @@ class StreamSectionBindingTest {
                     retention-value = "5m"
                     """);
 
-            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, 300_000L, RetentionMode.ANY));
+            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULT_COUNT, Long.MAX_VALUE, 300_000L, RetentionMode.ANY));
         }
 
         @Test
@@ -118,7 +119,7 @@ class StreamSectionBindingTest {
                     retention-value = "2MB"
                     """);
 
-            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(Long.MAX_VALUE, 2L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY));
+            assertThat(config.retention()).isEqualTo(RetentionPolicy.retentionPolicy(DEFAULT_COUNT, 2L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY));
         }
 
         private static void assertEveryKeyBound(StreamConfig config) {
@@ -132,6 +133,70 @@ class StreamSectionBindingTest {
             assertThat(config.minSyncReplicas()).isEqualTo(2);
             assertThat(config.compression()).isEqualTo(StreamCompression.LZ4);
             assertThat(config.encryptionKeyId()).isEqualTo(Option.some("orders-key"));
+        }
+    }
+
+    /// #1549 blast radius: `time` and `size` retention never reached the runtime before, and built a ring with an
+    /// unbounded count that stream creation could not allocate (it threw IndexOutOfBoundsException). Each form a
+    /// shipped example or fixture declares must bind to a config a manager can create.
+    @Nested
+    class EveryRetentionFormCreates {
+        @Test
+        void timeRetention_bindsAndCreates() {
+            assertCreates("""
+                    [streams.orders]
+                    partitions = 4
+                    retention = "time"
+                    retention-value = "5m"
+                    max-event-size = "64KB"
+                    """);
+        }
+
+        @Test
+        void sizeRetention_bindsAndCreates() {
+            assertCreates("""
+                    [streams.orders]
+                    retention = "size"
+                    retention-value = "64MB"
+                    """);
+        }
+
+        @Test
+        void compoundRetentionWithoutMaxCount_bindsAndCreates() {
+            assertCreates("""
+                    [streams.orders]
+                    retention = "compound"
+                    max-age = "1h"
+                    """);
+        }
+
+        @Test
+        void unindexableCount_isRefusedTyped_notThrown() {
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+            try {
+                var config = bindWith(new StreamPublisherFactory(), """
+                        [streams.orders]
+                        retention = "compound"
+                        max-count = "9223372036854775807"
+                        """);
+
+                manager.createStream(config)
+                       .onSuccess(_ -> fail("an unindexable count must be refused"))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.RetentionCountUnindexable.class));
+            } finally {
+                manager.close();
+            }
+        }
+
+        private static void assertCreates(String toml) {
+            var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
+            try {
+                manager.createStream(bindWith(new StreamPublisherFactory(), toml))
+                       .onFailure(cause -> fail("stream creation failed: " + cause.message()));
+                assertThat(manager.streamInfo(ALIAS).isPresent()).isTrue();
+            } finally {
+                manager.close();
+            }
         }
     }
 
