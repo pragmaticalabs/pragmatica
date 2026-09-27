@@ -103,22 +103,24 @@ class StreamPartitionCapTest {
         void createStream_aggregateBreach_rejected_existingStreamsCounted() {
             var manager = streamPartitionManager(Long.MAX_VALUE);
             manager.placementRoleSupplier((_, _) -> Role.NONE);
-            manager.clusterSizeSupplier(() -> 1);   // guard = 100 × 1 node × 1 max-replica = 100
+            // #1547: capConfig carries the default replicas = 3, so every partition is 3 slots and the guard is
+            // 100 × 1 node × 3 max-replicas = 300.
+            manager.clusterSizeSupplier(() -> 1);
             try {
-                manager.createStream(capConfig("alpha", 60)).onFailure(_ -> fail("Expected 60 slots within guard 100"));
+                manager.createStream(capConfig("alpha", 60)).onFailure(_ -> fail("Expected 180 slots within guard 300"));
 
-                // alpha already holds 60 slots; beta's 60 pushes the projected total to 120 > 100.
+                // alpha already holds 180 slots; beta's 180 pushes the projected total to 360 > 300.
                 manager.createStream(capConfig("beta", 60))
                        .onSuccess(_ -> fail("Expected PartitionCapExceeded"))
                        .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.PartitionCapExceeded("beta",
-                                                                                                            120L,
-                                                                                                            100L,
+                                                                                                            360L,
+                                                                                                            300L,
                                                                                                             1,
-                                                                                                            1)));
+                                                                                                            3)));
 
                 var snapshot = manager.hydrationSnapshot();
                 assertThat(snapshot.streams()).hasSize(1);
-                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(60L);
+                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(180L);
             } finally {
                 manager.close();
             }
@@ -136,7 +138,7 @@ class StreamPartitionCapTest {
                 var snapshot = manager.hydrationSnapshot();
                 assertThat(snapshot.clusterAggregateGuard()).isEqualTo(-1L);
                 assertThat(snapshot.aggregateHeadroom()).isEqualTo(-1L);
-                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(500L);
+                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(1500L);   // 500 × default replicas 3
             } finally {
                 manager.close();
             }
@@ -201,16 +203,16 @@ class StreamPartitionCapTest {
         void hydrationSnapshot_exposesDerivedCapValues() {
             var manager = streamPartitionManager(Long.MAX_VALUE);
             manager.placementRoleSupplier((_, _) -> Role.NONE);
-            manager.clusterSizeSupplier(() -> 5);   // guard = 100 × 5 nodes × 1 max-replica = 500
+            manager.clusterSizeSupplier(() -> 5);   // guard = 100 × 5 nodes × 3 max-replicas (the #1547 default) = 1500
             try {
                 manager.createStream(capConfig("orders", 4)).onFailure(_ -> fail("Expected success"));
 
                 var snapshot = manager.hydrationSnapshot();
 
                 assertThat(snapshot.perStreamCeiling()).isEqualTo(1024);
-                assertThat(snapshot.clusterAggregateGuard()).isEqualTo(500L);
-                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(4L);
-                assertThat(snapshot.aggregateHeadroom()).isEqualTo(496L);
+                assertThat(snapshot.clusterAggregateGuard()).isEqualTo(1500L);
+                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(12L);
+                assertThat(snapshot.aggregateHeadroom()).isEqualTo(1488L);
                 assertThat(snapshot.configOverCeilingStreams()).isEqualTo(0);
             } finally {
                 manager.close();

@@ -969,7 +969,7 @@ by one `[rule] field — message` line per failure (not the structured triples a
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
 exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
 the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
-`partitions-over-ceiling`, `replication-invalid`, `source-address-invalid`, `namespace-invalid`,
+`partitions-over-ceiling`, `replicas-below-minimum` (`replicas` under 3, #1547), `replication-invalid`, `source-address-invalid`, `namespace-invalid`,
 `stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
 names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
 derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
