@@ -365,11 +365,14 @@ Streams are declared in the blueprint's `resources.toml` alongside other resourc
 ```toml
 [streams.order-events]
 partitions = 6                    # Number of partitions (default: 4)
-retention = "time"                # "time", "count", or "size" (default: "time")
+retention = "time"                # "time", "count", "size" or "compound" (default: "count")
 retention-value = "5m"            # Duration for time, integer for count, size string for size
 max-event-size = "64KB"           # Maximum serialized event size (default: "1MB")
-backpressure = "drop-oldest"      # "block", "drop-oldest", "reject" (default: "drop-oldest")
 ```
+
+Since #1549 every key above reaches the runtime exactly as validated, and a key the parser does not read
+is refused (`unknown-stream-key`) — the `backpressure`, `storage` and `storage-instance` keys of the
+table below are among them: they were never read, and used to be ignored silently.
 
 ### 3.2 Consumer Group Configuration
 
@@ -409,12 +412,12 @@ on-failure = "stall"             # REJECTED as inert
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `partitions` | int | `4` | Number of partitions. Immutable after creation (Phase 1). |
-| `retention` | string | `"time"` | Retention mode: `"time"`, `"count"`, or `"size"`. |
-| `retention-value` | string/int | `"5m"` | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
+| `retention` | string | `"count"` | Retention mode: `"time"`, `"count"`, `"size"` or `"compound"` (`max-age`, `max-count`, `max-bytes`, `retention-mode` = `any`/`all`). A form that declares no count — `time`, `size`, or `compound` without `max-count` — also evicts at the default count of 100,000 events per partition (#1549): the ring's index is sized from the count, so it cannot be unbounded. |
+| `retention-value` | string/int | `"100000"` (count) | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
 | `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. |
-| `backpressure` | string | `"drop-oldest"` | Behavior when ring buffer is full: `"block"`, `"drop-oldest"`, `"reject"`. |
-| `storage` | string | `"memory"` | Storage mode: `"memory"` (Phase 1, in-memory only) or `"persistent"` (AHSE-backed, Phase 2+). |
-| `storage-instance` | string | auto | AHSE storage instance name. Default: `storage.{streamName}`. Only applies when `storage = "persistent"`. See [AHSE spec](future/hierarchical-storage-spec.md). |
+| `backpressure` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"block"`, `"drop-oldest"`, `"reject"`). |
+| `storage` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"memory"` or `"persistent"`, AHSE-backed). |
+| `storage-instance` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: AHSE instance name, see [AHSE spec](future/hierarchical-storage-spec.md)). |
 
 #### Consumer-Level Properties
 

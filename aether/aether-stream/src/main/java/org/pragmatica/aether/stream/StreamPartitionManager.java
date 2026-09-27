@@ -806,7 +806,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<Unit> createFreshStream(StreamConfig config, CommitMode commitMode) {
         return checkRetentionCapacity(config).flatMap(_ -> checkPartitionCaps(config))
-                                             .flatMap(_ -> materializeFreshStream(config, commitMode));
+                                     .flatMap(_ -> materializeFreshStream(config, commitMode));
     }
 
     /// #1549: the ring's index is sized from the retention count, so a count it cannot index is refused
@@ -816,8 +816,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .maxCount() <= OffHeapRingBuffer.MAX_CAPACITY
                ? success(unit())
                : new StreamError.RetentionCountUnindexable(config.name(),
-                                                           config.retention()
-                                                                 .maxCount(),
+                                                           config.retention().maxCount(),
                                                            OffHeapRingBuffer.MAX_CAPACITY).result();
     }
 

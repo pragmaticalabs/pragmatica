@@ -34,6 +34,15 @@
   them in order (3 of 3 runs on a 5-node Ember cluster). Ownership was observed to move only after the
   replacement joined; with no membership event after the kill it does not move (#1550).
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamAckedRecordsOwnerKillTest.java`]
+- **Retention forms that declare no count now keep the default count.** `retention = "time"`, `"size"`,
+  and `"compound"` without `max-count` built a policy with an unbounded count; they never reached the
+  runtime before this fix, and once they did, stream creation THREW (the ring's index is sized from the
+  count). They now evict at the default 100,000 events per partition as well, and a count the ring cannot
+  index is refused as `StreamError.RetentionCountUnindexable` instead of throwing. This matters to the
+  shipped `examples/notification-hub` (`retention = "time"`, `"5m"`), whose stream would otherwise have
+  failed to create. [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamSectionBindingTest.java`]
+- **Keys the streaming spec documented but nothing ever read — `backpressure`, `storage`,
+  `storage-instance` — are now refused** as `unknown-stream-key` instead of being ignored.
 - A dedicated `test-stream-acked` blueprint (`replicas = 3, min-sync-replicas = 3`) carries the Forge
   test, so no existing fixture's semantics change for it. The unused
   `StreamConfigParser.parse(String)`, a second, unvalidated section parse with no caller, is removed.

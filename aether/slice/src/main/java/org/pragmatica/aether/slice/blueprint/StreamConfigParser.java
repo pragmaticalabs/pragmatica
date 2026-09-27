@@ -550,7 +550,6 @@ public interface StreamConfigParser {
         var retentionType = section.string("retention").or("count");
         var retentionValue = section.string("retention-value").or("");
         var mode = section.string("retention-mode").map(StreamConfigParser::parseRetentionMode).or(RetentionMode.ANY);
-
         // #1549: a form that declares no count keeps the DEFAULT count, never Long.MAX_VALUE — the ring's
         // index is sized from the count, and an unbounded one cannot be allocated (stream creation threw
         // once these forms first reached the runtime). `time`/`size` therefore also evict at the default
