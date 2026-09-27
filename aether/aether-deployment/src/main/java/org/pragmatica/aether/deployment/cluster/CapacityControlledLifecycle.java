@@ -243,8 +243,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Promise<Unit> initializeInventory() {
-        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
-                    .fold(() -> Causes.cause("Committed source configuration required for fleet inventory").promise(),
+        // #1551: no operator source document (absent, or the BootstrapModule seed) → no operator sources to
+        // list, so the inventory completes empty, the same "no operator config" reading the registry uses.
+        return SourceComputeRegistry.operatorConfig(store.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                   AetherValue.ClusterConfigValue.class))
+                                    .fold(this::markInventoryComplete,
                           config -> ClusterBootstrapConfigParser.parse(config.tomlContent())
                                                                 .async()
                                                                 .flatMap(parsed -> {
