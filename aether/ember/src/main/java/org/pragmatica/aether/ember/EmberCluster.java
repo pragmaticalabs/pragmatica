@@ -1051,12 +1051,14 @@ public final class EmberCluster {
     /// (same ports); otherwise the next free slot is taken. Harness-scoped; production never calls this.
     public Promise<NodeId> relaunchNode(String nodeIdStr, boolean sameAddress) {
         var nodeId = nodeId(nodeIdStr).unwrap();
+        // A force-kill's slot returns to the pool only when the killed node's stop completes, which a
+        // hard kill does not wait for; the same-address relaunch takes the slot back directly.
         var slot = Option.option(lastSlotByNodeId.get(nodeIdStr))
                          .filter(_ -> sameAddress)
-                         .filter(availableSlots::remove);
+                         .onPresent(availableSlots::remove);
 
         if (sameAddress && slot.isEmpty()) {
-            return EnvironmentError.operationNotSupported("Killed node's slot is not free: " + nodeIdStr).promise();
+            return EnvironmentError.operationNotSupported("No recorded slot for node: " + nodeIdStr).promise();
         }
 
         return addProvisionedNode(nodeId, Map.of(NodeInfo.LABEL_ROLE, "core"), slot);

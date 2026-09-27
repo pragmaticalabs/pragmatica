@@ -1242,6 +1242,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01")  // Netty future callback chain
     private void connectPeer(NodeInfo peer, boolean forceInitiate) {
         var peerId = peer.id();
+
+        if (bootTokens.isRetired(peerId)) {
+            log.debug("Not dialing retired identity {} (boot-token conflict)", peerId);
+
+            return;
+        }
         // Deterministic connection policy selects one initiator. The default uses NodeId
         // ordering; directed hierarchy edges can select the worker as initiator. Bypassing this caused both sides to dial
         // concurrently at cold start — both Hellos completed, the second arrival closed

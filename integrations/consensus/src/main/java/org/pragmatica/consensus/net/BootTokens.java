@@ -15,12 +15,16 @@
  */
 package org.pragmatica.consensus.net;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Unit;
 
 
 /// Per-process BOOT TOKEN registry — the single store every admission path consults (owner ruling,
@@ -61,8 +65,17 @@ public interface BootTokens {
     /// Count of refused admissions — observability for the terminal-removal rule.
     long refusals();
 
+    /// Register a listener invoked once per NodeId, on the admission that retires it — whichever
+    /// layer (SWIM or the QUIC handshake) presented the conflicting token. Lets SWIM mark the known
+    /// process dead even when the transport saw the new process first.
+    Unit onRetired(Consumer<NodeId> listener);
+
     static BootTokens bootTokens(long self) {
-        record registry(long self, Map<NodeId, Long> tokens, Set<NodeId> retired, AtomicLong refusalCount) implements BootTokens {
+        record registry(long self,
+                        Map<NodeId, Long> tokens,
+                        Set<NodeId> retired,
+                        AtomicLong refusalCount,
+                        List<Consumer<NodeId>> retirementListeners) implements BootTokens {
             @Override
             public Admission admit(NodeId peer, long token) {
                 if (retired.contains(peer)) {
@@ -81,7 +94,13 @@ public interface BootTokens {
             }
 
             private Admission conflict(NodeId peer) {
-                retired.add(peer);
+                return retired.add(peer)
+                       ? announceRetirement(peer)
+                       : refused(Admission.RETIRED);
+            }
+
+            private Admission announceRetirement(NodeId peer) {
+                retirementListeners.forEach(listener -> listener.accept(peer));
 
                 return refused(Admission.CONFLICT);
             }
@@ -106,8 +125,19 @@ public interface BootTokens {
             public long refusals() {
                 return refusalCount.get();
             }
+
+            @Override
+            public Unit onRetired(Consumer<NodeId> listener) {
+                retirementListeners.add(listener);
+
+                return Unit.unit();
+            }
         }
 
-        return new registry(self, new ConcurrentHashMap<>(), ConcurrentHashMap.newKeySet(), new AtomicLong());
+        return new registry(self,
+                            new ConcurrentHashMap<>(),
+                            ConcurrentHashMap.newKeySet(),
+                            new AtomicLong(),
+                            new CopyOnWriteArrayList<>());
     }
 }

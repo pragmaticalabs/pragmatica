@@ -79,7 +79,7 @@ class EmberSameIdentityRelaunchTest {
         assertThat(write(survivor, "control-before").isSuccess()).as("control: a three-core cluster commits").isTrue();
 
         assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
-        assertThat(cluster.relaunchNode("btk-3", sameAddress).await(START_BOUND).fold(Cause::message, _ -> "launched"))
+        assertThat(relaunch(sameAddress, basePort))
             .as("the new process itself boots; refusal is the cluster's decision")
             .isIn("launched", "Promise is not resolved within specified timeout");
         var relaunched = cluster.getNode("btk-3").unwrap();
@@ -92,6 +92,18 @@ class EmberSameIdentityRelaunchTest {
         assertThat(write(survivor, "after-kill").isSuccess())
             .as("btk-1 plus a refused same-NodeId process must NOT form a quorum")
             .isFalse();
+    }
+
+    /// A hard kill resolves after a 1 s bound while the killed node may still hold its sockets; the
+    /// same-address relaunch waits until every port of btk-3's slot (slot 2) is free again.
+    private String relaunch(boolean sameAddress, int basePort) {
+        if (sameAddress) {
+            awaitSlotFree(basePort, 2);
+        }
+
+        return cluster.relaunchNode("btk-3", sameAddress)
+                      .await(START_BOUND)
+                      .fold(Cause::message, _ -> "launched");
     }
 
     private static org.pragmatica.lang.Result<List<Object>> write(AetherNode node, String keyId) {
@@ -110,6 +122,19 @@ class EmberSameIdentityRelaunchTest {
         }
     }
 
+    private static void awaitSlotFree(int base, int slot) {
+        var deadline = System.currentTimeMillis() + 60_000L;
+
+        while (!slotFree(base, slot) && System.currentTimeMillis() < deadline) {
+            sleep(250);
+        }
+    }
+
+    private static boolean slotFree(int base, int slot) {
+        return udpFree(base + slot) && tcpFree(base + slot) && tcpFree(base + MGMT_OFFSET + slot)
+               && tcpFree(base + APP_HTTP_OFFSET + slot);
+    }
+
     private static int freeBasePort() {
         for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
             if (blockIsFree(base)) {
@@ -121,10 +146,7 @@ class EmberSameIdentityRelaunchTest {
 
     private static boolean blockIsFree(int base) {
         for (int slot = 0; slot < SLOTS; slot++) {
-            if (!udpFree(base + slot)
-                || !tcpFree(base + slot)
-                || !tcpFree(base + MGMT_OFFSET + slot)
-                || !tcpFree(base + APP_HTTP_OFFSET + slot)) {
+            if (!slotFree(base, slot)) {
                 return false;
             }
         }

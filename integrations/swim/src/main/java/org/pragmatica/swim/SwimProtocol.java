@@ -410,6 +410,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         this.piggybackBuffer = PiggybackBuffer.piggybackBuffer(config.maxPiggyback());
         this.isBooting = isBooting;
         this.transportConnected = transportConnected;
+        bootTokens.onRetired(this::onRetired);
     }
 
     /// Factory creating a SWIM protocol instance.
@@ -1519,7 +1520,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the isolation latch clear + isolation-era FAULTY backlog expiry happen in
     /// [#recordHealthyAndEmit] (the single HEALTHY-edge chokepoint this routes through).
     private void acceptAliveEvidence(NodeId peer) {
-        if (!inMembershipScope(peer)) {
+        if (!inMembershipScope(peer) || isRetired(peer)) {
             return;
         }
 
@@ -1834,7 +1835,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private boolean admitsBootToken(NodeId peer, long token) {
         return switch (bootTokens.admit(peer, token)) {
             case ADMITTED -> true;
-            case CONFLICT -> retire(peer, token);
+            case CONFLICT -> refuseConflict(peer, token);
             case RETIRED -> refuseRetired(peer, token);
         };
     }
@@ -1847,18 +1848,22 @@ public final class SwimProtocol implements SwimMessageHandler {
         return false;
     }
 
-    /// A different process claimed `peer`: the resident process is treated as dead (FAULTY now,
-    /// unless it already is) and the identity is retired for the life of this process. Refuses.
-    private boolean retire(NodeId peer, long incoming) {
+    private boolean refuseConflict(NodeId peer, long incoming) {
         LOG.warn("SWIM boot-token conflict for {}: known process token {}, new token {} — the known process is"
                 + " treated as DEAD and the new process is REFUSED (terminal removal: recover with a fresh NodeId)",
                  peer.id(),
                  bootTokens.tokenOf(peer),
                  incoming);
-        option(members.get(peer)).filter(member -> member.state() != MemberState.FAULTY)
-              .onPresent(this::transitionToFaulty);
 
         return false;
+    }
+
+    /// Retirement listener on the shared registry: whichever layer (SWIM or the QUIC handshake) saw
+    /// the conflicting token, the resident process is treated as dead — FAULTY now, unless it already
+    /// is — so a same-address new process answering probes can never keep the old member alive.
+    private void onRetired(NodeId peer) {
+        option(members.get(peer)).filter(member -> member.state() != MemberState.FAULTY)
+              .onPresent(this::transitionToFaulty);
     }
 
     private boolean isRetired(NodeId peer) {
@@ -1886,6 +1891,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// through — before any peer evidence arrives. The registry's own token is this process's.
     public Unit setBootTokens(BootTokens registry) {
         bootTokens = registry;
+        registry.onRetired(this::onRetired);
         selfBootToken.compareAndSet(0L, registry.self());
 
         return Unit.unit();
