@@ -59,6 +59,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
+import org.pragmatica.storage.AppendLog;
 
 /// #1383: a replacement replica's catch-up read is served from the owner's ring, or from the owner's tier for a
 /// prefix the ring has evicted but the tier retains, bounded by the APPENDED head. Before the fix the owner's
@@ -434,6 +435,7 @@ class ReplicaCatchupTierFallbackTest {
     private static final class GatedSink implements SegmentSink {
         private final SegmentSink delegate;
         private final List<SealedSegment> heldSegments = new CopyOnWriteArrayList<>();
+        private final List<Option<AppendLog>> heldLogs = new CopyOnWriteArrayList<>();
         private final List<Promise<Unit>> heldOutcomes = new CopyOnWriteArrayList<>();
         private volatile boolean holding;
 
@@ -442,14 +444,15 @@ class ReplicaCatchupTierFallbackTest {
         }
 
         @Override
-        public Promise<Unit> seal(SealedSegment segment) {
+        public Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
             if (!holding) {
-                return delegate.seal(segment);
+                return delegate.seal(segment, log);
             }
 
             var outcome = Promise.<Unit> promise();
 
             heldSegments.add(segment);
+            heldLogs.add(log);
             heldOutcomes.add(outcome);
 
             return outcome;
@@ -469,7 +472,7 @@ class ReplicaCatchupTierFallbackTest {
             for (var call = 0; call < heldSegments.size(); call++) {
                 var outcome = heldOutcomes.get(call);
 
-                delegate.seal(heldSegments.get(call)).onResult(outcome::resolve);
+                delegate.seal(heldSegments.get(call), heldLogs.get(call)).onResult(outcome::resolve);
             }
         }
     }

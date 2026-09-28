@@ -20,7 +20,7 @@ import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
@@ -654,7 +654,7 @@ class StreamPartitionVisibilityTest {
                                            Option.none(),
                                            Option.none(),
                                            StreamOwnerEpochSource.zero(),
-                                           Option.some(walDir),
+                                           Option.some(AppendLog.Opener.directory(walDir)),
                                            lastSealed,
                                            DurableSealedOffsetSource.same(lastSealed));
         } catch (ReflectiveOperationException e) {
@@ -799,7 +799,7 @@ class StreamPartitionVisibilityTest {
     /// The partition's WAL, reached through the manager's private stream map — the WAL's channel is the
     /// only I/O seam, and the manager exposes neither.
     @SuppressWarnings("unchecked")
-    private static PartitionWal walOf(StreamPartitionManager manager) {
+    private static AppendLog walOf(StreamPartitionManager manager) {
         try {
             var field = StreamPartitionManager.class.getDeclaredField("streams");
 
@@ -827,7 +827,7 @@ class StreamPartitionVisibilityTest {
             this.delegate = delegate;
         }
 
-        static FailingChannel inject(PartitionWal wal) {
+        static FailingChannel inject(AppendLog wal) {
             try {
                 var field = channelField();
                 var wrapper = new FailingChannel((FileChannel) field.get(wal));
@@ -840,7 +840,7 @@ class StreamPartitionVisibilityTest {
         }
 
         private static Field channelField() throws NoSuchFieldException {
-            var field = PartitionWal.class.getDeclaredField("channel");
+            var field = AppendLog.class.getDeclaredField("channel");
 
             field.setAccessible(true);
             return field;

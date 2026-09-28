@@ -2,9 +2,11 @@ package org.pragmatica.storage;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -30,6 +32,7 @@ final class DefaultDemotionManager implements DemotionManager {
 
     private final AtomicReference<DemotionStats> stats = new AtomicReference<>(DemotionStats.empty());
     private volatile boolean active = false;
+    private final AtomicBoolean refusing = new AtomicBoolean(false);
 
     DefaultDemotionManager(List<StorageTier> tiers, MetadataStore metadataStore, DemotionConfig config) {
         this.tiers = List.copyOf(tiers);
@@ -89,13 +92,58 @@ final class DefaultDemotionManager implements DemotionManager {
         var totalBytes = 0L;
 
         for (var i = 0; i < tiers.size() - 1; i++) {
-            var result = demoteTier(tiers.get(i), tiers.get(i + 1));
+            var result = demoteFrom(i);
 
             totalDemoted += result.count();
             totalBytes += result.bytes();
         }
 
         return new DemotionResult(totalDemoted, totalBytes);
+    }
+
+    /// #1602 B3: a block never leaves its last durable copy. Demotion out of a durable tier
+    /// ([StorageTier#isDurable]) goes to the next durable tier below it, skipping non-durable ones; when there
+    /// is none, that tier is not demoted at all. Moving a block from the local disk to the in-memory DHT tier
+    /// would discard the only copy that survives a power loss -- for a sealed segment, after its WAL range
+    /// was truncated -- so capacity pressure there is refused rather than paid for with durability. The
+    /// pressure surfaces instead as [StorageError.TierFull] on the next write that needs the tier (a required
+    /// tier, so the write fails, typed) and as the WARN in [#refuseDurableDemotion].
+    private DemotionResult demoteFrom(int sourceIndex) {
+        var sourceTier = tiers.get(sourceIndex);
+
+        return sourceTier.isDurable()
+               ? nextDurableTier(sourceIndex).fold(() -> refuseDurableDemotion(sourceTier),
+                                                   target -> demoteTier(sourceTier, target))
+               : demoteTier(sourceTier, tiers.get(sourceIndex + 1));
+    }
+
+    private Option<StorageTier> nextDurableTier(int sourceIndex) {
+        return Option.from(tiers.subList(sourceIndex + 1,
+                                         tiers.size())
+                                .stream()
+                                .filter(StorageTier::isDurable)
+                                .findFirst());
+    }
+
+    /// Once per pressure episode (reset when the tier drops back under its high watermark), so a tick every
+    /// few minutes does not flood the log. TODO(#1574): also emit as an OperatorWarning cluster event.
+    private DemotionResult refuseDurableDemotion(StorageTier sourceTier) {
+        if (!isAboveHighWatermark(sourceTier)) {
+            refusing.set(false);
+
+            return DemotionResult.NONE;
+        }
+
+        if (refusing.compareAndSet(false, true)) {
+            log.warn("Tier {} is above its high watermark ({} of {} bytes) but holds the only durable copy of its "
+                    + "blocks: nothing is demoted to a non-durable tier. Writes that need it fail with TierFull once "
+                    + "it is full; add capacity or a durable tier below it",
+                     sourceTier.level(),
+                     sourceTier.usedBytes(),
+                     sourceTier.maxBytes());
+        }
+
+        return DemotionResult.NONE;
     }
 
     /// #250 review: mirrors the GC-side guard (`StorageInstance#deleteFromPrivateTiers`) rather than

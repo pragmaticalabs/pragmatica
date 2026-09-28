@@ -8,8 +8,8 @@ package org.pragmatica.aether.stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.stream.wal.PartitionWal;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.WalRecord;
 import org.pragmatica.lang.Option;
 
 import java.nio.file.Files;
@@ -47,7 +47,7 @@ class StreamPartitionManagerWalTest {
         // Open a SECOND WAL on the same file while the manager's WAL is still open: only an fsync (not
         // mere buffering) makes the records visible to this independent reader — proving the publish
         // appended durable records BEFORE it acked.
-        var verifier = PartitionWal.open(walFile()).unwrap();
+        var verifier = AppendLog.open(walFile()).unwrap();
         var records = replayAll(verifier);
 
         assertThat(records).hasSize(EVENTS);
@@ -78,7 +78,7 @@ class StreamPartitionManagerWalTest {
         // observed through the WAL's own counter.
         assertThat(fsyncCount(manager) - fsyncsBefore).as("the barrier fsynced the replicated records").isPositive();
 
-        var verifier = PartitionWal.open(walFile()).unwrap();
+        var verifier = AppendLog.open(walFile()).unwrap();
         var records = replayAll(verifier);
 
         assertThat(records).as("replica-side records must reach the WAL — RAM-until-seal loses acked"
@@ -152,7 +152,7 @@ class StreamPartitionManagerWalTest {
                       .flatMap(view -> view.partitions().stream())
                       .filter(view -> view.partition() == PARTITION)
                       .flatMap(view -> view.wal().stream())
-                      .mapToLong(PartitionWal.WalStats::fsyncCount)
+                      .mapToLong(AppendLog.WalStats::fsyncCount)
                       .sum();
     }
 
@@ -171,7 +171,7 @@ class StreamPartitionManagerWalTest {
                .onSuccess(offset -> assertThat(offset).isEqualTo((long) i));
     }
 
-    private static List<WalRecord> replayAll(PartitionWal wal) {
+    private static List<WalRecord> replayAll(AppendLog wal) {
         var records = new ArrayList<WalRecord>();
 
         wal.replay(-1L, records::add).onFailure(cause -> fail(cause.message()));

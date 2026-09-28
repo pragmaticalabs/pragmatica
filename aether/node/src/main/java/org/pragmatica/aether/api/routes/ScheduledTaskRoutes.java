@@ -30,10 +30,11 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -416,13 +417,10 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                          String artifactStr,
                                                          String methodStr,
                                                          boolean paused) {
-        var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
-        var value = new ScheduledTaskValue(task.registeredBy(),
-                                           task.interval(),
-                                           task.cron(),
-                                           task.executionMode(),
-                                           paused);
-        KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
+        var command = pauseCommand(ScheduledTaskPauseKey.scheduledTaskPauseKey(task.configSection(),
+                                                                               task.artifact(),
+                                                                               task.methodName()),
+                                   paused);
         var action = paused
                      ? "paused"
                      : "resumed";
@@ -430,6 +428,15 @@ public final class ScheduledTaskRoutes implements RouteSource {
         return nodeSupplier.get()
                            .apply(List.of(command))
                            .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, action));
+    }
+
+    /// Pause and resume write the operator's intent to its own cluster-state key: present = paused,
+    /// removed = resumed. The task registration itself is left alone.
+    private static KVCommand<AetherKey> pauseCommand(ScheduledTaskPauseKey key, boolean paused) {
+        return paused
+               ? new KVCommand.Put<>(key,
+                                     ScheduledTaskPauseValue.scheduledTaskPauseValue(System.currentTimeMillis()))
+               : new KVCommand.Remove<>(key);
     }
 
     private Promise<TaskActionResult> triggerTask(String configSection, String artifactStr, String methodStr) {

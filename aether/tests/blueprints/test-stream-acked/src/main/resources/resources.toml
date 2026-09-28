@@ -1,0 +1,25 @@
+# Application-level (blueprint) resources for test-stream-acked.
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT
+# maven-plugin (GenerateBlueprintMojo / PackageBlueprintMojo). At deploy
+# time, BlueprintService stores this content in the KV-Store; each node's
+# slice loader resolves @ResourceQualifier(config = "streams.acked-events")
+# lookups (see @EventStreamPublisher / @EventStreamReader) against it.
+#
+# replicas = min-sync-replicas = 3 config for the #1549 acked-record owner-kill Forge test
+# (StreamAckedRecordsOwnerKillTest). A dedicated fixture so no other test's semantics move with it.
+#   - partitions        = 1  -> one clean, globally-ordered log (monotonic offsets).
+#   - replicas          = 3  -> replication factor (RF): copies incl owner (owner + 2 replicas).
+#   - min-sync-replicas = 3  -> owner + 2 in-sync per write: a publish acks only after BOTH replicas
+#     hold the event, so every acked event is on every replica (min-sync == replicas). Until #1549
+#     this key never reached the runtime; the test asserts the committed config carries it.
+#   - retention  = count     -> count-based eviction (never time-based); retention-value is far larger
+#     than any test event count, so nothing is ever dropped.
+
+[streams.acked-events]
+partitions = 1
+replicas = 3
+min-sync-replicas = 3
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"

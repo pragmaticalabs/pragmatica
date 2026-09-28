@@ -132,7 +132,7 @@ class StreamPartitionManagerRecoveryTest {
         var index = new SegmentIndex();
         var storageDown = new AtomicBoolean(true);
         var failing = streamPartitionManager(Long.MAX_VALUE,
-                                             segmentSealer(segment -> sealUnlessDown(storageDown, index, segment)),
+                                             segmentSealer((segment, _) -> sealUnlessDown(storageDown, index, segment)),
                                              Option.some(walDir),
                                              index::lastSealedOffset);
 
@@ -172,7 +172,7 @@ class StreamPartitionManagerRecoveryTest {
         writer.close();
 
         var storageDown = new AtomicBoolean(true);
-        var sealer = segmentSealer(segment -> sealUnlessDown(storageDown, index, segment), TWO_SEGMENTS_BYTES);
+        var sealer = segmentSealer((segment, _) -> sealUnlessDown(storageDown, index, segment), TWO_SEGMENTS_BYTES);
         var recovered = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
 
         createStream(recovered, SMALL_RING_EVENTS);
@@ -359,7 +359,7 @@ class StreamPartitionManagerRecoveryTest {
         return walDir.resolve(STREAM).resolve(PARTITION + ".wal");
     }
 
-    /// Writes frames byte-for-byte in the documented `PartitionWal` format, in the order given — the
+    /// Writes frames byte-for-byte in the documented `AppendLog` format, in the order given — the
     /// fixed WAL refuses to WRITE an out-of-order or duplicate offset, so a file holding one (left by
     /// pre-fix code) can only be produced directly.
     private void writeRawWal(byte[]... frames) throws IOException {

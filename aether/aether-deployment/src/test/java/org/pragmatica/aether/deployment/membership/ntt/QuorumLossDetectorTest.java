@@ -20,6 +20,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
@@ -752,6 +753,109 @@ class QuorumLossDetectorTest {
             assertThat(listener.events())
                 .as("PASSIVE presence-edge real partition (effective<threshold) → drain FIRES")
                 .hasSize(1);
+        }
+
+        /// #1560: the count-path check that the gate suppresses must be re-evaluated, not dropped. An
+        /// isolated core's gate first reads its unreachable peers as SWIM-alive stuck members; when they
+        /// age out the re-check must fire the fence — before the fix the single suppressed check was the
+        /// last one, and the fence waited for an unrelated PASSIVE edge.
+        @Test
+        void suppressedFiringCheck_gateLiftsLater_reCheckFiresDrain() {
+            var coConfirmation = new AtomicReference<>(
+                QuorumCoConfirmation.quorumCoConfirmation(1, 3, List.of(new NodeId("a"), new NodeId("b")), List.of()));
+            detector.setCoConfirmationSupplier(coConfirmation::get);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            scheduler.fireAll();
+            assertThat(listener.events()).as("strict 1 + 2 SWIM-alive stuck = 3 → suppressed at T").isEmpty();
+            assertThat(liveTasks()).as("the suppressed check re-arms exactly one successor").hasSize(1);
+            assertThat(liveTasks().getFirst().delay()).isEqualTo(TimeSpan.timeSpan(1).seconds());
+
+            coConfirmation.set(QuorumCoConfirmation.quorumCoConfirmation(1, 1, List.of(), List.of()));
+            scheduler.fireAll();
+
+            assertThat(listener.events()).as("gate lifted → the re-check fires the fence").hasSize(1);
+        }
+
+        /// #1560 symmetry: the PASSIVE presence path goes through the same gate and must re-check too.
+        @Test
+        void suppressedPresenceCheck_gateLiftsLater_reCheckFiresDrain() {
+            var coConfirmation = new AtomicReference<>(
+                QuorumCoConfirmation.quorumCoConfirmation(2, 4, List.of(new NodeId("stuck-a")), List.of()));
+            detector.setCoConfirmationSupplier(coConfirmation::get);
+            members(5);
+            coreCount(5);
+
+            detector.onQuorumPresence(false);
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
+            assertThat(liveTasks()).hasSize(1);
+
+            coConfirmation.set(QuorumCoConfirmation.quorumCoConfirmation(1, 1, List.of(), List.of()));
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+
+        /// #1560 × A6: a co-confirmation re-check that lands inside the cold-boot convergence window must
+        /// not fence — the lifted gate still hands the intent to the cold-boot gate, which defers it — and
+        /// the deferred fence fires only once the window closes.
+        @Test
+        void suppressedFiringCheck_reCheckInsideColdBootWindow_neverFences_firesAfterWindow() {
+            var coldBoot = new AtomicBoolean(true);
+            var coConfirmation = new AtomicReference<>(
+                QuorumCoConfirmation.quorumCoConfirmation(1, 3, List.of(new NodeId("a"), new NodeId("b")), List.of()));
+            detector.setColdBootSupplier(coldBoot::get);
+            detector.setCoConfirmationSupplier(coConfirmation::get);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            scheduler.fireAll();
+            assertThat(listener.events()).as("suppressed by co-confirmation at T").isEmpty();
+
+            coConfirmation.set(QuorumCoConfirmation.quorumCoConfirmation(1, 1, List.of(), List.of()));
+            scheduler.fireAll();
+            scheduler.fireAll();
+            assertThat(listener.events()).as("gate lifted inside the cold-boot window: still deferred").isEmpty();
+            assertThat(liveTasks()).as("the cold-boot deferral keeps exactly one re-check").hasSize(1);
+            assertThat(liveTasks().getFirst().delay()).isEqualTo(membershipConfig().splitTimeout());
+
+            coldBoot.set(false);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+
+        /// A persistent stuck-promotion artifact stays suppressed across re-checks, keeps exactly one
+        /// re-check in flight, and recovery cancels it — the re-check never outlives the window.
+        @Test
+        void suppressedFiringCheck_persistentArtifact_staysSuppressed_recoveryCancelsReCheck() {
+            detector.setCoConfirmationSupplier(() ->
+                QuorumCoConfirmation.quorumCoConfirmation(2, 4, List.of(new NodeId("stuck-a")), List.of()));
+            members(5);
+            coreCount(5);
+            members(2);
+
+            scheduler.fireAll();
+            scheduler.fireAll();
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
+            assertThat(liveTasks()).as("no timer pile-up").hasSize(1);
+
+            members(5);
+            assertThat(liveTasks()).as("recovery cancels the pending re-check").isEmpty();
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
+        }
+
+        private List<ManualTask> liveTasks() {
+            return scheduler.pendingTasks()
+                            .stream()
+                            .filter(task -> !task.cancelled() && !task.isDone())
+                            .toList();
         }
     }
 
