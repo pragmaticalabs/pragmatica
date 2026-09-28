@@ -6,8 +6,10 @@ package org.pragmatica.aether.stream.pg;
 
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentSink;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.AppendLog;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,7 +29,10 @@ public final class PgSegmentSink implements SegmentSink {
     }
 
     @Override
-    public Promise<Unit> seal(SealedSegment segment) {
+    /// The partition's log is ignored: PostgreSQL is outside the storage engine, so no seal here can move
+    /// a log's seal bound and a WAL-backed partition sealing into this sink keeps its log (#1567). No
+    /// production wiring constructs this sink.
+    public Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
         return store.storeSegment(segment.streamName(),
                                   segment.partition(),
                                   segment.startOffset(),

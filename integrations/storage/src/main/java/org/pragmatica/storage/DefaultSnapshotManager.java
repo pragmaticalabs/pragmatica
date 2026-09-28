@@ -30,6 +30,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.FileOps.createDirectories;
 import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.forceDirectory;
 import static org.pragmatica.lang.io.FileOps.list;
 import static org.pragmatica.lang.io.FileOps.moveAtomic;
 import static org.pragmatica.lang.io.FileOps.readString;
@@ -214,10 +215,16 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// Write to the named partial in the snapshot directory, then rename it over `target` as one
     /// rename. A failure at either step removes the partial, so the directory never holds a torn
     /// file under any name a later boot or prune could pick up.
+    ///
+    /// #1567: the snapshot directory is forced after the rename, so the renamed entry survives a power
+    /// loss. The stream WAL is truncated up to the sealed bound this snapshot's refs carry; without the
+    /// directory force, a power loss could resurface the PREVIOUS snapshot at boot -- a lower bound than
+    /// the one truncation already used, with the records in between gone from the WAL.
     private Result<Unit> writeAtomically(String partialName, Path target, String content) {
         var partial = config.snapshotPath().resolve(partialName);
 
         return writeDurably(partial, content).flatMap(_ -> moveAtomic(partial, target))
+                           .flatMap(_ -> forceDirectory(config.snapshotPath()))
                            .onFailure(_ -> deleteIfExists(partial))
                            .mapToUnit()
                            .mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
@@ -233,9 +240,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     /// `force(true)` on the just-written partial: the bytes reach the device before the rename
-    /// publishes them, so the rename can never make a torn file the current one. [unverified: power
-    /// loss -- the rename's own directory entry is not fsynced, the same bound as #676's
-    /// `GitBackedPersistence`; the pinned property is torn-file behaviour, not platter state.]
+    /// publishes them, so the rename can never make a torn file the current one. The rename's own
+    /// directory entry is forced by [#writeAtomically] after it (#1567).
     @Contract
     private static Unit forceToDisk(Path path) throws Exception {
         try (var channel = FileChannel.open(path, StandardOpenOption.WRITE)) {

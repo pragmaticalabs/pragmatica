@@ -45,6 +45,7 @@ import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
 import org.pragmatica.storage.StorageTier;
+import org.pragmatica.storage.WritePolicy;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -518,17 +519,26 @@ public final class StorageFactory {
     /// memory+DHT when `streamDataDir` is not writable (mirrors `createOne`'s
     /// `handleDiskTierUnavailable`), so node boot never fails on an unmountable data dir.
     static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
-        return plainStreamStorage(dhtClient, streamDataDir, nodeId, StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES);
+        return plainStreamStorage(dhtClient,
+                                  streamDataDir,
+                                  nodeId,
+                                  StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                  Option.none());
     }
 
     private static Result<StorageSetup> plainStreamStorage(Option<DHTClient> dhtClient,
                                                            Path streamDataDir,
                                                            String nodeId,
-                                                           long diskMaxBytes) {
+                                                           long diskMaxBytes,
+                                                           Option<Path> logRoot) {
         var segmentsDir = streamDataDir.resolve("segments");
         var build = buildStreamTiers(dhtClient, segmentsDir, streamDiskMaxBytes(diskMaxBytes, segmentsDir));
 
-        return assembleStreamSetup(build.tiers(), streamDataDir.resolve("snapshots"), nodeId, build.dhtMarkerCheck());
+        return assembleStreamSetup(build.tiers(),
+                                   streamDataDir.resolve("snapshots"),
+                                   nodeId,
+                                   build.dhtMarkerCheck(),
+                                   logRoot);
     }
 
     /// #253 — encrypted counterpart to the three-arg overload above. Streams has no per-instance
@@ -576,7 +586,8 @@ public final class StorageFactory {
                                                        .flatMap(_ -> plainStreamStorage(request.dhtClient(),
                                                                                         request.streamDataDir(),
                                                                                         request.nodeId(),
-                                                                                        request.diskMaxBytes()))
+                                                                                        request.diskMaxBytes(),
+                                                                                        request.logRoot()))
                                                        .map(setup -> new PendingSetup(setup,
                                                                                       Option.none())),
                             ring -> armEncryptedStreamTiers(request.dhtClient(),
@@ -586,13 +597,17 @@ public final class StorageFactory {
                                                                                segmentsDir)).flatMap(build -> assembleStreamSetup(build.tiers(),
                                                                                                                                   snapshotDir,
                                                                                                                                   request.nodeId(),
-                                                                                                                                  build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
-                                                                                                                                                                                        build.armedDisk()))));
+                                                                                                                                  build.dhtMarkerCheck(),
+                                                                                                                                  request.logRoot()).map(setup -> new PendingSetup(setup,
+                                                                                                                                                                                   build.armedDisk()))));
     }
 
     /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
     /// per-instance [StorageConfig] to carry it -- gathered so [#createAll] can take them as one
     /// argument. `keyring` is that already-resolved decision, empty when streams is not encrypted.
+    /// `logRoot` is the stream WAL base directory -- the `streams` instance's append-log root (#1567), so its
+    /// partition logs open through [StorageInstance#openLog] under the instance; [Option#none] when streams
+    /// run without a WAL.
     ///
     /// `diskMaxBytes` is `[streaming] segment_disk_max_bytes`; [StreamingConfig#DERIVE_SEGMENT_DISK_MAX_BYTES]
     /// derives the cap from the filesystem ([#streamDiskMaxBytes], #1604).
@@ -600,12 +615,13 @@ public final class StorageFactory {
                               Path streamDataDir,
                               String nodeId,
                               Option<EncryptionKeyring> keyring,
-                              long diskMaxBytes) {
+                              long diskMaxBytes,
+                              Option<Path> logRoot) {
         StreamSetupRequest(Option<DHTClient> dhtClient,
                            Path streamDataDir,
                            String nodeId,
                            Option<EncryptionKeyring> keyring) {
-            this(dhtClient, streamDataDir, nodeId, keyring, StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES);
+            this(dhtClient, streamDataDir, nodeId, keyring, StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES, Option.none());
         }
     }
 
@@ -683,42 +699,79 @@ public final class StorageFactory {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
 
-        return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes).fold(cause -> {
-                                                                               log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
-                                                                                        cause.message());
+        return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes)
+                            .flatMap(LocalDiskTier::open)
+                            .fold(cause -> {
+                                      warnNoDurableStreamTier(segmentsDir, cause);
 
-                                                                               return Result.success(withDht(dhtBuild,
-                                                                                                             List.of(memoryTier)));
-                                                                           },
-                                                                           disk -> EncryptingStorageTier.armLocalDisk(disk,
-                                                                                                                      segmentsDir,
-                                                                                                                      keyring).map(armed -> withDht(dhtBuild,
-                                                                                                                                                    List.of(memoryTier,
-                                                                                                                                                            armed.tier()),
-                                                                                                                                                    Option.some(armed))));
+                                      return Result.success(withDht(dhtBuild,
+                                                                    List.of(memoryTier)));
+                                  },
+                                  disk -> EncryptingStorageTier.armLocalDisk(disk, segmentsDir, keyring).map(armed -> withDht(dhtBuild,
+                                                                                                                              List.of(memoryTier,
+                                                                                                                                      armed.tier()),
+                                                                                                                              Option.some(armed))));
     }
 
+    /// The disk tier is constructed read-only and then OPENED (#1569 A3): this node owns its stream data
+    /// directory, and opening is the step that creates it and sweeps stale partial blocks.
     private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir, long diskMaxBytes) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
 
-        return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes).fold(cause -> {
-                                                                               log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
-                                                                                        cause.message());
+        return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes)
+                            .flatMap(LocalDiskTier::open)
+                            .fold(cause -> {
+                                      warnNoDurableStreamTier(segmentsDir, cause);
 
-                                                                               return withDht(dhtBuild,
-                                                                                              List.of(memoryTier));
-                                                                           },
-                                                                           disk -> withDht(dhtBuild,
-                                                                                           List.of(memoryTier, disk)));
+                                      return withDht(dhtBuild,
+                                                     List.of(memoryTier));
+                                  },
+                                  disk -> withDht(dhtBuild,
+                                                  List.of(memoryTier, disk)));
+    }
+
+    /// #1567 F12: the fallback is loud because it stops sealing -- every seal on a tier list without a durable
+    /// tier refuses, so the WAL keeps every record and grows. A production boot refuses before it gets here
+    /// ([AetherNode#verifyStreamSegmentsBootable]); a directly constructed node degrades.
+    /// TODO(#1574): also emit this as an OperatorWarning cluster event once that event type exists.
+    private static void warnNoDurableStreamTier(Path segmentsDir, Cause cause) {
+        log.warn("Disk tier for 'streams' unavailable at {}: {}. Using memory + DHT only: stream segments can NOT be "
+                + "sealed (no durable tier) and each partition's WAL keeps every record until the disk tier is back "
+                + "and the node restarts",
+                 segmentsDir,
+                 cause.message());
+    }
+
+    /// The `streams` block tier could not be created and non-durable streams were not opted into (#1567
+    /// F12). Recovery: make `segmentsDir` creatable (mount, permissions, space) and restart, or opt in to
+    /// non-durable streams with `-Daether.allowNonDurableStreams=true`.
+    public record StreamDiskTierUnavailable(Path segmentsDir, String detail) implements Cause {
+        static StreamDiskTierUnavailable streamDiskTierUnavailable(Path segmentsDir, String detail) {
+            return new StreamDiskTierUnavailable(segmentsDir, detail);
+        }
+
+        @Override
+        public String message() {
+            return "stream segment directory " + segmentsDir
+                 + " cannot be created (" + detail
+                 + ") -- refusing to boot: sealed stream segments would have no durable tier, so no segment could "
+                 + "be sealed and every WAL would grow without bound. Fix the mount, or opt in to non-durable "
+                 + "streams explicitly with -Daether.allowNonDurableStreams=true";
+        }
     }
 
     private static Result<StorageSetup> assembleStreamSetup(List<StorageTier> tiers,
                                                             Path snapshotDir,
                                                             String nodeId,
-                                                            Option<DhtMarkerCheck> dhtMarkerCheck) {
+                                                            Option<DhtMarkerCheck> dhtMarkerCheck,
+                                                            Option<Path> logRoot) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
-        var instance = StorageInstance.storageInstance(STREAMS_NAME, tiers, metadataStore);
+        var instance = StorageInstance.storageInstance(STREAMS_NAME,
+                                                       tiers,
+                                                       metadataStore,
+                                                       WritePolicy.WRITE_THROUGH,
+                                                       logRoot);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
                                                            STREAM_SNAPSHOT_MUTATION_THRESHOLD,
                                                            STREAM_SNAPSHOT_INTERVAL_MILLIS,
@@ -784,9 +837,10 @@ public final class StorageFactory {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
         var dhtKeyPrefix = name + "-blocks";
         var diskPath = Path.of(config.diskPath());
-
+        // #1569 A3: the tier is constructed read-only; this node owns the volume, so it opens it.
         return LocalDiskTier.localDiskTier(diskPath,
                                            config.diskMaxBytes())
+                            .flatMap(LocalDiskTier::open)
                             .fold(cause -> handleDiskTierUnavailable(name,
                                                                      cause,
                                                                      memoryTier,

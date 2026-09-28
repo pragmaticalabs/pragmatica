@@ -41,6 +41,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
@@ -643,13 +644,13 @@ class SealedHistoryRecoveryTest {
         }
 
         @Override
-        public synchronized Promise<Unit> seal(SealedSegment segment) {
+        public synchronized Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
             var promise = Promise.<Unit> promise();
 
             if (open) {
-                sealOffThread(new HeldSeal(segment, promise));
+                sealOffThread(new HeldSeal(segment, log, promise));
             } else {
-                held.add(new HeldSeal(segment, promise));
+                held.add(new HeldSeal(segment, log, promise));
             }
 
             return promise;
@@ -662,11 +663,11 @@ class SealedHistoryRecoveryTest {
         }
 
         private void sealOffThread(HeldSeal seal) {
-            Thread.ofVirtual().start(() -> delegate.seal(seal.segment())
+            Thread.ofVirtual().start(() -> delegate.seal(seal.segment(), seal.log())
                                                    .onResult(seal.promise()::resolve));
         }
 
-        private record HeldSeal(SealedSegment segment, Promise<Unit> promise) {}
+        private record HeldSeal(SealedSegment segment, Option<AppendLog> log, Promise<Unit> promise) {}
     }
 
     private static KVStore<AetherKey, AetherValue> emptyKvStore() {
