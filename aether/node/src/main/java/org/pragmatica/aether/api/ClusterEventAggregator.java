@@ -58,10 +58,12 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.WarningLevel;
@@ -167,18 +169,44 @@ public final class ClusterEventAggregator {
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
     private static final long EVENT_THROTTLE_MS = 60_000L;
 
-    /// One throttle key's current window. `suppressed` counts the calls held back since `openedAt`.
-    /// `admitted` records whether the call that produced this state was let through, and for an
-    /// admitted call `suppressedBefore` is the count held back in the window it closed.
-    private record ThrottleWindow(long openedAt, long suppressed, boolean admitted, long suppressedBefore) {
+    /// Why an operator-warning event was not published; the throttle window is then handed back (#1617 R4).
+    private static final Cause NOT_PUBLISHED_REPLAYING = Causes.cause("snapshot/resync replay in progress");
+    private static final Cause NOT_PUBLISHED_UNBOUND = Causes.cause("cluster-events publisher not yet bound");
+
+    private volatile Option<ClusterEvent> lastRaisedOperatorWarning = Option.none();
+
+    /// A key with no call for this long is evicted by [#evictIdleThrottleWindows] (#1617 R3). Twice the
+    /// window, so a key is never evicted while its window could still hold a call back.
+    private static final long THROTTLE_IDLE_EVICTION_MS = 2 * EVENT_THROTTLE_MS;
+
+    /// Most keys named in the log line that reports evicted held-back counts.
+    private static final int EVICTION_SAMPLE_KEYS = 5;
+
+    /// One throttle key's current window. `suppressed` counts the calls held back since `openedAt`, and
+    /// `lastSeen` is the time of the latest call, admitted or not. `admitted` records whether the call that
+    /// produced this state was let through, and for an admitted call `suppressedBefore` is the count held
+    /// back in the window it closed.
+    private record ThrottleWindow(long openedAt, long lastSeen, long suppressed, boolean admitted, long suppressedBefore) {
         /// A new window opened at `now` by an admitted call, closing one that held back `suppressedBefore`.
         static ThrottleWindow throttleWindow(long now, long suppressedBefore) {
-            return new ThrottleWindow(now, 0, true, suppressedBefore);
+            return new ThrottleWindow(now, now, 0, true, suppressedBefore);
         }
 
         /// The same window with one more suppressed call.
-        ThrottleWindow held() {
-            return new ThrottleWindow(openedAt, suppressed + 1, false, 0);
+        ThrottleWindow held(long now) {
+            return new ThrottleWindow(openedAt, now, suppressed + 1, false, 0);
+        }
+
+        /// The window an admitted call opened, handed back because its event was not published (#1617 R4).
+        /// It is already expired, so the next call is admitted. It carries every occurrence no published event
+        /// represents: the count the failed event was meant to report, those held back while it was in flight,
+        /// and the failed occurrence itself.
+        ThrottleWindow released() {
+            return new ThrottleWindow(openedAt - EVENT_THROTTLE_MS, lastSeen, suppressed + suppressedBefore + 1, false, 0);
+        }
+
+        boolean idleAt(long now) {
+            return now - lastSeen >= THROTTLE_IDLE_EVICTION_MS;
         }
     }
 
@@ -530,6 +558,8 @@ public final class ClusterEventAggregator {
     }
 
     /// Throttle decision: emit iff no event for this `(streamName, phase)` key fired within the window.
+    /// The stream-memory throttle consumes its window on admission, whether or not the event lands; only
+    /// operator warnings hand a window back on a failed publish (#1617 R4 is scoped to them).
     private boolean shouldEmitStreamMemoryEvent(Exhaustion exhaustion) {
         return admit(streamMemoryEventThrottle,
                      exhaustion.streamName() + ":" + exhaustion.phase().name()).admitted();
@@ -541,23 +571,145 @@ public final class ClusterEventAggregator {
     /// emits through the ungated {@link #emitLocal} path, because a warning is a per-node fact. It is
     /// throttled per `(code, subject)` to one event per {@link #EVENT_THROTTLE_MS}, and the next
     /// admitted event carries the number held back as `suppressedSince`.
+    ///
+    /// #1617 R4: the window is consumed only by an event that is actually published. If the publish fails
+    /// (replay in progress, publisher not yet bound, or the publish itself failing), the window is handed
+    /// back, so the next occurrence is admitted and reports what this one could not.
     @Contract
     public void onOperatorWarning(OperatorWarning warning) {
-        var window = admit(operatorWarningThrottle,
-                           warning.code().code() + ":" + warning.subject());
+        var key = warning.code()
+                         .code() + ":" + warning.subject();
+        var window = admit(operatorWarningThrottle, key);
 
         if (!window.admitted()) {
             LOG.debug("ClusterEventAggregator: suppressing throttled OperatorWarning {} for {}",
-                      warning.code().code(),
+                      warning.code()
+                             .code(),
                       warning.subject());
 
             return;
         }
 
-        emitLocal(new ClusterEvent.OperatorWarning(hlcClock.now(),
-                                                   severityOf(warning.code().level()),
-                                                   warning.message(),
-                                                   operatorWarningDetails(warning, window.suppressedBefore())));
+        var event = new ClusterEvent.OperatorWarning(hlcClock.now(),
+                                                     severityOf(warning.code()
+                                                                       .level()),
+                                                     warning.message(),
+                                                     operatorWarningDetails(warning, window.suppressedBefore()));
+
+        lastRaisedOperatorWarning = Option.some(event);
+        publishedLocally(event).onFailure(_ -> releaseWindow(key, window));
+    }
+
+    /// Observability: the operator-warning event this node most recently admitted for publication,
+    /// whether or not the publish then landed. On a node that cannot reach the event log (an isolated
+    /// worker is the case that matters) this is the only in-process evidence that the warning reached
+    /// the aggregator rather than stopping at the log line.
+    public Option<ClusterEvent> lastRaisedOperatorWarning() {
+        return lastRaisedOperatorWarning;
+    }
+
+    /// Operator-warning throttle keys currently held (observability for #1617 R3).
+    public int operatorWarningThrottleKeys() {
+        return operatorWarningThrottle.size();
+    }
+
+    /// Evicts throttle keys idle for [#THROTTLE_IDLE_EVICTION_MS] from both throttles, so a key space as
+    /// open as peers or `stream[partition]` subjects cannot grow without bound (#1617 R3). `AetherNode`
+    /// schedules it once per window. An evicted operator-warning key that still held calls back would take
+    /// that count with it, so the evicted counts are reported in one aggregate log line.
+    public Unit evictIdleThrottleWindows() {
+        var now = hlcClock.now()
+                          .physicalMillis();
+
+        evictIdle(streamMemoryEventThrottle, now);
+
+        return reportEvictedHeldBack(evictIdle(operatorWarningThrottle, now));
+    }
+
+    private static List<Map.Entry<String, ThrottleWindow>> evictIdle(ConcurrentHashMap<String, ThrottleWindow> throttle,
+                                                                      long now) {
+        var idle = throttle.entrySet()
+                           .stream()
+                           .filter(entry -> entry.getValue()
+                                                 .idleAt(now))
+                           .map(entry -> Map.entry(entry.getKey(),
+                                                   entry.getValue()))
+                           .toList();
+
+        // remove(key, value) is conditional, so a key that saw a call after the scan is kept.
+        return idle.stream()
+                   .filter(entry -> throttle.remove(entry.getKey(),
+                                                    entry.getValue()))
+                   .toList();
+    }
+
+    private static Unit reportEvictedHeldBack(List<Map.Entry<String, ThrottleWindow>> evicted) {
+        var heldBack = evicted.stream()
+                              .filter(entry -> entry.getValue()
+                                                    .suppressed() > 0)
+                              .toList();
+        var total = heldBack.stream()
+                            .mapToLong(entry -> entry.getValue()
+                                                     .suppressed())
+                            .sum();
+
+        if (total > 0) {
+            LOG.warn("ClusterEventAggregator: {} held-back operator warning(s) across {} idle key(s) were never emitted "
+                     + "as events; their log lines were written. Keys include: {}",
+                     total,
+                     heldBack.size(),
+                     heldBack.stream()
+                             .limit(EVICTION_SAMPLE_KEYS)
+                             .map(Map.Entry::getKey)
+                             .toList());
+        }
+
+        return Unit.unit();
+    }
+
+    /// Hands `window` back if it is still the key's current window. A later window is left alone.
+    private Unit releaseWindow(String key, ThrottleWindow window) {
+        operatorWarningThrottle.computeIfPresent(key, (_, current) -> releasedIfCurrent(current, window));
+
+        return Unit.unit();
+    }
+
+    private static ThrottleWindow releasedIfCurrent(ThrottleWindow current, ThrottleWindow admitted) {
+        return current.openedAt() == admitted.openedAt()
+               ? current.released()
+               : current;
+    }
+
+    /// The `emitLocal` path with its outcome: fails when replay is in progress, when the publisher is not yet
+    /// bound, or when the publish throws or fails. It logs exactly as [#publishSafely] does.
+    private Promise<Unit> publishedLocally(ClusterEvent event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
+
+            return NOT_PUBLISHED_REPLAYING.promise();
+        }
+
+        return Option.option(publisherSupplier.get())
+                     .map(publisher -> publishedBy(publisher, event))
+                     .or(() -> unboundPublisher(event));
+    }
+
+    private static Promise<Unit> publishedBy(FrameworkStreamPublisher<ClusterEvent> publisher, ClusterEvent event) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> publisher.publish(event))
+                     .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw, dropped: {}",
+                                                  event,
+                                                  cause.message()))
+                     .async()
+                     .flatMap(promise -> promise.onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} failed, dropped: {}",
+                                                                              event,
+                                                                              cause.message())));
+    }
+
+    private static Promise<Unit> unboundPublisher(ClusterEvent event) {
+        LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event);
+
+        return NOT_PUBLISHED_UNBOUND.promise();
     }
 
     private static Severity severityOf(WarningLevel level) {
@@ -600,7 +752,7 @@ public final class ClusterEventAggregator {
         }
 
         if (now - previous.openedAt() < EVENT_THROTTLE_MS) {
-            return previous.held();
+            return previous.held(now);
         }
 
         return ThrottleWindow.throttleWindow(now, previous.suppressed());

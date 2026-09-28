@@ -50,6 +50,7 @@ import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -613,7 +614,7 @@ class SwimDeathPathCoConfirmationTest {
             var held = SwimProtocol.swimProtocol(shortWindow, transport, listener, SELF_ID, SELF_ADDR, () -> false, liveTransport::contains)
                                    .unwrap();
 
-            held.setOperatorWarningSink(warnings::add);
+            held.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
             seenHealthy(held, NODE_A, ADDR_A);
             held.start();
             try {

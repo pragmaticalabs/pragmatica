@@ -35,10 +35,17 @@ import static org.pragmatica.lang.Unit.unit;
 public sealed interface OperatorWarnings {
     /// Logs the warning at the level its code declares, then offers it to `sink`.
     ///
-    /// This never throws and never blocks on emission. A sink that throws is logged at WARN and
-    /// dropped. That is forward recovery: the log line written just before it is the report, and
-    /// nothing is retried. Throttling is the sink's concern, because only the node's aggregator knows
-    /// the window. So every call logs, and only the emit is rate-limited.
+    /// **It does not block on emission.** Every [OperatorWarningSink] either discards the warning or
+    /// enqueues it onto a bounded hand-off queue and returns (#1617 R2), so the caller's thread never runs
+    /// the publisher. A full queue drops the event, never the log line.
+    ///
+    /// **It never throws a non-fatal exception.** A sink that throws is logged at WARN and the event is
+    /// dropped. That is forward recovery: the log line written just before it is the report, and nothing
+    /// is retried. A `VirtualMachineError` is rethrown by design: `Result.lift` calls `rethrowIfFatal`,
+    /// because a JVM in that state must not carry on as if a warning had been handled.
+    ///
+    /// Throttling is the aggregator's concern, because only the node's aggregator knows the window. So
+    /// every call logs, and only the emit is rate-limited.
     static Unit raise(Logger log,
                       OperatorWarningSink sink,
                       OperatorWarningCode code,

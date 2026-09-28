@@ -566,6 +566,105 @@ class ClusterEventAggregatorTest {
         assertThat(h.events()).hasSize(1);
     }
 
+    /// #1617 R3: throttle keys are evicted once idle for twice the window, so an open key space (peers,
+    /// `stream[partition]` subjects) cannot grow without bound. 100k keys, then an idle interval past the
+    /// eviction age: the map is empty again.
+    @Test
+    void evictIdleThrottleWindows_afterTwiceTheWindowIdle_emptiesTheOperatorWarningThrottle() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 100_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[" + i + "]"));
+        }
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).isEqualTo(100_000);
+
+        // The HLC's logical counter carries into its physical component under 100k reads in one millisecond,
+        // so the keys' last-seen times spread over a few ms. The margins below are far wider than that.
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).as("not yet idle for twice the window")
+                                                                .isEqualTo(100_000);
+
+        physicalMillis.addAndGet(70_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).as("idle for twice the window").isZero();
+    }
+
+    /// #1617 R3: a key that is still being raised is not evicted, however old its window is.
+    @Test
+    void evictIdleThrottleWindows_keyRaisedRecently_isKept() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(119_000L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(1_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).isEqualTo(1);
+    }
+
+    /// #1617 R4: a window is consumed only by an event that is published. The first occurrence is not
+    /// published (replay in progress); a second occurrence inside the same window is then admitted, and
+    /// reports the one that was lost.
+    @Test
+    void onOperatorWarning_firstPublishFails_retryInTheSameWindowIsAdmitted() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               replaying::get,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.events()).as("control: the first occurrence was not published").isEmpty();
+
+        replaying.set(false);
+        physicalMillis.addAndGet(1_000L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        var events = h.events();
+        assertThat(events).as("the retry inside the same window is admitted").hasSize(1);
+        assertThat(events.getFirst().details()).containsEntry("suppressedSince", "1");
+    }
+
+    /// #1617 R5: the stream-memory throttle's own window edge. One millisecond short of the window is still
+    /// suppressed, and the window's end admits.
+    @Test
+    void onStreamMemoryExceeded_windowEdge_suppressesJustInside_admitsAtTheEdge() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+        physicalMillis.addAndGet(59_999L);
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+
+        assertThat(h.events()).as("59,999 ms: still inside the window").hasSize(1);
+
+        physicalMillis.addAndGet(1L);
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+
+        assertThat(h.events()).as("60,000 ms: the window has ended").hasSize(2);
+    }
+
     // --- production retention -------------------------------------------------------------------
 
     /// Count bound: with maxCount=3 the partition evicts oldest-on-append; only the newest 3 remain.

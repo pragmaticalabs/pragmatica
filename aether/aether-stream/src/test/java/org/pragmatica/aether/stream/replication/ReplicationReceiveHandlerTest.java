@@ -16,6 +16,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Result;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -171,7 +172,7 @@ class ReplicationReceiveHandlerTest {
                                                                           (_, _) -> {},
                                                                           (_, _) -> Causes.cause("fsync failed").promise(),
                                                                           CommittedStreamOwnerSource.none(),
-                                                                          warnings::add);
+                                                                          OperatorWarningSink.handingOffTo(warnings::add));
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
 

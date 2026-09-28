@@ -22,6 +22,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -101,7 +102,7 @@ class CoreAbsenceDetectorTest {
         void evaluate_fenceFires_raisesOneCoreAbsenceOperatorWarning() {
             var warnings = new CopyOnWriteArrayList<OperatorWarning>();
 
-            detector.setOperatorWarningSink(warnings::add);
+            detector.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
             detector.recordCorePing();
             timeSource.advanceTimeMillis(10_000);
 
@@ -110,10 +111,20 @@ class CoreAbsenceDetectorTest {
                 timeSource.advanceTimeMillis(1_000);
             }
 
+            awaitWarnings(warnings, 1);
             assertEquals(1, warnings.size());
             assertEquals(OperatorWarningCode.CORE_ABSENCE_FENCE, warnings.getFirst().code());
             assertEquals("core", warnings.getFirst().subject());
             assertTrue(warnings.getFirst().message().startsWith("CORE ABSENCE fence firing: no accepted ClusterSyncPing for 10000 ms"));
+        }
+
+        /// The sink hands off to its own thread, so the warning arrives asynchronously; bounded wait.
+        private static void awaitWarnings(List<OperatorWarning> warnings, int expected) {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+
+            while (warnings.size() < expected && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
         }
 
         @Test
