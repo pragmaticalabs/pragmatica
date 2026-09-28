@@ -106,6 +106,10 @@ final class NettyHttpServer implements HttpServer {
         return workerGroup;
     }
 
+    Option<Channel> serverChannel() {
+        return serverChannel;
+    }
+
     private Promise<Unit> shutdownGroupsThen(Result<Unit> closeOutcome) {
         return shutdownOwnedGroups().fold(groupsOutcome -> resolved(closeOutcome.flatMap(_ -> groupsOutcome)))
                                   .onSuccessRun(() -> log.info("HTTP server on port {} stopped", port))
@@ -134,33 +138,34 @@ final class NettyHttpServer implements HttpServer {
     }
 
     static Promise<HttpServer> create(HttpServerConfig config, BiConsumer<HttpRequest, ResponseWriter> handler) {
-        // Handle TLS
-        var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
-        var bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-        var workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
-        var socketOptions = config.socketOptions();
-        var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
-                                             .channel(NioServerSocketChannel.class)
-                                             .childHandler(new HttpServerInitializer(config, handler, sslContext))
-                                             .option(ChannelOption.SO_BACKLOG,
-                                                     socketOptions.soBacklog())
-                                             .childOption(ChannelOption.SO_KEEPALIVE,
-                                                          socketOptions.soKeepalive());
-
-        return Promise.promise(promise -> bootstrap.bind(config.port())
-                                                   .addListener((ChannelFuture future) -> onBind(config,
-                                                                                                 promise,
-                                                                                                 future,
-                                                                                                 sslContext,
-                                                                                                 bossGroup,
-                                                                                                 workerGroup,
-                                                                                                 true)));
+        return createOwning(config,
+                            handler,
+                            new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()),
+                            new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory()));
     }
 
     static Promise<HttpServer> createShared(HttpServerConfig config,
                                             BiConsumer<HttpRequest, ResponseWriter> handler,
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup) {
+        return bind(config, handler, bossGroup, workerGroup, false);
+    }
+
+    /// A server that OWNS `bossGroup` and `workerGroup`: its stop, or a failed bind, terminates them.
+    /// Package-private so the #1612 tests can hold the groups and check termination at the moment a failed
+    /// create reports.
+    static Promise<HttpServer> createOwning(HttpServerConfig config,
+                                            BiConsumer<HttpRequest, ResponseWriter> handler,
+                                            EventLoopGroup bossGroup,
+                                            EventLoopGroup workerGroup) {
+        return bind(config, handler, bossGroup, workerGroup, true);
+    }
+
+    private static Promise<HttpServer> bind(HttpServerConfig config,
+                                            BiConsumer<HttpRequest, ResponseWriter> handler,
+                                            EventLoopGroup bossGroup,
+                                            EventLoopGroup workerGroup,
+                                            boolean ownsGroups) {
         var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
         var socketOptions = config.socketOptions();
         var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
@@ -178,7 +183,7 @@ final class NettyHttpServer implements HttpServer {
                                                                                                  sslContext,
                                                                                                  bossGroup,
                                                                                                  workerGroup,
-                                                                                                 false)));
+                                                                                                 ownsGroups)));
     }
 
     private static void onBind(HttpServerConfig config,

@@ -2028,30 +2028,18 @@ public interface AetherNode extends ManageableNode {
                 // it ever gain a failure path, every stop below — management server, app HTTP, slice
                 // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
                 // that point rather than leaving the node half-stopped.
-                return clusterDeploymentManager.deactivate()
-                                               .flatMap(_ -> continuingPast("Management server",
-                                                                            managementServer.map(ManagementServer::stop)
-                                                                                            .or(Promise.unitPromise())))
-                                               .flatMap(_ -> continuingPast("App HTTP server",
-                                                                            appHttpServer.stop()))
-                                               .flatMap(_ -> sliceInvoker.stop())
-                                               .map(_ -> shutdownStorage())
-                                               .flatMap(_ -> clusterNode.stop())
-                                               .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                        self()));
-            }
-
-            /// #1612: an HTTP listener's `stop()` now reports a timed-out channel close or event-loop termination
-            /// as a FAILURE. Before, it never failed; a wedged loop hung it instead. In this chain a failure would
-            /// skip every later step through the `flatMap` short-circuit, so storage would not drain and the
-            /// cluster node would keep running. So the failure is logged and shutdown continues. This is forward
-            /// recovery (FER): the listener was asked to stop either way, and what is lost is only the
-            /// confirmation that its loops terminated.
-            private static Promise<Unit> continuingPast(String listener, Promise<Unit> stop) {
-                return stop.onFailure(cause -> log.warn("{} did not stop cleanly; continuing node shutdown: {}",
-                                                        listener,
-                                                        cause.message()))
-                           .recover(_ -> Unit.unit());
+                //
+                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
+                // skipped past rather than ending the shutdown.
+                return NodeStopSequence.run(NodeStopSequence.Steps.steps(clusterDeploymentManager::deactivate,
+                                                                         () -> managementServer.map(ManagementServer::stop)
+                                                                                               .or(Promise.unitPromise()),
+                                                                         appHttpServer::stop,
+                                                                         sliceInvoker::stop,
+                                                                         this::shutdownStorage,
+                                                                         clusterNode::stop))
+                                       .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                self()));
             }
 
             /// #1078: the three node-owned storage instances (`content`, `artifacts`, `streams`)

@@ -43,6 +43,17 @@ class AppHttpContextStopTest {
     }
 
     @Test
+    void stopServersAsync_h1Succeeds_h3Fails_reportsTheH3Failure() {
+        var h3Failed = Causes.cause("h3 termination timed out");
+        var outcome = context().stopServersAsync(Option.some(server(Promise.success(Unit.unit()))),
+                                                 Option.some(server(h3Failed.promise())))
+                               .await();
+
+        assertThat(outcome.isFailure()).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(h3Failed));
+    }
+
+    @Test
     void stopServersAsync_bothSucceed_succeeds() {
         var stopped = context().stopServersAsync(Option.some(server(Promise.success(Unit.unit()))),
                                                  Option.some(server(Promise.success(Unit.unit()))));

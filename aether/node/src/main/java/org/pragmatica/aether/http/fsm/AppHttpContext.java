@@ -7,6 +7,7 @@ package org.pragmatica.aether.http.fsm;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.http.ListenerStops;
 import org.pragmatica.aether.http.RouteTable;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.http.server.HttpServer;
@@ -104,7 +105,7 @@ public final class AppHttpContext {
         var h1Stop = server.map(HttpServer::stop).or(Promise.success(unit()));
         var h3Stop = h3.map(HttpServer::stop).or(Promise.success(unit()));
 
-        return h1Stop.fold(h1Outcome -> h3Stop.fold(h3Outcome -> Promise.resolved(h1Outcome.flatMap(_ -> h3Outcome))));
+        return ListenerStops.bothStopped(h1Stop, h3Stop);
     }
 
     public RouteTable currentRoutes() {

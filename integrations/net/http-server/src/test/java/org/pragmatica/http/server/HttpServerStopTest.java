@@ -23,10 +23,13 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
@@ -143,15 +146,58 @@ class HttpServerStopTest {
             }
         }
 
-        /// RED at base: the groups a failed create made are terminated before the create reports the failure.
+        /// RED at base: the groups a failed create owns are terminated BEFORE the create reports the failure.
+        /// Termination is read inside the failure callback itself, so a create that fails first and terminates
+        /// afterwards is caught deterministically; with a quiet period of 0 the threads die within
+        /// microseconds either way, so a check made after the fact could not tell the two apart.
         @Test
         void create_bindFailure_terminatesItsGroupsBeforeFailing() throws IOException {
+            var boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+            var worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+
             try (var taken = new ServerSocket(0)) {
-                assertNoNewLoopThreadsAfterFailedCreate(() -> NettyHttpServer.create(HttpServerConfig.httpServerConfig("bind-fail",
-                                                                                                                       taken.getLocalPort()),
-                                                                                     NO_HANDLER)
-                                                                             .mapToUnit());
+                assertGroupsTerminatedWhenFailureReported(NettyHttpServer.createOwning(HttpServerConfig.httpServerConfig("bind-fail",
+                                                                                                                         taken.getLocalPort()),
+                                                                                       NO_HANDLER,
+                                                                                       boss,
+                                                                                       worker)
+                                                                         .mapToUnit(),
+                                                          Set.of(boss, worker));
             }
+        }
+
+        /// R4/M5: an owned-group stop does not wait out a quiet period. Netty's default (2 s) would make every
+        /// stop take at least that long.
+        @Test
+        void stop_ownedGroups_completesWellUnderTheDefaultQuietPeriod() {
+            var server = startH1(freeTcpPort());
+            var started = System.nanoTime();
+
+            assertThat(server.stop().await(timeSpan(STOP_BOUND_MS).millis()).isSuccess()).isTrue();
+
+            var elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+            assertThat(elapsedMs).as("stop() took %d ms; Netty's default quiet period alone is 2000 ms", elapsedMs)
+                                 .isLessThan(1_000L);
+        }
+
+        /// R4/M7: a channel close that fails is the stop's typed first failure, even though the groups are
+        /// still shut down and terminate.
+        @Test
+        void stop_channelCloseFails_reportsThatFailure_andStillTerminatesTheGroups() {
+            var server = startH1(freeTcpPort());
+
+            server.serverChannel()
+                  .unwrap()
+                  .pipeline()
+                  .addFirst(new CloseRefusingHandler());
+
+            var outcome = server.stop().await(timeSpan(STOP_BOUND_MS).millis());
+
+            assertThat(outcome.isFailure()).as("the refused close is reported").isTrue();
+            outcome.onFailure(cause -> assertThat(cause.message()).contains(CloseRefusingHandler.REFUSAL));
+            assertThat(server.bossGroup().unwrap().isTerminated()).as("boss group terminated anyway").isTrue();
+            assertThat(server.workerGroup().unwrap().isTerminated()).as("worker group terminated anyway").isTrue();
         }
 
         private static NettyHttpServer startH1(int port) {
@@ -209,15 +255,21 @@ class HttpServerStopTest {
                                          Set.of(server.workerGroup().unwrap()));
         }
 
-        /// RED at base: the group a failed create made is terminated before the create reports the failure.
+        /// RED at base: the group a failed create owns is terminated BEFORE the create reports the failure,
+        /// read inside the failure callback (see the HTTP/1.1 twin).
         @Test
         void create_bindFailure_terminatesItsGroupBeforeFailing() throws IOException {
+            var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+
             try (var taken = new DatagramSocket(0)) {
-                assertNoNewLoopThreadsAfterFailedCreate(() -> Http3Server.create(HttpServerConfig.httpServerConfig("bind-fail-h3",
-                                                                                                                   taken.getLocalPort()),
-                                                                                 quicSsl(),
-                                                                                 NO_HANDLER)
-                                                                         .mapToUnit());
+                assertGroupsTerminatedWhenFailureReported(Http3Server.bind(HttpServerConfig.httpServerConfig("bind-fail-h3",
+                                                                                                             taken.getLocalPort()),
+                                                                           quicSsl(),
+                                                                           NO_HANDLER,
+                                                                           group,
+                                                                           true)
+                                                                     .mapToUnit(),
+                                                          Set.of(group));
             }
         }
 
@@ -257,31 +309,28 @@ class HttpServerStopTest {
         }
     }
 
-    /// A failed create must leave no live event-loop thread behind by the time it reports the failure. Threads
-    /// are identified by the default pool name of `MultiThreadIoEventLoopGroup`, and only threads that did not
-    /// exist before the attempt count.
-    private static void assertNoNewLoopThreadsAfterFailedCreate(Supplier<Promise<Unit>> create) {
-        var before = liveLoopThreads();
-        var outcome = create.get()
+    /// Reads every owned group's `isTerminated()` INSIDE the failure callback, i.e. at the moment the failed
+    /// create reports, not afterwards.
+    private static void assertGroupsTerminatedWhenFailureReported(Promise<Unit> create, Set<EventLoopGroup> groups) {
+        var terminatedAtFailure = new AtomicReference<Boolean>();
+        var outcome = create.onFailure(_ -> terminatedAtFailure.set(groups.stream()
+                                                                          .allMatch(EventLoopGroup::isTerminated)))
                             .await(timeSpan(STOP_BOUND_MS).millis());
 
         assertThat(outcome.isFailure()).as("control: the bind failed").isTrue();
         outcome.onFailure(cause -> assertThat(cause).isInstanceOf(HttpServerError.BindFailed.class));
-
-        var leftover = liveLoopThreads();
-
-        leftover.removeAll(before);
-        assertThat(leftover).as("event-loop threads still alive when the failed create reported").isEmpty();
+        assertThat(terminatedAtFailure.get()).as("every owned group was terminated when the failure was reported")
+                                            .isTrue();
     }
 
-    private static Set<Thread> liveLoopThreads() {
-        return Thread.getAllStackTraces()
-                     .keySet()
-                     .stream()
-                     .filter(Thread::isAlive)
-                     .filter(thread -> thread.getName()
-                                             .startsWith("multiThreadIoEventLoopGroup"))
-                     .collect(Collectors.toSet());
+    /// Fails every close on the server channel's pipeline, so its close future fails.
+    private static final class CloseRefusingHandler extends ChannelOutboundHandlerAdapter {
+        private static final String REFUSAL = "close refused by test";
+
+        @Override
+        public void close(ChannelHandlerContext ctx, ChannelPromise promise) {
+            promise.setFailure(new IOException(REFUSAL));
+        }
     }
 
     private static void hold(CountDownLatch blocking, CountDownLatch release) {

@@ -147,8 +147,10 @@ final class Http3Server {
         return bind(config, quicSslContext, handler, workerGroup, false);
     }
 
+    /// Package-private so the #1612 tests can pass an owned group and check its termination at the moment a
+    /// failed create reports.
     @SuppressWarnings("JBCT-UTIL-01")
-    private static Promise<Http3Server> bind(HttpServerConfig config,
+    static Promise<Http3Server> bind(HttpServerConfig config,
                                              QuicSslContext quicSslContext,
                                              BiConsumer<HttpRequest, ResponseWriter> handler,
                                              EventLoopGroup group,

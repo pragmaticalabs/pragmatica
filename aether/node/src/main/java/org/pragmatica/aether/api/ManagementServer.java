@@ -17,6 +17,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.http.ListenerStops;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -545,13 +546,7 @@ class ManagementServerImpl implements ManagementServer {
                                                       .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
                                  .or(Promise.success(unit()));
 
-        return bothStopped(h1Stop, h3Stop);
-    }
-
-    /// #1612: both stops are already under way; wait for both and report the first failure. `flatMap`
-    /// would return h1's failure without waiting for h3.
-    private static Promise<Unit> bothStopped(Promise<Unit> h1Stop, Promise<Unit> h3Stop) {
-        return h1Stop.fold(h1Outcome -> h3Stop.fold(h3Outcome -> Promise.resolved(h1Outcome.flatMap(_ -> h3Outcome))));
+        return ListenerStops.bothStopped(h1Stop, h3Stop);
     }
 
     @Override
@@ -565,17 +560,12 @@ class ManagementServerImpl implements ManagementServer {
     /// being replaced, not shut down, so the slots must stay publishable. A rotation racing a `stop()`
     /// finds them already CLOSED, and the replacement listeners are then closed by their publisher.
     ///
-    /// #1612: a stop that fails (a timed-out close or termination) is logged and the restart goes ahead. This
-    /// is forward recovery. Aborting would leave the node with no management listener at all, while a
-    /// restart succeeds whenever the channel did close, and a port still bound fails the restart visibly.
+    /// #1612: a stop that fails is logged and the restart goes ahead ([ListenerStops#stoppedForRestart]).
     private Promise<Unit> stopHttpServers() {
         var h1Stop = serverSlot.take().map(HttpServer::stop).or(Promise.success(unit()));
         var h3Stop = h3ServerSlot.take().map(HttpServer::stop).or(Promise.success(unit()));
 
-        return bothStopped(h1Stop, h3Stop).onFailure(cause -> log.warn("Management listeners did not stop cleanly before "
-                                                                      + "certificate rotation; restarting anyway: {}",
-                                                                       cause.message()))
-                          .recover(_ -> unit());
+        return ListenerStops.stoppedForRestart(ListenerStops.bothStopped(h1Stop, h3Stop), log, "Management listeners");
     }
 
     @SuppressWarnings("JBCT-PAT-01")
