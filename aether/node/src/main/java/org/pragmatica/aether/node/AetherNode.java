@@ -6455,6 +6455,10 @@ public interface AetherNode extends ManageableNode {
             return;
         }
 
+        // #1529 (v1635 N3), known tear, metrics only: the transport hands over `term`/`counter` from the epoch it
+        // captured, while `incarnation` is read here from `epochSupplier` at report time. An observation straddling
+        // an incarnation change can therefore mix two epochs. Nothing fences on these observations (they feed
+        // connectivity telemetry), so it is recorded rather than fixed.
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
             @Contract
             @Override
