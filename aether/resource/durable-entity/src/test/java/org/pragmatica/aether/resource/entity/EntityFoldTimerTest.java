@@ -403,6 +403,10 @@ class EntityFoldTimerTest {
 
             target.checkpoint = Option.some(new Checkpoint(source.checkpointableThrough(PARTITION),
                                                            source.snapshot(PARTITION)));
+            // The taking-over node's log numbering reaches the checkpoint (records below it reclaimed), as a
+            // production log's head does; a head BELOW the checkpoint would mean the log restarted, and the
+            // checkpoint would be ignored (#1533).
+            target.headFloor = source.checkpointableThrough(PARTITION);
 
             var restored = EntityFold.entityFold(KEYSPACE, target);
 
@@ -443,6 +447,7 @@ class EntityFoldTimerTest {
     private static final class GrowableSubstrate implements EntityLogSubstrate {
         private final List<byte[]> log = new ArrayList<>();
         private Option<Checkpoint> checkpoint = Option.none();
+        private long headFloor = -1L;
 
         void appendRaw(byte[] record) {
             log.add(record);
@@ -473,7 +478,7 @@ class EntityFoldTimerTest {
 
         @Override
         public long headOffset(String keyspace, int partition) {
-            return log.size() - 1L;
+            return Math.max(log.size() - 1L, headFloor);
         }
 
         @Override

@@ -18,6 +18,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -248,6 +249,80 @@ class EntityFoldTest {
 
             assertThat(text(fold, "seeded")).isEqualTo("fromCheckpoint");
             assertThat(text(fold, "tail")).isEqualTo("fromLog");
+        }
+    }
+
+    /// #1533 — a checkpoint POINTER is cluster state and comes back with a KV backup restore; the log it
+    /// points into is this node's and may not have survived the cold restart. The pointer is validated where
+    /// it is used.
+    @Nested
+    class RestoredCheckpointPointer {
+        /// The log survived: the pointer is inside it, so it is used — no skip, no refusal.
+        @Test
+        void ready_usesTheCheckpoint_whenTheLogSurvivedTheRestart() {
+            var substrate = new FakeSubstrate();
+
+            for (int i = 0; i < 10; i++) {
+                substrate.append(EntityLogRecord.upsert("log-" + i, bytes("v" + i)));
+            }
+            substrate.checkpoint(4, EntityFoldSnapshot.encode(Map.of("only-in-checkpoint", bytes("seeded")), Map.of()));
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            assertThat(text(fold, "only-in-checkpoint")).as("seeded from the checkpoint, not skipped")
+                                                        .isEqualTo("seeded");
+            assertThat(text(fold, "log-9")).isEqualTo("v9");
+        }
+
+        /// The log restarted at 0 while the restored pointer claims 500: the pointer is ignored and the
+        /// partition folds from its log — neither refusing nor seeding state the log never held.
+        @Test
+        void ready_ignoresACheckpointBeyondTheLogHead_whenTheLogRestartedAtZero() {
+            var substrate = new FakeSubstrate();
+
+            substrate.append(EntityLogRecord.upsert("fresh-0", bytes("a")));
+            substrate.append(EntityLogRecord.upsert("fresh-1", bytes("b")));
+            substrate.checkpoint(500, EntityFoldSnapshot.encode(Map.of("stale", bytes("old")), Map.of()));
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            assertThat(text(fold, "fresh-1")).isEqualTo("b");
+            assertThat(fold.get(PARTITION, "stale")
+                           .isEmpty()).as("nothing seeded from a pointer past the log")
+                                      .isTrue();
+        }
+
+        @Test
+        void ready_ignoresAnUndecodableCheckpoint_andFoldsFromTheLog() {
+            var substrate = new FakeSubstrate();
+
+            substrate.append(EntityLogRecord.upsert("k", bytes("v")));
+            substrate.checkpoint(0, bytes("not a snapshot"));
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            assertThat(text(fold, "k")).isEqualTo("v");
+        }
+
+        @Test
+        void ready_ignoresAnUnreadableCheckpoint_andFoldsFromTheLog() {
+            var substrate = new FakeSubstrate();
+
+            substrate.append(EntityLogRecord.upsert("k", bytes("from-log")));
+            substrate.checkpoint(0, EntityFoldSnapshot.encode(Map.of("k", bytes("from-checkpoint")), Map.of()));
+            substrate.failCheckpointLoads();
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            assertThat(text(fold, "k")).isEqualTo("from-log");
         }
     }
 
@@ -617,6 +692,7 @@ class EntityFoldTest {
         private byte[] checkpointSnapshot;
         private boolean localLogComplete = true;
         private boolean holdsPartition = true;
+        private boolean checkpointLoadFails;
         // Inert by default, so every other test in this file sees the substrate unchanged. Models a
         // substrate that fails SYNCHRONOUSLY rather than returning a failed promise — the window
         // Result.lift closes in caughtUp.
@@ -636,13 +712,22 @@ class EntityFoldTest {
             records.add(record.encode());
         }
 
+        /// A checkpoint over an EMPTY log models a log reclaimed through the checkpoint: its numbering
+        /// continues after it. (A log that restarted below the checkpoint is built by appending first.)
         void checkpoint(long throughOffset, byte[] snapshot) {
+            if (records.isEmpty() && baseOffset <= throughOffset) {
+                baseOffset = throughOffset + 1;
+            }
             checkpointThrough = throughOffset;
             checkpointSnapshot = snapshot;
         }
 
         void trimBefore(long offset) {
             baseOffset = offset;
+        }
+
+        void failCheckpointLoads() {
+            checkpointLoadFails = true;
         }
 
         @Override
@@ -676,9 +761,11 @@ class EntityFoldTest {
             return Promise.success(snapshot.subList(start, Math.min(snapshot.size(), start + maxRecords)));
         }
 
+        /// Numbering-based, as production's `nextExpectedOffset - 1` is: an empty log whose records were all
+        /// reclaimed still reports the offset it reached, not `-1`.
         @Override
         public long headOffset(String keyspace, int partition) {
-            return records.isEmpty() ? -1L : baseOffset + records.size() - 1;
+            return baseOffset + records.size() - 1;
         }
 
         @Override
@@ -706,6 +793,9 @@ class EntityFoldTest {
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
             checkpointLoads.incrementAndGet();
+            if (checkpointLoadFails) {
+                return Causes.cause("checkpoint block unreadable").promise();
+            }
 
             return Promise.success(checkpointSnapshot == null
                                    ? Option.none()

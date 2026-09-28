@@ -18,6 +18,7 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.ProvisioningDecisionSnapshot;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
@@ -207,12 +208,12 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     @TerminalOperation
     void setUp(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
-        var consensusDirectory = directory.resolve("consensus");
-        // The production backup adapter expects provisioned directories, including the scale-up control's new node.
-        org.pragmatica.lang.Result.allOf(java.util.stream.IntStream.rangeClosed(1, RAISED_CORES)
-            .mapToObj(index -> org.pragmatica.lang.io.FileOps.createDirectories(consensusDirectory.resolve(NODE_PREFIX + "-" + index))))
-            .unwrap();
-        cluster.withConsensusBaseDir(consensusDirectory);
+        // #1533: consensus runs in memory; the cluster's state crosses the full restart through the KV backup,
+        // pushed to a shared bare remote and restored by the new leader before any seeder writes.
+        var remote = directory.resolve("backup-remote.git");
+
+        initBareRemote(remote);
+        cluster.withKvBackup(directory.resolve("backup"), remote.toString(), BackupConfig.RestoreMode.AUTO);
         cluster.withComputeProviderDecorator(recorder::wrap);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         expectStarted(allConfiguredIds(), "FORMATION-1 start");
@@ -374,6 +375,25 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
                   .isEqualTo(RAISED_CORES);
     }
 
+    private static void initBareRemote(java.nio.file.Path remote) {
+        try {
+            var process = new ProcessBuilder("git", "init", "--quiet", "--bare", remote.toString()).redirectErrorStream(true)
+                                                                                                   .start();
+
+            process.getInputStream()
+                   .readAllBytes();
+            assertThat(process.waitFor()).as("git init --bare %s", remote)
+                                         .isZero();
+        } catch (java.io.IOException e) {
+            throw new AssertionError("could not run git", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread()
+                  .interrupt();
+
+            throw new AssertionError("interrupted running git", e);
+        }
+    }
+
     // ----- restart mechanics -----
     /// Membership callbacks run inside a consensus apply, before its phase advances. A leader and
     /// full observed membership therefore do not prove applied history is ready to checkpoint.
@@ -393,8 +413,8 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     }
 
     /// Full-cluster restart with [#HELD_BACK] deferred. Modelled on
-    /// `MultiPartitionCrashDurabilityTest.restartCluster()`. Consensus state persists across restart:
-    /// otherwise these PARTICIPATED identities are amnesiac and cannot count themselves toward recovery.
+    /// `MultiPartitionCrashDurabilityTest.restartCluster()`. Cluster state crosses the restart through the
+    /// KV backup restore (#1533); consensus itself restarts empty.
     @TerminalOperation
     private void restartWithHeldBackMembers() {
         awaitAppliedHistory();

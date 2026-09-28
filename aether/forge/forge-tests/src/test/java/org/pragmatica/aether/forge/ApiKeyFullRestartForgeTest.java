@@ -8,17 +8,19 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.config.ApiKeyEntry;
+import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.http.HttpOperations;
@@ -39,26 +41,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 
-/// #1020 — a cluster-minted API key survives a full (all-nodes) graceful restart when `[backup]` is
-/// enabled, on EVERY node, including the one whose disk snapshot is ahead of its first responder.
+/// #1020, moved onto the KV backup restore by #1533 — a cluster-minted API key survives a full (all-nodes)
+/// restart when `[backup]` is enabled, on EVERY node.
 ///
-/// The guarantee under test, stated precisely: a key minted through `POST /api/v1/cluster/keys` and
-/// acknowledged before a graceful all-nodes stop is accepted after restart, because it is a record in
-/// the consensus KV state machine, which `RabiaEngine.shutdownAndReset` saves through
-/// `GitBackedPersistence` to `[backup] path` at stop, and which sync adoption restores at boot — from
-/// a peer's persisted snapshot when a peer is ahead, and (the #1020 fix) from the node's OWN
-/// persisted snapshot when every responder is behind it.
+/// The guarantee under test, stated precisely: consensus runs in memory, so a restarted cluster starts
+/// empty; a key minted through `POST /api/v1/cluster/keys` and present in the backup head (the
+/// change-triggered, leader-only backup pushed to `[backup] remote`, #1532) before every node stops is
+/// accepted after the restart, because the new leader restores the head before any cluster-state write is
+/// admitted (`BackupRestoreCoordinator`, `RestoreGate`) and every node then holds it through consensus.
 ///
-/// The phase skew is produced deliberately, not left to the scheduler: node 1 is stopped first and
-/// saves at phase P; a second key is then minted through the surviving quorum, so nodes 2 and 3 save
-/// at P' > P. The restart holds node 3 back, so node 2's ONLY sync responder is node 1 — behind it.
-/// Before the fix, node 2 refused the response (correctly) and activated on an EMPTY store at phase 0:
-/// the operator's key answered 403 on the node holding the most advanced snapshot. Node 1 adopts node
-/// 2's response (ahead of it), so it is the control: the peer-restore path was never the defect.
+/// The control is the same restart with `[backup] restore = "fresh"`: the backup is ignored, and the same
+/// key must be REFUSED on every node — so the acceptance above is the restore's doing, not a leftover.
 ///
 /// Management security is `API_KEY` with one config-declared ADMIN key, because under Ember's default
 /// `SecurityMode.NONE` the management API skips authentication entirely and "accepted" would be
-/// unobservable. The config key mints; the minted keys are what every acceptance assertion presents.
+/// unobservable. The config key mints; the minted key is what every acceptance assertion presents.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ApiKeyFullRestartForgeTest {
@@ -75,28 +72,29 @@ class ApiKeyFullRestartForgeTest {
     private static final TimeSpan HTTP_BOUND = TimeSpan.timeSpan(15).seconds();
     private static final String API_KEY_HEADER = "X-API-Key";
     private static final String CONFIG_API_KEY = "forge-1020-config-key";
-    private static final String FIRST_KEY = "forge-1020-first-minted-key";
-    private static final String SECOND_KEY = "forge-1020-second-minted-key";
+    private static final String MINTED_KEY = "forge-1020-first-minted-key";
+    private static final String MINTED_KEY_ID = "first";
     private static final String KEYS_PATH = "/api/v1/cluster/keys";
+    private static final String BACKUP_BRANCH = "kv-backup";
+    private static final String BACKUP_FILE = "kv-backup.txt";
     private static final Pattern NODE_COUNT_FIELD = Pattern.compile("\"nodeCount\"\\s*:\\s*(\\d+)");
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
+    private Path backupDir;
+    private Path remote;
 
     @BeforeAll
-    void setUp(@TempDir Path backupDir) {
+    void setUp(@TempDir Path tempDir) {
+        backupDir = tempDir.resolve("nodes");
+        remote = tempDir.resolve("remote.git");
+        git(tempDir, "init", "--quiet", "--bare", remote.toString());
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
-        // MUST precede start(): every node reads the mode, the key map and the backup root at construction.
+        // MUST precede start(): every node reads the mode, the key map and the backup config at construction.
         cluster.withAppHttpSecurity(SecurityMode.API_KEY,
                                     Map.of(CONFIG_API_KEY,
                                            ApiKeyEntry.apiKeyEntry("forge-1020-config", Set.of("service"), "ADMIN")));
-        // #1341's seam: the caller provisions <baseDir>/<nodeId>, as production provisioning does —
-        // GitBackedPersistence writes into its directory and never creates it.
-        for (int i = 1; i <= NODES; i++) {
-            createDirectory(backupDir.resolve(NODE_PREFIX + "-" + i));
-        }
-
-        cluster.withConsensusBaseDir(backupDir);
+        cluster.withKvBackup(backupDir, remote.toString(), RestoreMode.AUTO);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         awaitMembers(NODES);
     }
@@ -109,31 +107,22 @@ class ApiKeyFullRestartForgeTest {
     }
 
     @Test
-    void fullGracefulRestart_everyNodeAcceptsTheKeysMintedBeforeTheStop() {
-        mint("first", FIRST_KEY);
-        assertAccepted(FIRST_KEY, NODE_1, NODE_2, NODE_3);
-        // Phase skew: node 1 saves at P on its graceful stop; the second mint advances the survivors past P.
-        LifecycleAwait.settled("graceful stop of " + NODE_1, cluster, cluster.killNode(NODE_1, true));
-        awaitMembers(NODES - 1);
-        mint("second", SECOND_KEY);
-        assertAccepted(SECOND_KEY, NODE_2, NODE_3);
+    void fullRestart_restoresTheBackup_everyNodeAcceptsTheMintedKey_andAFreshRestartDoesNot() {
+        mint(MINTED_KEY_ID, MINTED_KEY);
+        assertAccepted(MINTED_KEY, NODE_1, NODE_2, NODE_3);
+        awaitBackupHeadContains("api-key/" + MINTED_KEY_ID);
         LifecycleAwait.settled("cluster stop", cluster, cluster.stop());
-        // Restart with node 3 held back: node 2's only responder is node 1, whose snapshot is BEHIND node 2's.
-        LifecycleAwait.settled("cluster restart with " + NODE_3 + " held back",
-                               cluster,
-                               cluster.start(Set.of(NODE_3)));
-        awaitMembers(NODES - 1);
-        assertAccepted(SECOND_KEY, NODE_2);
-        assertAccepted(FIRST_KEY, NODE_2);
-        assertThat(listKeys(NODE_2)).as("node 2 must list both cluster-held keys it activated on — its own persisted snapshot")
-                  .contains("\"keyId\":\"first\"", "\"keyId\":\"second\"", "\"source\":\"cluster\"");
-        // The control: node 1 restarted BEHIND and adopted node 2's response — the peer-restore path.
-        assertAccepted(SECOND_KEY, NODE_1);
-        assertAccepted(FIRST_KEY, NODE_1);
-        LifecycleAwait.settled("start of held-back " + NODE_3, cluster, cluster.startHeldBackNodes());
+        LifecycleAwait.settled("cluster restart restoring the backup", cluster, cluster.start());
         awaitMembers(NODES);
-        assertAccepted(SECOND_KEY, NODE_3);
-        assertAccepted(FIRST_KEY, NODE_3);
+        assertAccepted(MINTED_KEY, NODE_1, NODE_2, NODE_3);
+        assertThat(listKeys(NODE_2)).as("node 2 lists the restored cluster-held key")
+                  .contains("\"keyId\":\"" + MINTED_KEY_ID + "\"", "\"source\":\"cluster\"");
+        // The control: the same restart ignoring the backup. The key must be gone everywhere.
+        LifecycleAwait.settled("cluster stop before the fresh control", cluster, cluster.stop());
+        cluster.withKvBackup(backupDir, remote.toString(), RestoreMode.FRESH);
+        LifecycleAwait.settled("cluster restart with restore = fresh", cluster, cluster.start());
+        awaitMembers(NODES);
+        assertRefused(MINTED_KEY, NODE_1, NODE_2, NODE_3);
     }
 
     // --- mint / accept ------------------------------------------------------
@@ -173,6 +162,31 @@ class ApiKeyFullRestartForgeTest {
                                                                                       nodeId)
                                                 .isEqualTo(200));
         }
+    }
+
+    /// The control's assertion: the key must be refused. Waits out a still-activating node the same way.
+    private void assertRefused(String plaintext, String... nodeIds) {
+        for (var nodeId : nodeIds) {
+            await().alias(plaintext + " refused on " + nodeId)
+                 .atMost(Duration.ofSeconds(30))
+                 .pollInterval(POLL_INTERVAL)
+                 .untilAsserted(() -> assertThat(statusWithKey(nodeId, plaintext)).as("%s presented on %s after a fresh restart",
+                                                                                      plaintext,
+                                                                                      nodeId)
+                                                .isEqualTo(403));
+        }
+    }
+
+    /// The backup head on the shared remote — what the restart restores — names the key.
+    private void awaitBackupHeadContains(String keyString) {
+        await().alias("backup head contains " + keyString)
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> backupHead().contains(" " + keyString + "\n") || backupHead().endsWith(" " + keyString));
+    }
+
+    private String backupHead() {
+        return gitOrEmpty(remote, "show", BACKUP_BRANCH + ":" + BACKUP_FILE);
     }
 
     private int statusWithKey(String nodeId, String plaintext) {
@@ -259,11 +273,45 @@ class ApiKeyFullRestartForgeTest {
                && Integer.parseInt(matcher.group(1)) == expected;
     }
 
-    private static void createDirectory(Path dir) {
+    private static String git(Path dir, String... args) {
+        var result = runGit(dir, args);
+
+        if (result.exitCode() != 0) {
+            throw new AssertionError("git " + String.join(" ", args) + " failed: " + result.output());
+        }
+
+        return result.output();
+    }
+
+    private static String gitOrEmpty(Path dir, String... args) {
+        var result = runGit(dir, args);
+
+        return result.exitCode() == 0
+               ? result.output()
+               : "";
+    }
+
+    private record GitResult(int exitCode, String output) {}
+
+    private static GitResult runGit(Path dir, String... args) {
+        var command = new ArrayList<>(List.of("git", "-C", dir.toString()));
+
+        command.addAll(List.of(args));
         try {
-            Files.createDirectories(dir);
+            var process = new ProcessBuilder(command).redirectErrorStream(true)
+                                                     .start();
+            var output = new String(process.getInputStream()
+                                           .readAllBytes(),
+                                    StandardCharsets.UTF_8);
+
+            return new GitResult(process.waitFor(), output);
         } catch (IOException e) {
-            throw new AssertionError("could not provision consensus dir " + dir, e);
+            throw new AssertionError("could not run git", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread()
+                  .interrupt();
+
+            throw new AssertionError("interrupted running git", e);
         }
     }
 

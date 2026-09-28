@@ -40,7 +40,8 @@ class EntityFoldReadyLivenessTest {
     ///
     ///   1. slot read EMPTY, CAS not yet attempted — a winner W calls `ready()` on another thread and takes
     ///      the slot with a rebuild parked in its checkpoint load, so L's CAS is certain to LOSE;
-    ///   2. CAS lost — W's checkpoint load now fails, its rebuild fails and clears the slot, and L waits
+    ///   2. CAS lost — W's checkpoint load now fails with the log below it reclaimed (so the fold cannot
+    ///      fall back to replay, #1533), its rebuild fails and clears the slot, and L waits
     ///      for W's promise to resolve, which happens only after the slot is cleared.
     ///
     /// The pre-#1268 code re-read the slot at that point and returned `null`. Re-entering makes L's own
@@ -184,6 +185,7 @@ class EntityFoldReadyLivenessTest {
         private final AtomicBoolean throwOnce = new AtomicBoolean();
         private final AtomicReference<Promise<Option<EntityCheckpoint>>> parked = new AtomicReference<>();
         private volatile Promise<Option<EntityCheckpoint>> parkedLoad;
+        private final AtomicBoolean reclaimedOnce = new AtomicBoolean();
 
         void neverHold() {
             held = false;
@@ -219,12 +221,16 @@ class EntityFoldReadyLivenessTest {
 
         @Override
         public long headOffset(String keyspace, int partition) {
-            return -1L;
+            return reclaimedOnce.get()
+                   ? 5L
+                   : -1L;
         }
 
         @Override
         public long earliestRetainedOffset(String keyspace, int partition) {
-            return -1L;
+            return reclaimedOnce.getAndSet(false)
+                   ? 5L
+                   : -1L;
         }
 
         @Override
@@ -242,7 +248,11 @@ class EntityFoldReadyLivenessTest {
             parked.set(Promise.promise());
         }
 
+        /// Fail the parked load while the log reads as reclaimed below offset 5: an unreadable checkpoint is
+        /// skipped, and it is the gap that fails the rebuild. One rebuild only — the next attempt sees an
+        /// empty, complete log again.
         void failParkedCheckpointLoad() {
+            reclaimedOnce.set(true);
             parkedLoad.fail(Causes.cause("parked checkpoint load failed"));
         }
 
