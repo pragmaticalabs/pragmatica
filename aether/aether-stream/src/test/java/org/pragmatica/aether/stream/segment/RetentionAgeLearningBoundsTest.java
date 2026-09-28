@@ -105,7 +105,9 @@ class RetentionAgeLearningBoundsTest {
     }
 
     /// #1616 R3, narrowed: a TRANSIENT read failure (an I/O error, a timeout) is not remembered -- the next pass
-    /// retries and learns the age, so one bad read cannot pin a segment against age-out until a restart.
+    /// retries and learns the age, so one bad read cannot pin a segment against age-out until a restart. A
+    /// SECONDARY unit pin of `StorageError.ReadError` (an exception thrown out of a tier read); the production I/O
+    /// error from the disk tier, `FileError.ReadFailed`, is pinned on the real tier in `RetentionAgeDiskReadTest`.
     @Test
     void aTransientReadFailure_isRetriedOnTheNextPass() {
         assertRetried(new StorageError.ReadError("injected I/O error"));
@@ -115,6 +117,19 @@ class RetentionAgeLearningBoundsTest {
     @Test
     void aReadTimeout_isRetriedOnTheNextPass() {
         assertRetried(new CoreError.Timeout("injected read timeout"));
+    }
+
+    /// #1639: a tier not yet admitted for reads (the DHT marker check still pending) is a bounded wait: retried.
+    @Test
+    void aTierNotYetAdmitted_isRetriedOnTheNextPass() {
+        assertRetried(new StorageError.TierNotAdmitted("streams", 30_000));
+    }
+
+    /// #1639 nit: an exhausted VM while reading or decoding a block reaches here as the escape `Promise` wraps
+    /// (#1311) before rethrowing; it says nothing about the block, so it is retried, never remembered.
+    @Test
+    void anExhaustedVm_isRetriedOnTheNextPass() {
+        assertRetried(new CoreError.Exception("heap exhausted decoding a block", new OutOfMemoryError("probe")));
     }
 
     /// #1630: the classification is inverted -- anything that is not a timeout or an I/O error is deterministic. A

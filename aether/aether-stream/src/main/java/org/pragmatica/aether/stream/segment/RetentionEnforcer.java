@@ -21,6 +21,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.io.FileError;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.storage.EncryptionError;
@@ -404,11 +406,23 @@ public final class RetentionEnforcer implements AutoCloseable {
         return unit();
     }
 
-    /// What a retry can change: a cause classed transient ([Cause#isTransient] -- a promise timeout,
-    /// [org.pragmatica.lang.io.CoreError.Timeout], is), an I/O error reading a tier ([StorageError.ReadError]), or a
-    /// tier not yet admitted for reads ([StorageError.TierNotAdmitted], a bounded wait on the DHT marker check).
+    /// What a retry can change:
+    ///   - a cause classed transient ([Cause#isTransient]): a promise timeout ([CoreError.Timeout]), a DHT client
+    ///     timeout or unreachable peer;
+    ///   - an I/O error reading a block file. The disk tier reports it as [FileError.ReadFailed] -- what `FileOps`
+    ///   maps any `IOException` to (EMFILE, EIO, a permission flake, a file removed mid-read) -- or as
+    ///   [StorageError.ReadError] for an exception thrown out of the read. A MISSING block file is neither: the tier
+    ///   answers "absent", which reaches here as `SEGMENT_DATA_NOT_FOUND` and stays deterministic (#1639 B1);
+    ///   - a tier not yet admitted for reads ([StorageError.TierNotAdmitted], a bounded wait on the DHT marker check);
+    ///   - an exhausted VM ([VirtualMachineError], e.g. out of memory decoding a big block). `Promise` fails the
+    ///     dependent promise with a [CoreError.Exception] carrying it BEFORE rethrowing it (#1311), so the failure
+    ///     does reach this classifier; it says nothing about the block, and remembering it would pin the segment.
     private static boolean isTransient(Cause cause) {
-        return cause.isTransient() || cause instanceof StorageError.ReadError || cause instanceof StorageError.TierNotAdmitted;
+        return cause.isTransient() || cause instanceof FileError.ReadFailed || cause instanceof StorageError.ReadError || cause instanceof StorageError.TierNotAdmitted || exhaustedVm(cause);
+    }
+
+    private static boolean exhaustedVm(Cause cause) {
+        return cause instanceof CoreError.Exception escaped && escaped.cause() instanceof VirtualMachineError;
     }
 
     /// One WARN when a pass found segments whose age cannot be read -- never silently aged out, never re-read.
