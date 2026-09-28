@@ -221,6 +221,41 @@ class PartitionProvenanceRecordingTest {
         }
     }
 
+    /// rc4 ruling: provenance applies only to WAL-backed partitions. A log-less partition records nothing, is excluded
+    /// from comparison (`localProvenance` is none), and is never flagged -- not for records without history, not for a
+    /// mismatching catch-up slice, not for a slice-less replay. Red under "drop the WAL gate" on any of those sites.
+    @Nested
+    class WalLessPartition {
+        private final List<AetherValue.PartitionRecoveryReason> raised = new CopyOnWriteArrayList<>();
+        private StreamPartitionManager walless;
+
+        @BeforeEach
+        void openWalLess() {
+            walless = streamPartitionManager(Long.MAX_VALUE);
+            walless.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+            walless.partitionFlags(recordingFlags(raised));
+        }
+
+        @AfterEach
+        void closeWalLess() {
+            walless.close();
+        }
+
+        @Test
+        void walLessPartition_isNeverFlagged_andIsExcludedFromComparison() {
+            walless.appendRecovered(STREAM, PARTITION, 0, PAYLOAD, 1L).onFailure(cause -> fail(cause.message()));
+            walless.appendRecovered(STREAM, PARTITION, 1, PAYLOAD, 1L, E1).onFailure(cause -> fail(cause.message()));
+            walless.publishLocal(STREAM, PARTITION, PAYLOAD, 1L, E2).onFailure(cause -> fail(cause.message()));
+            walless.installProvenance(STREAM, PARTITION, 3, 9, List.of(at(E2, 0))).onFailure(cause -> fail(cause.message()));
+            walless.installUnattributed(STREAM, PARTITION, 20).onFailure(cause -> fail(cause.message()));
+
+            assertThat(raised).as("no HISTORY_MISSING, MARKED_DIVERGED or HISTORY_INCOMPLETE for a log-less partition").isEmpty();
+            assertThat(walless.epochHistory(STREAM, PARTITION).unwrap()).isEmpty();
+            assertThat(walless.localProvenance(STREAM, PARTITION).unwrap()).isEqualTo(Option.none());
+            assertThat(walless.quarantinedAt(STREAM, PARTITION)).isEqualTo(Option.none());
+        }
+    }
+
     private static PartitionFlags recordingFlags(List<AetherValue.PartitionRecoveryReason> raised) {
         return new PartitionFlags() {
             @Override
@@ -246,7 +281,7 @@ class PartitionProvenanceRecordingTest {
     void localProvenance_reportsTheHeadAndTheHistory() {
         publish(E1, 4);
 
-        var local = manager.localProvenance(STREAM, PARTITION).unwrap();
+        var local = manager.localProvenance(STREAM, PARTITION).unwrap().unwrap();
 
         assertThat(local.head()).isEqualTo(3L);
         assertThat(local.base()).isEqualTo(0L);

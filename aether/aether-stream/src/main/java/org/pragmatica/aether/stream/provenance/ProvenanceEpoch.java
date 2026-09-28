@@ -31,8 +31,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// which `ProvenanceEntryTest` pins against the record's declared components.
 ///
 /// Not a wire type itself: [ProvenanceEntry] carries it flattened (kind, rank, id). A record field typed by a
-/// `@Codec` sealed interface is generated as a call to a parent codec the processor never emits, so the flat
-/// form is what crosses the wire.
+/// `@Codec` sealed interface is generated as a call to a parent codec the processor never emits (#1633), so the
+/// flat form is what crosses the wire.
 public sealed interface ProvenanceEpoch {
     String SEPARATOR = ".";
     /// The epoch the log orders this one by.

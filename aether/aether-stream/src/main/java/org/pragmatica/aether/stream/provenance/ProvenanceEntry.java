@@ -24,6 +24,8 @@ import static org.pragmatica.lang.Option.some;
 /// The components are the epoch flattened for the wire: `kind`, `rank` (the real epoch, or a synthetic one's
 /// floor) and `id` (a real epoch's incarnation ULID, or a synthetic one's `d`). Build one only through the
 /// factories, which keep the three consistent; read it through [#epoch].
+/// Flattened, not a [ProvenanceEpoch]-typed component, because of #1633: a record field typed by a `@Codec` sealed
+/// interface is generated as a call to a parent codec the processor never emits. Un-flatten once #1633 is fixed.
 ///
 /// The log stores the epoch as an opaque [EpochKey] ([ProvenanceEpoch#token]) and orders consecutive entries by
 /// [#ORDER].

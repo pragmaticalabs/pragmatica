@@ -106,7 +106,7 @@ class SegmentReplayProvenanceTest {
         replay();
 
         assertThat(node.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(15L);
-        var copy = node.localProvenance(STREAM, PARTITION).unwrap();
+        var copy = node.localProvenance(STREAM, PARTITION).unwrap().unwrap();
 
         assertThat(copy.history()).containsExactlyElementsOf(OWNER_HISTORY);
         assertThat(ProvenanceComparison.firstDivergence(copy, DEPOSED_Q, 0, 14)).isEqualTo(Option.some(10L));
@@ -123,7 +123,7 @@ class SegmentReplayProvenanceTest {
 
         replay();
 
-        var copy = node.localProvenance(STREAM, PARTITION).unwrap();
+        var copy = node.localProvenance(STREAM, PARTITION).unwrap().unwrap();
 
         assertThat(ProvenanceComparison.firstDivergence(copy, OWNER, 0, 14)).isEqualTo(Option.some(10L));
         assertThat(ProvenanceComparison.firstDivergence(copy, DEPOSED_Q, 0, 14)).isEqualTo(Option.some(10L));

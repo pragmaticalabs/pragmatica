@@ -2516,7 +2516,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// What this node's copy of `(streamName, partition)` says about its records' provenance (#1596): the input of
     /// [org.pragmatica.aether.stream.provenance.ProvenanceComparison] for the promotion gate and cold-restart
     /// detection. `low` is the lowest offset held locally, `head` the highest (`-1` for none).
-    public Result<LogProvenance> localProvenance(String streamName, int partition) {
+    ///
+    /// [Option#none] for a partition that keeps no log here (Forge, the explicit non-durable opt-in): provenance
+    /// applies ONLY to WAL-backed, durable partitions (CTO ruling for rc4). A log-less copy records no history, so
+    /// comparing it would read `HISTORY_MISSING` and flag every such partition; it makes no durability claim and
+    /// keeps its behaviour from before provenance, so a caller (the promotion gate, AD7) excludes it from the
+    /// comparison instead of flagging it.
+    public Result<Option<LogProvenance>> localProvenance(String streamName, int partition) {
+        return walFor(streamName, partition).map(_ -> provenanceOf(streamName, partition).map(Option::some))
+                     .or(() -> success(none()));
+    }
+
+    private Result<LogProvenance> provenanceOf(String streamName, int partition) {
         return epochHistory(streamName, partition).map(history -> LogProvenance.logProvenance(LogProvenance.baseOf(history),
                                                                                               earliestRetainedOffset(streamName,
                                                                                                                      partition),
@@ -2562,14 +2573,14 @@ public final class StreamPartitionManager implements AutoCloseable {
         var sourceBase = LogProvenance.baseOf(slice);
         var source = LogProvenance.logProvenance(sourceBase, sourceBase, toOffset, slice);
 
-        return localProvenance(streamName, partition).flatMap(local -> refuseMismatch(streamName,
-                                                                                      partition,
-                                                                                      ProvenanceComparison.firstDivergence(local,
-                                                                                                                           source,
-                                                                                                                           0,
-                                                                                                                           Math.min(local.head(),
-                                                                                                                                    toOffset))))
-                              .flatMap(_ -> recordSlice(wal, fromOffset, toOffset, slice));
+        return provenanceOf(streamName, partition).flatMap(local -> refuseMismatch(streamName,
+                                                                                   partition,
+                                                                                   ProvenanceComparison.firstDivergence(local,
+                                                                                                                        source,
+                                                                                                                        0,
+                                                                                                                        Math.min(local.head(),
+                                                                                                                                 toOffset))))
+                           .flatMap(_ -> recordSlice(wal, fromOffset, toOffset, slice));
     }
 
     private Result<Unit> refuseMismatch(String streamName, int partition, Option<Long> divergence) {
