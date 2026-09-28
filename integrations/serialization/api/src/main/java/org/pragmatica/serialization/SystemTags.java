@@ -531,7 +531,10 @@ public interface SystemTags {
         // scheduled-task operator pause as cluster state (#1541) — next free slots after 1706
         pin(table, 1707, "org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey");
         pin(table, 1708, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue");
-        // 1709/1710 are taken by #1621 (ClusterIncarnationKey/Value), open at this pin.
+        // cluster incarnation — the single lineage/incarnation authority (#1529 part 1); next free after 1708
+        pin(table, 1709, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey");
+        pin(table, 1710, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue");
+        // owner-epoch provenance entry nested in catch-up answers (#1596); next free after 1710
         pin(table, 1711, "org.pragmatica.aether.stream.provenance.ProvenanceEntry");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
