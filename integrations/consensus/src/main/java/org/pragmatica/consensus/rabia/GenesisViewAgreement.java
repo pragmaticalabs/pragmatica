@@ -45,10 +45,12 @@ import org.pragmatica.lang.Unit;
 /// holds genesis (it is in the view and never reports); so does a view larger than the configured count.
 /// Both are reported through [#status]. A view never shrinks while its process lives, so an action that
 /// leaves the pending processes running cannot clear it — stopping the extra candidates, stopping a retired
-/// core, or adding a fresh-identity replacement all leave the survivors waiting. What clears it is
-/// restarting EVERY pending core together as fresh processes, optionally with `cluster.genesis_voters` set
-/// to the intended roster (`GenesisRecoveryActionsTest`). A view that cannot shrink in a live process is a
-/// liveness trap, tracked as a follow-up.
+/// core, or adding a fresh-identity replacement all leave the survivors waiting (`GenesisRecoveryActionsTest`,
+/// view layer). The operator procedure lives with the transport's boot tokens (#1545): STOP every pending
+/// core and every worker or governor connected to them, THEN start the cores; or start them under fresh
+/// identities; or set `cluster.genesis_voters` and apply the same stop-all-then-start
+/// (`EmberGenesisRecoveryTest`, real transport). A view that cannot shrink in a live process is a liveness
+/// trap, tracked as a follow-up.
 final class GenesisViewAgreement {
     enum Stage {
         WAITING,

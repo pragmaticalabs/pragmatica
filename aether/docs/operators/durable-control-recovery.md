@@ -32,18 +32,16 @@ rounds naming the configured cores not yet visible and the members not yet repor
 seen, so if a core it saw is lost for good, or more core candidates are visible than configured (the node
 then refuses to choose and logs a WARN with the candidate set), nothing done while the pending cores keep
 running clears it — not stopping the extra candidates, not stopping a retired core, not adding a
-fresh-identity replacement. Restart EVERY pending core together as fresh processes (with the replacement,
-if a core is lost for good), or set `cluster.genesis_voters` to the intended roster and restart every
-pending core. `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/GenesisRecoveryActionsTest.java]` Restarting only some of them does not work: the cores still running refuse a
-restarted process under its old NodeId (#1545). A configured core that comes back after genesis joins as
+fresh-identity replacement `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/GenesisRecoveryActionsTest.java]`. STOP every pending core AND every worker or governor that connected to them, THEN start the cores; or start the cores under FRESH identities; or set `cluster.genesis_voters` to the intended roster and apply the same stop-all-then-start. Restarting the cores one at a time while any of them, or a connected worker or governor, keeps running does not work: that live peer recorded the old process's boot token and refuses the new one, which exits (#1545). Include the replacement when a core
+is lost for good. `[verified: aether/ember/src/test/java/org/pragmatica/aether/ember/EmberGenesisRecoveryTest.java]` `[unverified: stopping the connected workers/governors — follows from #1545, not measured]` A configured core that comes back after genesis joins as
 an observer and is voted in through a Rabia §4 add.
 
 **Cold restart after a replacement.** If a core was replaced through a §4 swap and the retired old core is
 still running and visible when the whole cluster cold-restarts, the view holds more candidates than the
 configured count: every node waits in `GENESIS_PENDING` with the EXCEEDS WARN. Recovery action: stop the
-retired core, then restart every pending core together as fresh processes; or set `cluster.genesis_voters`
-to the intended roster and restart every pending core. Stopping the retired core alone does not clear it.
-`[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/GenesisRecoveryActionsTest.java]`
+retired core, then STOP every pending core and every worker or governor connected to them, THEN start the
+cores; or set `cluster.genesis_voters` to the intended roster and apply the same stop-all-then-start.
+Stopping the retired core alone does not clear it `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/GenesisRecoveryActionsTest.java]`. `[verified: aether/ember/src/test/java/org/pragmatica/aether/ember/EmberGenesisRecoveryTest.java]` `[unverified: stopping the connected workers/governors — follows from #1545, not measured]`
 
 *Test-harness note (Ember only):* Ember gives the initial nodes a fixed `cluster.genesis_voters`. A
 harness cold restart after swapping out an initial node therefore waits for that fixed roster (the

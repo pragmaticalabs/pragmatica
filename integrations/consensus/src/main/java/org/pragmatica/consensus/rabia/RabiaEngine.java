@@ -367,8 +367,10 @@ public class RabiaEngine<C extends Command> {
         if (status.stage() == GenesisViewAgreement.Stage.EXCEEDS_COUNT) {
             log.warn("Node {} will NOT start genesis: {} core candidates are visible, more than the configured core count: {}. "
                     + "A running pending core never forgets a candidate it saw, so stopping candidates alone does not clear this. "
-                    + "Operator action: stop the extra candidates, then restart EVERY pending core together as fresh processes; "
-                    + "or set cluster.genesis_voters to the intended roster and restart every pending core.",
+                    + "Operator action: stop the extra candidates, then STOP every pending core and every worker or governor "
+                    + "connected to them, THEN start the cores; or start them under fresh identities; or set "
+                    + "cluster.genesis_voters to the intended roster and do the same stop-all-then-start. Restarting cores "
+                    + "one at a time while a peer that saw them keeps running is refused (#1545).",
                      self,
                      status.view().size(),
                      status.view());
@@ -380,8 +382,10 @@ public class RabiaEngine<C extends Command> {
             log.warn("Node {} genesis pending: view {} ({} cores); configured cores not yet visible: {}; members not yet "
                     + "reporting this view stably: {}. Genesis needs every configured core. Operator action: start the "
                     + "missing configured cores. If a core this node has seen is lost for good, nothing done while the "
-                    + "pending cores keep running clears this: restart EVERY pending core together as fresh processes "
-                    + "with its replacement, or set cluster.genesis_voters to the intended roster and restart every pending core.",
+                    + "pending cores keep running clears this: STOP every pending core and every worker or governor "
+                    + "connected to them, THEN start the cores with the replacement; or start them under fresh identities; "
+                    + "or set cluster.genesis_voters to the intended roster and do the same stop-all-then-start. Restarting "
+                    + "cores one at a time while a peer that saw them keeps running is refused (#1545).",
                      self,
                      status.view(),
                      status.view().size(),

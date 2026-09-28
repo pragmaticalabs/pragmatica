@@ -11,13 +11,13 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #1554 — which operator actions clear a genesis that waits forever (EXCEEDS_COUNT or WAITING).
+/// #1554 — the VIEW-layer claim only: a pending node's view never shrinks while its process lives, so an
+/// action that leaves the pending processes running (stopping the extra candidates, stopping a retired core,
+/// adding a fresh-identity replacement) leaves the survivors waiting, and fresh views agree.
 ///
-/// A pending node's view only grows while its process lives, so an action that leaves the pending
-/// processes running cannot clear it: stopping the extra candidates, stopping a retired core, or adding a
-/// fresh-identity replacement all leave the survivors waiting. What clears it is restarting EVERY pending
-/// core together as fresh processes, optionally with `cluster.genesis_voters` set to the intended roster.
-/// The engine WARN and the operator docs name exactly these actions. (Adapted from v1554's round-3 probe.)
+/// This layer has no boot tokens, so it says nothing about how to restart the cores: on real transport a live
+/// peer that recorded a core's old token refuses its new process (#1545). The operator procedure (stop all,
+/// then start) is pinned on real transport by `EmberGenesisRecoveryTest`. (Adapted from v1554's round-3 probe.)
 class GenesisRecoveryActionsTest {
     private static final NodeId A = new NodeId("a");
     private static final NodeId B = new NodeId("b");
@@ -53,7 +53,7 @@ class GenesisRecoveryActionsTest {
     }
 
     @Test
-    void exceeds_restartingEveryPendingCoreFresh_formsGenesis() {
+    void exceeds_everyPendingViewReset_agreesOnTheRemainingCores() {
         var world = new World(3, Set.of(A, B, C, X));
         world.rounds(4);
 
@@ -66,7 +66,7 @@ class GenesisRecoveryActionsTest {
     }
 
     @Test
-    void waiting_restartingEveryPendingCoreFreshWithTheReplacement_formsGenesis() {
+    void waiting_everyPendingViewResetWithTheReplacement_agreesOnTheNewRoster() {
         var world = new World(3, Set.of(A, B, C));
         world.rounds(1);
         world.stop(C);
@@ -80,7 +80,7 @@ class GenesisRecoveryActionsTest {
     }
 
     @Test
-    void exceeds_genesisVotersAndRestartingEveryPendingCore_formsTheIntendedRoster() {
+    void exceeds_everyPendingViewResetWithGenesisVoters_agreesOnTheIntendedRoster() {
         var world = new World(3, Set.of(A, B, C, X));
         world.rounds(4);
 
