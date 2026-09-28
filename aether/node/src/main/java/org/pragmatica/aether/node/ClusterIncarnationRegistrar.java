@@ -81,7 +81,10 @@ public final class ClusterIncarnationRegistrar {
     /// value.
     public static Supplier<Promise<Unit>> genesisLeg(Supplier<KVStore<AetherKey, AetherValue>> kvStore,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return genesisLeg(kvStore, applier, ClusterIncarnationRegistrar::freshUlid, ClusterIncarnationRegistrar::freshUlid);
+        return genesisLeg(kvStore,
+                          applier,
+                          ClusterIncarnationRegistrar::freshUlid,
+                          ClusterIncarnationRegistrar::freshUlid);
     }
 
     static Supplier<Promise<Unit>> genesisLeg(Supplier<KVStore<AetherKey, AetherValue>> kvStore,
