@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net.quic;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.QuicClusterServer.MessageReceiver;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.UnknownTypeTagException;
@@ -25,6 +26,8 @@ import org.pragmatica.serialization.UnknownTypeTagException;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.socket.ChannelInputShutdownReadComplete;
+import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.slf4j.Logger;
 
 
@@ -120,6 +123,36 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
         }
 
         super.channelWritabilityChanged(ctx);
+    }
+
+    /// #1578 — the other side finished this stream (its FIN arrived, after every frame it wrote). Under
+    /// QUIC half-closure the stream stays active here, so without this the lane could keep resolving
+    /// to a stream the other side has stopped reading from, and the stream would never end.
+    @Override
+    @Contract
+    public void userEventTriggered(ChannelHandlerContext ctx, Object event) throws Exception {
+        if (event instanceof ChannelInputShutdownReadComplete) {
+            streamEnded(ctx);
+        }
+
+        super.userEventTriggered(ctx, event);
+    }
+
+    /// #1578 — the stream ended outright (reset, or the connection closed): the lane must not keep
+    /// resolving to it.
+    @Override
+    @Contract
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        streamEnded(ctx);
+        super.channelInactive(ctx);
+    }
+
+    @Contract
+    private void streamEnded(ChannelHandlerContext ctx) {
+        if (ctx.channel() instanceof QuicStreamChannel stream) {
+            Option.option(stream.parent().attr(PeerOpenedLaneRouter.PEER_CONNECTION).get())
+                  .onPresent(connection -> connection.streamEnded(lane, stream));
+        }
     }
 
     @Override

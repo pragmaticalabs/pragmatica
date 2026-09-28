@@ -346,6 +346,23 @@ public final class QuicPeerConnection {
         var _ = retired.writeAndFlush(new DefaultQuicStreamFrame(Unpooled.EMPTY_BUFFER, true));
     }
 
+    /// #1578 — `stream` ended from the other side: its FIN arrived (the other side retired it under
+    /// [#outranks] or closed it) or the stream is gone. If `type` still resolves to it, the lane is
+    /// released, so the next write re-opens it or the other side's winning stream takes it instead of
+    /// writes going into a stream nobody reads. This side then finishes its own half, so a stream
+    /// both sides have stopped using ends and returns its credit.
+    @Contract
+    public void streamEnded(StreamType type, QuicStreamChannel stream) {
+        if (longLivedStreams[type.streamIndex()] == stream) {
+            longLivedStreams[type.streamIndex()] = null;
+            log.debug("{} stream {} for peer {} ended from the other side — lane released", type, stream.streamId(), peerId);
+        }
+
+        if (stream.isActive()) {
+            var _ = stream.writeAndFlush(new DefaultQuicStreamFrame(Unpooled.EMPTY_BUFFER, true));
+        }
+    }
+
     /// Check if the underlying QUIC connection is active.
     public boolean isActive() {
         return connection.isActive();
