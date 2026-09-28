@@ -106,8 +106,10 @@ public class PromiseTest {
                .onSuccess(_ -> fail("Promise should be cancelled"));
     }
 
-    /// #1605: each action releases the latch after its own effect. A separate `onSuccessRun(latch::countDown)`
-    /// is a third independent action with no order relative to the other two.
+    /// #1605 contract guard, not a race fix: under the current implementation, actions attached BEFORE resolution
+    /// run in attach order within one task (`PromiseImpl.processActions` → `runAll`), so the former trailing
+    /// `onSuccessRun(latch::countDown)` never raced. The Promise contract does not promise that order for
+    /// independent actions, so each action now releases the latch after its own effect.
     @Test
     void successActionsAreExecutedAfterResolutionWithSuccess() throws InterruptedException {
         var latch = new CountDownLatch(2);
