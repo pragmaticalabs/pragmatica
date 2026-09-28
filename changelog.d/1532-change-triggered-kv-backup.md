@@ -14,10 +14,14 @@
   - A head of the same lineage is written over only when it is not ahead of this cluster, compared
     lexicographically by incarnation, then revision. A deposed leader's late write is therefore dropped.
   - An empty remote is written freely, which establishes this cluster's lineage.
-  - A head of another lineage GATES a freshly started cluster until a restore (#1533) or
-    `aether backup declare-genesis`.
+  - **The remote's lineage changes only by an operator declaration.** A head of any other lineage is
+    GATED, whatever the incarnations; the transition warning names both lineages and the command.
+    `aether backup declare-genesis` commits a declaration (`declared-lineage.txt`) for exactly this
+    cluster's `(lineage, incarnation)`, and only that lets the service replace the head.
 - **`aether backup declare-genesis` / `POST /api/v1/backup/declare-genesis`** (ADMIN, leader).
-  - It moves this cluster's incarnation past a foreign head, so the next flush supersedes it.
+  - It moves this cluster's incarnation past a foreign head, commits the declaration beside the backup,
+    and pushes it; the next flush then supersedes the head. It is safe to repeat if the declaration push
+    fails (`DeclarationNotPublished`).
   - It is refused, with a typed conflict, when the head is this cluster's own lineage. When that head is
     newer than the cluster, the refusal says to restore it instead.
 - **Git unreachable.** Commits queue in the local repository (latest state wins). Pushes retry on backoff

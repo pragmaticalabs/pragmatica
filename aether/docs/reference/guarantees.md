@@ -106,7 +106,10 @@ There are **50** `AetherKey` record types (not ~40 as originally estimated), eac
     with a path), and `[backup] interval` has no reader.
 - **The change-triggered backup (#1532)** is a separate, leader-only git repository at
   `<path>/kv-backup`, written only when `[backup] enabled = true`; it backs up cluster-state keys only
-  and nothing reads it back until #1533 `[design intent — unverified]`. The release does not cut with
+  and nothing reads it back until #1533 `[design intent — unverified]`. **The remote's lineage changes
+  only by an operator declaration** (`aether backup declare-genesis`, which commits a declaration for
+  exactly this cluster's lineage and incarnation): a head of any other lineage is gated, whatever the
+  incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. The release does not cut with
   both paths live: #1533 deletes the old one.
 
 **Declared vs. derivable — the type system is the authoritative split (#1530).** Every `AetherKey` is either `AetherKey.ClusterStateKey` (cluster state, carried in a KV backup for a whole-cluster cold restart) or `AetherKey.RuntimeKey` (rebuilt by the running cluster, never backed up); `AetherKey` permits nothing else, so a new key cannot skip the choice `[mechanism: sealed interface AetherKey permits ClusterStateKey, RuntimeKey]`. `ConfigKey` backs up only its cluster-wide rows (`ConfigKey.isBackedUp()` is false for node-scoped overrides). The backup format is `BackupEntryCodec` (#1531). The earlier hand-maintained `EphemeralKeys` set and the TOML `KVStoreSerializer` it served are deleted — neither had a production caller. The split is pinned by `BackupKeyClassificationTest` (no backed-up key or value may reach a `NodeId` outside a commented allowlist), which is a unit-level pin, not a live-path verification: no restore path consumes a backup yet `[design intent — unverified]`.

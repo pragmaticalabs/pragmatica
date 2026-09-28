@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
@@ -28,7 +29,9 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -191,6 +194,56 @@ public final class KvBackupService {
         return repository;
     }
 
+    /// Run `task` on the backup worker — every git operation on this repository runs there, so a
+    /// declaration never races a flush on the same working tree.
+    <T> Promise<T> onWorker(Supplier<Result<T>> task) {
+        var promise = Promise.<T> promise();
+
+        scheduler.schedule(() -> promise.resolve(task.get()), 0);
+
+        return promise;
+    }
+
+    /// Commit the operator's genesis declaration beside the backup (on top of the remote head, as a
+    /// fast-forward) and push it; then flush at once so the gate lifts. Worker thread only.
+    Result<Unit> publishDeclaration(BackupDecision.Declaration declaration) {
+        return repository.prepare()
+                         .flatMap(_ -> readHead())
+                         .flatMap(this::alignWithRemote)
+                         .flatMap(_ -> repository.commitFile(GitBackupRepository.DECLARATION,
+                                                             declaration.render(),
+                                                             "declare genesis " + declaration.render()
+                                                                                             .strip()))
+                         .flatMap(_ -> pushDeclaration())
+                         .onSuccess(_ -> afterDeclaration());
+    }
+
+    private Result<Unit> pushDeclaration() {
+        return repository.hasRemote()
+               ? repository.push()
+               : Result.unitResult();
+    }
+
+    @Contract
+    private void afterDeclaration() {
+        lastWrittenBody = Option.none();
+        markUrgent();
+    }
+
+    /// The head as this service would judge against it. Worker thread only.
+    Result<Option<BackupHeader>> currentHead() {
+        return repository.prepare()
+                         .flatMap(_ -> readHead())
+                         .flatMap(this::decodeHead);
+    }
+
+    private Result<Option<BackupHeader>> decodeHead(Head head) {
+        return head.document()
+                   .map(text -> codec.decode(text)
+                                     .map(document -> Option.some(document.header())))
+                   .or(() -> success(Option.none()));
+    }
+
     boolean isLeader() {
         return leader.get();
     }
@@ -351,19 +404,27 @@ public final class KvBackupService {
     private Result<Head> readHead() {
         return repository.hasRemote()
                ? readRemoteHead()
-               : repository.localHead()
-                           .map(Head::local);
+               : readLocalHead(HeadKind.LOCAL);
     }
 
     private Result<Head> readRemoteHead() {
         return repository.fetchRemoteHead()
-                         .fold(_ -> readQueuedHead(),
-                               document -> success(Head.remote(document)));
+                         .fold(_ -> readLocalHead(HeadKind.UNREACHABLE), this::withRemoteDeclaration);
     }
 
-    private Result<Head> readQueuedHead() {
-        return repository.localHead()
-                         .map(Head::unreachable);
+    private Result<Head> withRemoteDeclaration(Option<String> document) {
+        return repository.remoteFile(GitBackupRepository.DECLARATION)
+                         .map(declaration -> Head.head(HeadKind.REMOTE, document, parseDeclaration(declaration)));
+    }
+
+    private Result<Head> readLocalHead(HeadKind kind) {
+        return Result.all(repository.localHead(),
+                          repository.localFile(GitBackupRepository.DECLARATION))
+                     .map((document, declaration) -> Head.head(kind, document, parseDeclaration(declaration)));
+    }
+
+    private static Option<BackupDecision.Declaration> parseDeclaration(Option<String> text) {
+        return text.flatMap(BackupDecision.Declaration::parse);
     }
 
     private Result<Outcome> decideAndWrite(BackupHeader header,
@@ -380,9 +441,9 @@ public final class KvBackupService {
         var existing = headHeader.map(decoded -> decoded.unwrap()
                                                         .header());
 
-        return switch (BackupDecision.decide(header, existing)) {
+        return switch (BackupDecision.decide(header, existing, head.declaration())) {
             case STALE -> success(Outcome.STALE);
-            case GATED -> success(Outcome.gated(existing.unwrap()));
+            case GATED -> success(Outcome.gated(existing.unwrap(), header));
             case WRITE -> write(document, body, head, pushAttempts);
         };
     }
@@ -505,7 +566,8 @@ public final class KvBackupService {
         return outcome.head()
                       .map(head -> "the backup head belongs to lineage " + head.lineageId()
                                   + " at incarnation " + head.incarnation()
-                                  + ", not to this cluster; restore that backup, or run `" + DECLARE_GENESIS_COMMAND
+                                  + ", this cluster is lineage " + outcome.ours().map(BackupHeader::lineageId).or("?")
+                                  + "; restore that backup, or run `" + DECLARE_GENESIS_COMMAND
                                   + "` to make this cluster's state the backup head")
                       .or("the backup head belongs to another lineage; run `" + DECLARE_GENESIS_COMMAND + "`");
     }
@@ -581,17 +643,9 @@ public final class KvBackupService {
         LOCAL
     }
 
-    private record Head(HeadKind kind, Option<String> document) {
-        static Head remote(Option<String> document) {
-            return new Head(HeadKind.REMOTE, document);
-        }
-
-        static Head unreachable(Option<String> localDocument) {
-            return new Head(HeadKind.UNREACHABLE, localDocument);
-        }
-
-        static Head local(Option<String> document) {
-            return new Head(HeadKind.LOCAL, document);
+    private record Head(HeadKind kind, Option<String> document, Option<BackupDecision.Declaration> declaration) {
+        static Head head(HeadKind kind, Option<String> document, Option<BackupDecision.Declaration> declaration) {
+            return new Head(kind, document, declaration);
         }
     }
 
@@ -605,16 +659,20 @@ public final class KvBackupService {
         PUSH_FAILED
     }
 
-    record Outcome(OutcomeKind kind, Option<BackupHeader> head) {
-        static final Outcome WRITTEN = new Outcome(OutcomeKind.WRITTEN, Option.none());
-        static final Outcome UNCHANGED = new Outcome(OutcomeKind.UNCHANGED, Option.none());
-        static final Outcome STALE = new Outcome(OutcomeKind.STALE, Option.none());
-        static final Outcome AWAITING_GENESIS = new Outcome(OutcomeKind.AWAITING_GENESIS, Option.none());
-        static final Outcome HEAD_UNREADABLE = new Outcome(OutcomeKind.HEAD_UNREADABLE, Option.none());
-        static final Outcome PUSH_FAILED = new Outcome(OutcomeKind.PUSH_FAILED, Option.none());
+    record Outcome(OutcomeKind kind, Option<BackupHeader> head, Option<BackupHeader> ours) {
+        static final Outcome WRITTEN = simple(OutcomeKind.WRITTEN);
+        static final Outcome UNCHANGED = simple(OutcomeKind.UNCHANGED);
+        static final Outcome STALE = simple(OutcomeKind.STALE);
+        static final Outcome AWAITING_GENESIS = simple(OutcomeKind.AWAITING_GENESIS);
+        static final Outcome HEAD_UNREADABLE = simple(OutcomeKind.HEAD_UNREADABLE);
+        static final Outcome PUSH_FAILED = simple(OutcomeKind.PUSH_FAILED);
 
-        static Outcome gated(BackupHeader head) {
-            return new Outcome(OutcomeKind.GATED, Option.some(head));
+        private static Outcome simple(OutcomeKind kind) {
+            return new Outcome(kind, Option.none(), Option.none());
+        }
+
+        static Outcome gated(BackupHeader head, BackupHeader ours) {
+            return new Outcome(OutcomeKind.GATED, Option.some(head), Option.some(ours));
         }
     }
 }

@@ -10,7 +10,6 @@ import java.util.function.Function;
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
-import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupDocument;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.http.HttpStatus;
@@ -20,10 +19,8 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-import static org.pragmatica.lang.Result.success;
 
 
 /// `aether backup declare-genesis` (#1532): the operator's statement that this cluster's state — not the
@@ -104,6 +101,18 @@ public record BackupGenesis(KvBackupService service) {
             }
         }
 
+        /// The incarnation committed but the declaration did not reach the backup; the command is safe to
+        /// repeat (the incarnation step is idempotent for the same head).
+        record DeclarationNotPublished(Cause origin, String message) implements DeclareGenesisError, Cause.Wrapped {
+            static final Fn1<DeclarationNotPublished, Cause> FACTORY = Causes.forOneValue("The genesis declaration could not be written to the backup: %s; re-run the command",
+                                                                                          DeclarationNotPublished::new);
+
+            @Override
+            public HttpStatus httpStatus() {
+                return HttpStatus.SERVICE_UNAVAILABLE;
+            }
+        }
+
         record HeadUnreadable(Cause origin, String message) implements DeclareGenesisError, Cause.Wrapped {
             static final Fn1<HeadUnreadable, Cause> FACTORY = Causes.forOneValue("The backup head could not be read: %s",
                                                                                  HeadUnreadable::new);
@@ -127,27 +136,9 @@ public record BackupGenesis(KvBackupService service) {
 
     private Promise<GenesisDeclared> readHeadThenSupersede(ClusterIncarnationValue current,
                                                            Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return Promise.promise(this::readHead).flatMap(head -> supersede(current, head, applier));
-    }
-
-    /// The head the backup would be judged against — git I/O, so run off the caller's thread.
-    private Result<Option<BackupHeader>> readHead() {
-        var repository = service.repository();
-
-        return repository.prepare()
-                         .flatMap(_ -> repository.hasRemote()
-                                       ? repository.fetchRemoteHead()
-                                       : repository.localHead())
-                         .flatMap(this::decodeHeader)
-                         .mapError(DeclareGenesisError.HeadUnreadable.FACTORY::apply);
-    }
-
-    private Result<Option<BackupHeader>> decodeHeader(Option<String> document) {
-        return document.map(text -> service.codec()
-                                           .decode(text)
-                                           .map(BackupDocument::header)
-                                           .map(Option::some))
-                       .or(() -> success(Option.none()));
+        return service.onWorker(service::currentHead)
+                      .mapError(DeclareGenesisError.HeadUnreadable.FACTORY::apply)
+                      .flatMap(head -> supersede(current, head, applier));
     }
 
     private Promise<GenesisDeclared> supersede(ClusterIncarnationValue current,
@@ -182,16 +173,25 @@ public record BackupGenesis(KvBackupService service) {
                : DeclareGenesisError.SameLineage.FACTORY.apply(head.lineageId()).promise();
     }
 
-    /// The fence drops a losing write silently, so the declaration re-reads what committed.
+    /// The fence drops a losing write silently, so the declaration re-reads what committed; then the
+    /// declaration is committed beside the backup — the only thing that lets this lineage replace the head.
     private Promise<GenesisDeclared> confirm(ClusterIncarnationValue current, BackupHeader head) {
         var expected = ClusterIncarnationValue.clusterIncarnationValue(current.lineageId(), head.incarnation() + 1);
 
         return ClusterIncarnation.committed(service.kvStore())
                                  .filter(expected::equals)
-                                 .map(committed -> Promise.success(GenesisDeclared.genesisDeclared(committed.lineageId(),
-                                                                                                   committed.incarnation(),
-                                                                                                   head.lineageId(),
-                                                                                                   head.incarnation())))
+                                 .map(committed -> publish(committed, head))
                                  .or(DeclareGenesisError.General.NOT_COMMITTED::promise);
+    }
+
+    private Promise<GenesisDeclared> publish(ClusterIncarnationValue committed, BackupHeader head) {
+        var declaration = BackupDecision.Declaration.declaration(committed.lineageId(), committed.incarnation());
+
+        return service.onWorker(() -> service.publishDeclaration(declaration))
+                      .mapError(DeclareGenesisError.DeclarationNotPublished.FACTORY::apply)
+                      .map(_ -> GenesisDeclared.genesisDeclared(committed.lineageId(),
+                                                                committed.incarnation(),
+                                                                head.lineageId(),
+                                                                head.incarnation()));
     }
 }

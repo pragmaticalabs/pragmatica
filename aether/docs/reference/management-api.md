@@ -3686,8 +3686,11 @@ land.
 
 Make this cluster's state the KV backup head in place of a backup of ANOTHER lineage (#1532). The
 leader raises its committed cluster incarnation past the head's (`ClusterIncarnationKey`, lineage
-unchanged); the next change-triggered backup flush then supersedes the head as a fast-forward push, and
-the old lineage stays in git history. The write is version-fenced and confirmed by re-read.
+unchanged), then commits a declaration naming exactly that lineage and incarnation (`declared-lineage.txt`)
+beside the backup and pushes it; the next change-triggered flush then supersedes the head as a
+fast-forward, and the old lineage stays in git history. The declaration is the only way the backup's
+lineage changes: a head of another lineage is otherwise gated whatever the incarnations. The incarnation
+write is version-fenced and confirmed by re-read.
 
 **Refusals:**
 
@@ -3697,6 +3700,7 @@ the old lineage stays in git history. The write is version-fenced and confirmed 
 | 409 `RemoteIsNewer` | The head is this cluster's lineage and AHEAD of it — restore it instead |
 | 409 `NOTHING_TO_SUPERSEDE` | The backup is empty — the first flush establishes this cluster's lineage |
 | 409 `NOT_COMMITTED` | A concurrent write won; re-read and retry |
+| 503 `DeclarationNotPublished` | The incarnation committed but the declaration did not reach the backup; re-run the command |
 | 409 `BACKUP_NOT_ENABLED` | `[backup]` is not enabled with a path on this node |
 | 503 `NOT_LEADER` / `NO_INCARNATION` / `HeadUnreadable` | Retry against the leader, after genesis, or once the head is reachable and readable |
 

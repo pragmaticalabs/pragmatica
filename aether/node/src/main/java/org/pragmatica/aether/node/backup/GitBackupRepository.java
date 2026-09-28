@@ -36,6 +36,9 @@ import static org.pragmatica.lang.Result.success;
 /// credential-less remote fails instead of hanging the backup worker.
 public record GitBackupRepository(Path dir, Option<String> remote, String branch, TimeSpan timeout) {
     public static final String FILE = "kv-backup.txt";
+    /// The operator's genesis declaration: `<lineage> <incarnation>`. Committed beside [#FILE] by
+    /// `aether backup declare-genesis`; the only thing that lets a different lineage replace the head.
+    public static final String DECLARATION = "declared-lineage.txt";
     /// Bound on any single git command — long enough for a push over a slow link, short enough that a
     /// hung remote cannot stall the backup worker indefinitely.
     public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(60).seconds();
@@ -115,13 +118,34 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
 
     /// Write `document` as [#FILE] and commit it on the local branch.
     public Result<Unit> commit(String document, String message) {
+        return commitFile(FILE, document, message);
+    }
+
+    /// Write `content` as `file` and commit it on the local branch.
+    public Result<Unit> commitFile(String file, String content, String message) {
         return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
-                           () -> Files.writeString(dir.resolve(FILE),
-                                                   document,
+                           () -> Files.writeString(dir.resolve(file),
+                                                   content,
                                                    StandardCharsets.UTF_8))
-                     .flatMap(_ -> git("add", FILE))
+                     .flatMap(_ -> git("add", file))
                      .flatMap(_ -> git("commit", "--quiet", "-m", message))
                      .mapToUnit();
+    }
+
+    /// `file` as committed at the local `HEAD`, absent when there is no commit or no such file.
+    public Result<Option<String>> localFile(String file) {
+        return fileAt("HEAD", file);
+    }
+
+    /// `file` at the fetched remote head (call [#fetchRemoteHead] first), absent when it has none.
+    public Result<Option<String>> remoteFile(String file) {
+        return fileAt(REMOTE_REF + branch, file);
+    }
+
+    private Result<Option<String>> fileAt(String ref, String file) {
+        return exitStatus("cat-file", "-e", ref + ":" + file).flatMap(status -> status == 0
+                                                                                ? git("show", ref + ":" + file).map(Option::some)
+                                                                                : success(Option.none()));
     }
 
     /// Push the local branch to the remote. Never forced: a remote that moved elsewhere answers

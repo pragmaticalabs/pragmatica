@@ -274,8 +274,62 @@ class KvBackupServiceTest {
             assertThat(warnings).singleElement()
                                 .satisfies(warning -> {
                                     assertThat(warning.code()).isEqualTo(Code.BACKUP_GATED);
-                                    assertThat(warning.detail()).contains(KvBackupService.DECLARE_GENESIS_COMMAND);
+                                    assertThat(warning.detail()).contains(KvBackupService.DECLARE_GENESIS_COMMAND)
+                                                                .contains("another-cluster")
+                                                                .contains(LINEAGE);
                                 });
+        }
+
+        /// §6.4 shape: a node holding a divergent lineage at a HIGHER incarnation must not replace the
+        /// backup on number order — only a declaration changes the remote's lineage.
+        @Test
+        void anotherLineageHead_isGated_evenWhenThisClusterHasTheHigherIncarnation() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, 40));
+            var service = leaderService(Option.some(remote), 2);
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.GATED);
+            assertThat(commitCount(remote)).as("nothing written over the other lineage").isEqualTo(1);
+            assertThat(remoteDocument(remote).header()
+                                             .lineageId()).isEqualTo("another-cluster");
+        }
+
+        /// A declaration naming a different (lineage, incarnation) than this cluster's authorizes nothing.
+        @Test
+        void aDeclarationForAnotherLineageOrIncarnation_doesNotAuthorize() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, 40));
+            seedDeclaration(remote, LINEAGE + " 5\n");
+            var service = leaderService(Option.some(remote), 2);
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.GATED);
+            assertThat(remoteDocument(remote).header()
+                                             .lineageId()).isEqualTo("another-cluster");
+        }
+
+        /// The exact declaration for this cluster's (lineage, incarnation) lets it replace the head.
+        @Test
+        void theMatchingDeclaration_authorizesTheWrite() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, 40));
+            seedDeclaration(remote, LINEAGE + " 2\n");
+            var service = leaderService(Option.some(remote), 2);
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(remoteDocument(remote).header()
+                                             .lineageId()).isEqualTo(LINEAGE);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
         }
 
         /// A restored cluster (same lineage, higher incarnation) writes over its own older backup even
@@ -371,9 +425,8 @@ class KvBackupServiceTest {
 
             assertThat(service.status()).isEqualTo(KvBackupService.Status.GATED);
 
-            var declared = BackupGenesis.backupGenesis(service)
-                                        .declare(commands -> applyAndNotify(service, commands))
-                                        .await()
+            var declared = settle(BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands)))
                                         .unwrap();
 
             assertThat(declared.lineageId()).isEqualTo(LINEAGE);
@@ -386,7 +439,9 @@ class KvBackupServiceTest {
                 assertThat(header.lineageId()).isEqualTo(LINEAGE);
                 assertThat(header.incarnation()).isEqualTo(4);
             });
-            assertThat(commitCount(remote)).as("the foreign head stays in history").isEqualTo(2);
+            assertThat(commitCount(remote)).as("foreign head, the declaration, this cluster's state — history kept")
+                                           .isEqualTo(3);
+            assertThat(git(Path.of(remote), "show", "backup:" + GitBackupRepository.DECLARATION)).isEqualTo(LINEAGE + " 4\n");
             assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
         }
 
@@ -398,9 +453,8 @@ class KvBackupServiceTest {
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 1_000_000));
             var service = leaderService(Option.some(remote));
 
-            var refused = BackupGenesis.backupGenesis(service)
-                                       .declare(commands -> applyAndNotify(service, commands))
-                                       .await();
+            var refused = settle(BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands)));
 
             assertThat(failureOf(refused)).isInstanceOf(BackupGenesis.DeclareGenesisError.RemoteIsNewer.class);
         }
@@ -413,9 +467,8 @@ class KvBackupServiceTest {
             incarnation(1);
             service.onLeaderChange(leaderChange(true));
 
-            var refused = BackupGenesis.backupGenesis(service)
-                                       .declare(commands -> applyAndNotify(service, commands))
-                                       .await();
+            var refused = settle(BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands)));
 
             assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOTHING_TO_SUPERSEDE);
         }
@@ -426,9 +479,8 @@ class KvBackupServiceTest {
 
             incarnation(1);
 
-            var refused = BackupGenesis.backupGenesis(service)
-                                       .declare(commands -> applyAndNotify(service, commands))
-                                       .await();
+            var refused = settle(BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands)));
 
             assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOT_LEADER);
         }
@@ -500,6 +552,36 @@ class KvBackupServiceTest {
 
         kvStore.processCommitted(kvStore.createBatch(List.of(remove)), ++slot);
         service.onValueRemove(new ValueRemove<>(remove, old));
+    }
+
+    /// Resolve a promise whose steps run on the manual scheduler: keep running scheduled work until it
+    /// settles.
+    private <T> Result<T> settle(Promise<T> promise) {
+        for (int i = 0; i < 200 && !promise.isResolved(); i++) {
+            scheduler.runUntilIdle();
+            pause();
+        }
+
+        return promise.await();
+    }
+
+    private static void pause() {
+        try {
+            Thread.sleep(10);
+        } catch (InterruptedException e) {
+            Thread.currentThread()
+                  .interrupt();
+        }
+    }
+
+    private void seedDeclaration(String remote, String declaration) {
+        var clone = temp.resolve("declarer");
+
+        git(temp, "clone", "--quiet", "--branch", "backup", remote, clone.toString());
+        writeFile(clone.resolve(GitBackupRepository.DECLARATION), declaration);
+        git(clone, "add", GitBackupRepository.DECLARATION);
+        git(clone, "-c", "user.email=s@x", "-c", "user.name=seed", "commit", "--quiet", "-m", "declare");
+        git(clone, "push", "--quiet", "origin", "backup");
     }
 
     private static Cause failureOf(Result<?> result) {
