@@ -198,14 +198,20 @@ class StorageGarbageCollectorClaimRaceTest {
     /// unresolved promise runs on the executor AFTER the fold that resolves the caller's promise, so
     /// the record was absent for a window after `collectGarbage()` returned (19/200 measured).
     ///
-    /// #1598: the property is asserted through STATE, not thread identity. The seam holds the delete open and
-    /// the test fails it, and the restore is made SLOW ([SeamMetadataStore#delayRestore]): a restore inside the
-    /// resolution holds `collectGarbage()` until the record is back, while a restore dispatched as a side effect
-    /// is still sleeping when `collectGarbage()` returns, so the record is absent then — deterministically, in
-    /// either attach order. The former assertion ("the restore ran on the test thread") was a scheduling
-    /// assumption: when the test failed the delete BEFORE the collector had attached its continuation, the
-    /// continuation ran on the collector's thread at attach time — correct, and still before the collection
-    /// resolved — and the assertion read `null` (8/1000 under load).
+    /// #1598: what is asserted is that the record is back BEFORE `collectGarbage()` returns, observed through
+    /// state rather than thread identity. (A restore run synchronously by the collector after the instance's
+    /// promise resolves would satisfy this equally; the caller cannot tell the two apart.) Two seams make it
+    /// deterministic:
+    ///  - the test fails the held delete only once the collector thread is WAITING, i.e. parked in
+    ///    `deleteBlock`'s `await()` with its continuation already attached, so the failure is always delivered
+    ///    by the TEST thread into an attached chain;
+    ///  - the restore is SLOW ([SeamMetadataStore#delayRestore]). A restore that is part of the chain holds
+    ///    `collectGarbage()` until the record is back; a restore registered as an independent side effect is
+    ///    dispatched concurrently and is still sleeping when `collectGarbage()` returns, so the record is absent.
+    /// Without the first seam, a delete failed BEFORE the collector attached made a side-effect restore run
+    /// inline on the collector thread at attach time and finish in time -- the regression passed (v1609: 20/20
+    /// under a forced late attach). The former assertion ("the restore ran on the test thread") was a
+    /// scheduling assumption of the same kind and read `null` when that order occurred (8/1000 under load).
     @Test
     void asyncTierDeleteFailure_restoresRecordBeforeTheCollectionResolves() {
         var id = storeOrphanPastGrace();
@@ -214,7 +220,9 @@ class StorageGarbageCollectorClaimRaceTest {
         metadataStore.delayRestore(RESTORE_DELAY_MS);
         var presentOnReturn = new AtomicBoolean();
         var collected = new AtomicInteger(-1);
+        var collectorThread = new AtomicReference<Thread>();
         var collector = Promise.<Unit> promise(returned -> {
+            collectorThread.set(Thread.currentThread());
             collected.set(gc.collectGarbage());
             presentOnReturn.set(metadataStore.containsBlock(id));
             returned.succeed(unit());
@@ -222,11 +230,14 @@ class StorageGarbageCollectorClaimRaceTest {
 
         assertThat(tier.awaitDeleteRequested(WAIT)).as("the collector must reach the tier delete").isTrue();
         assertThat(metadataStore.containsBlock(id)).as("the record was taken before the tier delete").isFalse();
+        assertThat(awaitParked(collectorThread.get(),
+                               WAIT)).as("the collector must park in deleteBlock's await -- its continuation attached -- before the delete is failed")
+                  .isTrue();
         heldDelete.fail(StorageError.WriteError.writeError("induced async tier delete failure"));
         assertThat(collector.await(WAIT).isSuccess()).as("the collector must return").isTrue();
         assertThat(collected.get()).isZero();
         assertThat(metadataStore.restoreCount()).as("control: the restore ran exactly once").isEqualTo(1);
-        assertThat(presentOnReturn.get()).as("the record must be back the instant collectGarbage() returns -- the restore is part of the collection's resolution, not a side effect after it")
+        assertThat(presentOnReturn.get()).as("the record must be back before collectGarbage() returns -- a restore left as a side effect of the failed delete is still running then")
                   .isTrue();
         assertThat(metadataStore.getLifecycle(id).map(BlockLifecycle::isOrphaned).or(false)).as("the restored record is the orphan the next cycle will scan")
                   .isTrue();
@@ -481,5 +492,20 @@ class StorageGarbageCollectorClaimRaceTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /// True once `thread` is WAITING (untimed park: `Promise.await()`), polled until `timeout`.
+    private static boolean awaitParked(Thread thread, TimeSpan timeout) {
+        var deadline = System.nanoTime() + timeout.nanos();
+
+        while (System.nanoTime() < deadline) {
+            if (thread != null && thread.getState() == Thread.State.WAITING) {
+                return true;
+            }
+
+            pause(1);
+        }
+
+        return false;
     }
 }
