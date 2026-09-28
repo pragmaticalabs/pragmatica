@@ -22,6 +22,10 @@ import static org.pragmatica.lang.Result.success;
 /// (multi-survivor union catch-up) lands, the constraint relaxes to `2 <= min-sync <= replicas` by
 /// amending this factory — not silently.
 ///
+/// A retention under 1 ms (`0s`, `500us`) is refused here too (#1549): the topic's stream holds its
+/// retention in whole milliseconds and refuses a bound below 1 at creation, so accepting it would fail
+/// at the first publish instead of at declaration.
+///
 /// `minSyncReplicas` counts the owner (Kafka `min.insync.replicas` convention, same as
 /// [org.pragmatica.aether.slice.StreamConfig]).
 public record DurableTopicSpec(int partitions, int replicas, int minSyncReplicas, TimeSpan retention) {
@@ -39,6 +43,10 @@ public record DurableTopicSpec(int partitions, int replicas, int minSyncReplicas
 
         if (replicas < StreamConfig.MIN_REPLICAS || minSyncReplicas != replicas) {
             return TopicConfigError.outsideProvenDurableConfig(replicas, minSyncReplicas).result();
+        }
+
+        if (retention.toMillis() < 1) {
+            return TopicConfigError.retentionBelowOneMillisecond(retention).result();
         }
 
         return success(new DurableTopicSpec(partitions, replicas, minSyncReplicas, retention));

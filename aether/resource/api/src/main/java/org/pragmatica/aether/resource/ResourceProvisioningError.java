@@ -68,6 +68,21 @@ public sealed interface ResourceProvisioningError extends Cause {
         return ConfigLoadFailed.configLoadFailed(configSection, configError);
     }
 
+    /// A factory that binds its own section ([ResourceFactory#sectionBinder()]) was asked to provision with no
+    /// slice configuration provider in the context (#1549). Refused rather than handed to the generic record
+    /// binder, which reads different key spellings and defaults whatever it does not find — the silent path
+    /// #1549 closed. Reachable only when a slice is loaded without a slice-composite
+    /// (`SliceLoadingContext.setSliceComposite` never called, e.g. a node started without a node-composite),
+    /// or through the context-free `provide(type, section)` overload.
+    record SectionBinderNeedsProvider(Class<?> resourceType, String configSection) implements ResourceProvisioningError {
+        @Override
+        public String message() {
+            return resourceType.getSimpleName()
+                 + " binds [" + configSection
+                 + "] from the slice's configuration provider, and none is available — refusing rather than binding defaults";
+        }
+    }
+
     enum ConfigServiceNotAvailable implements ResourceProvisioningError {
         INSTANCE;
         @Override

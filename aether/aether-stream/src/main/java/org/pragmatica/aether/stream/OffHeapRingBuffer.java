@@ -77,6 +77,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// (`dataRegionSize`). The last logical segment is clamped so total allocated data never
     /// exceeds the cap. See spec §4.2.
     static final long DEFAULT_SEGMENT_BYTES = 256 * 1024L;
+    /// The largest capacity whose control region plus first segment is representable in a `long` — beyond
+    /// it [#floorBytes] overflows and the ring would be built over a truncated index (#1549).
+    public static final long MAX_CAPACITY = (Long.MAX_VALUE - HEADER_SIZE - DEFAULT_SEGMENT_BYTES) / INDEX_ENTRY_SIZE;
     /// Always-admit growth predicate (default seam — standalone buffers grow without budget gating).
     private static final LongPredicate ALWAYS_ADMIT = _ -> true;
 
