@@ -125,6 +125,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey (
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ClusterConfigKey (configVersion:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ClusterIncarnationKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ClusterPhaseKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CommunityKey (communityId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CommunityPlacementAvailabilityKey (communityId:java.lang.String,source:java.lang.String,zone:org.pragmatica.lang.Option<java.lang.String>)
@@ -179,6 +180,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsVal
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue (allocated:int,version:long,inventoryComplete:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue (sourceName:java.lang.String,sourceBinding:java.lang.String,intendedRole:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ClusterConfigValue (tomlContent:java.lang.String,clusterName:java.lang.String,version:java.lang.String,desiredTopology:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$TopologyEntry>,coreMin:int,coreMax:int,deploymentType:java.lang.String,configVersion:long,updatedAt:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ClusterIncarnationValue (lineageId:java.lang.String,incarnation:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhaseValue (phase:org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementAvailabilityValue (policyIdentity:java.lang.String,sourceBinding:java.lang.String,refusedNode:org.pragmatica.consensus.NodeId,refusedAt:long,attempts:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementOperationValue (operationId:java.lang.String,communityId:java.lang.String,targetNode:org.pragmatica.consensus.NodeId,targetSource:java.lang.String,targetZone:org.pragmatica.lang.Option<java.lang.String>,sourceBinding:java.lang.String,previousNode:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>,previousSource:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$PlacementOperationPhase,issuer:org.pragmatica.cluster.state.kvstore.LeaderValue,startedAt:long,phaseChangedAt:long,detail:java.lang.String)
@@ -453,6 +455,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey 10
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey 1688
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey 1689
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterConfigKey 1097
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterIncarnationKey 1709
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterPhaseKey 1098
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityKey 1099
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityPlacementAvailabilityKey 2112
@@ -508,6 +511,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue 1690
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase 1692
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue 1691
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterConfigValue 1610
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterIncarnationValue 1710
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase 1611
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhaseValue 1612
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementAvailabilityValue 2113
