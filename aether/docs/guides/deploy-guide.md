@@ -89,7 +89,9 @@ call, a topic message or a scheduled task. A success on any of them is a success
 runtime itself produces count as defects: the method threw instead of returning, a bridge request could
 not be decoded or its response encoded, or the method does not exist in this version. A failure the slice
 method returns (a business error) never counts, however often it happens and whatever HTTP status it maps
-to; neither does an HTTP request rejected before the slice runs (a bad path, query or body, or no route).
+to; neither does an HTTP request rejected before the slice runs (a bad path, query or body, or no route —
+including a request record whose constructor refuses the path or query values, answered as a 400; a slice
+compiled before this rule still counts such a constructor throw as a defect until it is rebuilt).
 [verified: `aether/aether-invoke/src/test/java/org/pragmatica/aether/http/HttpRoutePublisherOutcomeTest.java`,
 `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`
 (HTTP successes on every node veto a rollback)] An execution timeout does not count either: a stall is as consistent with overload or a
@@ -115,7 +117,9 @@ fence `aether/aether-control/src/test/java/org/pragmatica/aether/controller/Roll
 [unverified: that the previous version is actually running afterwards. The end-to-end proof stops at the committed
 target, because the test's previous version is not a real artifact.]
 
-**What it does not detect.** A version that fails only on some instances or only for some requests;
+**What it does not detect.** A version that fails by RETURNING errors without throwing — it is never
+rolled back automatically, whatever HTTP status those errors map to, because a downstream outage fails
+the same way and must not roll a healthy version back; a version that fails only on some instances or only for some requests;
 business-logic regressions; hangs and deadlocks; exceptions thrown asynchronously inside the slice's
 own Promise chain; a version that receives no traffic. A hosting node that dies stops counting as a
 host only once membership declares it DEAD; until then — including during the cold-boot convergence

@@ -114,7 +114,12 @@ class RollbackManagerOverridePreservationTest {
     /// #1573 N2: a rollback commits only while this node is the committed leader.
     @SuppressWarnings({"unchecked", "rawtypes"})
     static void seedCommittedLeader(KVStore<AetherKey, AetherValue> kvStore, NodeId leader) {
-        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(leader, 1)))));
+        seedCommittedLeader(kvStore, leader, 1);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    static void seedCommittedLeader(KVStore<AetherKey, AetherValue> kvStore, NodeId leader, long viewSequence) {
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(leader, viewSequence)))));
     }
 
     private void seed(AetherKey key, AetherValue value) {

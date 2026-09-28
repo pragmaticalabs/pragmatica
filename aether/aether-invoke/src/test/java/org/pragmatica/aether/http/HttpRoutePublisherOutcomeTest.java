@@ -82,6 +82,17 @@ class HttpRoutePublisherOutcomeTest {
                             .isEmpty();
     }
 
+    /// v1608 R11: a handler that completes with a `Result.Failure` VALUE returned a failure. It is NEUTRAL —
+    /// never a success (that would let a version returning errors veto a rollback its defects elsewhere
+    /// justify) and never a defect.
+    @Test
+    void routeCompletingWithAFailureValue_isNeutral_neitherSuccessNorDefect() {
+        var response = get("/outcome/returned-value");
+
+        assertThat(response.statusCode()).as("arming: the router answers the returned failure as an error").isGreaterThanOrEqualTo(400);
+        assertThat(recorded).isEmpty();
+    }
+
     @Test
     void requestNoRouteMatches_isNotRecorded() {
         var response = get("/outcome/absent");

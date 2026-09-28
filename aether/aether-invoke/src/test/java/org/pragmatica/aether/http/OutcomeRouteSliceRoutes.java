@@ -14,11 +14,13 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 /// #1573 B1 fixture: one route per execution outcome — a value, a handler that throws on the calling
 /// thread (the HTTP twin of the bridge's MethodThrew), and a failure the method returns (a downstream
-/// outage, which is never a defect).
+/// outage, which is never a defect) — both as a failed Promise and as a successful Promise carrying a
+/// `Result.Failure` value, which the router answers exactly like the first.
 public final class OutcomeRouteSliceRoutes implements RouteSource, SliceRouterFactory<OutcomeRouteSlice> {
     @Override
     public Class<OutcomeRouteSlice> sliceType() {
@@ -56,6 +58,11 @@ public final class OutcomeRouteSliceRoutes implements RouteSource, SliceRouterFa
                               .withoutParameters()
                               .to(_ -> Causes.cause("downstream unavailable").<String>promise())
                               .named("returned").withSecurity(SecurityPolicy.publicRoute())
+                              .asJson(),
+                         Route.<Result<String>>get("/outcome/returned-value")
+                              .withoutParameters()
+                              .to(_ -> Promise.success(Causes.cause("downstream unavailable").<String>result()))
+                              .named("returnedValue").withSecurity(SecurityPolicy.publicRoute())
                               .asJson());
     }
 

@@ -33,6 +33,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -252,6 +254,38 @@ class RollbackManagerAutoRollbackSafetyTest {
         assertThat(racing.appliedCommands).as("arming: the rollback was decided and submitted").hasSize(1);
         assertThat(currentTargetVersion()).as("the newer target stands").isEqualTo(V3);
         assertThat(reported).isEmpty();
+    }
+
+    /// v1608 R05: the target already moved on BEFORE the commit read it (the manager's tracked state still
+    /// names the failed version). The commit's own pre-check refuses; without it the transaction would carry
+    /// the NEW target as its expected value, the store would accept it, and a newer target would be rolled back.
+    @Test
+    void targetMovedOnBeforeTheCommitReadsIt_isNeverRolledBack() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        var direct = new CapturingClusterNode(SELF, kvStore, () -> {});
+        var manager = RollbackManager.rollbackManager(SELF, () -> CONFIG, direct, kvStore, new AlwaysLeaderManager(SELF), reported::add);
+
+        seed(SliceTargetKey.sliceTargetKey(BASE), SliceTargetValue.sliceTargetValue(V3, 3));
+        manager.onAllInstancesFailed(failure(V2));
+
+        assertThat(direct.appliedCommands).as("nothing is submitted against a target that already names V3").isEmpty();
+        assertThat(currentTargetVersion()).isEqualTo(V3);
+    }
+
+    /// v1608 R06: a node the local leader manager still calls leader, but that is NOT the committed leader,
+    /// never commits a rollback.
+    @Test
+    void notTheCommittedLeader_neverRollsBack() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        RollbackManagerOverridePreservationTest.seedCommittedLeader(kvStore, NodeId.nodeId("node-9").unwrap(), 2);
+
+        assertThat(kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class).map(LeaderValue::leader))
+            .as("arming: the committed leader is another node")
+            .isEqualTo(Option.some(NodeId.nodeId("node-9").unwrap()));
+
+        manager().onAllInstancesFailed(failure(V2));
+
+        assertThat(clusterNode.appliedCommands).isEmpty();
     }
 
     /// The store-backed control for the two races above: with no interleaved write the same fixture commits.
