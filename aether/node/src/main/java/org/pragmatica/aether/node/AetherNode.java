@@ -1626,7 +1626,9 @@ public interface AetherNode extends ManageableNode {
                                                            new StorageFactory.StreamSetupRequest(dhtClientOption,
                                                                                                  streamDataDir(config),
                                                                                                  config.self().id(),
-                                                                                                 streamsKeyring));
+                                                                                                 streamsKeyring,
+                                                                                                 config.streaming()
+                                                                                                       .segmentDiskMaxBytes()));
 
         if (storageSetupsResult.isFailure()) {
             return storageSetupsResult.map(ignored -> null);

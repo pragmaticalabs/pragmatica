@@ -171,12 +171,18 @@ public final class ConfigLoader {
                                               "caught_up_max_lag_offsets",
                                               defaults.caughtUpMaxLagOffsets());
 
+        var segmentDiskMaxBytes = parseDataSize(doc,
+                                                "streaming",
+                                                "segment_disk_max_bytes",
+                                                defaults.segmentDiskMaxBytes());
+
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
                                                           maxBytes,
                                                           defaults.readLinearization(),
                                                           reshuffleConcurrency,
-                                                          caughtUpMaxLagOffsets));
+                                                          caughtUpMaxLagOffsets)
+                                         .withSegmentDiskMaxBytes(segmentDiskMaxBytes));
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {

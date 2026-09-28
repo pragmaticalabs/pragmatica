@@ -578,6 +578,7 @@ read_forward_timeout = "2s"
 max_read_response_bytes = "28MB"
 reshuffle_concurrency = 2
 caught_up_max_lag_offsets = 1024
+# segment_disk_max_bytes = "200GB"   # unset: derived from the disk at boot
 ```
 
 | Field | Type | Default | Description |
@@ -587,6 +588,7 @@ caught_up_max_lag_offsets = 1024
 | `max_read_response_bytes` | data size | `28MB` | Cap on a single forwarded-read response |
 | `reshuffle_concurrency` | int | `2` | Partitions one node may hold in materialize+backfill at once. Must be `>= 1` |
 | `caught_up_max_lag_offsets` | long | `1024` | How far a `CAUGHT_UP` replica may trail the freshest peer watermark and still serve reads or count toward the ring-release catch-up gate. Must be `>= 0` |
+| `segment_disk_max_bytes` | data size | derived | Cap on this node's local-disk tier for sealed stream segments. Unset (or `0`): 40% of the usable space on the filesystem holding the stream data directory at boot, clamped to at least 1 GiB and at most usable space minus 2 GiB (the WAL usually shares the disk); the chosen value is logged at INFO. A value above the usable space is kept, with a WARN. Must be `>= 0` |
 
 `reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
 partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition

@@ -634,6 +634,35 @@ class ConfigLoaderTest {
             });
     }
 
+    /// #1604: the streams disk-tier cap is a per-node knob; unset means "derive from the filesystem" (0).
+    @Test
+    void loadFromString_segmentDiskMaxBytes_parsedAsDataSize_andDefaultsToDerive() {
+        var withCap = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            segment_disk_max_bytes = "8GB"
+            """;
+        var withoutCap = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            reshuffle_concurrency = 2
+            """;
+
+        ConfigLoader.loadFromString(withCap)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().segmentDiskMaxBytes()).isEqualTo(8L * 1024 * 1024 * 1024));
+        ConfigLoader.loadFromString(withoutCap)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().segmentDiskMaxBytes())
+                                     .isEqualTo(StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES));
+    }
+
     // SPEC: §8.3 absence of [streaming] section → defaults
     @Test
     void loadFromString_streamingSectionAbsent_defaultsApplied() {
