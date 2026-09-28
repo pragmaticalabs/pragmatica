@@ -26,6 +26,8 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+import static org.pragmatica.lang.Option.some;
+
 
 /// #1652: community state, served from committed consensus state plus the leader's live view.
 ///
@@ -71,10 +73,9 @@ public final class CommunityRoutes implements RouteSource {
     private Promise<CommunityInfo> communityDetail(String communityId) {
         var node = nodeSupplier.get();
 
-        return Option.some(communityId)
-                     .filter(id -> isKnown(node, id))
-                     .map(id -> communityInfo(node, id))
-                     .async(CommunityNotFound.FACTORY.apply(communityId));
+        return some(communityId).filter(id -> isKnown(node, id))
+                   .map(id -> communityInfo(node, id))
+                   .async(CommunityNotFound.FACTORY.apply(communityId));
     }
 
     /// Sorted, so repeated calls are diffable — KV iteration order is not specified.
@@ -117,12 +118,14 @@ public final class CommunityRoutes implements RouteSource {
     }
 
     private static List<String> memberIds(GovernorAnnouncementValue roster) {
-        return roster.members()
-                     .stream()
-                     .map(NodeId::id)
-                     .distinct()
-                     .sorted()
-                     .toList();
+        return sortedIds(Set.copyOf(roster.members()));
+    }
+
+    private static List<String> sortedIds(Set<NodeId> members) {
+        return members.stream()
+                      .map(NodeId::id)
+                      .sorted()
+                      .toList();
     }
 
     private static Option<CommunityValue> community(ManageableNode node, String communityId) {
