@@ -130,8 +130,10 @@ class RollbackManagerTest {
 
             rollbackManager.onAllInstancesFailed(createFailureEvent(v2));
 
-            assertThat(clusterNode.appliedCommands).hasSize(1);
-            var command = clusterNode.appliedCommands.getFirst();
+            // #1573: one batch — the persisted rollback record first, then the target.
+            assertThat(clusterNode.appliedCommands).hasSize(2);
+            assertThat(((KVCommand.Put<?, ?>) clusterNode.appliedCommands.getFirst()).key()).isInstanceOf(PreviousVersionKey.class);
+            var command = clusterNode.appliedCommands.get(1);
             assertThat(command).isInstanceOf(KVCommand.Put.class);
             var put = (KVCommand.Put<AetherKey, AetherValue>) command;
             assertThat(put.key()).isInstanceOf(SliceTargetKey.class);
