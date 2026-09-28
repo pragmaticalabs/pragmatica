@@ -1,0 +1,18 @@
+### Security (2026-09-29 — #1659: a security override failed OPEN on nodes that do not host the route)
+- **An override added after a route first registered was not enforced by nodes that do not host that route.**
+  A node authorizes a request for a route it does not serve from the cluster route registry, and the registry kept
+  the policy registered FIRST for as long as any node served the route. So the republish carrying the override
+  never reached it: a non-hosting node saw the pre-override policy, inherited the global policy, accepted any valid
+  key and forwarded the request, answering 200 where the hosting nodes answered 403. It surfaced in CI after a quorum
+  flap left one node without its local route, but it needed no flap: any slice with fewer instances than nodes was
+  exposed.
+- The registry now keeps each node's published policy, replaces it on every republish, and drops it when the node's
+  entry is removed or the node departs. It reports the STRONGEST policy among the nodes serving the route, so while
+  nodes disagree (a republish in flight or failed) the route is as strict as its strictest node.
+- An ingress applies its own COMMITTED security overrides to a route it does not host, through the same rule the
+  hosting node uses, against the route's declared policy (now carried in the route entry beside the enforced one).
+  An override therefore takes effect, and a relaxed or removed one relaxes, at every ingress without waiting for
+  peers to republish. With no matching override the replicated (strongest) policy applies, and it relaxes once every
+  serving node has republished.
+  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/BlueprintSecurityOverrideClusterWideTest.java`
+  — `overrideAddedAfterTheRouteRegistered_isEnforcedOnNodesThatDoNotHostTheRoute`, one instance on three nodes]
