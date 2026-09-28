@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -54,7 +55,8 @@ import static org.pragmatica.lang.Unit.unit;
 /// once at ERROR, because the warning announcing such a flag is itself a cluster event and cannot land.
 final class ClusterEventRedelivery {
     private static final Logger LOG = LoggerFactory.getLogger(ClusterEventRedelivery.class);
-    /// Most events waiting for redelivery.
+    /// Most events held for redelivery at once, waiting AND in flight together (#1653 round 2: the bound used to
+    /// apply to the waiting queue only, so up to another CAPACITY retries in flight could double it).
     static final int CAPACITY = 1_024;
     /// An event not delivered within this long after its first failure is dropped as expired.
     static final long RETRY_HORIZON_MS = 5 * 60_000L;
@@ -221,10 +223,24 @@ final class ClusterEventRedelivery {
                : hold(Pending.pending(event, clock.getAsLong()));
     }
 
+    /// Starts holding a newly failed event. When CAPACITY events are already held, the OLDEST waiting one is dropped
+    /// to make room; if every held event is in flight (none waiting), the new one is dropped instead. Both are
+    /// counted as OVERFLOW. `held` only rises here, under the lock, so it never exceeds CAPACITY.
     private Unit hold(Pending pending) {
-        held.incrementAndGet();
+        synchronized (lock) {
+            if (held.get() >= CAPACITY) {
+                var oldest = Option.option(waiting.pollFirst());
 
-        return enqueue(pending);
+                if (oldest.isEmpty()) {
+                    return drop(DropReason.OVERFLOW, pending.event());
+                }
+                oldest.onPresent(entry -> dropHeld(DropReason.OVERFLOW, entry.event()));
+            }
+            held.incrementAndGet();
+            waiting.addLast(pending);
+        }
+
+        return unit();
     }
 
     private void retry(Pending pending) {
@@ -250,13 +266,9 @@ final class ClusterEventRedelivery {
         return cause instanceof StreamError.EventTooLarge || cause == StreamError.General.EVENT_DROPPED || cause == StreamError.General.RUN_DOES_NOT_FIT;
     }
 
+    /// Puts an already-held event back after a failed retry. It is counted in `held` already, so the bound holds.
     private Unit enqueue(Pending pending) {
         synchronized (lock) {
-            if (waiting.size() >= CAPACITY) {
-                dropHeld(DropReason.OVERFLOW,
-                         waiting.pollFirst().event());
-            }
-
             waiting.addLast(pending);
         }
 

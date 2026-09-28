@@ -19,6 +19,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
@@ -29,6 +35,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #1640 live path: cluster events raised while the cluster-events partition's owner dies are not lost.
 ///
@@ -121,6 +128,36 @@ class ClusterEventOwnerFailoverTest {
         // but is not in the log. That is the stream's acknowledgement contract, not a redelivery loss, so the log
         // may hold fewer than were delivered, never more.
         assertThat((long) landed.size()).as("the log holds no more than was delivered").isLessThanOrEqualTo(delivered);
+        // #1653 round 2, the retry DRIVER. With no new owner, nothing but AetherNode's 1 s tick can re-send a held
+        // event, so a retry count above zero pins that wiring.
+        assertThat(sum(producers, "retried")).as("AetherNode's 1 s redelivery tick re-sent held events").isPositive();
+        assertOwnershipPutDrainsAtOnce(producers.iterator()
+                                                .next());
+    }
+
+    /// #1653 round 2, the other retry driver: AetherNode routes a committed ownership put for cluster-events
+    /// partition 0 to the aggregator, which re-sends every WAITING event at once instead of on its backoff.
+    /// Re-committing the current ownership record (the same value, so nothing moves) produces that put. Held events
+    /// back off to 8 s, so the tick alone re-sends only a few percent of them in 500 ms; a drain re-sends them all.
+    private void assertOwnershipPutDrainsAtOnce(String producer) {
+        var aggregator = cluster.getNode(producer)
+                                .unwrap()
+                                .eventAggregator();
+        var waitingBefore = aggregator.redeliveryWaiting();
+        var retriedBefore = counterOn(producer, "retried");
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(SystemStreams.CLUSTER_EVENTS.asString(), 0);
+        var node = cluster.getNode(producer)
+                          .unwrap();
+        var current = node.kvStore()
+                          .getTyped(key, StreamPartitionOwnershipValue.class)
+                          .unwrap();
+
+        assertThat(waitingBefore).as("control: enough events are waiting to tell a drain from the tick").isGreaterThanOrEqualTo(10);
+        node.<Object>apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(key, current)))
+            .await(timeSpan(10).seconds());
+        await().atMost(Duration.ofMillis(500))
+               .pollInterval(Duration.ofMillis(20))
+               .until(() -> counterOn(producer, "retried") - retriedBefore >= waitingBefore * 9L / 10);
     }
 
     /// The full #1640 property, once #1555 re-places a dead owner: events raised across the owner's death and then

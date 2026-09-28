@@ -23,6 +23,12 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
@@ -506,17 +512,95 @@ class ClusterEventAggregatorTest {
     }
 
     /// An event can be in the log twice (an unknown outcome that landed, then its redelivery). Both copies carry
-    /// the same `at`, and a read returns one.
+    /// the same `details.eventId`, and a read returns one.
     @Test
     void events_sameEventLandedTwice_isReadOnce() {
         var h = Harness.create();
-        var event = selfDrainInitiated(h);
+        var event = new ClusterEvent.AlertInjected(h.hlc().now(),
+                                                   ClusterEvent.Severity.INFO,
+                                                   "landed twice",
+                                                   Map.of(ClusterEventIdentity.EVENT_ID, "incarnation:1"));
 
         h.aggregator().emitLocal(event);
         h.aggregator().emitLocal(event);
 
         assertThat(h.events()).hasSize(1);
         assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies are in the log").isEqualTo(1);
+    }
+
+    /// #1653 round 2: `at` is not an identity. Two DISTINCT events that share `at` (one node, one millisecond,
+    /// for example after a restart with a clock step) are both kept, because each is stamped with its own id.
+    @Test
+    void events_twoDistinctEventsWithTheSameAt_areBothKept() {
+        var h = Harness.create();
+        var at = h.hlc().now();
+
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(at, ClusterEvent.Severity.INFO, "first", Map.of()));
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(at, ClusterEvent.Severity.INFO, "second", Map.of()));
+
+        assertThat(h.events()).extracting(ClusterEvent::summary).containsExactlyInAnyOrder("first", "second");
+        assertThat(h.events()).allMatch(event -> event.details().containsKey(ClusterEventIdentity.EVENT_ID));
+    }
+
+    /// #1653 round 2: a redelivered event lands after events produced later; a read is still a timeline.
+    @Test
+    void events_landedOutOfAtOrder_areReadInAtOrder() {
+        var h = Harness.create();
+        var earlier = h.hlc().now();
+        var later = h.hlc().now();
+
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(later, ClusterEvent.Severity.INFO, "later", Map.of()));
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(earlier, ClusterEvent.Severity.INFO, "earlier", Map.of()));
+
+        assertThat(h.events()).extracting(ClusterEvent::summary).containsExactly("earlier", "later");
+    }
+
+    /// #1653 round 2: an ownership put for cluster-events partition 0 re-sends every held event at once, without
+    /// waiting for its backoff; a put for any other stream or partition does not.
+    @Test
+    void onStreamPartitionOwnershipPut_clusterEventsPartition0_drainsAtOnce_otherPutsDoNot() {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emitLocal(selfDrainInitiated(h));
+        h.publisher().set(publisher);
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut("orders", 0));
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 1));
+        assertThat(h.events()).as("control: other puts do not drain").isEmpty();
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(h.events()).as("drained at once, well inside the 1 s backoff").hasSize(1);
+    }
+
+    /// #1653 round 2: `redeliverDue` is what the AetherNode 1 s tick calls; once an event's backoff has passed, it
+    /// re-sends it.
+    @Test
+    void redeliverDue_afterTheBackoff_resends() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emitLocal(selfDrainInitiated(h));
+        h.publisher().set(publisher);
+        h.aggregator().redeliverDue();
+        assertThat(h.events()).as("control: not yet due").isEmpty();
+
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.events()).hasSize(1);
+    }
+
+    private static ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> ownershipPut(String stream, int partition) {
+        var epoch = Epoch.epoch(7, 3);
+
+        return new ValuePut<>(new KVCommand.Put<>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                                  StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,
+                                                                                                              epoch,
+                                                                                                              epoch.localCounter(),
+                                                                                                              HlcTimestamp.ZERO)),
+                              Option.none());
     }
 
     // --- production retention -------------------------------------------------------------------

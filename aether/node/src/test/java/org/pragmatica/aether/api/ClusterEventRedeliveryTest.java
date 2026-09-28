@@ -35,9 +35,17 @@ class ClusterEventRedeliveryTest {
     private final AtomicLong now = new AtomicLong(1_000_000L);
     private final List<ClusterEvent> landed = new ArrayList<>();
     private final Deque<Cause> scriptedFailures = new ArrayDeque<>();
+    private final List<Long> attempts = new ArrayList<>();
+    private volatile boolean retriesHang;
     private final ClusterEventRedelivery redelivery = ClusterEventRedelivery.clusterEventRedelivery(this::publish, now::get);
 
     private Promise<Unit> publish(ClusterEvent event) {
+        attempts.add(now.get());
+        if (retriesHang && event.summary()
+                                   .startsWith("first-wave")) {
+            return Promise.promise();
+        }
+
         var failure = scriptedFailures.pollFirst();
 
         if (failure != null) {
@@ -148,5 +156,119 @@ class ClusterEventRedeliveryTest {
         redelivery.redeliver(true);
 
         assertThat(landed).as("the oldest was the one dropped").doesNotContain(first).hasSize(ClusterEventRedelivery.CAPACITY);
+    }
+
+    /// Backoff doubles from 1 s and is capped at 8 s: retries go out 1, 2, 4, 8, 8 s apart.
+    @Test
+    void redeliver_backoffDoublesAndIsCapped() {
+        fail(100, UNKNOWN);
+        redelivery.deliver(event("keeps-failing"));
+
+        for (int step = 0; step < 400; step++) {
+            advanceAndRedeliver(100);
+        }
+
+        var gaps = new ArrayList<Long>();
+
+        for (int i = 1; i <= 5; i++) {
+            gaps.add(attempts.get(i) - attempts.get(i - 1));
+        }
+
+        assertThat(gaps).containsExactly(1_000L, 2_000L, 4_000L, 8_000L, 8_000L);
+    }
+
+    /// #1653 round 2: the bound covers held events, waiting AND in flight. With every retry hanging in flight, new
+    /// failures still cannot push `held` past CAPACITY; the excess is dropped and counted.
+    @Test
+    void deliver_withRetriesInFlight_heldNeverExceedsCapacity() {
+        fail(3 * ClusterEventRedelivery.CAPACITY, UNKNOWN);
+        for (int i = 0; i < ClusterEventRedelivery.CAPACITY; i++) {
+            redelivery.deliver(event("first-wave-" + i));
+        }
+        retriesHang = true;
+        redelivery.redeliver(true);
+        assertThat(redelivery.waiting()).as("control: every held event is in flight").isZero();
+
+        for (int i = 0; i < ClusterEventRedelivery.CAPACITY; i++) {
+            redelivery.deliver(event("second-wave-" + i));
+        }
+
+        assertThat(redelivery.held()).isEqualTo(ClusterEventRedelivery.CAPACITY);
+        assertThat(redelivery.dropped(OVERFLOW)).isEqualTo(ClusterEventRedelivery.CAPACITY);
+    }
+
+    /// Drops are reported: the next successful publish logs one WARN naming the dropped types and reasons.
+    @Test
+    void deliver_afterDrops_nextSuccessLogsTheDroppedTypes() {
+        var logged = capture();
+
+        try {
+            fail(1, new StreamError.EventTooLarge(10_000, 1_000));
+            redelivery.deliver(event("too-big"));
+            redelivery.deliver(event("fine"));
+        } finally {
+            release();
+        }
+
+        assertThat(logged).anyMatch(line -> line.startsWith("WARN ")
+                                            && line.contains("ALERT_INJECTED/PERMANENT=1"));
+    }
+
+    /// The first expiry is reported once at ERROR (the stream refused publishes for a whole horizon), not per event.
+    @Test
+    void redeliver_expiries_logOneError() {
+        var logged = capture();
+
+        try {
+            fail(10_000, UNKNOWN);
+            redelivery.deliver(event("a"));
+            redelivery.deliver(event("b"));
+            for (long elapsed = 0; elapsed <= ClusterEventRedelivery.RETRY_HORIZON_MS + ClusterEventRedelivery.MAX_BACKOFF_MS; elapsed += 1_000) {
+                advanceAndRedeliver(1_000);
+            }
+        } finally {
+            release();
+        }
+
+        assertThat(redelivery.dropped(EXPIRED)).as("control").isEqualTo(2L);
+        assertThat(logged.stream()
+                         .filter(line -> line.startsWith("ERROR ")))
+            .hasSize(1)
+            .allMatch(line -> line.contains("is refusing publishes"));
+    }
+
+    private final List<String> captured = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private org.apache.logging.log4j.core.LoggerContext logContext;
+    private org.apache.logging.log4j.core.appender.AbstractAppender appender;
+
+    private List<String> capture() {
+        logContext = (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+        appender = new org.apache.logging.log4j.core.appender.AbstractAppender("RedeliveryCapture",
+                                                                               null,
+                                                                               null,
+                                                                               true,
+                                                                               org.apache.logging.log4j.core.config.Property.EMPTY_ARRAY) {
+            @Override
+            public void append(org.apache.logging.log4j.core.LogEvent event) {
+                captured.add(event.getLevel() + " " + event.getMessage().getFormattedMessage());
+            }
+        };
+        appender.start();
+
+        var config = new org.apache.logging.log4j.core.config.LoggerConfig(ClusterEventRedelivery.class.getName(),
+                                                                           org.apache.logging.log4j.Level.TRACE,
+                                                                           false);
+
+        config.addAppender(appender, org.apache.logging.log4j.Level.TRACE, null);
+        logContext.getConfiguration().addLogger(ClusterEventRedelivery.class.getName(), config);
+        logContext.updateLoggers();
+
+        return captured;
+    }
+
+    private void release() {
+        logContext.getConfiguration().removeLogger(ClusterEventRedelivery.class.getName());
+        logContext.updateLoggers();
+        appender.stop();
     }
 }

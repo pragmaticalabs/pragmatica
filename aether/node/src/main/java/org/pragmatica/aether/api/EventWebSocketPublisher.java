@@ -11,9 +11,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import java.util.function.Function;
 
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -26,8 +26,6 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings("JBCT-RET-01")
 public class EventWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
-    /// How far back each poll looks, so a late-landing event is still sent (#1640).
-    static final long LOOKBACK_MS = ClusterEventRedelivery.RETRY_HORIZON_MS;
 
     private final EventWebSocketHandler handler;
     private final Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider;
@@ -37,13 +35,12 @@ public class EventWebSocketPublisher {
     private final AtomicReference<Option<ScheduledFuture<?>>> taskRef = new AtomicReference<>(Option.none());
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final AtomicReference<Instant> lastBroadcast = new AtomicReference<>(Instant.EPOCH);
-    /// #1640: events already broadcast, by their unique `at`. An event can land AFTER the poll that would have
-    /// covered its `at`: a redelivered event keeps the `at` of its first attempt (up to
-    /// [ClusterEventRedelivery#RETRY_HORIZON_MS] old), and even a normal publish lands after it was stamped. So each
-    /// poll looks back one horizon and sends only what it has not sent. Entries older than the look-back are
-    /// pruned, which bounds the set by the events retained in one horizon.
-    private final Set<HlcTimestamp> broadcast = ConcurrentHashMap.newKeySet();
+    /// #1640 / #1653 round 2: the keys ([ClusterEventIdentity#key]) of events already broadcast. Each poll reads the
+    /// whole retained log and sends only what is not in this set, with NO time window. A redelivered event keeps its
+    /// original `at`, and it can land long after that `at` (up to the redelivery horizon, plus a backoff and a
+    /// forward timeout). Any fixed look-back would have a boundary it misses. The set is pruned to the keys still
+    /// in the retained log, which bounds it by the stream's retention.
+    private final Set<String> broadcast = ConcurrentHashMap.newKeySet();
 
     private EventWebSocketPublisher(EventWebSocketHandler handler,
                                     Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider,
@@ -87,42 +84,44 @@ public class EventWebSocketPublisher {
         log.info("Event WebSocket publisher stopped");
     }
 
-    /// One poll. Package-private so the #1640 look-back test can drive it without the scheduler.
+    /// One poll. Package-private so the #1640 tests can drive it without the scheduler.
     void publish() {
         if (handler.connectedClients() == 0) {
             return;
         }
 
-        var since = lastBroadcast.get().minusMillis(LOOKBACK_MS);
-        var now = Instant.now();
-        Promise<?> ignored = eventsSinceProvider.apply(since)
-                                                .onSuccess(events -> broadcastIfPresent(events, now))
+        Promise<?> ignored = eventsSinceProvider.apply(Instant.EPOCH)
+                                                .onSuccess(this::broadcastNew)
                                                 .onFailure(cause -> log.error("Error publishing events via WebSocket: {}",
                                                                               cause.message()));
     }
 
-    private void broadcastIfPresent(List<ClusterEvent> candidates, Instant now) {
-        var newEvents = notYetBroadcast(candidates);
+    private void broadcastNew(List<ClusterEvent> retained) {
+        var newEvents = notYetBroadcast(retained);
 
-        pruneBroadcastBefore(now.minusMillis(LOOKBACK_MS));
+        pruneToRetained(retained);
         if (!newEvents.isEmpty()) {
-            var json = jsonSerializer.apply(newEvents);
-
-            handler.broadcast(json);
+            handler.broadcast(jsonSerializer.apply(newEvents));
         }
-
-        lastBroadcast.set(now);
     }
 
-    private List<ClusterEvent> notYetBroadcast(List<ClusterEvent> candidates) {
-        return candidates.stream()
-                         .filter(event -> broadcast.add(event.at()))
-                         .toList();
+    private List<ClusterEvent> notYetBroadcast(List<ClusterEvent> retained) {
+        return retained.stream()
+                       .filter(event -> broadcast.add(ClusterEventIdentity.key(event)))
+                       .toList();
     }
 
-    private void pruneBroadcastBefore(Instant horizon) {
-        var horizonMillis = horizon.toEpochMilli();
+    /// Keys of events that left the retained log can never be read again, so they are forgotten.
+    private void pruneToRetained(List<ClusterEvent> retained) {
+        var retainedKeys = retained.stream()
+                                   .map(ClusterEventIdentity::key)
+                                   .collect(Collectors.toSet());
 
-        broadcast.removeIf(at -> at.physicalMillis() < horizonMillis);
+        broadcast.retainAll(retainedKeys);
+    }
+
+    /// Keys remembered as broadcast (observability for the #1653 prune pin).
+    int rememberedBroadcasts() {
+        return broadcast.size();
     }
 }

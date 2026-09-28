@@ -6,6 +6,7 @@ package org.pragmatica.aether.api;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -62,7 +63,6 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.hlc.HlcClock;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -184,6 +184,8 @@ public final class ClusterEventAggregator {
     private final AtomicLong ownerlessDrops = new AtomicLong();
     /// #1640: events whose publish did not land wait here and are retried.
     private final ClusterEventRedelivery redelivery;
+    /// #1653 round 2: stamps each event with `details.eventId` so a redelivered copy is recognised on read.
+    private final ClusterEventIdentity identity = ClusterEventIdentity.clusterEventIdentity();
     private volatile int lastReadDuplicates;
 
     private static final Cause PUBLISHER_NOT_BOUND = Causes.cause("cluster-events publisher not yet bound");
@@ -359,12 +361,24 @@ public final class ClusterEventAggregator {
     }
 
     /// #1640: an event can be in the log twice. A publish whose outcome was unknown may have landed, and its
-    /// redelivery sends the same event again. Every event carries a unique `at` (the producing node's
-    /// `HlcTimestamp`, strictly monotonic per node), so duplicates are removed here, keeping the first
-    /// occurrence. Every reader goes through this method.
+    /// redelivery sends the same event again. Every copy carries the same `details.eventId` (see
+    /// [ClusterEventIdentity]), so duplicates are removed here, keeping the first occurrence. Events without an id
+    /// (from a node that predates it, or an `ExtendedEvent` that is not a record) fall back to `at`.
+    ///
+    /// #1653 round 2: the result is sorted by `at`, stably. A redelivered event lands in the log after events
+    /// produced later, and readers of this method (the REST list, the event feed, alert history, traces) expect
+    /// a timeline. Ties keep log order.
+    ///
+    /// Every reader of the aggregator goes through here. The raw stream read endpoint
+    /// (`GET /api/v1/streams/system/cluster-events/1.0.0/read`) does not: it returns the log as stored, so it can
+    /// show a redelivered event twice and out of `at` order. `details.eventId` is there to de-duplicate by.
     private List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
-        var seen = new HashSet<HlcTimestamp>();
-        var unique = raw.stream().map(StreamEvent::payload).filter(event -> seen.add(event.at())).toList();
+        var seen = new HashSet<String>();
+        var unique = raw.stream()
+                        .map(StreamEvent::payload)
+                        .filter(event -> seen.add(ClusterEventIdentity.key(event)))
+                        .sorted(Comparator.comparing(ClusterEvent::at))
+                        .toList();
 
         lastReadDuplicates = raw.size() - unique.size();
 
@@ -490,7 +504,7 @@ public final class ClusterEventAggregator {
     /// what it gives up on. Still never propagated to the caller.
     @Contract
     private void publishSafely(ClusterEvent event) {
-        redelivery.deliver(event);
+        redelivery.deliver(identity.stamped(event));
     }
 
     /// One publish attempt with its outcome: fails when the publisher is not yet bound, when the publish
