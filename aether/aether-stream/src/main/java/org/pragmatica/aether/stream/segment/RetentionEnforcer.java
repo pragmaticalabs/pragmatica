@@ -377,10 +377,18 @@ public final class RetentionEnforcer implements AutoCloseable {
         return unit();
     }
 
-    /// FER: the segment stays unknown-aged, which withholds it from age-based reclamation; nothing is lost. It
-    /// is remembered, so no later pass reads it again, and it is counted into [#reportUnreadableAges].
+    /// FER: the segment stays unknown-aged, which withholds it from age-based reclamation; nothing is lost.
+    ///
+    /// Only a DETERMINISTIC failure is remembered (#1616 R3, narrowed): a block that is gone or that does not
+    /// decode (corrupt, or read without its key) will fail the same way every time, so it is not read again and
+    /// is counted into [#reportUnreadableAges]. A TRANSIENT failure -- a read timeout, an I/O error -- is not
+    /// remembered and the next pass retries it: remembering it would pin the segment against age-out until a
+    /// restart, which is exactly what pressure relief needs to reclaim.
     private Unit ageUnreadable(PendingAge pending, Cause cause) {
-        unreadableAges.add(pending.id());
+        if (isDeterministic(cause)) {
+            unreadableAges.add(pending.id());
+        }
+
         log.debug("Age of segment {}:[{}-{}] could not be read from its block; it stays withheld: {}",
                   pending.id(),
                   pending.ref().startOffset(),
@@ -388,6 +396,10 @@ public final class RetentionEnforcer implements AutoCloseable {
                   cause.message());
 
         return unit();
+    }
+
+    private static boolean isDeterministic(Cause cause) {
+        return cause == SegmentError.General.SEGMENT_DATA_NOT_FOUND || cause instanceof SegmentError.CorruptRecord;
     }
 
     /// One WARN when a pass found segments whose age cannot be read -- never silently aged out, never re-read.

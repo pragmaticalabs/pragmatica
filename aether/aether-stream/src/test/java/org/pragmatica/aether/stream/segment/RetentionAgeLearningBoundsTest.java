@@ -96,6 +96,49 @@ class RetentionAgeLearningBoundsTest {
         assertThat(storage.resolveRef("streams/orders/0/0-2").isPresent()).as("withheld, not aged out").isTrue();
     }
 
+    /// #1616 R3, narrowed: a TRANSIENT read failure (an I/O error, a timeout) is not remembered -- the next pass
+    /// retries and learns the age, so one bad read cannot pin a segment against age-out until a restart.
+    @Test
+    void aTransientReadFailure_isRetriedOnTheNextPass() {
+        var tier = new CountingTier();
+        var setup = restartedWith(tier, 1);
+
+        tier.failNextReads.set(1);
+        setup.enforcer().enforceNow().await();
+        assertThat(setup.index().listSegments("orders", 0)).singleElement()
+                                                         .extracting(SegmentIndex.SegmentRef::maxTimestamp)
+                                                         .as("unknown after the failed read")
+                                                         .isEqualTo(0L);
+
+        setup.enforcer().enforceNow().await();
+        assertThat(setup.index().listSegments("orders", 0)).singleElement()
+                                                         .extracting(SegmentIndex.SegmentRef::maxTimestamp)
+                                                         .as("learned on the retry")
+                                                         .satisfies(timestamp -> assertThat(timestamp).isPositive());
+    }
+
+    /// #1616 R2d: a pass frees its slot BEFORE resuming the callers waiting on it, so a waiter that immediately
+    /// asks for another pass gets a new one rather than the result of the pass that just ended.
+    @Test
+    void aWaitersImmediateCall_startsANewPass() {
+        var tier = new CountingTier();
+        var setup = restartedWith(tier, 16);
+        var passes = new AtomicInteger();
+        var enforcer = RetentionEnforcer.retentionEnforcer(setup.storage(),
+                                                           setup.index(),
+                                                           WINDOW_MS,
+                                                           RetentionEnforcer.SegmentRetentionFloor.NONE,
+                                                           SegmentReader.segmentReader(setup.storage(), setup.index()),
+                                                           () -> 0.9,
+                                                           passes::incrementAndGet);
+
+        enforcer.enforceNow()
+                .flatMap(_ -> enforcer.enforceNow())
+                .await();
+
+        assertThat(passes.get()).isEqualTo(2);
+    }
+
     private static Setup restartedWith(CountingTier tier, int segments) {
         var storage = StorageInstance.storageInstance("age", List.of(tier), MetadataStore.inMemoryMetadataStore("age"));
         var sink = storageSegmentSink(storage, new SegmentIndex());
@@ -146,9 +189,14 @@ class RetentionAgeLearningBoundsTest {
         final AtomicInteger reads = new AtomicInteger();
         final AtomicInteger inFlight = new AtomicInteger();
         final AtomicInteger peak = new AtomicInteger();
+        final AtomicInteger failNextReads = new AtomicInteger();
 
         @Override
         public Promise<Option<byte[]>> get(BlockId id) {
+            if (failNextReads.getAndDecrement() > 0) {
+                return Causes.cause("injected I/O error").promise();
+            }
+
             reads.incrementAndGet();
             peak.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
 
