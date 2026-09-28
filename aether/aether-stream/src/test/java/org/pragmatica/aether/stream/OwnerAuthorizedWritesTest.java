@@ -328,7 +328,7 @@ class OwnerAuthorizedWritesTest {
                                              "earliest",
                                              StreamConfig.DEFAULT.maxEventSizeBytes(),
                                              ConsistencyMode.EVENTUAL,
-                                             MIN_SYNC_TWO,
+                                             3,
                                              MIN_SYNC_TWO,
                                              StreamCompression.NONE,
                                              Option.none());

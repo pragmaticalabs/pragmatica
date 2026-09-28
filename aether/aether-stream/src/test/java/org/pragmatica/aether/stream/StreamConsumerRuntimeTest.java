@@ -2720,7 +2720,7 @@ class StreamConsumerRuntimeTest {
                                              "latest",
                                              1_048_576L,
                                              ConsistencyMode.EVENTUAL,
-                                             1,
+                                             3,
                                              0,
                                              StreamCompression.NONE,
                                              none());

@@ -39,7 +39,7 @@ class SegmentSealerBacklogTest {
 
     @Test
     void backlogReleasedToSynchronousSink_sealsEverySegmentInOrder_pendingBytesReachZero() {
-        var sealer = segmentSealer(this::seal);
+        var sealer = segmentSealer((segment, _) -> seal(segment));
 
         LongStream.range(0, BACKLOG)
                   .forEach(offset -> sealer.onEviction(STREAM,

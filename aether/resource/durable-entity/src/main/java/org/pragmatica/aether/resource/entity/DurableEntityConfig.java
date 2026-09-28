@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.entity;
 import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidKeyspace;
 import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidPartitionCount;
 import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidReplicationFactor;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -41,20 +42,16 @@ public record DurableEntityConfig(String keyspace, int partitionCount, int repli
     /// i.e. `awaitReplication(..., minAcks)` blocks on ONE distinct non-self ack.
     ///
     /// ## Why this is derived and not configured
-    /// It is the difference between the two guarantees this resource can offer, and both are honest:
-    ///
-    ///   - `replicationFactor == 1` ⇒ `1`. No peer holds the record. State survives a RESTART of the
-    ///     owner (the local WAL is fsync-durable before the write acks) but NOT the owner's death: a new
-    ///     owner recovers only to the last sealed segment plus checkpoint, and everything after it is on
-    ///     a disk nobody is reading. This is a legitimate single-node/dev choice, and it is the caller's
-    ///     to make EXPLICITLY.
-    ///   - `replicationFactor >= 2` ⇒ `2`. A peer holds the record before the write acks, so a new owner
-    ///     replays a log that already contains it.
+    /// `replicationFactor < 3` is refused at bind (#1547, the stream replication minimum: under terminal
+    /// removal a dead owner never returns, so a single copy dies with it), which leaves one value:
+    /// `replicationFactor >= 3` ⇒ `2`. The owner and one peer hold the record before the write acks. With
+    /// `2 < replicationFactor` the peer that acked need not be the replica promoted when the owner dies,
+    /// and promotion catch-up sources from a single survivor, so a lossless promotion is not yet
+    /// guaranteed (#411).
     ///
     /// Deriving rather than configuring is what keeps the runtime from silently degrading: a cluster too
     /// small to satisfy the barrier FAILS the write with a typed cause instead of quietly serving the
-    /// weaker guarantee under the stronger name. Whoever wants the weaker one writes `1` and can be held
-    /// to it.
+    /// weaker guarantee under the stronger name.
     public int minSyncReplicas() {
         return Math.min(2, replicationFactor);
     }
@@ -76,7 +73,7 @@ public record DurableEntityConfig(String keyspace, int partitionCount, int repli
     ///                          [EntityProvisioningError.InvalidKeyspace] for why the character is
     ///                          reserved)
     /// @param partitionCount    number of ownership arcs for the keyspace
-    /// @param replicationFactor total copies including the owner; must be at least 1
+    /// @param replicationFactor total copies including the owner; at least `StreamConfig.MIN_REPLICAS` (3, #1547)
     ///
     /// @return the config, or a failure naming the rule the declaration broke
     public static Result<DurableEntityConfig> durableEntityConfig(String keyspace,
@@ -89,7 +86,7 @@ public record DurableEntityConfig(String keyspace, int partitionCount, int repli
                                  new InvalidPartitionCount(partitionCount)),
                    Verify.ensure(replicationFactor,
                                  Verify.Is::greaterThanOrEqualTo,
-                                 1,
+                                 StreamConfig.MIN_REPLICAS,
                                  new InvalidReplicationFactor(replicationFactor))).map(DurableEntityConfig::new);
     }
 

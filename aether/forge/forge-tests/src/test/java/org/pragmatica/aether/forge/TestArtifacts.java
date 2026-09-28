@@ -25,23 +25,25 @@ final class TestArtifacts {
     /// (independent of the platform `project.version`), so the coordinate is hardcoded.
     static final String STREAM_SLICE = "org.pragmatica.aether.test:test-stream-stream-slice:1.0.0";
 
-    /// RF=2 / min-sync-replicas=2 replicated stream blueprint (`test-stream-repl`), used by
-    /// `StreamOwnerFailoverTest` for the #457 in-JVM owner-kill failover proof. A synchronously
-    /// replicated stream (owner + 1 in-sync replica) is the ONLY topology with a promotable CAUGHT_UP
-    /// non-owner replica; `POST /api/v1/streams` can only mint RF=1 (owner-only), so the RF=2 config MUST
-    /// come from a blueprint that declares `min-sync-replicas=2`. Mirrors the RF=1 [#STREAM_SLICE]
+    /// RF=3 / min-sync-replicas=2 replicated stream blueprint (`test-stream-repl`), used by
+    /// `StreamOwnerFailoverTest` for the #457 in-JVM owner-kill failover proof (RF=2 until #1547 made 3
+    /// the stream replication minimum). Mirrors the default-RF [#STREAM_SLICE]
     /// coordinate (the `-stream-slice` artifact, fixed `1.0.0` blueprint version, resolved from the
     /// local Maven repo) — the sibling `aether/tests/blueprints/test-stream-repl` module the cloud
     /// suite `02-chaos/test-stream-replica-failover.sh` deploys.
     static final String STREAM_REPL_SLICE = "org.pragmatica.aether.test:test-stream-repl-stream-slice:1.0.0";
 
-    /// partitions=4 / RF=2 / min-sync-replicas=2 replicated stream blueprint (`test-stream-multipart`),
+    /// replicas=3 / min-sync-replicas=3 stream blueprint (`test-stream-acked`), used by
+    /// `StreamAckedRecordsOwnerKillTest` for the #1549 acked-record proof: every acked event is on every
+    /// replica, and the declared min-sync reaches the runtime only since #1549. A dedicated fixture so no
+    /// other test's semantics move with it.
+    static final String STREAM_ACKED_SLICE = "org.pragmatica.aether.test:test-stream-acked-stream-slice:1.0.0";
+
+    /// partitions=4 / RF=3 / min-sync-replicas=2 replicated stream blueprint (`test-stream-multipart`),
     /// used by `MultiPartitionStreamTest` for the #429 multi-partition e2e fixture (partition→owner
     /// distribution, per-partition ordering, local/forwarded reads + read-preference arms) and by
     /// `StreamPublishReshuffleTest` for the #430 publish-under-ownership-reshuffle chaos test. Four
-    /// partitions give HRW placement room to spread owners across the 5-node cluster; RF=2 +
-    /// synchronous replication (min-sync-2) is the only topology whose ACKED writes survive a single
-    /// owner kill. Mirrors the [#STREAM_REPL_SLICE] coordinate (the `-stream-slice` artifact, fixed
+    /// partitions give HRW placement room to spread owners across the 5-node cluster. Mirrors the [#STREAM_REPL_SLICE] coordinate (the `-stream-slice` artifact, fixed
     /// `1.0.0` blueprint version, resolved from the local Maven repo) — the sibling
     /// `aether/tests/blueprints/test-stream-multipart` module.
     static final String STREAM_MULTIPART_SLICE = "org.pragmatica.aether.test:test-stream-multipart-stream-slice:1.0.0";
@@ -80,9 +82,9 @@ final class TestArtifacts {
     /// different key convention — underscores (`topic_name`, `min_sync_replicas`) rather than the
     /// streams family's dashes.
     ///
-    /// Both its topics are `partitions = 1, replicas = 2, min_sync_replicas = 2`. That is the durable
-    /// tier's only proven scoping (a durable declaration outside `min-sync == replicas >= 2` is
-    /// rejected at parse), and the single partition is what makes the delivery count a discriminator:
+    /// Its topics are `partitions = 1, replicas = 3, min_sync_replicas = 3`. That is the durable
+    /// tier's only accepted scoping (a durable declaration outside `min-sync == replicas >= 3` is
+    /// rejected at parse, #1547), and the single partition is what makes the delivery count a discriminator:
     /// with the slice on every node, a correctly gated consumer records each event once cluster-wide
     /// while an ungated one records it once per node. Two subscriber methods bind to the SAME
     /// `poison-events` topic — one that can never ack and one that always can — making them two

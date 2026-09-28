@@ -190,7 +190,7 @@ class StreamForwardHandlerTest {
                                                      "earliest",
                                                      1_048_576L,
                                                      ConsistencyMode.EVENTUAL,
-                                                     2,
+                                                     3,
                                                      2,
                                                      StreamCompression.NONE,
                                                      Option.none()));
@@ -340,7 +340,7 @@ class StreamForwardHandlerTest {
                                              "latest",
                                              1_048_576L,
                                              ConsistencyMode.EVENTUAL,
-                                             2,
+                                             3,
                                              minSyncReplicas,
                                              StreamCompression.NONE,
                                              Option.none());
