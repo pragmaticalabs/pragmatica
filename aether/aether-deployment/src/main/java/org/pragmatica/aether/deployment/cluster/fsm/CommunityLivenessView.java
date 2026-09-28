@@ -59,7 +59,6 @@ public interface CommunityLivenessView {
     /// everyone-alive when no observation backs it).
     enum Unwired implements CommunityLivenessView {
         INSTANCE;
-
         @Override
         public boolean isAbsent(NodeId node) {
             return false;

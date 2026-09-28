@@ -46,13 +46,17 @@ public sealed interface CommunityLifecycleEvents {
                                             String communityId,
                                             Option<GovernorAnnouncementValue> before,
                                             GovernorAnnouncementValue after) {
-        var previous = before.map(GovernorAnnouncementValue::members)
-                             .map(Set::copyOf)
-                             .or(Set.of());
+        var previous = before.map(GovernorAnnouncementValue::members).map(Set::copyOf).or(Set.of());
         var current = Set.copyOf(after.members());
 
-        return Stream.concat(sorted(current, previous).map(node -> joined(clock.get(), communityId, node, after)),
-                             sorted(previous, current).map(node -> left(clock.get(), communityId, node, after)))
+        return Stream.concat(sorted(current, previous).map(node -> joined(clock.get(),
+                                                                          communityId,
+                                                                          node,
+                                                                          after)),
+                             sorted(previous, current).map(node -> left(clock.get(),
+                                                                        communityId,
+                                                                        node,
+                                                                        after)))
                      .toList();
     }
 
@@ -91,7 +95,10 @@ public sealed interface CommunityLifecycleEvents {
                                              CommunityValue value) {
         return new CommunityStateChanged(at,
                                          severityOf(value.state()),
-                                         "Community '" + communityId + "' " + from.name() + " -> " + value.state().name(),
+                                         "Community '" + communityId
+                                        + "' " + from.name()
+                                        + " -> " + value.state()
+                                                        .name(),
                                          Map.of("communityId",
                                                 communityId,
                                                 "from",
@@ -128,7 +135,9 @@ public sealed interface CommunityLifecycleEvents {
                                        rosterDetails(communityId, node, roster));
     }
 
-    private static Map<String, String> rosterDetails(String communityId, NodeId node, GovernorAnnouncementValue roster) {
+    private static Map<String, String> rosterDetails(String communityId,
+                                                     NodeId node,
+                                                     GovernorAnnouncementValue roster) {
         return Map.of("communityId",
                       communityId,
                       "nodeId",

@@ -55,8 +55,7 @@ public final class CommunityRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<CommunitiesResponse> route(ManagementRoute.CLUSTER_COMMUNITIES)
-                                         .toJson(this::buildCommunitiesResponse),
+        return Stream.of(ManagementRoutes.<CommunitiesResponse> route(ManagementRoute.CLUSTER_COMMUNITIES).toJson(this::buildCommunitiesResponse),
                          ManagementRoutes.<CommunityInfo> route(ManagementRoute.CLUSTER_COMMUNITY_GET)
                                          .withPath(PathParameter.aString())
                                          .to(this::communityDetail)
@@ -66,9 +65,7 @@ public final class CommunityRoutes implements RouteSource {
     private CommunitiesResponse buildCommunitiesResponse() {
         var node = nodeSupplier.get();
 
-        return new CommunitiesResponse(communityIds(node).stream()
-                                                         .map(id -> communityInfo(node, id))
-                                                         .toList());
+        return new CommunitiesResponse(communityIds(node).stream().map(id -> communityInfo(node, id)).toList());
     }
 
     private Promise<CommunityInfo> communityDetail(String communityId) {
@@ -84,8 +81,9 @@ public final class CommunityRoutes implements RouteSource {
     private static Set<String> communityIds(ManageableNode node) {
         var ids = new TreeSet<String>();
 
-        node.kvStore()
-            .forEach(CommunityKey.class, CommunityValue.class, (key, _) -> ids.add(key.communityId()));
+        node.kvStore().forEach(CommunityKey.class,
+                               CommunityValue.class,
+                               (key, _) -> ids.add(key.communityId()));
         node.kvStore()
             .forEach(GovernorAnnouncementKey.class,
                      GovernorAnnouncementValue.class,
@@ -101,16 +99,17 @@ public final class CommunityRoutes implements RouteSource {
     private static CommunityInfo communityInfo(ManageableNode node, String communityId) {
         var community = community(node, communityId);
         var roster = roster(node, communityId);
-        var members = roster.map(CommunityRoutes::memberIds)
-                            .or(List.of());
+        var members = roster.map(CommunityRoutes::memberIds).or(List.of());
 
         return new CommunityInfo(communityId,
-                                 community.map(value -> value.state().name()),
+                                 community.map(value -> value.state()
+                                                             .name()),
                                  community.map(CommunityValue::targetSize),
                                  community.map(CommunityValue::role),
                                  community.map(CommunityValue::createdAt),
                                  community.flatMap(CommunityValue::dissolvedAt),
-                                 roster.map(value -> value.governorId().id()),
+                                 roster.map(value -> value.governorId()
+                                                          .id()),
                                  members,
                                  members.size(),
                                  roster.map(GovernorAnnouncementValue::communityTerm),
@@ -128,11 +127,13 @@ public final class CommunityRoutes implements RouteSource {
 
     private static Option<CommunityValue> community(ManageableNode node, String communityId) {
         return node.kvStore()
-                   .getTyped(CommunityKey.communityKey(communityId), CommunityValue.class);
+                   .getTyped(CommunityKey.communityKey(communityId),
+                             CommunityValue.class);
     }
 
     private static Option<GovernorAnnouncementValue> roster(ManageableNode node, String communityId) {
         return node.kvStore()
-                   .getTyped(GovernorAnnouncementKey.forCommunity(communityId), GovernorAnnouncementValue.class);
+                   .getTyped(GovernorAnnouncementKey.forCommunity(communityId),
+                             GovernorAnnouncementValue.class);
     }
 }

@@ -2875,7 +2875,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// positive evidence for members still assigned to this community. Shared with the
         /// `/cluster/communities` route through [CommunityLiveMembers] (#1652); no roster counts as zero here.
         private int communityLiveMembers(String communityId) {
-            return CommunityLiveMembers.communityLiveMembers(ctx.kvStore(), ctx.communityLiveness(), communityId)
+            return CommunityLiveMembers.communityLiveMembers(ctx.kvStore(),
+                                                             ctx.communityLiveness(),
+                                                             communityId)
                                        .or(0);
         }
 

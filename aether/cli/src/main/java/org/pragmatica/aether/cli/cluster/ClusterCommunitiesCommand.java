@@ -20,12 +20,12 @@ import picocli.CommandLine.Parameters;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_COMMUNITIES;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_COMMUNITY_GET;
+import static org.pragmatica.lang.Option.option;
 
 
 /// #1652: `aether cluster communities [<id>]` — every community, or one, with its lifecycle state,
 /// target size, roster and the leader's live-member count.
-@Command(name = "communities",
- description = "Show worker communities: state (FORMING/ACTIVE/DEGRADED/DISSOLVED), target size, members and live members")
+@Command(name = "communities", description = "Show worker communities: state (FORMING/ACTIVE/DEGRADED/DISSOLVED), target size, members and live members")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterCommunitiesCommand implements Callable<Integer> {
     @CommandLine.ParentCommand
@@ -40,12 +40,13 @@ class ClusterCommunitiesCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         return clusterTarget.applyOverrides()
-                            .flatMap(_ -> fetch(Option.option(communityId)))
+                            .flatMap(_ -> fetch(option(communityId)))
                             .fold(ClusterCommunitiesCommand::onFailure, this::onSuccess);
     }
 
     private static Result<String> fetch(Option<String> communityId) {
-        return communityId.map(id -> ClusterHttpClient.fetch(CLUSTER_COMMUNITY_GET, List.of(id)))
+        return communityId.map(id -> ClusterHttpClient.fetch(CLUSTER_COMMUNITY_GET,
+                                                             List.of(id)))
                           .or(() -> ClusterHttpClient.fetch(CLUSTER_COMMUNITIES));
     }
 

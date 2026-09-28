@@ -28,7 +28,8 @@ public sealed interface CommunityLiveMembers {
     static Option<Integer> communityLiveMembers(KVStore<AetherKey, AetherValue> kvStore,
                                                 CommunityLivenessView liveness,
                                                 String communityId) {
-        return kvStore.getTyped(GovernorAnnouncementKey.forCommunity(communityId), GovernorAnnouncementValue.class)
+        return kvStore.getTyped(GovernorAnnouncementKey.forCommunity(communityId),
+                                GovernorAnnouncementValue.class)
                       .filter(value -> !value.dissolved())
                       .map(value -> countLive(kvStore, liveness, communityId, value));
     }
@@ -40,13 +41,20 @@ public sealed interface CommunityLiveMembers {
         return (int) value.members()
                           .stream()
                           .distinct()
-                          .filter(node -> directedTo(kvStore, node, communityId))
-                          .filter(node -> !liveness.isAbsent(node))
+                          .filter(node -> countsAsLive(kvStore, liveness, node, communityId))
                           .count();
     }
 
+    private static boolean countsAsLive(KVStore<AetherKey, AetherValue> kvStore,
+                                        CommunityLivenessView liveness,
+                                        NodeId node,
+                                        String communityId) {
+        return directedTo(kvStore, node, communityId) && !liveness.isAbsent(node);
+    }
+
     private static boolean directedTo(KVStore<AetherKey, AetherValue> kvStore, NodeId node, String communityId) {
-        return kvStore.getTyped(ActivationDirectiveKey.activationDirectiveKey(node), ActivationDirectiveValue.class)
+        return kvStore.getTyped(ActivationDirectiveKey.activationDirectiveKey(node),
+                                ActivationDirectiveValue.class)
                       .filter(directive -> directive.communityId()
                                                     .equals(communityId))
                       .isPresent();

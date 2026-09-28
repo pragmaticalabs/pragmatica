@@ -79,6 +79,7 @@ import org.pragmatica.statemachine.Fsm;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
@@ -541,7 +542,7 @@ public interface ClusterDeploymentManager {
         public Option<Integer> communityLiveMembers(String communityId) {
             return ctx.isActive() && ctx.hasCommunityLiveness()
                    ? CommunityLiveMembers.communityLiveMembers(ctx.kvStore(), ctx.communityLiveness(), communityId)
-                   : Option.none();
+                   : none();
         }
 
         @Contract
