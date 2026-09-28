@@ -102,11 +102,11 @@ public class RabiaEngine<C extends Command> {
     /// One stuck-in-`Syncing` WARN per this many unsatisfied sync rounds (#660) — roughly every 30s at
     /// the default 5s `syncRetryInterval`.
     private static final int WARN_EVERY_N_SYNC_ROUNDS = 6;
+
     /// Greater is preferred: higher epoch; at an equal epoch, the lexicographically LOWER member-id list
     /// (members are kept sorted, joined with a separator below every id character).
-    private static final Comparator<VoterConfiguration> FORMED_PREFERENCE = Comparator.comparingLong(VoterConfiguration::epoch)
-                                                                                       .thenComparing(RabiaEngine::memberIds,
-                                                                                                      Comparator.reverseOrder());
+    private static final Comparator<VoterConfiguration> FORMED_PREFERENCE = Comparator.comparingLong(VoterConfiguration::epoch).thenComparing(RabiaEngine::memberIds,
+                                                                                                                                              Comparator.reverseOrder());
 
     private volatile boolean passiveClient;
     private boolean participationStarted;
@@ -464,8 +464,7 @@ public class RabiaEngine<C extends Command> {
     /// seen one on a tie and replacing it are the same.
     private void noteFormedElectorate(VoterConfiguration formed) {
         if (genesisPending) {
-            newestFormed = Option.some(newestFormed.map(seen -> preferredFormed(seen, formed))
-                                                   .or(formed));
+            newestFormed = Option.some(newestFormed.map(seen -> preferredFormed(seen, formed)).or(formed));
         }
     }
 

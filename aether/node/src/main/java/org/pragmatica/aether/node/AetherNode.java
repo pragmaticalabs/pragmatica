@@ -5939,7 +5939,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                     .noneMatch(configuredPeers::contains);
     }
 
-
     private static Set<NodeId> configuredVoters(AetherNodeConfig config) {
         return config.topology()
                      .coreNodes()
