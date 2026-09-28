@@ -134,8 +134,10 @@ class OwnershipFenceBaselineTest {
         var rf = ReplicaPlacement.replicationFactor(REQUESTED_RF, members.size());
         var owner0 = ownerOf(FENCE_STREAM, members, rf);
 
-        var epoch0 = Epoch.epoch(0L, 7L, 0L);
-        var epoch1 = Epoch.epoch(0L, 8L, 0L);
+        // #1529: the live cluster incarnation leads every epoch it compares; a literal 0 would sit below it.
+        var incarnation = cluster.allNodes().getFirst().currentGenerationEpoch().incarnation();
+        var epoch0 = Epoch.epoch(incarnation, 7L, 0L);
+        var epoch1 = Epoch.epoch(incarnation, 8L, 0L);
         assertThat(epoch1.isStrictlyAfter(epoch0))
             .as("new owner's generation (term 8) must strictly dominate the deposed owner's (term 7)")
             .isTrue();

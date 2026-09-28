@@ -79,7 +79,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// ## Determinism
 ///   - [`ReplicaPlacement#place`] is PURE HRW — the test computes the expected owner from the SAME
 ///     committed member view (`coreNodes()`) the driver uses, so the asserted owner is exact.
-///   - The driver's epoch is `Epoch.epoch(0L, rabiaTerm, ownershipTerm)`: the committed generation term
+///   - The driver's epoch is `Epoch.epoch(incarnation, rabiaTerm, ownershipTerm)`: the committed generation term
 ///     paired with the per-partition takeover counter as its local component. It advances on a leader
 ///     re-election (rabiaTerm, the dominant component) AND on every owner change (ownershipTerm, the
 ///     local counter), so a deposed-but-alive owner is fenced even within a single generation term.
@@ -205,11 +205,14 @@ class StreamOwnershipDriverFenceTest {
         var owner0 = hrwOwner(TRANSFER_STREAM, TRANSFER_PARTITION);
         var owner1 = view.stream().filter(n -> !n.equals(owner0)).findFirst().orElse(view.getLast());
         var owner0Node = resolveNode(owner0);
-        var term = leaderNode().currentGenerationEpoch().rabiaTerm();
+        // #1529: epochs carry the live cluster incarnation (minted 1 at genesis), read here, never a literal.
+        var generation = leaderNode().currentGenerationEpoch();
+        var incarnation = generation.incarnation();
+        var term = generation.rabiaTerm();
         log.info("OWNERSHIP-DRIVER-FENCE: same-term transfer owner0={} owner1={} term={}", owner0.id(), owner1.id(), term);
 
         var hrwHolder = new AtomicReference<>(owner0);
-        var writer = liveWriter(term, hrwHolder::get);
+        var writer = liveWriter(incarnation, term, hrwHolder::get);
 
         // The writer commits owner0 at (term, 1) through REAL consensus — no manual Put; the writer mints it.
         commitOwnershipVia(writer, TRANSFER_STREAM, TRANSFER_PARTITION);
@@ -218,7 +221,7 @@ class StreamOwnershipDriverFenceTest {
         var first = committedOwner(TRANSFER_PARTITION).or(StreamOwnershipDriverFenceTest::failNoRecord);
         assertThat(first.ownerEpoch())
             .as("writer commits owner0 at (term, ownershipTerm=1)")
-            .isEqualTo(Epoch.epoch(0L, term, 1L));
+            .isEqualTo(Epoch.epoch(incarnation, term, 1L));
 
         // Same-term reshuffle: HRW now selects owner1. The writer commits the transfer at (term, 2).
         hrwHolder.set(owner1);
@@ -228,7 +231,7 @@ class StreamOwnershipDriverFenceTest {
         var second = committedOwner(TRANSFER_PARTITION).or(StreamOwnershipDriverFenceTest::failNoRecord);
         assertThat(second.ownerEpoch())
             .as("the same-term transfer to owner1 advances the epoch to (term, ownershipTerm=2)")
-            .isEqualTo(Epoch.epoch(0L, term, 2L));
+            .isEqualTo(Epoch.epoch(incarnation, term, 2L));
         assertThat(second.ownerEpoch().isStrictlyAfter(first.ownerEpoch()))
             .as("owner1's epoch strictly dominates owner0's at the SAME generation term")
             .isTrue();
@@ -237,9 +240,9 @@ class StreamOwnershipDriverFenceTest {
 
         // owner0 is STILL ALIVE. Once its high-water observes (term, 2), its (term, 1)-stamped append is fenced.
         await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
-               .until(() -> transferAppend(owner0Node, Epoch.epoch(0L, term, 1L)).isFailure());
+               .until(() -> transferAppend(owner0Node, Epoch.epoch(incarnation, term, 1L)).isFailure());
 
-        transferAppend(owner0Node, Epoch.epoch(0L, term, 1L))
+        transferAppend(owner0Node, Epoch.epoch(incarnation, term, 1L))
             .onSuccess(offset -> Assertions.fail(
                 "fence: the deposed-but-alive owner0's (term, 1) append must be REJECTED after the same-term "
                 + "transfer advanced the committed epoch to (term, 2), but it was accepted at offset " + offset))
@@ -248,7 +251,7 @@ class StreamOwnershipDriverFenceTest {
         // epoch (term, 2) passes the fence, and the owner-write admission — bound through the real AetherNode
         // wiring to the committed record, which now names owner1 — refuses it instead. A live non-owner
         // stamping the committed epoch is exactly the second writer the fence cannot see.
-        transferAppend(owner0Node, Epoch.epoch(0L, term, 2L))
+        transferAppend(owner0Node, Epoch.epoch(incarnation, term, 2L))
             .onSuccess(offset -> Assertions.fail(
                 "admission: the deposed owner0's CURRENT-epoch append must be refused as a non-owner write, but it "
                 + "was accepted at offset " + offset))
@@ -265,9 +268,9 @@ class StreamOwnershipDriverFenceTest {
     /// Build the production [StreamPartitionOwnershipWriter] bound to the LIVE leader: real committed-KV
     /// reader, real consensus generation term (held fixed for a same-term reshuffle), and a
     /// test-controlled HRW seam. Leader gate is `true` because the test drives it on the leader's behalf.
-    private StreamPartitionOwnershipWriter liveWriter(long term, Supplier<NodeId> hrwOwner) {
+    private StreamPartitionOwnershipWriter liveWriter(long incarnation, long term, Supplier<NodeId> hrwOwner) {
         return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
-                                                                             () -> Epoch.epoch(0L, term, 0L),
+                                                                             () -> Epoch.epoch(incarnation, term, 0L),
                                                                              HlcClock.hlcClock(leaderNode().self()),
                                                                              (stream, partition) -> committedOwner(partition),
                                                                              (stream, partition) -> Option.some(hrwOwner.get()));

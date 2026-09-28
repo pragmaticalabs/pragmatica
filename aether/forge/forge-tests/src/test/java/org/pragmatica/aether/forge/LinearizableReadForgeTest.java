@@ -105,12 +105,13 @@ class LinearizableReadForgeTest {
 
         var owner = hrwOwner(STREAM, PARTITION);
         var ownerNode = resolveNode(owner);
-        var term = leaderNode().currentGenerationEpoch().rabiaTerm();
+        var generation = leaderNode().currentGenerationEpoch();
+        var term = generation.rabiaTerm();
         log.info("LINEARIZABLE-READ: committed owner={} term={}", owner.id(), term);
 
         // Commit ownership through the production writer + REAL consensus, so the LINEARIZABLE arm has a
         // committed StreamPartitionOwnershipValue.owner to route to.
-        var writer = liveWriter(term, owner);
+        var writer = liveWriter(generation.incarnation(), term, owner);
         commitOwnershipVia(writer, STREAM, PARTITION);
         await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
                .until(() -> committedOwner(PARTITION).map(v -> v.owner().equals(owner)).or(false));
@@ -158,9 +159,9 @@ class LinearizableReadForgeTest {
     /// Minimal carrier so the read result is a plain immutable value the awaitility predicate can size.
     private record OffHeapRingEvent(long offset) {}
 
-    private StreamPartitionOwnershipWriter liveWriter(long term, NodeId owner) {
+    private StreamPartitionOwnershipWriter liveWriter(long incarnation, long term, NodeId owner) {
         return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
-                                                                             () -> Epoch.epoch(0L, term, 0L),
+                                                                             () -> Epoch.epoch(incarnation, term, 0L),
                                                                              HlcClock.hlcClock(leaderNode().self()),
                                                                              (stream, partition) -> committedOwner(partition),
                                                                              (stream, partition) -> Option.some(owner));
