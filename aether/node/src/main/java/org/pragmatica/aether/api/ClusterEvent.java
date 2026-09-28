@@ -69,7 +69,6 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     String summary();
     /// Free-form key/value payload carried by every closed-set variant.
     Map<String, String> details();
-
     /// This event with `details[key] = value` (#1653: the aggregator stamps `details.eventId` through it). Each
     /// closed variant implements it with its own canonical constructor, so adding a variant is a compile error until
     /// it does, and no reflection is involved. An `ExtendedEvent` returns itself unless it overrides this.

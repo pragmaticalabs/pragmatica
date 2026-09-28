@@ -44,9 +44,9 @@ public class EventWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
     /// Events re-read before the cursor on each poll.
     static final long OVERLAP = 16;
+
     /// Upper bound on how long after an event's first copy a duplicate copy can land, plus margin.
-    static final long DEDUP_MEMORY_MS = ClusterEventRedelivery.RETRY_HORIZON_MS + ClusterEventRedelivery.MAX_BACKOFF_MS
-                                        + 60_000L;
+    static final long DEDUP_MEMORY_MS = ClusterEventRedelivery.RETRY_HORIZON_MS + ClusterEventRedelivery.MAX_BACKOFF_MS + 60_000L;
 
     private final EventWebSocketHandler handler;
     private final Function<Long, Promise<EventPage>> eventsFrom;
@@ -119,7 +119,8 @@ public class EventWebSocketPublisher {
             return;
         }
 
-        Promise<?> ignored = eventsFrom.apply(Math.max(0, cursor.get() - OVERLAP))
+        Promise<?> ignored = eventsFrom.apply(Math.max(0,
+                                                       cursor.get() - OVERLAP))
                                        .onSuccess(this::broadcastNew)
                                        .onFailure(cause -> log.error("Error publishing events via WebSocket: {}",
                                                                      cause.message()));
@@ -138,13 +139,13 @@ public class EventWebSocketPublisher {
 
     private List<ClusterEvent> notYetBroadcast(List<ClusterEvent> events, long now) {
         return events.stream()
-                     .filter(event -> broadcast.putIfAbsent(ClusterEventIdentity.key(event), now) == null)
+                     .filter(event -> broadcast.putIfAbsent(ClusterEventIdentity.key(event),
+                                                            now) == null)
                      .toList();
     }
 
     private void forgetBefore(long horizon) {
-        broadcast.values()
-                 .removeIf(broadcastAt -> broadcastAt < horizon);
+        broadcast.values().removeIf(broadcastAt -> broadcastAt < horizon);
     }
 
     /// Keys remembered as broadcast (observability for the #1653 prune pin).

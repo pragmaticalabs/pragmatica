@@ -357,25 +357,22 @@ public final class ClusterEventAggregator {
     public Promise<EventPage> eventsFrom(long fromOffset) {
         return Option.option(consumerSupplier.get())
                      .map(consumer -> pageFrom(consumer, fromOffset))
-                     .or(() -> Promise.success(new EventPage(List.of(), fromOffset)));
+                     .or(() -> Promise.success(new EventPage(List.of(),
+                                                             fromOffset)));
     }
 
     private static Promise<EventPage> pageFrom(FrameworkStreamConsumer<ClusterEvent> consumer, long fromOffset) {
         return consumer.metadata()
                        .map(ClusterEventAggregator::retainedTailOffset)
-                       .flatMap(tail -> consumer.fetch(Math.max(fromOffset, tail), FETCH_BATCH))
+                       .flatMap(tail -> consumer.fetch(Math.max(fromOffset, tail),
+                                                       FETCH_BATCH))
                        .map(raw -> page(raw, fromOffset));
     }
 
     private static EventPage page(List<StreamEvent<ClusterEvent>> raw, long fromOffset) {
-        var nextOffset = raw.stream()
-                            .mapToLong(StreamEvent::offset)
-                            .max()
-                            .orElse(fromOffset - 1) + 1;
+        var nextOffset = raw.stream().mapToLong(StreamEvent::offset).max().orElse(fromOffset - 1) + 1;
 
-        return new EventPage(raw.stream()
-                                .map(StreamEvent::payload)
-                                .toList(),
+        return new EventPage(raw.stream().map(StreamEvent::payload).toList(),
                              nextOffset);
     }
 

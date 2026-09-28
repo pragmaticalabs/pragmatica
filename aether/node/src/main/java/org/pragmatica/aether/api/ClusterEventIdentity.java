@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.utility.ULID;
 
+
 /// The identity that makes a cluster event's copies recognisable as ONE event (#1640, #1653).
 ///
 /// A publish whose outcome was unknown may have landed, and redelivery then sends the same event again, so the
@@ -23,8 +24,7 @@ import org.pragmatica.utility.ULID;
 final class ClusterEventIdentity {
     static final String EVENT_ID = "eventId";
 
-    private final String incarnation = ULID.ulid()
-                                           .encoded();
+    private final String incarnation = ULID.ulid().encoded();
     private final AtomicLong sequence = new AtomicLong();
 
     private ClusterEventIdentity() {}
@@ -44,6 +44,7 @@ final class ClusterEventIdentity {
     /// The key two copies of one event share: its `eventId`, or `at` for an event without one.
     static String key(ClusterEvent event) {
         return event.details()
-                    .getOrDefault(EVENT_ID, "at:" + event.at());
+                    .getOrDefault(EVENT_ID,
+                                  "at:" + event.at());
     }
 }
