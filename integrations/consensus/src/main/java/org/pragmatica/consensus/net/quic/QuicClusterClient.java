@@ -212,6 +212,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private final boolean ownsEventLoop;
     private final QuicClusterServer.MessageReceiver messageReceiver;
     private final BootTokens bootTokens;
+    private final PeerOpenedLaneRouter laneRouter;
     /// Non-blocking DNS resolver backed by the client's Netty event loop. Lazily built on first
     /// [#resolve] so construction stays cheap and tests that never dial never allocate it. The
     /// `DefaultNameResolver` performs the JDK lookup on the supplied [io.netty.util.concurrent.EventExecutor],
@@ -245,6 +246,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         this.eventLoopGroup = eventLoop.or(QuicClusterClientInstance::createEventLoop);
         this.messageReceiver = messageReceiver;
         this.bootTokens = bootTokens;
+        this.laneRouter = new PeerOpenedLaneRouter(deserializer, quicMetrics, messageReceiver, log);
     }
 
     @Override
@@ -374,6 +376,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                                     Promise<QuicPeerConnection> promise) {
         QuicChannel.newBootstrap(channel)
                    .handler(new ClientConnectionInitializer())
+                   .streamHandler(new DialerStreamInitializer())
                    .remoteAddress(address)
                    .connect()
                    .addListener(future -> handleQuicConnect(peerId, address, promise, future));
@@ -524,6 +527,43 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         @Contract
         protected void initChannel(QuicChannel ch) {
         // No additional handlers needed for raw QUIC connections
+        }
+    }
+
+    /// #1578 — initializer for streams the ACCEPTOR opens on this connection. There was none: a lane
+    /// the acceptor lazily opened (a write racing this dialer's preamble frames) was read by nobody,
+    /// so everything written on it vanished while the acceptor saw successful writes. Same framing as
+    /// every other lane; the preamble is routed through the acceptor's own [PeerOpenedLaneRouter].
+    private class DialerStreamInitializer extends ChannelInitializer<QuicStreamChannel> {
+        @Override
+        @Contract
+        protected void initChannel(QuicStreamChannel ch) {
+            ch.pipeline()
+              .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
+              .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
+              .addLast(new DialerStreamHandler());
+        }
+    }
+
+    /// Reads the 1-byte lane preamble of an acceptor-opened stream and hands the stream to
+    /// [PeerOpenedLaneRouter]. CONTROL is refused: the handshake lane is always dialer-opened.
+    private class DialerStreamHandler extends SimpleChannelInboundHandler<ByteBuf> {
+        @Override
+        @Contract
+        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
+            // #726: the preamble is a real frame at the lane boundary, counted like the acceptor's.
+            quicMetrics.onBytesReceived(buf.readableBytes());
+            PeerOpenedLaneRouter.preambleLane(buf)
+                                .filter(lane -> lane != StreamType.CONTROL)
+                                .fold(() -> refusePreamble(ctx), lane -> laneRouter.attach(ctx, this, lane));
+        }
+
+        private Unit refusePreamble(ChannelHandlerContext ctx) {
+            log.warn("Missing, invalid or CONTROL preamble on an acceptor-opened stream from {} — closing",
+                     ctx.channel().remoteAddress());
+            ctx.close();
+
+            return unit();
         }
     }
 
@@ -682,7 +722,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // a connection under an unverified id.
             var peerConnection = quicPeerConnection(peerId, selfId, quicChannel);
             // The handshake stream is the CONTROL lane.
-            peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
+            var _ = peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
+            // #1578: stamp the VERIFIED connection so a lane the acceptor opens finds it (the acceptor
+            // opens lanes only after answering this Hello, so the stamp precedes them).
+            quicChannel.attr(PeerOpenedLaneRouter.PEER_CONNECTION).set(peerConnection);
             // Install the lazy lane-opener so a write that finds a lost data lane can re-open it on
             // the live channel instead of failing "No stream available" (symmetry with the acceptor).
             peerConnection.laneOpener((lane, onResult) -> openLaneStream(peerConnection, peerId, lane, onResult));
@@ -753,7 +796,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
             // #726: PAYLOAD bytes at the lane boundary — the lane preamble is a real frame.
             quicMetrics.onBytesSent(preamble.length);
-            peerConnection.registerStream(lane, streamChannel);
+            var _ = peerConnection.registerStream(lane, streamChannel);
             if (pending.decrementAndGet() == 0) {
                 log.info("All 8 lanes registered for peer {} — connection ready", peerNodeId);
                 promise.succeed(peerConnection);
@@ -808,9 +851,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
             // #726: PAYLOAD bytes at the lane boundary — lazy-reopen preamble is a real frame too.
             quicMetrics.onBytesSent(preamble.length);
-            peerConnection.registerStream(lane, streamChannel);
+            // #1578: report the stream the lane KEEPS, which is where messages waiting on this open belong.
+            var kept = peerConnection.registerStream(lane, streamChannel);
+
             log.info("Lazily (re)opened {} lane to peer {} — stream-zombie healed without re-dial", lane, peerNodeId);
-            onResult.accept(option(streamChannel));
+            onResult.accept(option(kept));
         }
     }
 }

@@ -237,6 +237,138 @@ class StreamConfigParserTest {
             assertThat(result.isSuccess()).isTrue();
         }
 
+        /// #1549: a key nothing in the stream parser reads is refused by a typed cause naming the key and the
+        /// known key it resembles — never ignored, because the runtime now binds through this same parse.
+        @Test
+        void rejectsUnknownKey_namingTheKnownKeyItResembles() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    max_event_size_bytes = 1024
+                    min_sync_replicas = 2
+                    """;
+
+            parseResources(toml).onSuccess(_ -> fail("unknown keys must be refused"))
+                                .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
+                                .onFailure(cause -> assertThat(((StreamDeclarationError.UnknownStreamKeys) cause).keys())
+                                                        .containsExactly("max_event_size_bytes", "min_sync_replicas"))
+                                .onFailure(cause -> assertThat(cause.message()).contains("did you mean 'min-sync-replicas'"));
+        }
+
+        @Test
+        void rejectsUnknownKey_onAnExternalSection() {
+            var toml = """
+                    [streams.audit]
+                    source = "io.acme.inventory:stock-updates:2.0.0"
+                    partitons = 4
+                    """;
+
+            parseResources(toml).onSuccess(_ -> fail("unknown keys must be refused on external sections too"))
+                                .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class));
+        }
+
+        @Test
+        void rejectsNonIntegerValue_forAnIntegerKey() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    replicas = "three"
+                    """;
+
+            parseResources(toml).onSuccess(_ -> fail("a non-integer replicas must be refused, not defaulted"))
+                                .onFailure(cause -> assertThat(cause).isEqualTo(new StreamDeclarationError.NotAnInteger("orders", "replicas", "three")));
+        }
+
+        /// #1549 (v1557): every value refusal below used to throw, default or wrap once these values reached the
+        /// runtime; each is now a typed cause at deploy.
+        @Test
+        void rejectsZeroCount() {
+            assertValueRefused("retention = \"count\"\nretention-value = \"0\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "retention-value", "0", 1));
+        }
+
+        @Test
+        void rejectsZeroCompoundMaxCount() {
+            assertValueRefused("retention = \"compound\"\nmax-count = \"0\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "max-count", "0", 1));
+        }
+
+        @Test
+        void rejectsZeroMaxEventSize() {
+            assertValueRefused("max-event-size = \"0\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "max-event-size", "0", 1));
+        }
+
+        @Test
+        void rejectsZeroMaxEventSizeWithUnit() {
+            assertValueRefused("max-event-size = \"0KB\"",
+                               new StreamDeclarationError.ValueOutOfRange("orders", "max-event-size", "0KB", 1));
+        }
+
+        @Test
+        void rejectsNegativeMaxEventSize() {
+            assertValueRefused("max-event-size = \"-1\"",
+                               new StreamDeclarationError.MalformedValue("orders", "max-event-size", "-1", StreamValues.SIZE_FORM));
+        }
+
+        @Test
+        void rejectsNegativeCount() {
+            assertValueRefused("retention = \"count\"\nretention-value = \"-5\"",
+                               new StreamDeclarationError.MalformedValue("orders", "retention-value", "-5", StreamValues.COUNT_FORM));
+        }
+
+        @Test
+        void rejectsNegativeSize() {
+            assertValueRefused("retention = \"size\"\nretention-value = \"-1\"",
+                               new StreamDeclarationError.MalformedValue("orders", "retention-value", "-1", StreamValues.SIZE_FORM));
+        }
+
+        @Test
+        void rejectsFractionalSize() {
+            assertValueRefused("max-event-size = \"1.5MB\"",
+                               new StreamDeclarationError.MalformedValue("orders", "max-event-size", "1.5MB", StreamValues.SIZE_FORM));
+        }
+
+        @Test
+        void rejectsUnknownDurationUnit() {
+            assertValueRefused("retention = \"time\"\nretention-value = \"5 min\"",
+                               new StreamDeclarationError.MalformedValue("orders", "retention-value", "5 min", StreamValues.DURATION_FORM));
+        }
+
+        @Test
+        void rejectsCountBeyondTheLongRange() {
+            assertValueRefused("retention = \"count\"\nretention-value = \"99999999999999999999\"",
+                               new StreamDeclarationError.ValueOverflows("orders", "retention-value", "99999999999999999999"));
+        }
+
+        @Test
+        void rejectsDurationThatOverflowsInMilliseconds() {
+            assertValueRefused("retention = \"time\"\nretention-value = \"999999999999999d\"",
+                               new StreamDeclarationError.ValueOverflows("orders", "retention-value", "999999999999999d"));
+        }
+
+        @Test
+        void rejectsEventSizeThatOverflowsInBytes() {
+            assertValueRefused("max-event-size = \"99999999999GB\"",
+                               new StreamDeclarationError.ValueOverflows("orders", "max-event-size", "99999999999GB"));
+        }
+
+        @Test
+        void rejectsZeroPartitions() {
+            assertValueRefused("partitions = 0", new StreamDeclarationError.ValueOutOfRange("orders", "partitions", "0", 1));
+        }
+
+        @Test
+        void rejectsNegativePartitions() {
+            assertValueRefused("partitions = -1", new StreamDeclarationError.ValueOutOfRange("orders", "partitions", "-1", 1));
+        }
+
+        @Test
+        void rejectsUnknownRetentionForm() {
+            assertValueRefused("retention = \"tme\"",
+                               new StreamDeclarationError.MalformedValue("orders", "retention", "tme", "one of count, time, size, compound"));
+        }
+
         /// #1547: the stream replication factor minimum is 3 — a declared value below it is refused by a
         /// typed cause naming the stream, the declared value and the minimum; it is never clamped up.
         @Test
@@ -407,6 +539,61 @@ class StreamConfigParserTest {
             var owned = (StreamResource.Owned) result.get("inventory");
             assertThat(owned.version()).isSameAs(StreamVersionSpec.Latest.INSTANCE);
         }
+    }
+
+    /// #1549: `checkpoint-interval` threw `NumberFormatException` out of deploy validation; it is refused typed now.
+    @Nested
+    class ConsumerValues {
+        @Test
+        void parseConsumers_refusesCheckpointIntervalThatIsNotADuration() {
+            assertCheckpointRefused("5 min",
+                                    new StreamDeclarationError.MalformedValue("orders",
+                                                                              "consumers.billing.checkpoint-interval",
+                                                                              "5 min",
+                                                                              StreamValues.DURATION_FORM));
+        }
+
+        @Test
+        void parseConsumers_refusesZeroCheckpointInterval() {
+            assertCheckpointRefused("0s",
+                                    new StreamDeclarationError.ValueOutOfRange("orders",
+                                                                               "consumers.billing.checkpoint-interval",
+                                                                               "0s",
+                                                                               1));
+        }
+
+        @Test
+        void parseConsumers_refusesOverflowingCheckpointInterval() {
+            assertCheckpointRefused("999999999999999d",
+                                    new StreamDeclarationError.ValueOverflows("orders",
+                                                                              "consumers.billing.checkpoint-interval",
+                                                                              "999999999999999d"));
+        }
+
+        @Test
+        void parseConsumers_bindsDeclaredCheckpointInterval() {
+            StreamConfigParser.parseConsumers(consumerToml("5s"), "orders")
+                              .onFailure(cause -> fail(cause.message()))
+                              .onSuccess(consumers -> assertThat(consumers.get("billing").checkpointInterval().millis()).isEqualTo(5_000L));
+        }
+
+        private static void assertCheckpointRefused(String raw, StreamDeclarationError expected) {
+            StreamConfigParser.parseConsumers(consumerToml(raw), "orders")
+                              .onSuccess(consumers -> fail("expected " + expected + ", parsed " + consumers))
+                              .onFailure(cause -> assertThat(cause).isEqualTo(expected));
+        }
+
+        private static String consumerToml(String checkpointInterval) {
+            return "[streams.orders]\nversion = \"1.0.0\"\n\n[streams.orders.consumers.billing]\ncheckpoint-interval = \""
+                   + checkpointInterval + "\"\n";
+        }
+    }
+
+    private static void assertValueRefused(String lines, StreamDeclarationError expected) {
+        var toml = "[streams.orders]\nversion = \"1.0.0\"\n" + lines + "\n";
+
+        parseResources(toml).onSuccess(resources -> fail("expected " + expected + ", parsed " + resources))
+                            .onFailure(cause -> assertThat(cause).isEqualTo(expected));
     }
 
     private static void assertReplicasRefused(int replicas) {

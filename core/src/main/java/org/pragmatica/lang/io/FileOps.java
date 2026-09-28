@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -124,7 +125,33 @@ public sealed interface FileOps {
         // The order is the guarantee, not an accident of composition: the directory force must come
         // AFTER the file exists, or the entry naming it is never the thing that got synced. Pinned
         // by FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
-        return writeAndForce(path, content).flatMap(_ -> forceParentDirectory(path));
+        return writeBytesForced(path, content).flatMap(_ -> forceDirectory(path.toAbsolutePath().getParent()));
+    }
+
+    /// Write a byte array to a file and force the file -- its bytes and its metadata
+    /// (`FileChannel.force(true)`) -- to the device before returning. Creates the file if it doesn't
+    /// exist, truncates if it does. The directory entry naming the file is NOT forced: this is the
+    /// first half of [#writeBytesDurable], for a caller that publishes the file under another name
+    /// (a same-directory sibling renamed with [#moveAtomic]) and must force the directory AFTER
+    /// that rename, with [#forceDirectory] -- forcing it before would sync an entry the rename is
+    /// about to replace.
+    static Result<Unit> writeBytesForced(Path path, byte[] content) {
+        return writeAndForce(path, content);
+    }
+
+    /// Force a directory to the device, so that the entries it holds -- files created, renamed into
+    /// or removed from it -- survive a crash. A file's own force never covers the entry that names
+    /// it. [unverified: Windows -- a directory cannot be opened as a channel there, so this returns a
+    /// failure rather than a silently weaker guarantee; Linux and macOS honour it.]
+    static Result<Unit> forceDirectory(Path directory) {
+        return Result.lift(e -> new FileError.WriteFailed(directory, e.getMessage()),
+                           () -> {
+                               try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+                               channel.force(true);
+                           }
+
+                               return unit();
+                           });
     }
 
     private static Result<Unit> writeAndForce(Path path, byte[] content) {
@@ -150,23 +177,39 @@ public sealed interface FileOps {
                            });
     }
 
-    private static Result<Unit> forceParentDirectory(Path path) {
-        return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
-                           () -> {
-                               try (var directory = FileChannel.open(path.toAbsolutePath().getParent(),
-                                                                     StandardOpenOption.READ)) {
-                               directory.force(true);
-                           }
-
-                               return unit();
-                           });
-    }
-
     // === Directory ===
     /// Create a directory and all parent directories.
     static Result<Path> createDirectories(Path path) {
         return Result.lift(e -> new FileError.DirectoryCreationFailed(path, e.getMessage()),
                            () -> Files.createDirectories(path));
+    }
+
+    /// Create a directory and all missing parents, and make their creation durable: after the
+    /// directories exist, the parent of every directory this call CREATED is forced
+    /// ([#forceDirectory]), so the entries naming them survive a crash. Directories that already
+    /// existed are not forced -- their entries were made durable, or not, by whoever created them.
+    /// Without this, a file made durable inside a freshly created directory can still vanish with
+    /// the directory after a power loss.
+    static Result<Path> createDirectoriesDurable(Path path) {
+        var absolute = path.toAbsolutePath();
+        var created = missingDirectories(absolute);
+
+        return createDirectories(absolute).flatMap(_ -> forceParentsOf(created))
+                                .map(_ -> absolute);
+    }
+
+    private static List<Path> missingDirectories(Path absolute) {
+        var missing = new ArrayList<Path>();
+
+        for (var current = absolute; current != null && !Files.exists(current); current = current.getParent()) {
+            missing.add(current);
+        }
+
+        return List.copyOf(missing);
+    }
+
+    private static Result<Unit> forceParentsOf(List<Path> created) {
+        return Result.allOf(created.stream().map(dir -> forceDirectory(dir.getParent())).toList()).mapToUnit();
     }
 
     // === Copy / Move / Delete ===

@@ -5,7 +5,7 @@
 
 package org.pragmatica.aether.stream;
 
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Option;
 
 import java.io.IOException;
@@ -18,7 +18,7 @@ import java.nio.channels.WritableByteChannel;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-/// Test seam for arming an interleaving around a partition WAL's fsync: reaches the manager's [PartitionWal]
+/// Test seam for arming an interleaving around a partition WAL's fsync: reaches the manager's [AppendLog]
 /// for `(stream, partition)` and swaps its channel — the WAL's only I/O seam — for one that delegates
 /// everything except `force`, which parks until released. Reflection, because neither is a production surface.
 final class GatedWalFsync extends FileChannel {
@@ -31,15 +31,15 @@ final class GatedWalFsync extends FileChannel {
     }
 
     @SuppressWarnings("unchecked")
-    static PartitionWal walOf(StreamPartitionManager manager, String stream, int partition) throws Exception {
+    static AppendLog walOf(StreamPartitionManager manager, String stream, int partition) throws Exception {
         var walFor = StreamPartitionManager.class.getDeclaredMethod("walFor", String.class, int.class);
 
         walFor.setAccessible(true);
-        return ((Option<PartitionWal>) walFor.invoke(manager, stream, partition)).unwrap();
+        return ((Option<AppendLog>) walFor.invoke(manager, stream, partition)).unwrap();
     }
 
-    static GatedWalFsync inject(PartitionWal wal) throws ReflectiveOperationException {
-        var field = PartitionWal.class.getDeclaredField("channel");
+    static GatedWalFsync inject(AppendLog wal) throws ReflectiveOperationException {
+        var field = AppendLog.class.getDeclaredField("channel");
 
         field.setAccessible(true);
         var gate = new GatedWalFsync((FileChannel) field.get(wal));

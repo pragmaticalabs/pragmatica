@@ -13,8 +13,8 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
-import org.pragmatica.aether.stream.wal.PartitionWal;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.WalRecord;
 import org.pragmatica.lang.Option;
 
 import java.nio.file.Path;
@@ -291,7 +291,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     }
 
     private long walLastOffset(StreamConfig config) {
-        var wal = PartitionWal.open(walFile(config)).unwrap();
+        var wal = AppendLog.open(walFile(config)).unwrap();
         var last = wal.lastOffset();
 
         wal.close();
@@ -299,7 +299,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     }
 
     private List<WalRecord> walRecords(StreamConfig config) {
-        var wal = PartitionWal.open(walFile(config)).unwrap();
+        var wal = AppendLog.open(walFile(config)).unwrap();
         var records = new ArrayList<WalRecord>();
 
         wal.replay(-1L, records::add).onFailure(cause -> fail(cause.message()));
