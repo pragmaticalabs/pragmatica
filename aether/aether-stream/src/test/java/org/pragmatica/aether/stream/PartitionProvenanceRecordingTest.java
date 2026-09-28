@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,8 +15,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.stream.provenance.PartitionFlags;
+import org.pragmatica.aether.stream.provenance.PartitionFlags.PartitionFlag;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -169,6 +174,72 @@ class PartitionProvenanceRecordingTest {
             assertThat(walless.epochHistory(STREAM, PARTITION).unwrap()).isEmpty();
             walless.close();
         }
+    }
+
+    /// The durable half of the local fences: an N13 mismatch raises `MARKED_DIVERGED`, a log with records and no
+    /// history raises `HISTORY_MISSING` -- each once per process, not once per occurrence. Red under "quarantine only".
+    @Nested
+    class DurableFlag {
+        private final List<AetherValue.PartitionRecoveryReason> raised = new CopyOnWriteArrayList<>();
+
+        @BeforeEach
+        void wireFlags() {
+            manager.partitionFlags(recordingFlags(raised));
+        }
+
+        @Test
+        void n13Mismatch_raisesMarkedDiverged_once() {
+            for (var offset = 0; offset < 5; offset++) {
+                live(offset, E1);
+            }
+
+            install(5, 8, at(E1, 0), at(E2, 3));
+            install(5, 8, at(E1, 0), at(E2, 3));
+
+            assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
+                              .containsExactly(AetherValue.PartitionRecoveryReasonKind.MARKED_DIVERGED);
+            assertThat(raised.getFirst().evidence()).contains("offset 3");
+        }
+
+        @Test
+        void recordsWithoutHistory_raiseHistoryMissing_once() {
+            caughtUp(0);
+            caughtUp(1);
+            live(2, E1);
+            live(3, E1);
+
+            assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
+                              .containsExactly(AetherValue.PartitionRecoveryReasonKind.HISTORY_MISSING);
+        }
+
+        @Test
+        void attributedLog_raisesNothing() {
+            publish(E1, 3);
+            live(3, E2);
+
+            assertThat(raised).isEmpty();
+        }
+    }
+
+    private static PartitionFlags recordingFlags(List<AetherValue.PartitionRecoveryReason> raised) {
+        return new PartitionFlags() {
+            @Override
+            public Promise<PartitionFlag> raise(String stream, int partition, AetherValue.PartitionRecoveryReason reason) {
+                raised.add(reason);
+
+                return Promise.success(new PartitionFlag(AetherValue.StreamPartitionRecoveryValue.raised(Option.none(), reason), "digest"));
+            }
+
+            @Override
+            public Option<PartitionFlag> status(String stream, int partition) {
+                return Option.none();
+            }
+
+            @Override
+            public AetherValue.PartitionRecoveryReason local(AetherValue.PartitionRecoveryReasonKind kind, String evidence) {
+                return AetherValue.PartitionRecoveryReason.partitionRecoveryReason(kind, Option.some("self"), evidence);
+            }
+        };
     }
 
     @Test

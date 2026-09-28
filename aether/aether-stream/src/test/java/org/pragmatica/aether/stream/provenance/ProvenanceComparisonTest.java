@@ -96,6 +96,19 @@ class ProvenanceComparisonTest {
             assertThat(ProvenanceComparison.diverge(a, b)).isTrue();
         }
 
+        /// UNKNOWN(d) equals only itself: two copies that took an unattributed range in two decisions diverge over it,
+        /// and a copy compared with the same decision's range does not.
+        @Test
+        void unattributedRanges_equalOnlyTheSameDecision() {
+            var unknown = ProvenanceEpoch.unknown(E2);
+            var a = copy(0, 20, at(E1, 0), ProvenanceEntry.provenanceEntry(unknown, 10));
+            var sameDecision = copy(0, 20, at(E1, 0), ProvenanceEntry.provenanceEntry(unknown, 10));
+            var otherDecision = copy(0, 20, at(E1, 0), ProvenanceEntry.provenanceEntry(ProvenanceEpoch.unknown(E2), 10));
+
+            assertThat(ProvenanceComparison.diverge(a, sameDecision)).isFalse();
+            assertThat(ProvenanceComparison.firstDivergence(a, otherDecision, 0, 20)).isEqualTo(Option.some(10L));
+        }
+
         @Test
         void copyHoldingNothing_neverDiverges() {
             var empty = copy(0, -1);
@@ -122,6 +135,16 @@ class ProvenanceComparisonTest {
             var copy = LogProvenance.logProvenance(500, 400, 600, List.of(at(E2, 500)));
 
             assertThat(ProvenanceComparison.incompleteness(copy)).isEqualTo(Option.some(Incompleteness.HISTORY_INCOMPLETE));
+        }
+
+        /// A first `BASE(d)` entry sets the base: offsets below it are NONE, not UNDEFINED.
+        @Test
+        void baseEntry_setsTheBase() {
+            var history = List.of(ProvenanceEntry.provenanceEntry(new ProvenanceEpoch.Base("d", E1), 500), at(E2, 520));
+
+            assertThat(LogProvenance.baseOf(history)).isEqualTo(500L);
+            assertThat(LogProvenance.baseOf(List.of(at(E1, 0)))).isEqualTo(0L);
+            assertThat(ProvenanceComparison.incompleteness(LogProvenance.logProvenance(500, 500, 600, history))).isEqualTo(Option.none());
         }
 
         @Test

@@ -50,6 +50,33 @@ class ProvenanceEntryTest {
     }
 
     @Test
+    void syntheticKinds_roundTripThroughTheLog() {
+        var unknown = ProvenanceEntry.provenanceEntry(ProvenanceEpoch.unknown(Epoch.epoch(2, 0)), 30);
+        var base = ProvenanceEntry.provenanceEntry(new ProvenanceEpoch.Base("01J9ZQ3V8K2M4N6P8R0T2V4X6Z", Epoch.epoch(1, 4)), 500);
+
+        assertThat(decoded(unknown)).isEqualTo(unknown);
+        assertThat(decoded(base)).isEqualTo(base);
+        assertThat(unknown.epoch()).isInstanceOf(ProvenanceEpoch.Unknown.class);
+        assertThat(base.epoch()).isInstanceOf(ProvenanceEpoch.Base.class);
+    }
+
+    /// A synthetic entry ranks as its floor: it may follow the real epoch it extends, and that epoch (or a later one)
+    /// may follow it; nothing older than the floor may. Two fresh unknown ranges are never the same epoch.
+    @Test
+    void syntheticKinds_orderByTheirFloor() {
+        var e1 = ProvenanceEpoch.owned(Epoch.epoch(1, 0));
+        var e2 = ProvenanceEpoch.owned(Epoch.epoch(2, 0));
+        var unknownAfterE2 = ProvenanceEpoch.unknown(Epoch.epoch(2, 0));
+
+        assertThat(ProvenanceEpoch.follows(unknownAfterE2, e2)).isTrue();
+        assertThat(ProvenanceEpoch.follows(e2, unknownAfterE2)).as("the floor's owner keeps writing").isTrue();
+        assertThat(ProvenanceEpoch.follows(e1, unknownAfterE2)).as("older than the floor").isFalse();
+        assertThat(ProvenanceEpoch.follows(ProvenanceEpoch.unknown(Epoch.epoch(1, 0)), e2)).isFalse();
+        assertThat(ProvenanceEpoch.follows(unknownAfterE2, unknownAfterE2)).isFalse();
+        assertThat(ProvenanceEpoch.unknown(Epoch.epoch(2, 0))).isNotEqualTo(unknownAfterE2);
+    }
+
+    @Test
     void provenanceEntry_refusesAKeyThisCodecDidNotWrite() {
         ProvenanceEntry.provenanceEntry(new EpochStart(EpochKey.epochKey("seven").unwrap(), 0))
                        .onSuccess(_ -> fail("a foreign key must not decode as an epoch"));
