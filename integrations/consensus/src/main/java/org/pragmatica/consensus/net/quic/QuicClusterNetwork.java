@@ -1978,7 +1978,36 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var pending = connection.completeLaneOpen(lane);
 
         opened.onPresent(stream -> writeLaneOpened(stream, pending, peerId, lane))
-              .onEmpty(() -> backstopUnhealableStream(peerId, connection));
+              .onEmpty(() -> laneOpenFailed(peerId, lane, connection, pending));
+    }
+
+    /// #1578 — a lane open fails when its connection is dead. If that connection is still the bound
+    /// one, the link is a zombie and the BACKSTOP evicts it. If it was REPLACED (the losing side of a
+    /// duplicate dial, closed while writes captured it), evicting would tear down the survivor: the
+    /// waiting messages go to the lane on the bound connection instead, or are reported as dropped.
+    private void laneOpenFailed(NodeId peerId, StreamType lane, QuicPeerConnection connection, List<byte[]> pending) {
+        boundConnection(peerId).filter(bound -> bound != connection)
+                               .onPresent(bound -> resendOnBoundConnection(peerId, lane, bound, pending))
+                               .onEmpty(() -> backstopUnhealableStream(peerId, connection));
+    }
+
+    private Option<QuicPeerConnection> boundConnection(NodeId peerId) {
+        return Option.option(peers.get(peerId)).flatMap(PeerState::activeConnection);
+    }
+
+    private void resendOnBoundConnection(NodeId peerId, StreamType lane, QuicPeerConnection bound, List<byte[]> pending) {
+        laneStream(bound, lane).filter(QuicStreamChannel::isActive)
+                               .onPresent(stream -> pending.forEach(bytes -> resendOnKeptStream(stream, bytes, peerId, lane)))
+                               .onEmpty(() -> warnPendingDropped(peerId, lane, pending.size()));
+    }
+
+    private void warnPendingDropped(NodeId peerId, StreamType lane, int count) {
+        quicMetrics.onWriteFailure();
+        log.warn("Lane open for {} on a replaced connection to peer {} failed and the bound connection has no {} stream — {} pending message(s) dropped",
+                 lane,
+                 peerId,
+                 lane,
+                 count);
     }
 
     @Contract
@@ -2185,7 +2214,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private void resendOnKeptStream(QuicStreamChannel current, byte[] bytes, NodeId peerId, StreamType streamType) {
         quicMetrics.onRetiredStreamResend();
-        log.debug("Write to peer {} on a retired {} stream failed — resending once on the stream the lane kept",
+        log.debug("Write to peer {} on a retired {} stream or connection failed — resending once on the stream the lane resolves to now",
                   peerId,
                   streamType);
         current.writeAndFlush(Unpooled.wrappedBuffer(bytes))
@@ -2218,10 +2247,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
 
-        var evicted = state.evict(System.nanoTime());
+        var evicted = state.evictIfBound(connection, System.nanoTime());
 
         if (evicted.isEmpty()) {
             log.debug("Node {} stale link already replaced — nothing to evict", peerId);
+            Option.option(connection).filter(QuicPeerConnection::isActive).onPresent(this::closeDroppedConnection);
 
             return;
         }
@@ -2239,8 +2269,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         log.warn("Node {} evicted stale (inactive) link — peer remains in topology, offline buffer preserved for reconnect",
                  peerId);
-        // Explicit use of the `connection` parameter to satisfy the API contract — the
-        // identity check already happened inside `state.evict()` which matches by phase.
+        // #1578: the identity check is `state.evictIfBound(connection)` above — the evicted
+        // connection IS `connection`. (It used to read "matches by phase", which it did, and a
+        // stale captured reference then evicted the connection that replaced it.)
         // #1442: wrapped at the boundary rather than null-checked in place. Behaviour is
         // unchanged — every caller passes a live connection, and the documented guard is the
         // `isActive()` one (see the comment at the channel-close call site).

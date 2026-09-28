@@ -683,6 +683,27 @@ class QuicClusterNetworkStreamZombieTest {
             assertThat(network.quicMetrics().writeFailureCount()).as("a delivered resend is not a failure").isZero();
         }
 
+        /// The rep-7 route of QuicSimultaneousDialLaneTest: a write captured the LOSING connection of a
+        /// duplicate dial, its lane open failed because that connection was closed, and the BACKSTOP
+        /// evicted whatever was bound — the survivor. Now the survivor stays bound and carries the message.
+        @Test
+        void lazyOpenFailsOnAReplacedConnection_survivorStaysBound_andCarriesTheWaitingMessage() {
+            var network = network();
+            var peerId = new NodeId("replaced-connection-peer");
+            var survivorStream = writableStream();
+            var survivor = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+            var loser = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+
+            survivor.registerStream(StreamType.CONTROL, survivorStream);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, survivor));
+
+            var _ = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), loser);
+
+            verify(survivorStream, times(1)).writeAndFlush(any());
+            assertThat(network.quicMetrics().streamZombieEvictionCount()).as("the survivor is not evicted").isZero();
+            assertThat(network.activeConnectionForTests(peerId)).isEqualTo(Option.some(survivor));
+        }
+
         @Test
         void writeToStream_failedWriteWhoseLaneStillResolvesToIt_isReportedNotResent() {
             var network = network();

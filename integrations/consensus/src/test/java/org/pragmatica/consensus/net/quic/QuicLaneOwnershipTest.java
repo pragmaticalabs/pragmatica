@@ -130,7 +130,8 @@ class QuicLaneOwnershipTest {
         var lostAtAcceptor = acceptorSide.get().stream(LANE).unwrap();
 
         lost.close().awaitUninterruptibly(AWAIT.millis());
-        awaitTrue(() -> !lostAtAcceptor.isActive(), "the acceptor sees the dialer's FORWARD stream end");
+        awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != lostAtAcceptor).or(true),
+                  "the acceptor releases FORWARD once the dialer's stream for it ends (it stays active under half-closure)");
 
         openLane(acceptorSide.get());
         writeProbe(acceptorSide.get(), ACCEPTOR, "stand-in-to-dialer");
