@@ -129,6 +129,9 @@ class StreamOwnershipDriverFenceTest {
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesReady);
+        // #1529: epochs are read from the live incarnation; read it only once every node carries the genesis
+        // incarnation, or a read that races the genesis commit captures 0 and the fixture literal returns as a flake.
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::genesisIncarnationObserved);
         log.info("OWNERSHIP-DRIVER-FENCE: {}-node cluster formed, leader={}", SIZE, cluster.currentLeader().or("none"));
     }
 
@@ -380,6 +383,12 @@ class StreamOwnershipDriverFenceTest {
 
     private AetherNode leaderNode() {
         return cluster.currentLeader().flatMap(cluster::getNode).or(cluster.allNodes().getFirst());
+    }
+
+    private boolean genesisIncarnationObserved() {
+        return cluster.allNodes()
+                      .stream()
+                      .allMatch(node -> node.currentGenerationEpoch().incarnation() >= 1L);
     }
 
     private boolean allNodesReady() {
