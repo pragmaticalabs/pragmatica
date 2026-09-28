@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
-import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Map;
@@ -26,8 +25,7 @@ class ClusterConfigKVTest {
             List.of(new AetherValue.TopologyEntry("primary", "core", 5));
 
     private static final BackupEntryCodec BACKUP = BackupEntryCodec.backupEntryCodec(BackupFixtures.codec());
-    private static final BackupEntryCodec.BackupHeader HEADER = BackupEntryCodec.BackupHeader.backupHeader(42L,
-                                                                                                            Option.none());
+    private static final BackupEntryCodec.BackupHeader HEADER = BackupEntryCodec.BackupHeader.backupHeader("lineage-test", 1L, 42L);
 
     @Nested
     class KeyTests {

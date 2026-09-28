@@ -1,0 +1,528 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.node.backup;
+
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
+
+import org.pragmatica.aether.node.ClusterIncarnation;
+import org.pragmatica.aether.node.backup.BackupWarning.Code;
+import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
+import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Result.success;
+
+/// Change-triggered, leader-only KV backup (#1532).
+///
+/// **Trigger.** Every KV notification reaches [#onValuePut]/[#onValueRemove] on the applier thread, which
+/// does O(1) work: a change to a backed-up key ([BackupEntryCodec#isBackedUp]) — a Remove, or a Put whose
+/// value differs from the previous one — marks the backup dirty. Runtime keys never do.
+///
+/// **Coalescing.** One worker (the single-threaded [Scheduler]) flushes once the store has been quiet for
+/// [Timing#quietMillis], and at the latest [Timing#maxDelayMillis] after the first unflushed change, so a
+/// burst of changes is one commit and a continuous stream still lands. A flush whose entry section equals
+/// the last one written commits nothing: a revision that moved only through runtime keys is not a backup.
+///
+/// **Leadership.** Only the leader flushes. Gaining leadership always runs one flush, so a new leader
+/// closes any gap its predecessor left; losing it stops the worker.
+///
+/// **Ordering and the lineage gate.** Each document carries `(lineage, incarnation, revision)` from the
+/// committed cluster incarnation and the KV committed revision; [BackupDecision] decides against the head
+/// already there. Pushes are fast-forward only — a rejected push re-reads the remote and decides again.
+///
+/// **Git unreachable.** The commit still lands in the local repository, which is the queue: latest state
+/// wins, and it only grows when the backed-up state actually changes. Pushes retry on backoff, and one
+/// successful push carries every pending commit.
+///
+/// **Warnings** are transition-only ([BackupWarning]).
+public final class KvBackupService {
+    private static final Logger LOG = LoggerFactory.getLogger(KvBackupService.class);
+
+    /// The operator action that resolves a gated backup.
+    public static final String DECLARE_GENESIS_COMMAND = "aether backup declare-genesis";
+
+    private final KVStore<AetherKey, AetherValue> kvStore;
+    private final BackupEntryCodec codec;
+    private final GitBackupRepository repository;
+    private final Scheduler scheduler;
+    private final LongSupplier clock;
+    private final BackupWarning.Sink warnings;
+    private final Timing timing;
+
+    private final AtomicBoolean leader = new AtomicBoolean(false);
+    private final AtomicBoolean dirty = new AtomicBoolean(false);
+    private final AtomicBoolean tickScheduled = new AtomicBoolean(false);
+    private final AtomicLong firstDirtyAt = new AtomicLong();
+    private final AtomicLong lastDirtyAt = new AtomicLong();
+    private final AtomicReference<Status> status = new AtomicReference<>(Status.CURRENT);
+    private final AtomicLong pushFailingSince = new AtomicLong(-1);
+    private final AtomicLong retryDelay;
+
+    // Owned by the worker thread only.
+    private Option<String> lastWrittenBody = Option.none();
+    private boolean pendingPush;
+
+    /// One-shot scheduling seam. Production passes a single-threaded executor — every flush runs on it,
+    /// which is what makes the worker-owned fields safe; tests pass a manual scheduler.
+    @FunctionalInterface
+    public interface Scheduler {
+        @Contract
+        void schedule(Runnable task, long delayMillis);
+    }
+
+    public record Timing(long quietMillis, long maxDelayMillis, long initialRetryMillis, long maxRetryMillis,
+                         long pushLagWarnMillis) {
+        public static final Timing DEFAULT = new Timing(500, 5_000, 1_000, 60_000, 60_000);
+
+        public static Timing timing(long quietMillis, long maxDelayMillis, long initialRetryMillis,
+                                    long maxRetryMillis, long pushLagWarnMillis) {
+            return new Timing(quietMillis, maxDelayMillis, initialRetryMillis, maxRetryMillis, pushLagWarnMillis);
+        }
+    }
+
+    /// What the backup is doing now, for operators and tests.
+    public enum Status {
+        CURRENT,
+        GATED,
+        HEAD_UNREADABLE,
+        PUSH_FAILING,
+        COMMIT_FAILED
+    }
+
+    private KvBackupService(KVStore<AetherKey, AetherValue> kvStore,
+                            BackupEntryCodec codec,
+                            GitBackupRepository repository,
+                            Scheduler scheduler,
+                            LongSupplier clock,
+                            BackupWarning.Sink warnings,
+                            Timing timing) {
+        this.kvStore = kvStore;
+        this.codec = codec;
+        this.repository = repository;
+        this.scheduler = scheduler;
+        this.clock = clock;
+        this.warnings = warnings;
+        this.timing = timing;
+        this.retryDelay = new AtomicLong(timing.initialRetryMillis());
+    }
+
+    public static KvBackupService kvBackupService(KVStore<AetherKey, AetherValue> kvStore,
+                                                  BackupEntryCodec codec,
+                                                  GitBackupRepository repository,
+                                                  Scheduler scheduler,
+                                                  LongSupplier clock,
+                                                  BackupWarning.Sink warnings,
+                                                  Timing timing) {
+        return new KvBackupService(kvStore, codec, repository, scheduler, clock, warnings, timing);
+    }
+
+    public Status status() {
+        return status.get();
+    }
+
+    public GitBackupRepository repository() {
+        return repository;
+    }
+
+    // --- triggers (applier / router threads) ---
+
+    @Contract
+    public void onValuePut(ValuePut<?, ?> put) {
+        if (isBackedUp(put.cause()
+                          .key()) && !put.oldValue()
+                                         .equals(Option.some(put.cause()
+                                                                .value()))) {
+            markDirty();
+        }
+    }
+
+    @Contract
+    public void onValueRemove(ValueRemove<?, ?> remove) {
+        if (isBackedUp(remove.cause()
+                             .key()) && remove.value()
+                                              .isPresent()) {
+            markDirty();
+        }
+    }
+
+    @Contract
+    public void onLeaderChange(LeaderNotification.LeaderChange change) {
+        if (change.localNodeIsLeader()) {
+            if (leader.compareAndSet(false, true)) {
+                // A new leader always flushes once: it closes any gap its predecessor left.
+                scheduler.schedule(this::resetForNewLeadership, 0);
+                markDirty();
+            }
+        } else {
+            leader.set(false);
+        }
+    }
+
+    private static boolean isBackedUp(Object key) {
+        return key instanceof AetherKey aetherKey && BackupEntryCodec.isBackedUp(aetherKey);
+    }
+
+    @Contract
+    private void markDirty() {
+        var now = clock.getAsLong();
+
+        lastDirtyAt.set(now);
+        if (dirty.compareAndSet(false, true)) {
+            firstDirtyAt.set(now);
+        }
+
+        if (leader.get() && tickScheduled.compareAndSet(false, true)) {
+            scheduler.schedule(this::tick, timing.quietMillis());
+        }
+    }
+
+    // --- worker ---
+
+    @Contract
+    private void resetForNewLeadership() {
+        lastWrittenBody = Option.none();
+        pendingPush = true;
+    }
+
+    @Contract
+    private void tick() {
+        tickScheduled.set(false);
+        if (!leader.get() || !dirty.get()) {
+            return;
+        }
+
+        var now = clock.getAsLong();
+        var quietAt = lastDirtyAt.get() + timing.quietMillis();
+        var capAt = firstDirtyAt.get() + timing.maxDelayMillis();
+        var dueAt = Math.min(quietAt, capAt);
+
+        if (now >= dueAt) {
+            flush();
+        } else if (tickScheduled.compareAndSet(false, true)) {
+            scheduler.schedule(this::tick, dueAt - now);
+        }
+    }
+
+    @Contract
+    private void flush() {
+        dirty.set(false);
+        attemptFlush(2).onSuccess(this::settle)
+                       .onFailure(this::onCommitFailure);
+    }
+
+    /// One pass: read the state, decide against the head, commit locally, push. `pushAttempts` bounds
+    /// the re-decide loop after a rejected (raced) push.
+    private Result<Outcome> attemptFlush(int pushAttempts) {
+        return ClusterIncarnation.committed(kvStore)
+                                 .map(incarnation -> flushAt(incarnation, pushAttempts))
+                                 .or(() -> success(Outcome.AWAITING_GENESIS));
+    }
+
+    private Result<Outcome> flushAt(ClusterIncarnationValue incarnation, int pushAttempts) {
+        var captured = capture();
+        var header = BackupHeader.backupHeader(incarnation.lineageId(), incarnation.incarnation(), captured.revision());
+
+        return codec.encode(header, captured.entries())
+                    .flatMap(document -> writeIfChanged(header, document, pushAttempts));
+    }
+
+    /// The committed revision and the entries it produced, read under the store's monitor so neither
+    /// can move between the two reads (`KVStore#committedRevision` documents this pairing).
+    @SuppressWarnings("SynchronizationOnLocalVariableOrMethodParameter")
+    private Captured capture() {
+        synchronized (kvStore) {
+            return new Captured(kvStore.committedRevision(), kvStore.snapshot());
+        }
+    }
+
+    private Result<Outcome> writeIfChanged(BackupHeader header, String document, int pushAttempts) {
+        var body = header.lineageId() + "\n" + header.incarnation() + "\n" + BackupEntryCodec.entrySection(document);
+
+        if (lastWrittenBody.equals(Option.some(body)) && !pendingPush) {
+            return success(Outcome.UNCHANGED);
+        }
+
+        return repository.prepare()
+                         .flatMap(_ -> readHead())
+                         .flatMap(head -> decideAndWrite(header, document, body, head, pushAttempts));
+    }
+
+    /// The head this cluster's state is judged against: the remote's when it is reachable, else the
+    /// local repository's (the queue). A remote that cannot be reached is not an absent remote.
+    private Result<Head> readHead() {
+        return repository.hasRemote()
+               ? repository.fetchRemoteHead()
+                           .fold(_ -> repository.localHead()
+                                                .map(Head::unreachable),
+                                 document -> success(Head.remote(document)))
+               : repository.localHead()
+                           .map(Head::local);
+    }
+
+    private Result<Outcome> decideAndWrite(BackupHeader header, String document, String body, Head head,
+                                           int pushAttempts) {
+        var headHeader = head.document()
+                             .map(codec::decode);
+
+        if (headHeader.filter(Result::isFailure)
+                      .isPresent()) {
+            return success(Outcome.HEAD_UNREADABLE);
+        }
+
+        var existing = headHeader.map(decoded -> decoded.unwrap()
+                                                        .header());
+
+        return switch (BackupDecision.decide(header, existing)) {
+            case STALE -> success(Outcome.STALE);
+            case GATED -> success(Outcome.gated(existing.unwrap()));
+            case WRITE -> write(document, body, head, pushAttempts);
+        };
+    }
+
+    private Result<Outcome> write(String document, String body, Head head, int pushAttempts) {
+        return alignWithRemote(head).flatMap(_ -> commitUnlessUnchanged(document))
+                                    .map(_ -> rememberWritten(body))
+                                    .flatMap(_ -> pushIfRemote(head, pushAttempts));
+    }
+
+    /// Before committing on top of a remote head this repository does not contain, move onto it: the
+    /// commit then carries the whole state as one fast-forward. Local commits the remote does not have
+    /// are dropped — the new commit supersedes them.
+    private Result<Boolean> alignWithRemote(Head head) {
+        if (head.kind() != HeadKind.REMOTE || head.document()
+                                                  .isEmpty()) {
+            return success(true);
+        }
+
+        return repository.localContainsRemoteHead()
+                         .flatMap(contained -> contained
+                                               ? success(true)
+                                               : repository.resetToRemoteHead()
+                                                           .map(_ -> true));
+    }
+
+    private Result<Boolean> commitUnlessUnchanged(String document) {
+        return repository.localHead()
+                         .flatMap(local -> sameState(local, document)
+                                           ? success(false)
+                                           : repository.commit(document, commitMessage(document))
+                                                       .map(_ -> true));
+    }
+
+    private static boolean sameState(Option<String> local, String document) {
+        return local.filter(existing -> Objects.equals(firstLines(existing), firstLines(document))
+                                        && BackupEntryCodec.entrySection(existing)
+                                                           .equals(BackupEntryCodec.entrySection(document)))
+                    .isPresent();
+    }
+
+    /// Lineage and incarnation lines: a different incarnation with the same entries is still a new backup.
+    private static String firstLines(String document) {
+        return document.lines()
+                       .skip(1)
+                       .limit(2)
+                       .reduce("", String::concat);
+    }
+
+    private static String commitMessage(String document) {
+        return "kv backup " + document.lines()
+                                      .skip(1)
+                                      .limit(3)
+                                      .reduce((left, right) -> left + " " + right)
+                                      .orElse("");
+    }
+
+    private Boolean rememberWritten(String body) {
+        lastWrittenBody = Option.some(body);
+        pendingPush = repository.hasRemote();
+
+        return true;
+    }
+
+    private Result<Outcome> pushIfRemote(Head head, int pushAttempts) {
+        if (!repository.hasRemote()) {
+            return success(Outcome.WRITTEN);
+        }
+
+        if (head.kind() == HeadKind.UNREACHABLE) {
+            return success(Outcome.PUSH_FAILED);
+        }
+
+        return repository.push()
+                         .fold(cause -> afterPushFailure(cause, pushAttempts),
+                               _ -> success(pushed()));
+    }
+
+    private Outcome pushed() {
+        pendingPush = false;
+
+        return Outcome.WRITTEN;
+    }
+
+    /// A rejected push means another writer moved the remote: read it again and decide again. Any other
+    /// failure leaves the commit queued locally.
+    private Result<Outcome> afterPushFailure(Cause cause, int pushAttempts) {
+        if (cause instanceof BackupRepositoryError.PushRejected && pushAttempts > 1) {
+            lastWrittenBody = Option.none();
+
+            return attemptFlush(pushAttempts - 1);
+        }
+
+        LOG.debug("KV backup push failed: {}", cause.message());
+
+        return success(Outcome.PUSH_FAILED);
+    }
+
+    // --- outcome handling ---
+
+    @Contract
+    private void settle(Outcome outcome) {
+        switch (outcome.kind()) {
+            case WRITTEN, UNCHANGED, STALE -> recover();
+            case AWAITING_GENESIS -> scheduleRetry();
+            case GATED -> enter(Status.GATED, gatedDetail(outcome));
+            case HEAD_UNREADABLE -> enter(Status.HEAD_UNREADABLE,
+                                          "the backup head cannot be read as a backup document; inspect the backup"
+                                          + " repository, or run `" + DECLARE_GENESIS_COMMAND + "` to supersede it");
+            case PUSH_FAILED -> onPushFailed();
+        }
+    }
+
+    private static String gatedDetail(Outcome outcome) {
+        return outcome.head()
+                      .map(head -> "the backup head belongs to lineage " + head.lineageId() + " at incarnation "
+                                   + head.incarnation() + ", not to this cluster; restore that backup, or run `"
+                                   + DECLARE_GENESIS_COMMAND + "` to make this cluster's state the backup head")
+                      .or("the backup head belongs to another lineage; run `" + DECLARE_GENESIS_COMMAND + "`");
+    }
+
+    @Contract
+    private void onPushFailed() {
+        var now = clock.getAsLong();
+
+        pushFailingSince.compareAndSet(-1, now);
+        if (now - pushFailingSince.get() >= timing.pushLagWarnMillis()) {
+            enter(Status.PUSH_FAILING,
+                  "backup commits are queued locally and have not reached the remote for "
+                  + (now - pushFailingSince.get()) / 1000 + "s; check the remote URL, credentials and network");
+        }
+
+        scheduleRetry();
+    }
+
+    @Contract
+    private void onCommitFailure(Cause cause) {
+        enter(Status.COMMIT_FAILED,
+              "the local backup repository could not take a commit: " + cause.message()
+              + "; check the [backup] path's disk and permissions and that git is installed");
+        scheduleRetry();
+    }
+
+    @Contract
+    private void recover() {
+        pushFailingSince.set(-1);
+        retryDelay.set(timing.initialRetryMillis());
+
+        var previous = status.getAndSet(Status.CURRENT);
+
+        if (previous != Status.CURRENT) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED, "the KV backup is current again"));
+        }
+    }
+
+    @Contract
+    private void enter(Status next, String detail) {
+        var previous = status.getAndSet(next);
+
+        if (previous != next) {
+            warnings.emit(BackupWarning.backupWarning(codeFor(next), detail));
+        }
+    }
+
+    private static Code codeFor(Status status) {
+        return switch (status) {
+            case GATED -> Code.BACKUP_GATED;
+            case HEAD_UNREADABLE -> Code.BACKUP_REMOTE_UNREADABLE;
+            case PUSH_FAILING -> Code.BACKUP_PUSH_FAILING;
+            case COMMIT_FAILED -> Code.BACKUP_COMMIT_FAILED;
+            case CURRENT -> Code.BACKUP_RECOVERED;
+        };
+    }
+
+    @Contract
+    private void scheduleRetry() {
+        var delay = retryDelay.getAndUpdate(current -> Math.min(current * 2, timing.maxRetryMillis()));
+
+        dirty.set(true);
+        firstDirtyAt.set(clock.getAsLong() - timing.maxDelayMillis());
+        if (leader.get() && tickScheduled.compareAndSet(false, true)) {
+            scheduler.schedule(this::tick, delay);
+        }
+    }
+
+    private record Captured(long revision, Map<AetherKey, AetherValue> entries) {}
+
+    private enum HeadKind {
+        REMOTE,
+        UNREACHABLE,
+        LOCAL
+    }
+
+    private record Head(HeadKind kind, Option<String> document) {
+        static Head remote(Option<String> document) {
+            return new Head(HeadKind.REMOTE, document);
+        }
+
+        static Head unreachable(Option<String> localDocument) {
+            return new Head(HeadKind.UNREACHABLE, localDocument);
+        }
+
+        static Head local(Option<String> document) {
+            return new Head(HeadKind.LOCAL, document);
+        }
+    }
+
+    enum OutcomeKind {
+        WRITTEN,
+        UNCHANGED,
+        STALE,
+        AWAITING_GENESIS,
+        GATED,
+        HEAD_UNREADABLE,
+        PUSH_FAILED
+    }
+
+    record Outcome(OutcomeKind kind, Option<BackupHeader> head) {
+        static final Outcome WRITTEN = new Outcome(OutcomeKind.WRITTEN, Option.none());
+        static final Outcome UNCHANGED = new Outcome(OutcomeKind.UNCHANGED, Option.none());
+        static final Outcome STALE = new Outcome(OutcomeKind.STALE, Option.none());
+        static final Outcome AWAITING_GENESIS = new Outcome(OutcomeKind.AWAITING_GENESIS, Option.none());
+        static final Outcome HEAD_UNREADABLE = new Outcome(OutcomeKind.HEAD_UNREADABLE, Option.none());
+        static final Outcome PUSH_FAILED = new Outcome(OutcomeKind.PUSH_FAILED, Option.none());
+
+        static Outcome gated(BackupHeader head) {
+            return new Outcome(OutcomeKind.GATED, Option.some(head));
+        }
+    }
+}

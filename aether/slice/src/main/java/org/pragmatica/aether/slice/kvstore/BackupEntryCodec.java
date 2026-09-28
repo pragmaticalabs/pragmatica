@@ -87,12 +87,13 @@ import static org.pragmatica.lang.Result.success;
 /// [ClusterStateKey][AetherKey.ClusterStateKey] that [backs up][AetherKey.ClusterStateKey#isBackedUp];
 /// runtime state is filtered out on encode and refused on decode.
 ///
-/// Layout, one entry per line after a five-line header:
+/// Layout, one entry per line after a six-line header:
 ///
 /// ```
 /// aether-kv-backup/1
-/// revision=<long>
-/// incarnation=<escaped text, empty when not yet assigned>
+/// lineage=<escaped cluster lineage id>
+/// incarnation=<long>
+/// revision=<long, the KV committed revision within that incarnation>
 /// entries=<count>
 /// sha256=<lowercase hex SHA-256 of every OTHER line of the document>
 /// <base64 of the value's generated binary codec> <escaped canonical key string>
@@ -114,12 +115,13 @@ import static org.pragmatica.lang.Result.success;
 public record BackupEntryCodec(SliceCodec codec) {
     public static final int FORMAT_VERSION = 1;
     private static final String MAGIC = "aether-kv-backup/";
-    private static final String REVISION = "revision=";
+    private static final String LINEAGE = "lineage=";
     private static final String INCARNATION = "incarnation=";
+    private static final String REVISION = "revision=";
     private static final String ENTRIES = "entries=";
     private static final String CHECKSUM = "sha256=";
-    private static final int CHECKSUM_LINE = 4;
-    private static final int HEADER_LINES = 5;
+    private static final int CHECKSUM_LINE = 5;
+    private static final int HEADER_LINES = 6;
     private static final String SEPARATOR = " ";
 
     private static final Comparator<Map.Entry<AetherKey, AetherValue>> BY_KEY = Comparator.comparing(BackupEntryCodec::keyString);
@@ -229,12 +231,33 @@ public record BackupEntryCodec(SliceCodec codec) {
                      .flatMap(this::decodeDocument);
     }
 
-    /// Header of a backup document. `clusterIncarnation` is a placeholder until cluster incarnations
-    /// exist: it is carried and round-tripped, and nothing reads it yet.
-    public record BackupHeader(long revision, Option<String> clusterIncarnation) {
-        /// A blank incarnation is normalised to absent, which is how it renders.
-        public static BackupHeader backupHeader(long revision, Option<String> clusterIncarnation) {
-            return new BackupHeader(revision, clusterIncarnation.filter(Verify.Is::notBlank));
+    /// The entry section of a rendered document — everything after the header. Two documents with the
+    /// same entry section back up the same state, whatever their headers say; a backup writer uses this
+    /// to skip a commit when only the revision moved.
+    public static String entrySection(String document) {
+        return document.lines()
+                       .skip(HEADER_LINES)
+                       .collect(Collectors.joining("\n"));
+    }
+
+    /// Header of a backup document: which cluster history it belongs to (`lineageId`, from the committed
+    /// cluster incarnation key) and how far along it is. Position is `(incarnation, revision)` compared
+    /// lexicographically: the KV revision restarts with every cold restart, and the incarnation — raised
+    /// by every restore — dominates it.
+    public record BackupHeader(String lineageId, long incarnation, long revision) {
+        public static BackupHeader backupHeader(String lineageId, long incarnation, long revision) {
+            return new BackupHeader(lineageId, incarnation, revision);
+        }
+
+        /// Strictly further along than `other`, by `(incarnation, revision)`.
+        public boolean isAhead(BackupHeader other) {
+            return incarnation != other.incarnation
+                   ? incarnation > other.incarnation
+                   : revision > other.revision;
+        }
+
+        public boolean isSameLineage(BackupHeader other) {
+            return lineageId.equals(other.lineageId);
         }
     }
 
@@ -432,8 +455,9 @@ public record BackupEntryCodec(SliceCodec codec) {
     /// Header fields, then entries, then the checksum over both inserted as the last header line.
     private static Result<String> seal(BackupHeader header, List<String> entryLines) {
         var unsealed = Stream.concat(Stream.of(MAGIC + FORMAT_VERSION,
+                                               LINEAGE + escape(header.lineageId()),
+                                               INCARNATION + header.incarnation(),
                                                REVISION + header.revision(),
-                                               INCARNATION + escape(header.clusterIncarnation().or("")),
                                                ENTRIES + entryLines.size()),
                                      entryLines.stream())
                              .toList();
@@ -518,14 +542,16 @@ public record BackupEntryCodec(SliceCodec codec) {
     // --- decode: header ---
     private static Result<ParsedHeader> parseHeader(List<String> lines) {
         return Result.all(headerField(lines, 0, MAGIC).flatMap(raw -> parseFormatVersion(raw, 1)),
-                          headerField(lines, 1, REVISION).flatMap(raw -> parseRevision(raw, 2)),
-                          headerField(lines, 2, INCARNATION).flatMap(raw -> parseIncarnation(raw, 3)),
-                          headerField(lines, 3, ENTRIES).flatMap(raw -> parseEntryCount(raw, 4)),
+                          headerField(lines, 1, LINEAGE).flatMap(raw -> parseLineage(raw, 2)),
+                          headerField(lines, 2, INCARNATION).flatMap(raw -> parseLong(raw, 3, INCARNATION)),
+                          headerField(lines, 3, REVISION).flatMap(raw -> parseLong(raw, 4, REVISION)),
+                          headerField(lines, 4, ENTRIES).flatMap(raw -> parseEntryCount(raw, 5)),
                           headerField(lines, CHECKSUM_LINE, CHECKSUM))
-                     .map((_, revision, incarnation, count, sum) -> ParsedHeader.parsedHeader(BackupHeader.backupHeader(revision,
-                                                                                                                        incarnation),
-                                                                                              count,
-                                                                                              sum));
+                     .map((_, lineage, incarnation, revision, count, sum) -> ParsedHeader.parsedHeader(BackupHeader.backupHeader(lineage,
+                                                                                                                                 incarnation,
+                                                                                                                                 revision),
+                                                                                                       count,
+                                                                                                       sum));
     }
 
     /// The text after `prefix` on header line `index`, or a failure naming the field that is missing.
@@ -543,14 +569,14 @@ public record BackupEntryCodec(SliceCodec codec) {
                      .filter(BackupError.UnsupportedFormatVersion.FACTORY, version -> version == FORMAT_VERSION);
     }
 
-    private static Result<Long> parseRevision(String raw, int lineNumber) {
-        return Number.parseLong(raw).mapError(_ -> BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber,
-                                                                                                  REVISION + raw));
+    private static Result<Long> parseLong(String raw, int lineNumber, String field) {
+        return Number.parseLong(raw)
+                     .mapError(_ -> BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber, field + raw));
     }
 
-    private static Result<Option<String>> parseIncarnation(String raw, int lineNumber) {
-        return unescape(raw).toResult(BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber, INCARNATION + raw))
-                       .map(Option::some);
+    private static Result<String> parseLineage(String raw, int lineNumber) {
+        return unescape(raw).filter(Verify.Is::notBlank)
+                            .toResult(BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber, LINEAGE + raw));
     }
 
     private static Result<Integer> parseEntryCount(String raw, int lineNumber) {

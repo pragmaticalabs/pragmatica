@@ -448,7 +448,7 @@ class ScheduledTaskManagerTest {
                                                        ScheduledTaskValue.intervalTask(self, "30s", ExecutionMode.ALL),
                                                        pauseKey,
                                                        ScheduledTaskPauseValue.scheduledTaskPauseValue(1L));
-            var restored = codec.encode(BackupHeader.backupHeader(1L, Option.none()), live)
+            var restored = codec.encode(BackupHeader.backupHeader("lineage-test", 1L, 1L), live)
                                 .flatMap(codec::decode)
                                 .unwrap()
                                 .entries();
