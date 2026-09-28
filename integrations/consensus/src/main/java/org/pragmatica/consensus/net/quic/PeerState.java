@@ -399,24 +399,6 @@ public final class PeerState {
         return evicted;
     }
 
-    /// #1578 — [#evict], but only while `expected` is still the bound connection. A caller that
-    /// learned a connection is dead from a reference it captured earlier (a write, a failed lane
-    /// open) must not evict whatever is bound NOW: after a duplicate dial is resolved, that is the
-    /// surviving connection, and evicting it tears down the pair the resolution just kept.
-    public Option<QuicPeerConnection> evictIfBound(QuicPeerConnection expected, long nowNanos) {
-        var evicted = evictIfBoundInternal(expected, nowNanos);
-
-        flushTransitions();
-
-        return evicted;
-    }
-
-    private synchronized Option<QuicPeerConnection> evictIfBoundInternal(QuicPeerConnection expected, long nowNanos) {
-        return connection == expected
-               ? evictInternal(nowNanos)
-               : Option.empty();
-    }
-
     private synchronized Option<QuicPeerConnection> evictInternal(long nowNanos) {
         if (phase != Phase.CONNECTED) {
             return Option.empty();
