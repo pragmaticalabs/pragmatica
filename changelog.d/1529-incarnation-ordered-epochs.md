@@ -24,6 +24,12 @@
 - **`aether cluster await-quiesced --epoch` takes `incarnation:term:counter`**; the pre-#1529 `term:counter`
   form is refused (`400`) rather than read as incarnation 0, which would rank below every epoch a cluster
   mints and report quiescence at once. `aether cluster ownership` gains `EPOCH-INC`/`HW-INC` columns.
+- **The integration harness's quiescence barriers send `incarnation:term:counter` and fail loudly.**
+  `lib/generation.sh` reads the epoch from the top-level `epoch` object and bumps only the counter for
+  `current+N`. A `400` from the barrier route, or an epoch spec it cannot build, aborts the calling
+  suite whatever `|| true` wraps the call, because a barrier that silently does nothing invalidates every
+  later result. [verified: `aether/tests/integration/test/test-generation-epoch.sh` (offline, stubbed
+  curl)] [unverified: not run end-to-end against a live cluster]
 - **`ClusterIncarnationValue` gains `incarnationId`**, a ULID minted fresh at every genesis mint and every
   restore and compared for equality only (#1625): a reused incarnation number no longer names the same
   incarnation. Shape change of a backed-up value (pre-GA; tag unchanged).

@@ -10,7 +10,10 @@
 # feedback — fall back to raw curl only when the CLI is unavailable.
 #
 # Semantics (see aether/docs/specs/cluster-generation-spec.md §14):
-#   - epoch = "term:counter" (e.g. "7:142").
+#   - epoch = "incarnation:term:counter" (e.g. "1:7:142"), cluster incarnation first (#1529).
+#   - A 400 from the barrier routes, or an epoch this file cannot build, is a HARNESS BUG, never
+#     an environmental failure: it aborts the calling script whatever `|| true` the caller has
+#     (_generation_harness_bug). A barrier that silently no-ops makes every later result meaningless.
 #   - "quiesced" means observedEpoch >= requested AND snapshot.quiescence==QUIESCED.
 #   - Server endpoint polls internally at 200ms intervals up to timeout (max 120s).
 
@@ -20,7 +23,8 @@ source "${LIB_DIR_GENERATION}/common.sh"
 # ---------------------------------------------------------------------------
 # generation_current [endpoint]
 #
-# Prints the current epoch as "T:C" read from GET /api/v1/cluster/generation.
+# Prints the current epoch as "I:T:C" read from the top-level `epoch` object of
+# GET /api/v1/cluster/generation (never from the per-member/partition epochs).
 # If the node has no snapshot yet (epoch==null) prints empty + returns 1.
 # endpoint defaults to ${CLUSTER_ENDPOINT} (per-suite scoped mgmt endpoint).
 # ---------------------------------------------------------------------------
@@ -29,14 +33,18 @@ generation_current() {
     local response
     response=$(curl -sf -m 5 -H "X-API-Key: ${API_KEY}" \
         "${endpoint}/api/v1/cluster/generation" 2>/dev/null) || return 1
-    # Extract nested epoch.rabiaTerm / epoch.localCounter.
-    local term counter
-    term=$(printf '%s' "$response" | grep -oE '"rabiaTerm"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')
-    counter=$(printf '%s' "$response" | grep -oE '"localCounter"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')
-    if [ -z "$term" ] || [ -z "$counter" ]; then
+    # Scope the read to the top-level `epoch` object: the response also carries a top-level
+    # rabiaTerm and per-member joinedEpoch/lastSeenEpoch objects, which a first-match grep over
+    # the whole body would pick up whenever `epoch` is absent.
+    local epoch_obj incarnation term counter
+    epoch_obj=$(printf '%s' "$response" | grep -oE '"epoch"[[:space:]]*:[[:space:]]*\{[^}]*\}' | head -1)
+    incarnation=$(_epoch_field "$epoch_obj" incarnation)
+    term=$(_epoch_field "$epoch_obj" rabiaTerm)
+    counter=$(_epoch_field "$epoch_obj" localCounter)
+    if [ -z "$incarnation" ] || [ -z "$term" ] || [ -z "$counter" ]; then
         return 1
     fi
-    printf '%s:%s' "$term" "$counter"
+    printf '%s:%s:%s' "$incarnation" "$term" "$counter"
 }
 
 # ---------------------------------------------------------------------------
@@ -47,12 +55,14 @@ generation_current() {
 #
 # Arguments:
 #   endpoint        — management endpoint (default: ${CLUSTER_ENDPOINT})
-#   epoch           — "T:C" form; "current" reads current; "current+N" advances
-#                     current by N. Default: "current+1".
+#   epoch           — "I:T:C" form; "current" reads current; "current+N" advances
+#                     current's COUNTER by N (incarnation and term kept). Default: "current+1".
 #   timeout_seconds — default 30, server caps at 120.
 # Exit codes:
 #   0 — quiesced at-or-beyond epoch within timeout
 #   1 — server returned 408 timeout or network error
+#   2 — the current epoch could not be read (unreachable, not a quiescence failure)
+#   never returns on a malformed epoch or a 400: the calling script is aborted
 # ---------------------------------------------------------------------------
 await_generation_quiesced() {
     local endpoint="${1:-$(_resolve_live_endpoint)}"
@@ -61,8 +71,13 @@ await_generation_quiesced() {
     # Same scaling as wait_for — cloud's higher inter-node latency stretches consensus rounds.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
 
-    local target_epoch
-    if ! target_epoch=$(_resolve_epoch "$endpoint" "$epoch"); then
+    local target_epoch resolve_rc
+    target_epoch=$(_resolve_epoch "$endpoint" "$epoch")
+    resolve_rc=$?
+    if [ "$resolve_rc" -eq 3 ]; then
+        _generation_harness_bug "await_generation_quiesced: invalid epoch spec '${epoch}' (expected I:T:C, current, or current+N)"
+    fi
+    if [ "$resolve_rc" -ne 0 ]; then
         # rc=2 (distinct from the 408-timeout rc=1): we could not even READ the
         # current generation epoch — the endpoint is unreachable/unable to serve the
         # leader-bound /api/v1/cluster/generation route. Callers must NOT report this as
@@ -108,6 +123,9 @@ await_generation_quiesced() {
         log_pass "quiesced at ${target_epoch} (${elapsed}ms)"
         return 0
     fi
+    if [ "$http_status" = "400" ]; then
+        _generation_harness_bug "await-quiesced rejected target=${target_epoch} with 400 (the route requires incarnation:term:counter)"
+    fi
     # Library function: caller decides via return code whether timeout is fatal.
     # Print as warn (not fail) so `|| log_warn` callers don't get spurious [FAIL] noise.
     log_warn "await-quiesced status=${http_status} after ${elapsed}ms (target=${target_epoch})"
@@ -144,7 +162,8 @@ record_quiesced_timing() {
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-# Resolve "current", "current+N", or literal "T:C" against the live snapshot.
+# Resolve "current", "current+N", or literal "I:T:C" against the live snapshot.
+# Returns 3 for a spec that is not one of those forms (a harness bug; the caller aborts).
 # Retries up to ~10s if the snapshot is temporarily missing (e.g., during leader
 # transition right after a destructive test) so the runner doesn't false-abort.
 _resolve_epoch() {
@@ -157,17 +176,39 @@ _resolve_epoch() {
             local bump="${spec#current+}"
             local now
             now=$(_resolve_with_retry "$endpoint") || return 1
-            local term="${now%%:*}" counter="${now##*:}"
-            printf '%s:%s' "$term" "$((counter + bump))"
-            ;;
-        *:*)
-            printf '%s' "$spec"
+            case "$bump" in ''|*[!0-9]*) return 3 ;; esac
+            local incarnation="${now%%:*}" rest="${now#*:}"
+            local term="${rest%%:*}" counter="${rest#*:}"
+            printf '%s:%s:%s' "$incarnation" "$term" "$((counter + bump))"
             ;;
         *)
-            log_fail "await_generation_quiesced: invalid epoch '${spec}' (expected T:C, current, or current+N)"
-            return 1
+            _is_epoch_string "$spec" || return 3
+            printf '%s' "$spec"
             ;;
     esac
+}
+
+# _epoch_field <json-object> <name>: the unsigned integer value of <name> in <json-object>.
+_epoch_field() {
+    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*[0-9]+" | head -1 | grep -oE '[0-9]+$'
+}
+
+# _is_epoch_string <s>: true for exactly three unsigned integers joined by ':' (I:T:C).
+_is_epoch_string() {
+    [[ "$1" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]
+}
+
+# _generation_harness_bug <message>: aborts the calling SCRIPT, not just this function.
+# A malformed barrier request is a harness bug; returning non-zero would be swallowed by the
+# `|| true` / `|| log_warn` most callers wrap the barrier in. `exit` ends the current shell;
+# inside a subshell ( ... ) or $( ... ) that is only the subshell, so the script's own pid
+# ($$ is not updated in subshells) is sent TERM first.
+_generation_harness_bug() {
+    echo "[FAIL]  HARNESS BUG (generation barrier): $1 -- aborting the suite: a barrier that no-ops invalidates every later result" >&2
+    if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
+        kill -TERM "$$" 2>/dev/null
+    fi
+    exit 3
 }
 
 _resolve_with_retry() {
