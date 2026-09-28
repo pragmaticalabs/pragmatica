@@ -218,6 +218,8 @@ import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
+import org.pragmatica.aether.stream.SegmentTierPressure;
+import org.pragmatica.aether.stream.segment.PressureRelief;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
@@ -1702,6 +1704,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                  streamDataDir(config),
                                                                                                  config.self().id(),
                                                                                                  streamsKeyring,
+                                                                                                 config.streaming()
+                                                                                                       .segmentDiskMaxBytes(),
                                                                                                  resolveStreamWalDir(config)));
 
         if (storageSetupsResult.isFailure()) {
@@ -4694,12 +4698,20 @@ public interface AetherNode extends ManageableNode {
         // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
         var streamSegmentReader = SegmentReader.segmentReader(streamStorage, streamSegmentIndex);
+        // #1604: the durable segment tier's pressure -- retention warns at 85%, owner publishes are refused at 95%.
+        var streamSegmentTierPressure = SegmentTierPressure.localDiskOf(streamStorage);
+
+        streamPartitionManager.segmentTierPressure(streamSegmentTierPressure);
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
                                                                           DEFAULT_STREAM_RETENTION_MS,
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
-                                                                                                                      partition));
+                                                                                                                      partition),
+                                                                          streamSegmentReader,
+                                                                          streamSegmentTierPressure,
+                                                                          PressureRelief.snapshotBounded(streamStorageSetup.snapshotManager(),
+                                                                                                         streamStorageSetup.garbageCollector()));
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.

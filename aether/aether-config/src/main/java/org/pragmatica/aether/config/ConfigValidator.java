@@ -133,6 +133,10 @@ public final class ConfigValidator {
             errors.add("streaming.caught_up_max_lag_offsets must be >= 0 (a negative bound rejects every replica, "
                       + "stopping replica-served reads and blocking the ring-release catch-up gate). Got: " + streaming.caughtUpMaxLagOffsets());
         }
+        // #1604: 0 means "derive from the filesystem"; a negative cap has no meaning.
+        if (streaming.segmentDiskMaxBytes() < 0) {
+            errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
+        }
     }
 
     private static Result<AetherConfig> toResult(AetherConfig config, List<String> errors) {
