@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -54,9 +56,11 @@ class OwnerActivationTest {
     private final AtomicBoolean consensusActive = new AtomicBoolean(true);
 
     private final List<OwnerActivation.ActivationBlock> alarms = new CopyOnWriteArrayList<>();
+    private final Set<NodeId> divergent = ConcurrentHashMap.newKeySet();
     private final OwnerActivation activation = gate(PromotionTestRanges.NEVER_ALARM);
 
-    /// Every range reads empty, so no overlap is compared: divergence is pinned on real rings in
+    /// Every node holds the same lineage over any range the gate compares (`rec-<offset>`), except the nodes in
+    /// [#divergent], whose records differ (`div-<offset>`). Divergence on real rings is pinned in
     /// [DivergentTailPromotionTest].
     private OwnerActivation gate(TimeSpan unreachableAlarmAfter) {
         return OwnerActivation.ownerActivation(SELF,
@@ -68,9 +72,19 @@ class OwnerActivationTest {
                                                (_, _) -> localWatermark.get(),
                                                this::catchUp,
                                                consensusActive::get,
-                                               (_, _, _, _, _) -> Promise.success(List.of()),
+                                               this::range,
                                                this::raise,
                                                unreachableAlarmAfter);
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> range(NodeId node, String stream, int partition, long from, long to) {
+        var tag = divergent.contains(node) ? "div-" : "rec-";
+
+        return Promise.success(LongStream.rangeClosed(from, to)
+                                         .mapToObj(offset -> OffHeapRingBuffer.RawEvent.rawEvent(offset,
+                                                                                                 (tag + offset).getBytes(StandardCharsets.UTF_8),
+                                                                                                 1L))
+                                         .toList());
     }
 
     private Unit raise(OwnerActivation.ActivationBlock block) {
@@ -219,6 +233,55 @@ class OwnerActivationTest {
 
         assertThat(reporting.activate(STREAM, PARTITION).await().isSuccess()).isTrue();
         assertThat(reporting.blockOf(STREAM, PARTITION)).as("an activation clears the block").isEqualTo(Option.none());
+    }
+
+    /// A divergence block is cleared by the activation that follows once the divergent member is gone (pins the
+    /// activation's own block clearing: nothing else clears a divergence block).
+    @Test
+    void activate_afterDivergentMemberLeaves_clearsTheDivergenceBlock() {
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 24L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).as("refused while the source disagrees").isFalse();
+        assertThat(activation.blockOf(STREAM, PARTITION).isPresent()).isTrue();
+
+        members.set(List.of(SELF));
+
+        assertThat(activate()).isTrue();
+        assertThat(activation.blockOf(STREAM, PARTITION)).as("the activation clears the block").isEqualTo(Option.none());
+    }
+
+    /// A catch-up source that holds none of the compared window (its ring and tier start above it) is refused as
+    /// unverifiable, not trusted (#1555 R1: fail closed).
+    @Test
+    void activate_sourceHoldsNoneOfTheWindow_refusesAsUnverifiable() {
+        var evicted = OwnerActivation.ownerActivation(SELF,
+                                                      (_, _) -> record.get(),
+                                                      (_, _) -> placementOwner.get(),
+                                                      Option.some(this::round),
+                                                      members::get,
+                                                      this::probe,
+                                                      (_, _) -> localWatermark.get(),
+                                                      this::catchUp,
+                                                      consensusActive::get,
+                                                      (node, stream, partition, from, to) -> node.equals(PEER_A)
+                                                                                              ? Promise.success(List.of())
+                                                                                              : range(node, stream, partition, from, to),
+                                                      this::raise,
+                                                      PromotionTestRanges.NEVER_ALARM);
+
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 24L);
+
+        assertThat(evicted.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
+        assertThat(catchUps).as("nothing pulled from an unverifiable source").isEmpty();
+        assertThat(evicted.blockOf(STREAM, PARTITION)).isEqualTo(Option.some(new OwnerActivation.ActivationBlock.OverlapUnverifiable(STREAM,
+                                                                                                                                     PARTITION,
+                                                                                                                                     PEER_A,
+                                                                                                                                     24,
+                                                                                                                                     SELF,
+                                                                                                                                     19)));
     }
 
     @Test

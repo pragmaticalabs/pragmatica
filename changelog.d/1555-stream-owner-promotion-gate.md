@@ -11,10 +11,14 @@
   live placement member's watermark is probed and any higher suffix is pulled from the highest holder; the
   activation is then bound to that exact record, so any later ownership change requires the gate again. A
   partition's first owner skips only the refresh round. Quorum loss clears every activation. Until activated,
-  appends and owner reads are refused with the transient `OwnerNotActivated` (forwarded publishes retry it;
-  local publishes retry it within a short bound).
+  appends and owner-role client reads — forwarded reads, the slice-facing stream access and linearizable owner
+  reads — are refused with the transient `OwnerNotActivated` (forwarded publishes retry it; local publishes
+  retry it within a short bound). Not gated: the local reader of the declarative consumer runtime and raw
+  slice reads, which read this node's ring directly.
 - **An unreachable live member blocks promotion** until the membership FSM declares it dead and it leaves the
-  live placement set; promotion never proceeds while a reachable member holds a higher watermark. Each probe
+  live placement set; promotion never proceeds while a reachable member holds a higher watermark. The probe
+  starts at each peer's oldest available offset, so a healthy peer whose offset 0 has aged out is probed, not
+  mistaken for an unreachable one. Each probe
   times out on its own, but there is no bound independent of DEAD: a member that keeps handshaking while
   answering nothing never reaches DEAD (#1563). Such a stall is no longer silent: after two SWIM suspect
   windows of continuous probe failure the partition stays blocked and is reported once as a CRITICAL warning
@@ -30,22 +34,35 @@
   that peer, and compares the chosen catch-up source pairwise with every other responder — a candidate that
   lags two lineages agrees with both on its own short log, so only the pairwise check stops it pulling one
   lineage's tail over records the other acknowledged. Two peers that merely lag differently along one lineage
-  never disagree, since only offsets both hold are compared. Any disagreement refuses promotion in either direction — nothing can tell which lineage was
+  never disagree, since only offsets both hold are compared; a peer at or below the candidate's head is not
+  compared with the source, because the pulled suffix lies above everything it holds. A peer's window is read
+  from its oldest available offset, so records it still holds are always compared; a catch-up source that holds
+  none of the window it must be checked over cannot be verified, and is refused rather than trusted. Any
+  disagreement refuses promotion in either direction — nothing can tell which lineage was
   acknowledged — and is reported once as a CRITICAL warning naming the partition, the divergent node and both
   heads, and on the partition status read. The partition waits for an operator to pick the source (#1569,
   AD14). The warning is a WARN until the operator-warning channel (#1574) lands.
 - **Limitation of the divergence check:** the window is a named constant, not an enforced bound. Nothing caps
   how far an owner may append beyond its last acknowledged offset (the replica floor requires in-sync peers to
-  exist, and peer lag is measured against the freshest peer, not the owner's head), so a divergence starting
-  more than 1024 offsets below the lower of the two heads is not detected, and offsets that either side has
-  already evicted are not compared. The complete detect-and-flag over a durable per-log epoch history is
+  exist, and peer lag is measured against the freshest peer, not the owner's head). A divergent tail runs up to
+  the diverging copy's head, so the top window of offsets both copies hold lies inside it and a divergence is
+  detected however deep it starts — what the window bounds is the cost of the check, not its reach. Offsets
+  that either side has already evicted are not compared, and a lower peer whose whole window the candidate has
+  evicted is compared over nothing and accepted. The complete detect-and-flag over a durable per-log epoch history is
   #1596; the cluster never auto-truncates.
 - **Sticky ownership.** Every node now routes, and computes its role and `servedByOwner`, from the COMMITTED
   ownership record (HRW placement only before a record exists), so nodes agree on the owner even while their
   membership views disagree. Only the leader's ownership writer judges liveness, and it moves ownership only
   when the committed owner leaves its live set — a higher-ranked node that joins becomes a replica instead of
   taking ownership back, which removes the hand-back trigger. While a dead owner's record stands, its
-  partition answers retryable refusals until the leader rewrites it.
+  partition answers retryable refusals; the rewrite is driven by the leader's membership reconcile, so a
+  leader change that lands after the owner's DEAD edge can leave the record standing until the next
+  membership decision.
+- **Residual (not lossy, detected):** an ex-owner cut off in a minority stays activated until it loses quorum,
+  and in that window it can append a record locally that no replica acknowledges (the publish answers
+  "outcome unknown"). That unacknowledged record is exactly a divergent tail: if the node later becomes a
+  catch-up source or a candidate, the overlap check refuses the promotion and reports it rather than
+  serving it.
 - **Accepted residual:** at `min-sync-replicas` 0 an append acknowledged by the previous owner in the instant
   before the ownership flip reaches it can be lost — the acknowledgement is owner-local by definition there.
   `min-sync-replicas` >= 1 closes it.
@@ -57,3 +74,7 @@
   returning node's tail; the returning node is never activated over the lower peer, and the block is reported
   once and on the status read); `LowCandidateTwoLineagesTest` pins the lagging-candidate case (refused, naming
   both peers), its positive control and differently-lagging peers of one lineage; `OwnerActivationTest` pins the unreachable-member report and its window.
+- `OwnerPeerReadsTest` pins the peer reads (resume at the oldest offset for the probe and the window,
+  failures other than expiry propagate); `PromotionGateShapesVerifierTest` (the verifier's shapes, adopted)
+  pins three-lineage, ahead/behind and evicted-source shapes; `StreamAccessOwnerGateTest` pins the gated
+  stream-access read, and `StreamReadRouterReplicaSnapshotTest` the gated `servedByOwner`.

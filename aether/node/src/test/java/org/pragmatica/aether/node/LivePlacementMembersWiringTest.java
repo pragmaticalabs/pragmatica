@@ -11,7 +11,6 @@ import java.nio.file.Path;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import org.pragmatica.aether.stream.StreamError;
 
 import org.junit.jupiter.api.Test;
 
@@ -88,13 +87,6 @@ class LivePlacementMembersWiringTest {
         assertThat(code).contains("AetherNode::raiseOwnerPromotionBlock,ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()));");
         assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
         assertThat(code).contains("(node,stream,partition,from,to)->readOwnerRange(config.self(),streamPartitionManager,streamForwardClient,node,stream,partition,from,to)");
-    }
-
-    /// The overlap read recognises a peer's expired cursor by message (remote causes travel as text): the marker
-    /// must be a fragment of the real [StreamError.CursorExpired] message.
-    @Test
-    void expiredCursorMarker_matchesTheCursorExpiredMessage() {
-        assertThat(new StreamError.CursorExpired(3, 9).message()).contains(AetherNode.EXPIRED_CURSOR_MARKER);
     }
 
     @Test

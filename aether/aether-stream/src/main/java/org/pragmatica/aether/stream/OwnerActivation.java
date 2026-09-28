@@ -66,7 +66,7 @@ import org.slf4j.LoggerFactory;
 /// indistinguishable by HEAD from the acked history that replaced it. Before any peer is used as catch-up source,
 /// and for every other responder, the last [#OVERLAP_WINDOW] offsets both hold are compared record by record
 /// (offset, timestamp, payload — the #1505 notion of "the same event"); the catch-up source is also compared
-/// PAIRWISE with every other responder, because the local log covers only offsets up to the candidate's own head
+/// PAIRWISE with every responder above the candidate's head, because the local log covers only offsets up to the candidate's own head
 /// and a candidate lagging two lineages agrees with both. Any disagreement REFUSES activation,
 /// whichever side is higher: without an epoch nothing here can tell which of the two lineages was acknowledged,
 /// so neither is served and neither is pulled. The refusal is reported once through the [BlockAlarm] and on
@@ -74,12 +74,15 @@ import org.slf4j.LoggerFactory;
 /// (#1569's pick-source surface, AD14). The detect-and-flag follow-up over a durable per-log epoch history is
 /// #1596; the cluster never auto-truncates.
 ///
-/// **The window is a named constant, not a derived bound, and the check is incomplete beyond it.** A divergent
-/// tail is at most what an owner appended beyond its last acknowledged offset, and nothing caps that per
-/// partition: the pre-append floor (`ReplicationManager.ensureReplicaFloor`) requires in-sync peers to EXIST,
-/// and `ReplicaRegistry.freshPeersFor` bounds a peer's lag against the freshest PEER, not against the owner's
-/// head — when every peer stops acking together all lags stay 0 and the owner keeps appending. A divergence
-/// that starts more than [#OVERLAP_WINDOW] offsets below the lower of the two heads is therefore not detected.
+/// **The window is a named constant, not a derived bound.** Nothing caps how far an owner may append beyond its
+/// last acknowledged offset: the pre-append floor (`ReplicationManager.ensureReplicaFloor`) requires in-sync peers
+/// to EXIST, and `ReplicaRegistry.freshPeersFor` bounds a peer's lag against the freshest PEER, not against the
+/// owner's head. That does not limit detection: a divergent tail runs up to the diverging copy's head, so the top
+/// window of offsets both copies hold lies inside it however deep the divergence starts. What the window bounds is
+/// the cost of each check. Offsets either side has evicted are not compared: a peer's window is read from its
+/// oldest available offset ([OwnerPeerReads]); a catch-up SOURCE that holds none of the window it is checked over
+/// cannot be verified and is refused ([ActivationBlock.OverlapUnverifiable]); a lower peer the candidate has
+/// evicted the window of is compared over nothing and accepted, since nothing is pulled from it.
 ///
 /// **An unreachable member that stays unreachable is reported, not bypassed (#1555 item 8).** After
 /// `unreachableAlarmAfter` of continuous probe failure the partition stays blocked and the block is reported
@@ -181,6 +184,27 @@ public final class OwnerActivation {
                 return ("Owner promotion of %s[%d] refused: catch-up source %s (head %d) and %s (head %d) disagree where "
                        + "both hold records; one of them is a divergent tail and the partition waits for an operator "
                        + "to pick the source").formatted(streamName, partition, origin, originHead, peer, peerHead);
+            }
+        }
+
+        /// The catch-up source `origin` holds none of the records its comparison with `other` would check — its
+        /// ring and tier start above the window — so its suffix cannot be verified against `other`'s log.
+        record OverlapUnverifiable(String streamName,
+                                   int partition,
+                                   NodeId origin,
+                                   long originHead,
+                                   NodeId other,
+                                   long otherHead) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] refused: catch-up source %s (head %d) holds none of the records to "
+                       + "compare with %s (head %d) — its window is evicted — so its suffix cannot be verified; the "
+                       + "partition waits for an operator to pick the source").formatted(streamName,
+                                                                                          partition,
+                                                                                          origin,
+                                                                                          originHead,
+                                                                                          other,
+                                                                                          otherHead);
             }
         }
 
@@ -506,8 +530,9 @@ public final class OwnerActivation {
                                        long local,
                                        PeerWatermark highest,
                                        List<PeerWatermark> others) {
-        return verifyOverlap(stream, partition, local, highest).flatMap(_ -> verifySourceAgainstPeers(stream,
+        return verifySourceOverlap(stream, partition, local, highest).flatMap(_ -> verifySourceAgainstPeers(stream,
                                                                                                       partition,
+                                                                                                      local,
                                                                                                       highest,
                                                                                                       others))
                             .flatMap(_ -> pullSuffix(stream, partition, highest));
@@ -517,11 +542,20 @@ public final class OwnerActivation {
     /// offsets up to the candidate's own head, so a candidate that lags both lineages — a lagging or freshly
     /// joined node HRW may pick — agrees with each of them and would pull the source's suffix over records
     /// another peer acknowledged. Two prefixes of ONE lineage never disagree: only offsets both hold are compared.
+    ///
+    /// Only peers ABOVE the candidate's head are compared pairwise. The pull appends the source's offsets above the
+    /// candidate's head, and a peer at or below that head holds none of them: its records are checked against the
+    /// candidate's own (lenient comparison), never overwritten by the suffix. Comparing it with the source too would
+    /// only refuse a healthy promotion whenever the source has evicted a lagging replica's range.
     private Promise<Unit> verifySourceAgainstPeers(String stream,
                                                    int partition,
+                                                   long local,
                                                    PeerWatermark source,
                                                    List<PeerWatermark> others) {
-        return Promise.allOf(others.stream().map(peer -> verifyPair(stream, partition, source, peer)).toList())
+        return Promise.allOf(others.stream()
+                                   .filter(peer -> peer.watermark() > local)
+                                   .map(peer -> verifyPair(stream, partition, source, peer))
+                                   .toList())
                       .flatMap(results -> Result.allOf(results).async())
                       .mapToUnit();
     }
@@ -560,6 +594,15 @@ public final class OwnerActivation {
                                              PeerWatermark peer,
                                              List<OffHeapRingBuffer.RawEvent> sourceRange,
                                              List<OffHeapRingBuffer.RawEvent> peerRange) {
+        if (compared(sourceRange, peerRange) == 0) {
+            return refuseDivergent(new ActivationBlock.OverlapUnverifiable(stream,
+                                                                           partition,
+                                                                           source.node(),
+                                                                           source.watermark(),
+                                                                           peer.node(),
+                                                                           peer.watermark()));
+        }
+
         return agree(sourceRange, peerRange)
                ? Promise.success(Unit.unit())
                : refuseDivergent(new ActivationBlock.DivergentPeers(stream,
@@ -589,6 +632,40 @@ public final class OwnerActivation {
                       .flatMap((mine, theirs) -> agreeOrRefuse(stream, partition, local, peer, mine, theirs));
     }
 
+    /// The candidate against the catch-up SOURCE, whose suffix is then pulled on top of the candidate's log: as
+    /// [#verifyOverlap], and in addition the comparison must reach at least one record. A source that holds none
+    /// of the window (its ring and tier start above the candidate's head) cannot be verified, so it is refused
+    /// rather than trusted; a lower peer nobody pulls from stays lenient.
+    private Promise<Unit> verifySourceOverlap(String stream, int partition, long local, PeerWatermark source) {
+        var to = Math.min(local, source.watermark());
+
+        if (to < 0) {
+            return Promise.success(Unit.unit());
+        }
+
+        var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
+
+        return Promise.all(ranges.read(self, stream, partition, from, to),
+                           ranges.read(source.node(), stream, partition, from, to))
+                      .flatMap((mine, theirs) -> sourceAgreesOrRefuse(stream, partition, local, source, mine, theirs));
+    }
+
+    private Promise<Unit> sourceAgreesOrRefuse(String stream,
+                                               int partition,
+                                               long local,
+                                               PeerWatermark source,
+                                               List<OffHeapRingBuffer.RawEvent> mine,
+                                               List<OffHeapRingBuffer.RawEvent> theirs) {
+        return compared(mine, theirs) == 0
+               ? refuseDivergent(new ActivationBlock.OverlapUnverifiable(stream,
+                                                                         partition,
+                                                                         source.node(),
+                                                                         source.watermark(),
+                                                                         self,
+                                                                         local))
+               : agreeOrRefuse(stream, partition, local, source, mine, theirs);
+    }
+
     private Promise<Unit> agreeOrRefuse(String stream,
                                         int partition,
                                         long local,
@@ -602,6 +679,15 @@ public final class OwnerActivation {
                                                                    peer.node(),
                                                                    local,
                                                                    peer.watermark()));
+    }
+
+    /// How many offsets both ranges hold.
+    private static long compared(List<OffHeapRingBuffer.RawEvent> mine, List<OffHeapRingBuffer.RawEvent> theirs) {
+        var theirOffsets = theirs.stream().map(OffHeapRingBuffer.RawEvent::offset).collect(Collectors.toSet());
+
+        return mine.stream()
+                   .filter(event -> theirOffsets.contains(event.offset()))
+                   .count();
     }
 
     /// Two ranges agree when every offset present in both holds the same record there.

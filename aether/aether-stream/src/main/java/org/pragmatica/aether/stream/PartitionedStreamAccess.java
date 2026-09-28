@@ -722,8 +722,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                      .toList();
     }
 
+    /// A client read of this node's copy: on the partition's owner it passes the owner promotion gate (#1555), so a
+    /// just-promoted owner never answers from a ring it has not yet caught up.
     private Promise<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+        return partitionManager.readServing(streamName, partition, fromOffset, maxEvents)
                                .map(rawEvents -> toStreamEvents(rawEvents, partition))
                                .fold(cause -> handleReadFailure(cause, partition, fromOffset, maxEvents),
                                      Promise::success);
@@ -833,7 +835,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     }
 
     private Result<List<StreamEvent<T>>> readBufferEvents(int partition, long fromOffset, int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+        return partitionManager.readServing(streamName, partition, fromOffset, maxEvents)
                                .map(rawEvents -> toStreamEvents(rawEvents, partition));
     }
 
