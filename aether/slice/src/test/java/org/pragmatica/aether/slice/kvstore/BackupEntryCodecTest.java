@@ -284,6 +284,25 @@ class BackupEntryCodecTest {
                                                                .allMatch(BackupError.ValueTypeRefused.class::isInstance);
         }
 
+        /// #1573 N3: a malformed rollback record — its codec bytes cut short inside the new fields — is a typed
+        /// ValueDecodingFailed naming the line, never a thrown exception (the deleted KVStoreSerializer threw
+        /// NumberFormatException on `rollbackCount = "x"`).
+        @Test
+        void decode_malformedPreviousVersionValue_isATypedFailure() {
+            var base = ArtifactBase.artifactBase("com.example:svc").unwrap();
+            var v1 = Version.version("1.0.0").unwrap();
+            var v2 = Version.version("2.0.0").unwrap();
+            var bytes = BackupFixtures.codec()
+                                      .canonical()
+                                      .encode(new PreviousVersionValue(base, v2, v1, 1000L, 2, 900L, List.of(v2)));
+            var truncated = Arrays.copyOf(bytes, bytes.length - 4);
+            var entry = Base64.getEncoder().encodeToString(truncated) + " "
+                        + BackupEntryCodec.escape(PreviousVersionKey.previousVersionKey(base).asString());
+
+            assertThat(failures(CODEC.decode(sealedDocument(entry)))).singleElement()
+                                                                    .isInstanceOf(BackupError.ValueDecodingFailed.class);
+        }
+
         @Test
         void decode_refusesAValueOfTheWrongTypeForItsKey() {
             var document = sealedDocument(line(LogLevelValue.logLevelValue("root", "INFO"), "api-key/key-1"),

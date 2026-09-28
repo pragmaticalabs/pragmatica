@@ -83,7 +83,7 @@ class RollbackManagerAutoRollbackSafetyTest {
         assertThat(clusterNode.appliedCommands.getFirst()).isInstanceOf(KVCommand.LeaderTransaction.class);
         assertThat(((KVCommand.LeaderTransaction<?, ?>) clusterNode.appliedCommands.getFirst()).mutations())
             .extracting(KVCommand.Mutation::key)
-            .containsExactly(PreviousVersionKey.previousVersionKey(BASE), SliceTargetKey.sliceTargetKey(BASE));
+            .containsExactlyElementsOf(List.<Object>of(PreviousVersionKey.previousVersionKey(BASE), SliceTargetKey.sliceTargetKey(BASE)));
         var first = value(0);
         var second = value(1);
 

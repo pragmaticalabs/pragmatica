@@ -357,8 +357,10 @@ public final class InvocationMetricsCollector {
     /// | DRAINING refusal, reply timeout, execution timeout | not counted |
     ///
     /// A returned failure is not a defect because a downstream outage surfaces exactly that way, and
-    /// counting it would roll a healthy version back during someone else's incident. An HTTP request body
-    /// that fails to decode is the client's input, unlike a bridge request, which another build produced.
+    /// counting it would roll a healthy version back during someone else's incident. The consequence is a
+    /// stated limit: a version that fails by RETURNING errors, without throwing, is never auto-rolled back.
+    /// An HTTP request body that fails to decode is the client's input, unlike a bridge request, which
+    /// another build produced.
     public enum ExecutionOutcome {
         SUCCESS,
         DEFECT
