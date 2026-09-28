@@ -56,9 +56,10 @@ public final class QuicTransportMetrics {
     /// send path is the defect #718 exists to remove. A persistently non-zero value here means the
     /// bound is too small for the offered load, not that the dedup is misbehaving.
     private final LongAdder streamZombieLazyOpenDrops = new LongAdder();
-    /// #1578: writes re-sent once because their stream was retired under them — the lane moved to the
-    /// stream `QuicPeerConnection.registerStream` kept between the write resolving its stream and
-    /// running. Non-zero is expected around a lane-ownership change; each one is a message that would
+    /// #1578: writes re-sent once on the stream their lane resolves to now, because the stream or
+    /// connection they were written to was retired under them — the lane moved to the stream
+    /// `QuicPeerConnection.registerStream` kept, or a duplicate dial replaced the connection. Non-zero
+    /// is expected around a lane-ownership change or a dual dial; each one is a message that would
     /// otherwise have been lost with only a write-failure line to show for it.
     private final LongAdder retiredStreamResends = new LongAdder();
     /// #487: count of sends DROPPED to a peer with no PeerState (dead or never-connected). Counts EVERY
@@ -178,7 +179,8 @@ public final class QuicTransportMetrics {
         streamZombieLazyOpenDrops.increment();
     }
 
-    /// #1578: records a write re-sent on the stream its lane kept after its own stream was retired.
+    /// #1578: records a write re-sent on the stream its lane resolves to now, after its own stream or
+    /// connection was retired.
     @Contract
     public void onRetiredStreamResend() {
         retiredStreamResends.increment();

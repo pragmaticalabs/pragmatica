@@ -187,6 +187,22 @@ class PeerStateTest {
         assertThat(s.activeConnection().isEmpty()).isTrue();
     }
 
+    /// #1578: an eviction that names a connection other than the bound one is a no-op — the caller
+    /// learned "dead" from a stale reference, and the bound connection is its replacement.
+    @Test
+    void evictIfBound_withAReplacedConnection_leavesTheBoundOneConnected() {
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var replaced = liveConnection();
+        var bound = liveConnection();
+        s.attach(bound, T0 + 2);
+        assertThat(s.evictIfBound(replaced, T0 + 3).isEmpty()).isTrue();
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(bound);
+        assertThat(s.evictIfBound(bound, T0 + 4).or((QuicPeerConnection) null)).isSameAs(bound);
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
+    }
+
     @Test
     void evict_from_EVICTED_is_noop() {
         var s = state();
