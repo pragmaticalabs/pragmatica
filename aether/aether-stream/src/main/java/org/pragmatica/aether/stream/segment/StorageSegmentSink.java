@@ -4,10 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import java.util.List;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.EpochStart;
 import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.CompressionCodec;
@@ -68,9 +71,13 @@ public final class StorageSegmentSink implements SegmentSink {
     /// durable tier, then the ref, then the log's seal bound -- so the log can never be truncated past a
     /// segment whose block is not on disk. Without one (a manager built with no WAL) there is nothing to
     /// truncate and [StorageInstance#putRef] stores it, durably on the same tiers.
+    ///
+    /// With a log whose owner-epoch history is not empty, the block carries the slice of it covering
+    /// `[base, endOffset]` in front of the events ([SegmentProvenance], #1596), read here at seal time: a node that
+    /// later replays the segment from the tier installs it before appending the segment's records.
     @Override
     public Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
-        var raw = segment.serializedEvents();
+        var raw = withProvenance(segment, log);
         var originalSize = raw.length;
         var compressed = compressionCodec.compress(raw).or(raw);
         var processedData = applyEncryption(compressed);
@@ -81,6 +88,22 @@ public final class StorageSegmentSink implements SegmentSink {
                                                                 originalSize,
                                                                 processedData.encrypted()))
                     .onSuccess(_ -> logSealed(segment));
+    }
+
+    private static byte[] withProvenance(SealedSegment segment, Option<AppendLog> log) {
+        var events = segment.serializedEvents();
+
+        return log.map(wal -> sliceThrough(wal, segment.endOffset()))
+                  .filter(slice -> !slice.isEmpty())
+                  .map(slice -> SegmentProvenance.withSlice(slice, events))
+                  .or(events);
+    }
+
+    private static List<EpochStart> sliceThrough(AppendLog wal, long endOffset) {
+        return wal.epochHistory()
+                  .stream()
+                  .filter(start -> start.startOffset() <= endOffset)
+                  .toList();
     }
 
     private Promise<BlockId> store(SealedSegment segment, Option<AppendLog> log, byte[] block) {

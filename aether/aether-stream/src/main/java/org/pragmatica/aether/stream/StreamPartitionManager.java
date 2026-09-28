@@ -51,6 +51,7 @@ import org.pragmatica.aether.stream.provenance.LogProvenance;
 import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.provenance.ProvenanceComparison;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
+import org.pragmatica.aether.stream.provenance.ProvenanceEpoch;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.AppendLog.WalRecord;
@@ -2577,7 +2578,39 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                      timestamp,
                                                                                                                      ownerEpochSource.currentOwnerEpoch(streamName,
                                                                                                                                                         partition)),
-                                               this::installProvenance);
+                                               this::installProvenance,
+                                               this::installUnattributed);
+    }
+
+    /// Records about to be applied up to `toOffset` carry no provenance (#1596: a sealed segment without a slice).
+    /// When they reach past this copy's head, `UNKNOWN(d)` -- a fresh `d`, floored at the last epoch this log records
+    /// -- is recorded at the head + 1 before they are appended, and `HISTORY_INCOMPLETE` is raised for this copy:
+    /// the range equals no other copy's, so any comparison over it fails closed rather than attributing the records
+    /// to whichever epoch came before them. A partition without a log records nothing; records that land at or
+    /// below the head are verified against what is held and need nothing.
+    ///
+    /// The head is read outside the partition's ordered section: a live append landing between that read and the
+    /// replay's first append makes the replay's appends at those offsets a verification instead, and the unknown
+    /// entry then starts above records the live batch attributed -- conservative, never permissive.
+    public Result<Unit> installUnattributed(String streamName, int partition, long toOffset) {
+        var start = nextExpectedOffset(streamName, partition);
+
+        return walFor(streamName, partition).filter(_ -> toOffset >= start)
+                     .map(wal -> recordUnattributed(wal, streamName, partition, start))
+                     .or(Result::unitResult);
+    }
+
+    private Result<Unit> recordUnattributed(AppendLog wal, String streamName, int partition, long start) {
+        var unknown = ProvenanceEpoch.unknown(lastRecordedEpoch(streamName, partition).or(Epoch.ZERO));
+
+        return ProvenanceEntry.provenanceEntry(unknown, start)
+                              .key()
+                              .flatMap(key -> wal.recordEpochStart(key, start, ProvenanceEntry.ORDER))
+                              .onSuccess(_ -> raiseOnce(streamName,
+                                                        partition,
+                                                        PartitionRecoveryReasonKind.HISTORY_INCOMPLETE,
+                                                        "records from offset " + start
+                                                        + " were taken from a sealed segment that carries no owner-epoch provenance"));
     }
 
     /// The owner-epoch fence (#345 item 1d-ii, spec §5b/§6): reject the append when `ownerEpoch` is
