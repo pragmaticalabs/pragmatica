@@ -4531,6 +4531,9 @@ public interface AetherNode extends ManageableNode {
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                  .onPut(AetherKey.SpokesmanKey.class,
                                                         _ -> bootstrapModule.retryIfNeeded())
+                                                 // #1533: the restore decision opens the restore gate; re-drive the config seed it refused.
+                                                 .onPut(AetherKey.BackupRestoreKey.class,
+                                                        _ -> bootstrapModule.retryIfNeeded())
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
                                                                                                                                                                              clusterTopologyManager,

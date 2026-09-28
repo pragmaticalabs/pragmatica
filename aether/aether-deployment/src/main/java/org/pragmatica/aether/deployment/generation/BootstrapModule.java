@@ -162,8 +162,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         var configPlan = planClusterConfigSeed();
 
         corePlan.onPresent(plan -> batch.add(plan.command()));
-        configPlan.onPresent(plan -> batch.add(plan.command()));
-        if (batch.isEmpty()) {
+        if (batch.isEmpty() && configPlan.isEmpty()) {
             fireBootstrapCommitted();
 
             return;
@@ -177,8 +176,17 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
             return;
         }
 
+        // #1533: the config seed is a cluster-state write, which a backup-enabled node refuses until its
+        // restore decision commits; submitted apart from the runtime core-partition write so that refusal
+        // never holds the DHT core bootstrap back. The decision's commit re-drives it via retryIfNeeded.
+        configPlan.onPresent(plan -> seedClusterConfig(clusterNode, plan));
+        if (batch.isEmpty()) {
+            fireBootstrapCommitted();
+
+            return;
+        }
+
         corePlan.onPresent(this::logCoreBootstrap);
-        configPlan.onPresent(this::logClusterConfigSeed);
         var hasCore = corePlan.isPresent();
 
         if (hasCore) {
@@ -354,13 +362,16 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     @Contract
     private void retryConfigSeedIfNeeded() {
-        cluster.onPresent(clusterNode -> planClusterConfigSeed().onPresent(plan -> {
-            logClusterConfigSeed(plan);
-            clusterNode.apply(List.of(plan.command()))
-                       .onFailure(cause -> log.warn("Config seed retry failed: {}",
-                                                    cause.message()))
-                       .onSuccess(_ -> log.info("Config seed applied on retry"));
-        }));
+        cluster.onPresent(clusterNode -> planClusterConfigSeed().onPresent(plan -> seedClusterConfig(clusterNode, plan)));
+    }
+
+    @Contract
+    private void seedClusterConfig(ClusterNode<KVCommand<AetherKey>> clusterNode, ClusterConfigSeedPlan plan) {
+        logClusterConfigSeed(plan);
+        clusterNode.apply(List.of(plan.command()))
+                   .onFailure(cause -> log.warn("Config seed failed (retried on the next membership or restore-decision event): {}",
+                                                cause.message()))
+                   .onSuccess(_ -> log.info("Config seed applied"));
     }
 
     private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<DhtPartitionOwnershipValue> existing,
