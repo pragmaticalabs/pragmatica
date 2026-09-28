@@ -64,7 +64,8 @@ public sealed interface ClusterIncarnation {
     /// The value is removed first so the Put is a first write: it must land even when this cluster
     /// already minted its own genesis before the restore ran, which the successor fence would refuse.
     /// This bypasses the fence by design; monotonicity here comes from the floor.
-    static List<KVCommand<AetherKey>> restoreCommands(ClusterIncarnationValue restored, long highestRecordedForLineage) {
+    static List<KVCommand<AetherKey>> restoreCommands(ClusterIncarnationValue restored,
+                                                      long highestRecordedForLineage) {
         var next = Math.max(restored.incarnation(), highestRecordedForLineage) + 1;
 
         return List.of(new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()),
