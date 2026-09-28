@@ -168,7 +168,7 @@ class RollbackManagerAutoRollbackSafetyTest {
     }
 
     private AetherValue value(int index) {
-        return ((KVCommand.Put<?, ?>) clusterNode.appliedCommands.get(index)).value();
+        return (AetherValue) ((KVCommand.Put<?, ?>) clusterNode.appliedCommands.get(index)).value();
     }
 
     private static long now() {
