@@ -33,6 +33,12 @@ final class TestArtifacts {
     /// suite `02-chaos/test-stream-replica-failover.sh` deploys.
     static final String STREAM_REPL_SLICE = "org.pragmatica.aether.test:test-stream-repl-stream-slice:1.0.0";
 
+    /// replicas=3 / min-sync-replicas=3 stream blueprint (`test-stream-acked`), used by
+    /// `StreamAckedRecordsOwnerKillTest` for the #1549 acked-record proof: every acked event is on every
+    /// replica, and the declared min-sync reaches the runtime only since #1549. A dedicated fixture so no
+    /// other test's semantics move with it.
+    static final String STREAM_ACKED_SLICE = "org.pragmatica.aether.test:test-stream-acked-stream-slice:1.0.0";
+
     /// partitions=4 / RF=3 / min-sync-replicas=2 replicated stream blueprint (`test-stream-multipart`),
     /// used by `MultiPartitionStreamTest` for the #429 multi-partition e2e fixture (partition→owner
     /// distribution, per-partition ordering, local/forwarded reads + read-preference arms) and by

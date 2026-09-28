@@ -361,10 +361,11 @@ class StreamResourceValidatorTest {
                                                                                         .contains("#1262")));
         }
 
-        /// #1262 B2: `consistency_mode` is the key the runtime binder actually reads, so a STRONG declared
-        /// there is the one that would reach the write path. It must be refused too, naming the key.
+        /// #1262 B2 pinned `consistency_mode` because the runtime record binder read it. Since #1549 the
+        /// runtime binds `[streams.X]` through the stream parser, which reads `consistency` only, so a
+        /// `consistency_mode` declaration is refused as a key nothing reads, pointing at the one that is.
         @Test
-        void strongConsistencyModeIsRejected_underTheKeyTheBinderReads() {
+        void strongConsistencyMode_isRefusedAsAnUnknownKey_namingTheKeyTheRuntimeReads() {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
@@ -376,10 +377,10 @@ class StreamResourceValidatorTest {
             result.onSuccessRun(() -> fail("Expected failure"))
                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
                                               .filteredOn(failure -> failure.rule()
-                                                                            .equals(StreamResourceValidator.RULE_UNSUPPORTED_CONSISTENCY))
+                                                                            .equals(StreamResourceValidator.RULE_UNKNOWN_STREAM_KEY))
                                               .extracting(StreamValidationFailure::message)
-                                              .anySatisfy(message -> assertThat(message).contains("consistency_mode")
-                                                                                        .contains("#1262")));
+                                              .anySatisfy(message -> assertThat(message).contains("'consistency_mode'")
+                                                                                        .contains("did you mean 'consistency'")));
         }
 
         @Test

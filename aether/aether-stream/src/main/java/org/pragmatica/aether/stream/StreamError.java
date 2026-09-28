@@ -231,6 +231,29 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A retention count the ring cannot index (#1549): the ring's index is sized from `maxCount`, and a count
+    /// past [OffHeapRingBuffer#MAX_CAPACITY] overflows the allocation size. Rejected PRE-COMMIT on create
+    /// rather than built over a truncated index; a fatal config error, never retried.
+    record RetentionCountUnindexable(String streamName, long maxCount, long maxCapacity) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' retention max-count %d exceeds the indexable ring capacity %d".formatted(streamName,
+                                                                                                         maxCount,
+                                                                                                         maxCapacity);
+        }
+    }
+
+    /// A retention bound below 1 (#1549): a count of 0 divided by zero and a negative count requested a
+    /// negative allocation — both threw out of stream creation — and a byte or age bound of 0 creates a
+    /// stream that refuses or immediately evicts every event. Rejected PRE-COMMIT on create; a fatal config
+    /// error, never retried. `bound` is `max-count`, `max-bytes` or `max-age`.
+    record RetentionBoundInvalid(String streamName, String bound, long value) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' retention %s = %d is invalid: it must be at least 1".formatted(streamName, bound, value);
+        }
+    }
+
     /// An APP stream created with fewer than `StreamConfig.MIN_REPLICAS` copies (#1547). The engine
     /// backstop behind every mint path — blueprint parser, durable topics, durable entities and the
     /// management defaults each refuse or default above it first, so this names a path that bypassed

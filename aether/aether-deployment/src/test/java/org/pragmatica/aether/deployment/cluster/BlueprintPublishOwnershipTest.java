@@ -856,7 +856,9 @@ class BlueprintPublishOwnershipTest {
                 max-event-size = "64KB"
                 """;
 
-        /// `consistency_mode` is the key the provisioning binder reads for `StreamConfig.consistencyMode`.
+        /// `consistency_mode` is the record-binder spelling that reached the runtime before #1549. The stream
+        /// parser now refuses it as an unknown key, and the #1262 consistency gate still names a STRONG under
+        /// it, which is what this fixture pins.
         private static final String STRONG_MODULE_STREAMS = """
                 [streams.order-events]
                 partitions = 1
