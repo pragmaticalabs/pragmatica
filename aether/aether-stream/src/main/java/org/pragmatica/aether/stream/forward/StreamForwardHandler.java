@@ -452,10 +452,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                              request.correlationId(),
                                                              capped.events(),
                                                              bounds)
-                     : ReadForwardResponse.successResponse(selfNodeId,
-                                                           request.correlationId(),
-                                                           capped.events(),
-                                                           bounds);
+                     : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events(), bounds);
         var response = withCatchupHistory(request, answer);
 
         if (capped.truncated()) {

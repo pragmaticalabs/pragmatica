@@ -309,9 +309,9 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stream append refused for %s[%d]: owner epoch %s is older than epoch %s this partition's log already records".formatted(streamName,
-                                                                                                                                         partition,
-                                                                                                                                         presented,
-                                                                                                                                         recorded);
+                                                                                                                                            partition,
+                                                                                                                                            presented,
+                                                                                                                                            recorded);
         }
     }
 
@@ -322,8 +322,8 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Catch-up refused for %s[%d]: the source's owner-epoch history differs from this replica's at offset %d".formatted(streamName,
-                                                                                                                                   partition,
-                                                                                                                                   offset);
+                                                                                                                                      partition,
+                                                                                                                                      offset);
         }
     }
 

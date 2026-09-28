@@ -1705,11 +1705,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                  long timestamp,
                                                  Epoch ownerEpoch) {
         return writeWalFrame(walFor(streamName, partition), offset, payload, timestamp, ownerEpoch).onSuccess(_ -> replicationManager.replicateEvent(streamName,
-                                                                                                                                         partition,
-                                                                                                                                         offset,
-                                                                                                                                         payload,
-                                                                                                                                         timestamp,
-                                                                                                                                         ownerEpoch));
+                                                                                                                                                     partition,
+                                                                                                                                                     offset,
+                                                                                                                                                     payload,
+                                                                                                                                                     timestamp,
+                                                                                                                                                     ownerEpoch));
     }
 
     private static Result<LoggedAppend> writeWalFrame(Option<AppendLog> wal,
@@ -1757,7 +1757,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static Result<Long> keyedWrite(AppendLog wal, long offset, byte[] payload, long timestamp, Epoch epoch) {
-        return ProvenanceEntry.provenanceEntry(epoch, none(), offset)
+        return ProvenanceEntry.provenanceEntry(epoch,
+                                               none(),
+                                               offset)
                               .key()
                               .flatMap(key -> wal.write(offset, payload, timestamp, key, ProvenanceEntry.ORDER));
     }
@@ -1809,7 +1811,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admitOwnerWrite(streamName,
                                                                                               partition,
                                                                                               minAcks))
-                             .flatMap(_ -> provenanceAdmits(streamName, partition, some(ownerEpoch)))
+                             .flatMap(_ -> provenanceAdmits(streamName,
+                                                            partition,
+                                                            some(ownerEpoch)))
                              .flatMap(_ -> checkEventSizes(entry, payloads))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
                              .flatMap(buffer -> appendRunInSection(buffer,
@@ -1859,12 +1863,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         var firstOffset = lastOffset - payloads.size() + 1;
 
         return writeWalFrames(walFor(streamName, partition), firstOffset, payloads, timestamp, ownerEpoch).onSuccess(_ -> replicationManager.replicateEvents(streamName,
-                                                                                                                                                 partition,
-                                                                                                                                                 firstOffset,
-                                                                                                                                                 payloads,
-                                                                                                                                                 Collections.nCopies(payloads.size(),
-                                                                                                                                                                     timestamp),
-                                                                                                                                                 ownerEpoch));
+                                                                                                                                                             partition,
+                                                                                                                                                             firstOffset,
+                                                                                                                                                             payloads,
+                                                                                                                                                             Collections.nCopies(payloads.size(),
+                                                                                                                                                                                 timestamp),
+                                                                                                                                                             ownerEpoch));
     }
 
     private static Result<LoggedAppend> writeWalFrames(Option<AppendLog> wal,
@@ -2120,16 +2124,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                             payload,
                             ownerEpoch,
                             provenanceAdmits(streamName, partition, provenance)).flatMap(buffer -> buffer.appendOrderedAt(offset,
-                                                                                                                                                    payload,
-                                                                                                                                                    timestamp,
-                                                                                                                                                    new PartitionQuarantine(streamName,
-                                                                                                                                                                            partition),
-                                                                                                                                                    assigned -> success(logReplicated(streamName,
-                                                                                                                                                                                      partition,
-                                                                                                                                                                                      assigned,
-                                                                                                                                                                                      payload,
-                                                                                                                                                                                      timestamp,
-                                                                                                                                                                                      provenance))))
+                                                                                                                          payload,
+                                                                                                                          timestamp,
+                                                                                                                          new PartitionQuarantine(streamName,
+                                                                                                                                                  partition),
+                                                                                                                          assigned -> success(logReplicated(streamName,
+                                                                                                                                                            partition,
+                                                                                                                                                            assigned,
+                                                                                                                                                            payload,
+                                                                                                                                                            timestamp,
+                                                                                                                                                            provenance))))
                            .onSuccess(_ -> entry.updateActivity());
     }
 
@@ -2383,10 +2387,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// append, a partition without a log, or an unreadable last entry passes (the log's own order check decides).
     private Result<Unit> provenanceAdmits(String streamName, int partition, Option<Epoch> provenance) {
         return provenance.flatMap(epoch -> lastRecordedEpoch(streamName, partition).filter(recorded -> recorded.isStrictlyAfter(epoch))
-                                                                                   .map(recorded -> new StreamError.ProvenanceRegression(streamName,
-                                                                                                                                         partition,
-                                                                                                                                         epoch,
-                                                                                                                                         recorded)))
+                                                            .map(recorded -> new StreamError.ProvenanceRegression(streamName,
+                                                                                                                  partition,
+                                                                                                                  epoch,
+                                                                                                                  recorded)))
                          .map(StreamError::<Unit> result)
                          .or(Result::unitResult);
     }
@@ -2395,8 +2399,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         return walFor(streamName, partition).flatMap(wal -> Option.from(wal.epochHistory()
                                                                            .stream()
                                                                            .reduce((earlier, later) -> later)))
-                     .flatMap(last -> ProvenanceEntry.provenanceEntry(last)
-                                                     .option())
+                     .flatMap(last -> ProvenanceEntry.provenanceEntry(last).option())
                      .map(ProvenanceEntry::epoch);
     }
 
@@ -2441,7 +2444,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           long fromOffset,
                                           long toOffset,
                                           List<ProvenanceEntry> slice) {
-        return walFor(streamName, partition).map(wal -> installProvenance(wal, streamName, partition, fromOffset, toOffset, slice))
+        return walFor(streamName, partition).map(wal -> installProvenance(wal,
+                                                                          streamName,
+                                                                          partition,
+                                                                          fromOffset,
+                                                                          toOffset,
+                                                                          slice))
                      .or(Result::unitResult);
     }
 
@@ -2460,7 +2468,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                            PROVENANCE_BASE,
                                                                                                                            Math.min(local.head(),
                                                                                                                                     toOffset))))
-                     .flatMap(_ -> recordSlice(wal, fromOffset, toOffset, slice));
+                              .flatMap(_ -> recordSlice(wal, fromOffset, toOffset, slice));
     }
 
     private Result<Unit> refuseMismatch(String streamName, int partition, Option<Long> divergence) {
@@ -2474,27 +2482,29 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new StreamError.ProvenanceMismatch(streamName, partition, offset).result();
     }
 
-    private static Result<Unit> recordSlice(AppendLog wal, long fromOffset, long toOffset, List<ProvenanceEntry> slice) {
+    private static Result<Unit> recordSlice(AppendLog wal,
+                                            long fromOffset,
+                                            long toOffset,
+                                            List<ProvenanceEntry> slice) {
         return Result.allOf(slice.stream()
                                  .filter(entry -> entry.startOffset() >= fromOffset && entry.startOffset() <= toOffset)
                                  .map(entry -> entry.key()
                                                     .flatMap(key -> wal.recordEpochStart(key,
                                                                                          entry.startOffset(),
                                                                                          ProvenanceEntry.ORDER)))
-                                 .toList())
-                     .mapToUnit();
+                                 .toList()).mapToUnit();
     }
 
     /// The seam every catch-up apply lands through (#1505, #1596): records are appended unattributed and fenced with
     /// the partition's current owner epoch, after the source's slice is installed.
     public AlignedRecovery alignedRecovery() {
         return AlignedRecovery.alignedRecovery((streamName, partition, offset, payload, timestamp) -> appendCaughtUp(streamName,
-                                                                                                                  partition,
-                                                                                                                  offset,
-                                                                                                                  payload,
-                                                                                                                  timestamp,
-                                                                                                                  ownerEpochSource.currentOwnerEpoch(streamName,
-                                                                                                                                                     partition)),
+                                                                                                                     partition,
+                                                                                                                     offset,
+                                                                                                                     payload,
+                                                                                                                     timestamp,
+                                                                                                                     ownerEpochSource.currentOwnerEpoch(streamName,
+                                                                                                                                                        partition)),
                                                this::installProvenance);
     }
 

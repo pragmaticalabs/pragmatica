@@ -10,6 +10,9 @@ import java.util.List;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+
 
 /// What one copy of a partition log says about where its records came from (#1596, spec #1569 §7.5.2):
 /// `base` (0, or the start of a first `BASE(d)` entry once operator resolution exists), `low` (the lowest
@@ -17,12 +20,13 @@ import org.pragmatica.lang.Option;
 /// `history`, oldest first. The input of [ProvenanceComparison] at cold restart (AD7) and at promotion
 /// (#1596's gate) alike.
 public record LogProvenance(long base, long low, long head, List<ProvenanceEntry> history) {
+    /// Below every epoch a history can hold, so a copy without history ranks last.
+    private static final Epoch NO_HISTORY = Epoch.epoch(Long.MIN_VALUE, Long.MIN_VALUE);
+
     /// Candidate order for choosing a catch-up source among NON-divergent copies: the later last epoch, then
     /// the higher head -- never the head alone (rev1569 F1: a deposed owner's longer unacked tail must not
     /// win). A copy with no history ranks below every copy that has one.
-    public static final Comparator<LogProvenance> SOURCE_ORDER = Comparator.comparing(LogProvenance::lastEpoch,
-                                                                                      LogProvenance::compareLastEpochs)
-                                                                           .thenComparingLong(LogProvenance::head);
+    public static final Comparator<LogProvenance> SOURCE_ORDER = Comparator.comparing(LogProvenance::rankEpoch).thenComparingLong(LogProvenance::head);
 
     public LogProvenance {
         history = List.copyOf(history);
@@ -35,15 +39,11 @@ public record LogProvenance(long base, long low, long head, List<ProvenanceEntry
     /// The epoch of the last history entry, if any.
     public Option<Epoch> lastEpoch() {
         return history.isEmpty()
-               ? Option.none()
-               : Option.some(history.getLast()
-                                    .epoch());
+               ? none()
+               : some(history.getLast().epoch());
     }
 
-    private static int compareLastEpochs(Option<Epoch> left, Option<Epoch> right) {
-        return left.fold(() -> right.isPresent()
-                               ? -1
-                               : 0,
-                         l -> right.fold(() -> 1, l::compareTo));
+    private Epoch rankEpoch() {
+        return lastEpoch().or(NO_HISTORY);
     }
 }

@@ -880,7 +880,11 @@ public final class PartitionBackfill {
                                                    response.fromOffset(),
                                                    response.toOffset(),
                                                    response.history())
-                                .flatMap(_ -> applyPayloads(streamName, partition, response.fromOffset(), payloads, timestamps));
+                                .flatMap(_ -> applyPayloads(streamName,
+                                                            partition,
+                                                            response.fromOffset(),
+                                                            payloads,
+                                                            timestamps));
     }
 
     /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded ([#applyEvents]).

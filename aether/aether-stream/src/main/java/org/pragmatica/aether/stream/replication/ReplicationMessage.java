@@ -173,7 +173,14 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
                                                       long toOffset,
                                                       List<byte[]> payloads,
                                                       List<Long> timestamps) {
-            return catchupResponse(governorId, streamName, partition, fromOffset, toOffset, payloads, timestamps, List.of());
+            return catchupResponse(governorId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   toOffset,
+                                   payloads,
+                                   timestamps,
+                                   List.of());
         }
 
         public static CatchupResponse catchupResponse(NodeId governorId,

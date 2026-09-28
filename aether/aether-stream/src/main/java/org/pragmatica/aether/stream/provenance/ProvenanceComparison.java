@@ -4,11 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.provenance;
 
-import java.util.TreeSet;
 import java.util.stream.LongStream;
-import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 /// The divergence rule of spec #1569 §7.5.2 (AD7), as ONE pure function shared by cold-restart detection and
@@ -43,22 +44,25 @@ public sealed interface ProvenanceComparison {
     /// for).
     static Option<Incompleteness> incompleteness(LogProvenance copy) {
         if (holdsRecordBelowBase(copy)) {
-            return Option.some(Incompleteness.HISTORY_INCOMPLETE);
+            return some(Incompleteness.HISTORY_INCOMPLETE);
         }
 
         if (copy.head() < copy.base()) {
-            return Option.none();
+            return none();
         }
 
         return copy.history()
                    .isEmpty()
-               ? Option.some(Incompleteness.HISTORY_MISSING)
+               ? some(Incompleteness.HISTORY_MISSING)
                : startsAtBase(copy);
     }
 
     /// Whether `a` and `b` diverge anywhere in `[0, min(head_a, head_b)]`.
     static boolean diverge(LogProvenance a, LogProvenance b) {
-        return divergesWithin(a, b, 0, Math.min(a.head(), b.head()));
+        return divergesWithin(a,
+                              b,
+                              0,
+                              Math.min(a.head(), b.head()));
     }
 
     /// Whether `a` and `b` disagree at any offset of `[from, to]` -- the range form, for the backfill's N13
@@ -69,39 +73,41 @@ public sealed interface ProvenanceComparison {
 
     /// The first offset of `[from, to]` at which `a` and `b` disagree, if any.
     static Option<Long> firstDivergence(LogProvenance a, LogProvenance b, long from, long to) {
-        return Option.from(boundaries(a, b, from, to).filter(offset -> !equal(prov(a, offset), prov(b, offset)))
-                                                     .boxed()
-                                                     .findFirst());
+        return Option.from(boundaries(a, b, from, to).filter(offset -> !equal(prov(a, offset),
+                                                                              prov(b, offset)))
+                                     .boxed()
+                                     .findFirst());
     }
 
     private static boolean holdsRecordBelowBase(LogProvenance copy) {
-        return copy.low() < copy.base() && copy.low() >= 0 && copy.low() <= copy.head();
+        return copy.low() < copy.base()
+               && copy.low() >= 0
+               && copy.low() <= copy.head();
     }
 
     private static Option<Incompleteness> startsAtBase(LogProvenance copy) {
         return copy.history()
                    .getFirst()
                    .startOffset() == copy.base()
-               ? Option.none()
-               : Option.some(Incompleteness.HISTORY_INCOMPLETE);
+               ? none()
+               : some(Incompleteness.HISTORY_INCOMPLETE);
     }
 
     private static LongStream boundaries(LogProvenance a, LogProvenance b, long from, long to) {
-        var points = new TreeSet<Long>();
+        return LongStream.concat(LongStream.of(from,
+                                               a.base(),
+                                               b.base()),
+                                 LongStream.concat(starts(a),
+                                                   starts(b)))
+                         .filter(offset -> offset >= from && offset <= to)
+                         .sorted()
+                         .distinct();
+    }
 
-        Stream.of(Stream.of(from, a.base(), b.base()),
-                  a.history()
+    private static LongStream starts(LogProvenance copy) {
+        return copy.history()
                    .stream()
-                   .map(ProvenanceEntry::startOffset),
-                  b.history()
-                   .stream()
-                   .map(ProvenanceEntry::startOffset))
-              .flatMap(offsets -> offsets)
-              .filter(offset -> offset >= from && offset <= to)
-              .forEach(points::add);
-
-        return points.stream()
-                     .mapToLong(Long::longValue);
+                   .mapToLong(ProvenanceEntry::startOffset);
     }
 
     private static OffsetProvenance prov(LogProvenance copy, long offset) {
@@ -120,8 +126,7 @@ public sealed interface ProvenanceComparison {
     private static boolean equal(OffsetProvenance left, OffsetProvenance right) {
         return switch (left) {
             case OffsetProvenance.None none -> right instanceof OffsetProvenance.None other && none.base() == other.base();
-            case OffsetProvenance.Owned owned -> right instanceof OffsetProvenance.Owned other && owned.entry()
-                                                                                                        .sameEpoch(other.entry());
+            case OffsetProvenance.Owned owned -> right instanceof OffsetProvenance.Owned other && owned.entry().sameEpoch(other.entry());
             case OffsetProvenance.Undefined _ -> false;
         };
     }

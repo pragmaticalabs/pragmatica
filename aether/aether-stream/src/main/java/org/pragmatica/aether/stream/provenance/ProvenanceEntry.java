@@ -7,11 +7,15 @@ package org.pragmatica.aether.stream.provenance;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.storage.AppendLog.EpochKey;
 import org.pragmatica.storage.AppendLog.EpochOrder;
 import org.pragmatica.storage.AppendLog.EpochStart;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 
 /// One entry of a partition log's owner-epoch history (#1596, spec #1569 §7.5.1): the committed owner epoch
@@ -32,12 +36,9 @@ import org.pragmatica.storage.AppendLog.EpochStart;
 @Codec
 public record ProvenanceEntry(Epoch epoch, Option<String> incarnationUlid, long startOffset) {
     private static final String SEPARATOR = ".";
-
     /// The order the log enforces between consecutive entries: a strictly later [Epoch]. Two keys of the same
     /// epoch that differ only in the ULID follow neither way, so the log refuses the second (#1625).
-    public static final EpochOrder ORDER = (later, earlier) -> Result.all(epochOf(later), epochOf(earlier))
-                                                                      .map(Epoch::isStrictlyAfter)
-                                                                      .or(false);
+    public static final EpochOrder ORDER = ProvenanceEntry::follows;
 
     public static ProvenanceEntry provenanceEntry(Epoch epoch, Option<String> incarnationUlid, long startOffset) {
         return new ProvenanceEntry(epoch, incarnationUlid, startOffset);
@@ -67,29 +68,38 @@ public record ProvenanceEntry(Epoch epoch, Option<String> incarnationUlid, long 
                                                                                      .or("");
     }
 
+    /// A key this codec did not write follows nothing, so the log refuses it.
+    private static boolean follows(EpochKey later, EpochKey earlier) {
+        return Result.all(epochOf(later),
+                          epochOf(earlier))
+                     .map(Epoch::isStrictlyAfter)
+                     .or(false);
+    }
+
     private static Result<Epoch> epochOf(EpochKey key) {
         return decode(key).map(ProvenanceEntry::epoch);
     }
 
     private static Result<ProvenanceEntry> decode(EpochKey key) {
-        var parts = key.token()
-                       .split("\\.", -1);
+        var parts = key.token().split("\\.", -1);
 
         return parts.length < 2 || parts.length > 3
-               ? Causes.cause("Not a provenance epoch key: '" + key.token() + "'").result()
-               : Result.all(number(parts[0]), number(parts[1]))
+               ? cause("Not a provenance epoch key: '" + key.token() + "'").result()
+               : Result.all(number(parts[0]),
+                            number(parts[1]))
                        .map(Epoch::epoch)
-                       .map(epoch -> new ProvenanceEntry(epoch, ulidOf(parts), 0));
+                       .map(epoch -> new ProvenanceEntry(epoch,
+                                                         ulidOf(parts),
+                                                         0));
     }
 
     private static Option<String> ulidOf(String[] parts) {
         return parts.length == 3
-               ? Option.some(parts[2])
-               : Option.none();
+               ? some(parts[2])
+               : none();
     }
 
     private static Result<Long> number(String field) {
-        return Result.lift(_ -> Causes.cause("Not a number in a provenance epoch key: '" + field + "'"),
-                           () -> Long.parseLong(field));
+        return Number.parseLong(field).mapError(_ -> cause("Not a number in a provenance epoch key: '" + field + "'"));
     }
 }
