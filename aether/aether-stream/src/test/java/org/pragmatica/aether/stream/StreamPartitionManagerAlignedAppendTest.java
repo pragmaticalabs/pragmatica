@@ -8,8 +8,8 @@ package org.pragmatica.aether.stream;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.stream.wal.PartitionWal;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.WalRecord;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -103,7 +103,7 @@ class StreamPartitionManagerAlignedAppendTest {
     }
 
     private static List<WalRecord> replayAll(Path file) {
-        var wal = PartitionWal.open(file).unwrap();
+        var wal = AppendLog.open(file).unwrap();
         var records = new ArrayList<WalRecord>();
 
         wal.replay(-1L, records::add).onFailure(cause -> fail(cause.message()));

@@ -154,6 +154,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -1031,7 +1032,15 @@ public interface AetherNode extends ManageableNode {
     private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
         var walDir = streamWalBaseDir(config);
 
-        return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+        return createStreamDirectory(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+    }
+
+    /// The stream partition logs open through the `streams` storage instance (#1567), under its log root —
+    /// the WAL dir [#resolveStreamWalDir] resolved when the instance was built; none when that dir was
+    /// unusable and streams degraded to no WAL.
+    private static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
+        return streamStorage.logRoot()
+                            .<AppendLog.Opener> map(_ -> streamStorage::openLog);
     }
 
     /// #634 item 2 — the boot gate, exposed for [org.pragmatica.aether.Main]'s verification chain (the
@@ -1046,9 +1055,37 @@ public interface AetherNode extends ManageableNode {
     public static Result<Unit> verifyWalBootable(AetherNodeConfig config) {
         var walDir = streamWalBaseDir(config);
 
-        return decideWalAvailability(walDir,
-                                     FileOps.createDirectories(walDir).mapToUnit(),
-                                     nonDurableStreamsAllowed()).mapToUnit();
+        return decideWalAvailability(walDir, createStreamDirectory(walDir), nonDurableStreamsAllowed()).mapToUnit();
+    }
+
+    /// #1567 F12/N2 — the durable-block counterpart of [#verifyWalBootable], at the same production entry
+    /// point. The `streams` instance's local-disk tier lives in `<streamDataDir>/segments`; when it cannot be
+    /// created the instance is built from memory and the in-memory DHT tier alone, where every seal refuses
+    /// (`StorageError.NoDurableTier`) -- so nothing is ever "sealed" into RAM and the WAL is never truncated
+    /// past it, but sealing stops and the WAL grows without bound. A node must not boot silently into that
+    /// state: without the same explicit non-durable opt-in, boot is refused. Directly constructed nodes
+    /// (Forge, Ember, tests) never pass through Main and keep the loud degrade, exactly as the WAL gate does.
+    public static Result<Unit> verifyStreamSegmentsBootable(AetherNodeConfig config) {
+        var segmentsDir = streamDataDir(config).resolve("segments");
+
+        return decideSegmentsAvailability(segmentsDir, createStreamDirectory(segmentsDir), nonDurableStreamsAllowed());
+    }
+
+    /// Every stream directory a node creates -- the WAL base and `segments/` -- is created with its entry
+    /// forced in its parent (#1602 N1): the files made durable inside it later are only as durable as the
+    /// directory entry that names it. The gates run first, so they are the ones that create them.
+    static Result<Unit> createStreamDirectory(Path dir) {
+        return FileOps.createDirectoriesDurable(dir).mapToUnit();
+    }
+
+    /// The pure decision, package-visible for [#verifyStreamSegmentsBootable]'s test.
+    static Result<Unit> decideSegmentsAvailability(Path segmentsDir, Result<Unit> probe, boolean allowNonDurable) {
+        return probe.fold(cause -> allowNonDurable
+                                   ? Result.unitResult()
+                                   : StorageFactory.StreamDiskTierUnavailable.streamDiskTierUnavailable(segmentsDir,
+                                                                                                        cause.message())
+                                                                             .result(),
+                          _ -> Result.unitResult());
     }
 
     /// The #492-class killer (#634 structural follow-up): every ROUTED `Message.Wired` type must have
@@ -1626,7 +1663,8 @@ public interface AetherNode extends ManageableNode {
                                                            new StorageFactory.StreamSetupRequest(dhtClientOption,
                                                                                                  streamDataDir(config),
                                                                                                  config.self().id(),
-                                                                                                 streamsKeyring));
+                                                                                                 streamsKeyring,
+                                                                                                 resolveStreamWalDir(config)));
 
         if (storageSetupsResult.isFailure()) {
             return storageSetupsResult.map(ignored -> null);
@@ -4530,7 +4568,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
-                                                                                   resolveStreamWalDir(config),
+                                                                                   streamLogs(streamStorage),
                                                                                    streamSegmentIndex::lastSealedOffset,
                                                                                    DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
 

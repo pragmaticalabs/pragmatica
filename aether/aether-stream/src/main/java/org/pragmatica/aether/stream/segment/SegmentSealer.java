@@ -19,7 +19,7 @@ import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.WalRangeReader;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.aether.stream.segment.SegmentIndex.PartitionKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -59,7 +59,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///   - **Heap copies are bounded by `pendingCapBytes`; the WAL is the holder.** Each pending segment starts
 ///     with a heap copy. For a partition WITH a WAL (attached by its ring at construction, [#walAttached]),
 ///     going past the cap drops heap copies, oldest first, and keeps only the pending RANGE — but only for a
-///     range already durable in the WAL ([PartitionWal#durableOffset]); a copy whose range the WAL has not yet
+///     range already durable in the WAL ([AppendLog#durableOffset]); a copy whose range the WAL has not yet
 ///     fsynced (the replica path writes its WAL asynchronously) is kept, so the heap can exceed the cap by at
 ///     most that not-yet-durable tail. What bounds the tail is the replica's WAL chain lag: on the owner's
 ///     publish path it is empty (a publish is acked only after its fsync); on the replica path it is the
@@ -110,7 +110,7 @@ public final class SegmentSealer implements EvictionListener {
     /// Set by the first spill of an episode and cleared by the next hand-over that fits under the cap, so a
     /// spill episode logs one WARN while [#spillCount] counts every dropped heap copy.
     private final AtomicBoolean spilling = new AtomicBoolean(false);
-    private final ConcurrentHashMap<PartitionKey, PartitionWal> wals = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, AppendLog> wals = new ConcurrentHashMap<>();
 
     private SegmentSealer(SegmentSink sink, long pendingCapBytes) {
         this.sink = sink;
@@ -145,7 +145,7 @@ public final class SegmentSealer implements EvictionListener {
     /// Registered per partition by its ring before anything is replayed into it, so recovery-time hand-overs
     /// already see the partition as WAL-backed; a re-materialized partition replaces its closed WAL here.
     @Override
-    public Unit walAttached(String streamName, int partition, PartitionWal wal) {
+    public Unit walAttached(String streamName, int partition, AppendLog wal) {
         wals.put(PartitionKey.partitionKey(streamName, partition), wal);
 
         return unit();
@@ -211,8 +211,12 @@ public final class SegmentSealer implements EvictionListener {
         return wals.containsKey(PartitionKey.partitionKey(streamName, partition));
     }
 
-    private Option<PartitionWal> walOf(PendingSegment segment) {
-        return option(wals.get(PartitionKey.partitionKey(segment.streamName(), segment.partition())));
+    private Option<AppendLog> walOf(PendingSegment segment) {
+        return walOf(segment.streamName(), segment.partition());
+    }
+
+    private Option<AppendLog> walOf(String streamName, int partition) {
+        return option(wals.get(PartitionKey.partitionKey(streamName, partition)));
     }
 
     /// A heap copy may be dropped only when the WAL already holds its whole range durably.
@@ -404,7 +408,9 @@ public final class SegmentSealer implements EvictionListener {
     /// scheduler's thread, where an escaping exception would leave the retry — and the drain — hanging.
     private Promise<Unit> sealGuarded(SealedSegment segment) {
         return Result.lift(Causes::fromThrowable,
-                           () -> sink.seal(segment))
+                           () -> sink.seal(segment,
+                                           walOf(segment.streamName(),
+                                                 segment.partition())))
                      .fold(Cause::<Unit> promise, promise -> promise);
     }
 
