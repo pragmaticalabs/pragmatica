@@ -22,12 +22,14 @@ import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
@@ -65,6 +67,17 @@ class BackupRestoreCoordinatorTest {
     private static final String LINEAGE = "01K4ZT9Q6W3X8Y2B7C5D1E0F9G";
     private static final ConfigValue ALPHA = ConfigValue.configValue("alpha", "1");
     private static final ConfigValue BETA = ConfigValue.configValue("beta", "2");
+    private static final ClusterConfigValue CLUSTER_CONFIG = new ClusterConfigValue("",
+                                                                               "restore-test",
+                                                                               "1.0.0",
+                                                                               List.of(new AetherValue.TopologyEntry("",
+                                                                                                                     AetherValue.TopologyEntry.CORE_ROLE,
+                                                                                                                     3)),
+                                                                               3,
+                                                                               5,
+                                                                               "bootstrap-seed",
+                                                                               1L,
+                                                                               0L);
 
     @TempDir
     Path temp;
@@ -215,7 +228,8 @@ class BackupRestoreCoordinatorTest {
             var remote = bareRemote(temp.resolve("remote.git"));
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
-                                                                                  ConfigKey.forKey("beta"), BETA));
+                                                                                  ConfigKey.forKey("beta"), BETA,
+                                                                                  ClusterConfigKey.CURRENT, CLUSTER_CONFIG));
             var commit = git(Path.of(remote), "rev-parse", "backup").strip();
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 60), Map.of(ConfigKey.forKey("later"), ALPHA));
@@ -226,6 +240,9 @@ class BackupRestoreCoordinatorTest {
                                                                                   40,
                                                                                   commit)));
             applyDirect(new KVCommand.Put<>(ConfigKey.forKey("alpha"), ALPHA));
+            // Already restored by the interrupted leader, and version-fenced: re-writing it equal would be
+            // refused by the successor fence and take the whole chunk down with it.
+            applyDirect(new KVCommand.Put<>(ClusterConfigKey.CURRENT, CLUSTER_CONFIG));
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
 
             runToCompletion(coordinator);
