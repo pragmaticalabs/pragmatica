@@ -107,7 +107,7 @@ class ClusterIncarnationTest {
         void restoreCommands_keepTheRestoredLineage_atTheNextIncarnation() {
             var restored = ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5);
 
-            ClusterIncarnation.restoreCommands(restored)
+            ClusterIncarnation.restoreCommands(restored, restored.incarnation())
                               .forEach(ClusterIncarnationTest.this::apply);
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup",
@@ -121,10 +121,32 @@ class ClusterIncarnationTest {
             ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-fresh")
                               .onPresent(ClusterIncarnationTest.this::apply);
 
-            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5)));
+            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5),
+                                                          5));
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup",
                                                                                                                                      6)));
+        }
+
+        /// Restoring an OLDER backup of the lineage must not move the incarnation backwards: the live
+        /// cluster is at L@7, the operator restores L@3, and the result is L@8, not L@4.
+        @Test
+        void restoreOfAnOlderBackup_landsAboveTheHighestRecorded_notBelowIt() {
+            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("L1", 7)));
+
+            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 3), 7));
+
+            assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.clusterIncarnationValue("L1",
+                                                                                                                                     8)));
+        }
+
+        /// The backup store holds L@5..7 and the operator restores L@5: committing L@6 would REUSE a number
+        /// that already names another history. The floor lands it at L@8.
+        @Test
+        void restoreOfAMiddleBackup_neverReusesARecordedIncarnation() {
+            applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("L1", 5), 7));
+
+            assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
         }
 
         /// The fence the restore sidesteps with its Remove: a plain successor-skipping write is refused.
@@ -201,6 +223,29 @@ class ClusterIncarnationTest {
 
             assertThat(registrar.isComplete()).isFalse();
             assertThat(scheduled).hasSize(1);
+        }
+
+        /// A leader that lost leadership mid-retry must not mint when the captured retry later fires
+        /// (adopted from v1621's probe `OK_leadershipLostMidRetry`).
+        @Test
+        void leadershipLostMidRetry_retryFires_butDoesNotMint() {
+            var registrar = registrar(commands -> countedFailure());
+
+            registrar.onLeaderChange(leaderChange(true));
+            assertThat(applies).hasValue(1);
+            assertThat(scheduled).hasSize(1);
+            registrar.onLeaderChange(leaderChange(false));
+            scheduled.removeFirst().run();
+
+            assertThat(applies).as("the retry fired after leadership was lost and must not mint").hasValue(1);
+            assertThat(scheduled).isEmpty();
+            assertThat(ClusterIncarnation.current(kvStore)).isZero();
+        }
+
+        private Promise<List<Object>> countedFailure() {
+            applies.incrementAndGet();
+
+            return Causes.cause("not quorate").promise();
         }
 
         private ClusterIncarnationRegistrar registrar(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {

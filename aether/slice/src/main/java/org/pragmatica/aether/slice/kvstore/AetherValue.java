@@ -1047,9 +1047,11 @@ public sealed interface AetherValue {
     /// `lineageId` names the cluster's history across cold restarts; `incarnation` counts those restarts
     /// and dominates any per-incarnation counter (a consensus revision restarts with the cluster).
     ///
-    /// [VersionFenced] on `incarnation`: two leaders racing to mint genesis resolve first-wins, and an
-    /// increment is accepted only as the immediate successor of the committed value — so the counter
-    /// never goes backwards or skips.
+    /// [VersionFenced] on `incarnation`, which gives two per-operation guarantees and no more: a genesis
+    /// mint against an absent key is first-wins, and a Put through the fence is accepted only as the
+    /// immediate successor of the committed value. A Remove is NOT fenced, and a restore deliberately goes
+    /// Remove-then-Put to bypass the fence; a restore's monotonicity comes from the floor in
+    /// `ClusterIncarnation.restoreCommands`, not from this fence.
     record ClusterIncarnationValue(String lineageId, long incarnation) implements AetherValue, VersionFenced {
         public static final long GENESIS = 1L;
 
