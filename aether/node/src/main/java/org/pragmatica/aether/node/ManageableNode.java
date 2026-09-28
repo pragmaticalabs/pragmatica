@@ -99,6 +99,14 @@ public interface ManageableNode {
     /// of the generation snapshot. Additive accessor; snapshot accessors remain until a later wave.
     MembershipFsm membershipFsm();
 
+    /// #1652 — the leader's instantaneous live-member count for a community, served by
+    /// `GET /cluster/communities`. An observation, not committed state; [Option#none] when this node
+    /// cannot observe it (not the leader, liveness unwired, no committed roster). Default none keeps
+    /// test proxies compiling; the production node record delegates to its deployment manager.
+    default Option<Integer> communityLiveMembers(String communityId) {
+        return Option.none();
+    }
+
     /// Wave-1 Enrichment A (cluster-topology-overhaul spec) — exposes the per-node transition
     /// journal (every `MembershipFsm` + `PeerState` transition, bounded ring buffer per layer)
     /// so `GET /api/cluster/journal` can dump it. Diagnostic-only. Default inert journal keeps

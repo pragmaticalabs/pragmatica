@@ -2317,6 +2317,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public Option<Integer> communityLiveMembers(String communityId) {
+                return clusterDeploymentManager.communityLiveMembers(communityId);
+            }
+
+            @Override
             public Option<OwnershipEpochHighWater> ownershipEpochHighWater() {
                 return Option.some(ownershipEpochHighWaterInstance);
             }
@@ -7473,6 +7478,9 @@ public interface AetherNode extends ManageableNode {
                                                   .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          eventAggregator::onNodeArtifactPut)
+                                                  .onPut(AetherKey.CommunityKey.class, eventAggregator::onCommunityPut)
+                                                  .onPut(AetherKey.GovernorAnnouncementKey.class,
+                                                         eventAggregator::onGovernorAnnouncementPut)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
                                                             nodeDeploymentManager::onNodeArtifactRemove)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,

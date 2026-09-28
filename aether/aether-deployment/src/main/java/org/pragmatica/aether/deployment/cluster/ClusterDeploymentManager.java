@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
+import org.pragmatica.aether.deployment.cluster.fsm.CommunityLiveMembers;
 import org.pragmatica.aether.deployment.cluster.fsm.CommunityLivenessView;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectiveRemoveReceived;
@@ -92,6 +93,13 @@ public interface ClusterDeploymentManager {
     /// collector exists; unwired deployments keep the pre-#590 behaviour.
     @Contract
     void setCommunityLiveness(CommunityLivenessView view);
+
+    /// #1652 — the leader's instantaneous live-member count for `communityId`: the same count the
+    /// per-community FSM compares against the viability floor ([CommunityLiveMembers]). It is an
+    /// OBSERVATION, not committed state. [Option#none] on a node whose deployment FSM is not active
+    /// (not the leader), while the liveness view is unwired, or when the community has no committed
+    /// roster — never a fabricated `0`.
+    Option<Integer> communityLiveMembers(String communityId);
 
     /// #731 round 3 — inject the leader's local SWIM-derived alive-member view, read by
     /// `sweepDeadRestoredWorkers` alongside the committed announcement roster. Narrow on purpose,
@@ -527,6 +535,13 @@ public interface ClusterDeploymentManager {
         @Override
         public boolean isActive() {
             return ctx.isActive();
+        }
+
+        @Override
+        public Option<Integer> communityLiveMembers(String communityId) {
+            return ctx.isActive() && ctx.hasCommunityLiveness()
+                   ? CommunityLiveMembers.communityLiveMembers(ctx.kvStore(), ctx.communityLiveness(), communityId)
+                   : Option.none();
         }
 
         @Contract

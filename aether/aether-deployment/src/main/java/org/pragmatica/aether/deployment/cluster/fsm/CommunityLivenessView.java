@@ -51,6 +51,18 @@ public interface CommunityLivenessView {
     /// #590. Tests and any deployment that has not wired the collector keep the old semantics rather
     /// than silently gaining a demotion path with no signal behind it.
     static CommunityLivenessView unwired() {
-        return _ -> false;
+        return Unwired.INSTANCE;
+    }
+
+    /// Holder for the single unwired instance, so a caller can tell "not wired" from "wired, and
+    /// nothing is absent" (#1652: the live-member count is withheld rather than reported as
+    /// everyone-alive when no observation backs it).
+    enum Unwired implements CommunityLivenessView {
+        INSTANCE;
+
+        @Override
+        public boolean isAbsent(NodeId node) {
+            return false;
+        }
     }
 }

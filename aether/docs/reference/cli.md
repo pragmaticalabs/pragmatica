@@ -2232,6 +2232,21 @@ Example output (`--format json`):
 {"mismatches": [{"nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE"}]}
 ```
 
+### `aether cluster communities`
+
+Show worker communities: lifecycle state (`FORMING` / `ACTIVE` / `DEGRADED` / `DISSOLVED`), target size,
+roster and the leader's live-member count. Wraps `GET /api/cluster/communities`, or
+`GET /api/cluster/communities/{id}` when an id is given.
+
+```bash
+aether cluster communities
+aether cluster communities default:local:0
+```
+
+`liveMembers` is the leader's instantaneous observation, not committed state, and is `null` when it cannot
+be observed. A worker that fenced itself after losing the core is shown as `DEGRADED`, never `DISSOLVED`;
+see `GET /api/v1/cluster/communities` in the management API reference.
+
 ### `aether cluster governors`
 
 Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/cluster/governors`.

@@ -436,6 +436,13 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `STREAM_MEMORY_EXCEEDED` -- a node's off-heap stream budget was exhausted at stream create or growth (per-node fact, NOT leader-gated; throttled per `(stream, phase)`). Severity WARNING.
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
+- `COMMUNITY_MINTED` -- the leader minted a worker community: its committed `CommunityValue` appeared (`details`: `communityId`, `state`, `targetSize`, `role`). Severity INFO.
+- `COMMUNITY_STATE_CHANGED` -- a community's committed lifecycle state changed; one event per edge (`details`: `communityId`, `from`, `to`, `targetSize`). `FORMING -> ACTIVE` is "formed", `ACTIVE -> DEGRADED` (severity WARNING, the only non-INFO edge) is live membership falling below the viability floor, `DEGRADED -> ACTIVE` is recovery, `-> DISSOLVED` is retirement by placement policy. Severity INFO otherwise.
+- `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO.
+
+The four community events are derived from committed records, so every node observes them and the owner gate publishes each once. They
+record what the core can see. A worker that loses the core fences itself locally and writes nothing, so no `-> DISSOLVED` event exists for
+that case; see [`GET /api/v1/cluster/communities`](#get-apiv1clustercommunities) for how that boundary looks.
 
 `GENERATION_CHANGED` no longer exists (#722). It was documented and consumer-wired but never produced: the
 v1 spec's leader-resident reconciler that would have emitted it was never built, and the epoch the cluster
@@ -3135,6 +3142,51 @@ List active community governors (worker pool leaders elected via SWIM).
 ```
 
 Returns empty list if no worker communities exist (all nodes are core).
+
+### GET /api/v1/cluster/communities
+
+List worker communities: lifecycle state, target size, roster and the leader's live-member count (#1652).
+Served by the leader. `GET /api/v1/cluster/communities/{id}` returns one entry, or 404 when no committed
+record exists for the id.
+
+**Response:**
+```json
+{
+  "communities": [
+    {
+      "communityId": "default:local:0",
+      "state": "ACTIVE",
+      "targetSize": 4,
+      "role": "WORKER",
+      "createdAt": 1759000000000,
+      "dissolvedAt": null,
+      "governorId": "node-6",
+      "members": ["node-6", "node-7", "node-8", "node-9"],
+      "memberCount": 4,
+      "communityTerm": 2,
+      "liveMembers": 3
+    }
+  ]
+}
+```
+
+Each entry is the union of two committed records: `CommunityValue` (`state`, `targetSize`, `role`,
+`createdAt`, `dissolvedAt`) and the governor's roster (`governorId`, `members`, `communityTerm`). A
+community known to only one of them shows the other half as `null`.
+
+- `state` is one of `FORMING`, `ACTIVE`, `DEGRADED`, `DISSOLVED`. `DISSOLVING` exists in the state enum
+  but nothing writes it today (#1656), so it is not a state you will see.
+- `liveMembers` is **the leader's instantaneous view, not committed state**: roster members still directed
+  to the community that the leader has not observed absent. It is the same count the leader compares
+  against the viability floor to move a community between `ACTIVE` and `DEGRADED`. It is `null` when the
+  serving node cannot observe it (not the leader, or no roster), never a stand-in `0`.
+
+**What the core cannot see.** A worker that loses contact with the core fences itself locally: it stops
+serving and writes nothing, because it cannot reach the core. The core therefore never records that
+community as `DISSOLVED`. What it shows is the consequence it observes: `liveMembers` drops and the
+community moves to `DEGRADED` once live membership falls below the floor. The worker's own fence is visible
+only on that worker, in the `coreAbsence` field of its `GET /api/v1/cluster/membership` (a LOCAL route; ask
+the worker directly).
 
 ---
 
