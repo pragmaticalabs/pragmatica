@@ -31,6 +31,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.MembershipView;
@@ -96,20 +97,26 @@ class ClusterTopologyManagerWorkerReconcileTest {
     private WorkerRecordingLifecycleManager lifecycleManager;
     private AtomicReference<Option<ClusterConfigValue>> configRef;
     private ClusterTopologyManager ctm;
+    private TopologyObserver observer;
+    private StubSnapshotSource snapshotSource;
 
     @BeforeEach
     void setUp() {
-        var snapshotSource = new StubSnapshotSource();
+        snapshotSource = new StubSnapshotSource();
         var config = new TopologyConfig(SELF,
                                         3,
                                         timeSpan(60).seconds(),
                                         timeSpan(1).seconds(),
                                         List.of(INFO_SELF, INFO_A, INFO_B));
-        var observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
+        observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         lifecycleManager = new WorkerRecordingLifecycleManager();
         configRef = new AtomicReference<>(Option.none());
+        ctm = buildCtm(MembershipLiveness.UNWIRED);
+    }
+
+    private ClusterTopologyManager buildCtm(MembershipLiveness liveness) {
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
-        ctm = ClusterTopologyManager.clusterTopologyManager(observer,
+        var built = ClusterTopologyManager.clusterTopologyManager(observer,
                                                             lifecycleManager,
                                                             autoHeal,
                                                             DeploymentMap.deploymentMap(),
@@ -120,9 +127,9 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             _ -> {},
                                                             _ -> {},
                                                             Option::none,
-                                                            MembershipLiveness.UNWIRED);
+                                                            liveness);
         var placements = new java.util.HashMap<AetherKey, AetherValue>();
-        ctm.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
+        built.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
             () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
             key -> Option.option(placements.get(key)), commands -> {
                 var results = new java.util.ArrayList<Object>();
@@ -137,6 +144,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
                 }
                 return Promise.success(results);
             }));
+
+        return built;
     }
 
     private static Promise<List<Object>> applyNoop(List<KVCommand<AetherKey>> commands) {
@@ -154,6 +163,33 @@ class ClusterTopologyManagerWorkerReconcileTest {
 
     private static AetherValue.TopologyEntry entry(String source, String role, int count) {
         return new AetherValue.TopologyEntry(source, role, count);
+    }
+
+    /// #1601: a new worker is seeded with the LIVE installed voters. PEER_B is a configured voter the observer
+    /// still has NodeInfo for, but membership no longer counts it (dead). Before #1601 the seed was the voter
+    /// set itself, so PEER_B's address rode into the new worker's PEERS.
+    @Test
+    void reconcile_workerDeficit_seedsNewWorkersWithLiveVotersOnly_neverADeadOne() {
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF,
+                                                                                                        List.of(INFO_A, INFO_B)));
+        assertThat(observer.get(PEER_B).isPresent()).as("arming: the observer still knows the dead voter's address")
+                                                    .isTrue();
+        ctm = buildCtm(new MembershipLiveness(() -> Set.of(SELF, PEER_A),
+                                              () -> Set.of(SELF, PEER_A),
+                                              _ -> false,
+                                              _ -> false,
+                                              Set::of,
+                                              () -> 3,
+                                              _ -> Option.none()));
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedPeers()).hasSize(1);
+        assertThat(lifecycleManager.provisionedPeers().getFirst())
+            .contains(PEER_A.id())
+            .doesNotContain(PEER_B.id());
     }
 
     @Test
@@ -408,6 +444,10 @@ class ClusterTopologyManagerWorkerReconcileTest {
             listGate.set(gate);
 
             return gate;
+        }
+
+        List<String> provisionedPeers() {
+            return provisioned.stream().map(spec -> spec.context().peers().or("")).toList();
         }
 
         List<String> provisionedRoles() {
