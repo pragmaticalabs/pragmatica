@@ -209,12 +209,6 @@ public interface ClusterNetwork {
         return connectedPeers();
     }
 
-    /// Peers with a connection attempt in flight (dialed, handshake not yet complete). Excludes
-    /// CONNECTED peers. Default empty for transports that do not track dials.
-    default Set<NodeId> connectingPeers() {
-        return Set.of();
-    }
-
     /// Get the underlying server instance for metrics collection.
     /// Returns empty if the network has not been started yet.
     Option<Server> server();
