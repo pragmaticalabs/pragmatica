@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.stream.Stream;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -53,6 +54,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
@@ -1312,21 +1314,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                          config.interval(),
                                                                                                                                          cause.message()));
 
-            return validated.map(value -> new KVCommand.Put<>(key, value.withPaused(existingPausedFlag(key))));
-        }
-
-        /// Operator pause (set via the management API into [ScheduledTaskValue#paused]) lives only on
-        /// this cluster-scoped KV entry. Slice (re)activation republishes the SAME key — on rebalance,
-        /// leader-failover republish, or node-wipe convergence — so the freshly built value MUST carry
-        /// over the existing `paused` flag, or an unrelated deploy would silently resume a paused task.
-        /// Absent prior value → `false` (the historical default for a brand-new registration).
-        boolean existingPausedFlag(ScheduledTaskKey key) {
-            return ctx.kvStore()
-                      .get(key)
-                      .filter(ScheduledTaskValue.class::isInstance)
-                      .map(ScheduledTaskValue.class::cast)
-                      .map(ScheduledTaskValue::paused)
-                      .or(false);
+            return validated.map(value -> new KVCommand.Put<>(key, value));
         }
 
         private Promise<SliceNodeKey> unpublishScheduledTasks(SliceNodeKey sliceKey) {
@@ -1348,7 +1336,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             // NodeId — see AetherKey.ScheduledTaskKey): all replicas hosting the task share one entry.
             // A single replica's deactivate (CDM rebalance, drain) must NOT Remove it while another
             // replica still hosts the task — that would destroy the live registration AND the operator
-            // pause. Remove only when this node is the LAST hosting replica.
+            // pause. Remove only when this node is the LAST hosting replica. The operator pause is its
+            // own key (ScheduledTaskPauseKey, which republishing never touches); it goes with the task
+            // when the task itself goes, so a later redeploy starts unpaused as before.
             if (artifactHostedElsewhere(artifact)) {
                 log.debug("Skipping scheduled-task unpublish for {} — still hosted on other nodes", artifact);
 
@@ -1356,7 +1346,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             var commands = entries.stream()
-                                  .<KVCommand<AetherKey>> map(entry -> buildScheduledTaskRemoveCommand(artifact, entry))
+                                  .flatMap(entry -> buildScheduledTaskRemoveCommands(artifact, entry))
                                   .toList();
 
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
@@ -1375,11 +1365,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return ! collectTargetNodesForArtifact(SliceNodeKey.sliceNodeKey(artifact, ctx.self())).isEmpty();
         }
 
-        private KVCommand<AetherKey> buildScheduledTaskRemoveCommand(Artifact artifact,
-                                                                     ScheduledTaskManifestEntry entry) {
+        private Stream<KVCommand<AetherKey>> buildScheduledTaskRemoveCommands(Artifact artifact,
+                                                                              ScheduledTaskManifestEntry entry) {
             var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
 
-            return new KVCommand.Remove<>(key);
+            return Stream.<KVCommand<AetherKey>> of(new KVCommand.Remove<>(key),
+                                                    new KVCommand.Remove<>(ScheduledTaskPauseKey.scheduledTaskPauseKey(key)));
         }
 
         private record ConfigUpdateManifestEntry(String configSection, String factoryClassName) {}
@@ -1635,8 +1626,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         /// Resolve the stream a `[streams.X]` consumer subscribes to.
         ///
-        /// Binds [StreamConfig] — the SAME type the stream resource itself is provisioned with — and takes
-        /// its `name`, so a consumer always resolves to exactly the stream its publisher writes to.
+        /// Binds [StreamConfig] through the generic record binder and takes ONLY its `name`, which that binder
+        /// derives from the section suffix (`[streams.orders]` → `orders`) — the same alias the stream
+        /// resource factories' own section binder (#1549, `StreamConfigParser.parseStreamConfig`) assigns, so a
+        /// consumer resolves to exactly the stream its publisher writes to. No other field of this binding is
+        /// read: since #1549 the record binder is NOT what provisions the stream, and its other fields would
+        /// carry `StreamConfig.DEFAULT` values for the documented dashed keys.
         ///
         /// This previously bound a dedicated `StreamNameConfig(String streamName)`, which required a
         /// `stream-name` key that no `resources.toml` carries (the stream's name comes from the config
@@ -1644,8 +1639,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// declarative registration was silently dropped by the `.option()` below — a consumer that
         /// declared correctly still received nothing, with no diagnostic anywhere. Part of #488.
         ///
-        /// #1040: the bound name is then qualified to the engine key, because "the SAME type the stream
-        /// resource itself is provisioned with" is only half the guarantee — the resource factories now
+        /// #1040: the bound name is then qualified to the engine key, because the shared alias is only half
+        /// the guarantee — the resource factories
         /// rewrite that name to the blueprint's declared address, and a subscriber left on the bare
         /// alias would register against a ring no publisher writes to. Both sides derive through
         /// [BlueprintStreamAddresses#engineKeyFor] against the same bindings map, so the property this

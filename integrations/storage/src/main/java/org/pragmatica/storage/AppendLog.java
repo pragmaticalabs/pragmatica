@@ -1,8 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
-// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.stream.wal;
+package org.pragmatica.storage;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -13,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
@@ -20,6 +17,7 @@ import java.util.zip.CRC32;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -34,13 +32,35 @@ import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Crash-durable, append-only write-ahead log for ONE `(stream, partition)`
-/// (streaming-persistence Phase A-WAL, step W2).
+/// Crash-durable, append-only log: the storage engine's single append-log component (#1567). It was
+/// the stream partition WAL (`PartitionWal`, streaming-persistence Phase A-WAL) and is relocated here
+/// unchanged in its fsync, framing, fail-stop and recovery code; a stream opens one per
+/// `(stream, partition)`.
 ///
-/// Every event is appended and **fsync'd before the publish is acked**; on recovery the log is
-/// replayed to rebuild the ring tail, and entries are truncated once they seal into segments.
-/// This class is self-contained — it owns its file, framing, group-commit and recovery, and is
-/// wired into the node/stream path by later steps (W3–W6).
+/// A [StorageInstance] opens its logs with [StorageInstance#openLog], under the instance's log root,
+/// so whatever adopts the instance's storage (#1569) adopts its logs with it. Local disk only: a log is
+/// never written behind, and never placed on a memory, DHT or remote tier. **Never used for consensus
+/// or KV state** -- KV is in-memory and restored from backup (owner ruling, #1569).
+///
+/// Every record is appended and **fsync'd before the append resolves**; on recovery the log is
+/// replayed, and records are truncated once a [StorageInstance#seal] has made a block holding them
+/// durable.
+///
+/// ## Owner-epoch history (#1567 A11)
+/// Beside the log sits `<log>.epochs`, the durable history of which owner epoch began writing at which
+/// offset ([#recordEpochStart], [#epochHistory]) -- what ranks replicas by `(last owner epoch, head)` after
+/// an ownership move or a cold restart. It is a separate file written by temp, force, rename and directory
+/// force ([EpochHistory]); the record framing below is unchanged by it.
+///
+/// ## Seal-gated truncation (#1567)
+/// [#truncate] never discards past [#sealedThrough], and only [StorageInstance#seal] advances that
+/// watermark -- after the block holding the sealed range is durable on every durable tier and its ref
+/// is recorded. So no caller, whatever bound it passes, can truncate a record whose only other copy is
+/// a block still in the page cache. Block durability is enforced here; ref durability is bounded by
+/// the snapshot lag (#1345) until #1570: a ref reaches disk with the next metadata snapshot, so a
+/// caller must also bound truncation by the refs in the latest snapshot on disk, as the stream
+/// truncation tick does. The watermark is in memory and starts at `-1` on every open, so after a
+/// restart nothing is truncated -- and the log grows -- until the first seal of the new process.
 ///
 /// ## On-disk record format (fixed framing + payload), BIG_ENDIAN
 /// ```
@@ -113,16 +133,14 @@ import static org.pragmatica.lang.Unit.unit;
 /// observed regardless of the caller's `afterOffset`. The watermark is in-memory: after a crash it
 /// resets and previously-truncated records reappear, but recovery filters them out via the durable
 /// last-sealed offset (W4), so no double-apply — the watermark is purely a reclamation hint.
-public final class PartitionWal implements AutoCloseable {
-    private static final Logger log = LoggerFactory.getLogger(PartitionWal.class);
+public final class AppendLog implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(AppendLog.class);
     /// Fixed framing header: u32 payloadLen + u64 offset + u64 timestampMillis + u32 crc32.
     private static final int HEADER_BYTES = 4 + 8 + 8 + 4;
     /// CRC pre-image header (offset + timestampMillis); payload is appended after it.
     private static final int CRC_HEADER_BYTES = 8 + 8;
     /// File-size watermark past which a `truncate` triggers a compaction rewrite (else O(1) lazy).
     private static final long COMPACTION_THRESHOLD_BYTES = 8L * 1024 * 1024;
-
-    private static final Consumer<WalRecord> NO_OP = _ -> {};
 
     private static final Fn1<Cause, Throwable> APPEND_FAILED = t -> new WalError.AppendFailed(t.getMessage());
 
@@ -141,6 +159,7 @@ public final class PartitionWal implements AutoCloseable {
     private volatile long lastOffset;  // last appended offset (-1 when none)
     private volatile long syncedOffset;  // last offset covered by a successful force (#1234); guarded by syncLock
     private volatile long truncatedUpto = -1;  // in-memory discard watermark
+    private final AtomicLong sealedThrough = new AtomicLong(-1);  // highest offset a durable seal covers; advanced only by StorageInstance.seal
     private volatile long lastCompactedUpto = -1;  // last physical compaction point
     private final AtomicLong commitRequests = new AtomicLong();  // group commits requested, any thread
     private volatile long fsyncCount;  // group commits completed; guarded by syncLock
@@ -148,19 +167,82 @@ public final class PartitionWal implements AutoCloseable {
     private volatile long fsyncMaxNanos;  // guarded by syncLock
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
+    private final EpochHistory epochs;
 
-    private PartitionWal(Path file, FileChannel channel, long writePosition, long lastOffset) {
+    private AppendLog(Path file, FileChannel channel, long writePosition, long lastOffset, EpochHistory epochs) {
         this.file = file;
+        this.epochs = epochs;
         this.channel = channel;
         this.writePosition = writePosition;
         this.lastOffset = lastOffset;
         this.syncedOffset = lastOffset;
     }
 
-    /// Open-or-create the WAL for `file`, positioned for further appends AFTER its last VALID
+    /// Open-or-create the log at `file`, positioned for further appends AFTER its last VALID
     /// record (a torn trailing record is physically truncated). Creates parent directories.
-    public static Result<PartitionWal> open(Path file) {
-        return FileOps.createDirectories(file.toAbsolutePath().getParent()).flatMap(_ -> recover(file));
+    ///
+    /// Creation is durable (#1567): missing parent directories are created with their entries forced
+    /// ([FileOps#createDirectoriesDurable]), and a log file this call CREATES has its directory forced
+    /// before the log is returned. The group-commit `force(false)` covers the file's bytes, never the
+    /// directory entry naming it, so without this a power loss after the first acked appends could lose
+    /// the whole file.
+    ///
+    /// A storage instance's logs are opened through [StorageInstance#openLog]; this is the standalone
+    /// entry for a reader of a known file (a verification or tool). Its truncation is seal-gated all
+    /// the same.
+    public static Result<AppendLog> open(Path file) {
+        return open(file, TornTailSink.logOnly());
+    }
+
+    /// [#open], reporting a torn tail the recovery cut off to `sink` as well as at WARN (#1569 A10).
+    /// Recovery -- the only step of a log's life that rewrites bytes it did not append -- runs HERE, on
+    /// an explicit open, and never on a read-only path ([#inspect], [StorageInstance#listLogs]).
+    public static Result<AppendLog> open(Path file, TornTailSink sink) {
+        return open(file, sink, FileOps::writeBytesForced);
+    }
+
+    /// Test seam: `sidecarWriter` writes (and forces) the epoch history's temp file ([EpochHistory]).
+    static Result<AppendLog> open(Path file, TornTailSink sink, Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+        var absolute = file.toAbsolutePath();
+
+        return FileOps.createDirectoriesDurable(absolute.getParent()).flatMap(_ -> openDurably(absolute,
+                                                                                               Files.exists(absolute),
+                                                                                               sink,
+                                                                                               sidecarWriter));
+    }
+
+    /// What a log file holds, read without opening, recovering or writing it (#1569 A3/A4): the lowest and
+    /// highest valid offsets (`-1` for none), the bytes of the valid prefix, and the file's size -- a larger
+    /// size means a torn tail that the next [#open] would cut. The inventory probe reads this from a volume
+    /// it may not end up owning, so it must leave the volume byte-identical.
+    public static Result<LogExtent> inspect(Path file) {
+        return FileOps.readBytes(file).map(AppendLog::extentOf);
+    }
+
+    private static LogExtent extentOf(byte[] bytes) {
+        var low = new AtomicLong(-1);
+        var result = scan(wrapBigEndian(bytes),
+                          Long.MIN_VALUE,
+                          record -> low.compareAndSet(-1, record.offset()));
+
+        return new LogExtent(low.get(), result.lastOffset(), result.validEnd(), bytes.length);
+    }
+
+    private static Result<AppendLog> openDurably(Path file,
+                                                 boolean existed,
+                                                 TornTailSink sink,
+                                                 Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+        return existed
+               ? recover(file, sink, sidecarWriter)
+               : recover(file, sink, sidecarWriter).flatMap(AppendLog::forceCreatedEntry);
+    }
+
+    /// A failed force closes the log it just opened: its file may not survive a power loss, so it is
+    /// not handed out.
+    private static Result<AppendLog> forceCreatedEntry(AppendLog log) {
+        return FileOps.forceDirectory(log.file.getParent())
+                      .onFailure(_ -> log.close())
+                      .map(_ -> log);
     }
 
     /// Append a record and GROUP-COMMIT fsync: [#write] in the caller's thread, then [#commit]. The
@@ -209,8 +291,9 @@ public final class PartitionWal implements AutoCloseable {
                : readRegion().map(buf -> replayScan(buf, afterOffset, consumer));
     }
 
-    /// Discard all records with `offset <= uptoOffset`; records with `offset > uptoOffset` remain
-    /// replayable. Threshold-lazy: O(1) watermark bump until the file grows past the compaction
+    /// Discard all records with `offset <= min(uptoOffset, sealedThrough())`; later records remain
+    /// replayable. The seal bound is not the caller's to lift (see the class doc): a `uptoOffset` past
+    /// it discards only up to it, and before any seal nothing is discarded. Threshold-lazy: O(1) watermark bump until the file grows past the compaction
     /// threshold, then a single survivors-rewrite reclaims disk. Refused once fail-stopped:
     /// compaction re-reads the file through a page cache the failed fsync may have desynchronized
     /// from disk, and its `syncedSeq = writtenSeq` publication would un-freeze the fail-stop for an
@@ -218,7 +301,58 @@ public final class PartitionWal implements AutoCloseable {
     public Result<Unit> truncate(long uptoOffset) {
         return closed
                ? WalError.General.WAL_CLOSED.result()
-               : syncFailure.fold(() -> advanceWatermark(uptoOffset), Cause::result);
+               : syncFailure.fold(() -> advanceWatermark(Math.min(uptoOffset, sealedThrough.get())),
+                                  Cause::result);
+    }
+
+    /// Highest offset covered by a seal of this process whose block is durable and whose ref is
+    /// recorded (#1567); `-1` before the first seal since open. The ceiling of [#truncate].
+    public long sealedThrough() {
+        return sealedThrough.get();
+    }
+
+    /// Record, durably, that owner epoch `ownerEpoch` begins writing this log at `startOffset` (#1567 A11,
+    /// KIP-101's leader-epoch checkpoint). Durable before it returns -- see [EpochHistory] for the write
+    /// sequence -- and monotonic: refused with [WalError.EpochRegression] for an epoch at or below the last
+    /// one or a start below the last start, a no-op when it repeats the last entry exactly.
+    public Result<Unit> recordEpochStart(long ownerEpoch, long startOffset) {
+        return epochs.recordStart(ownerEpoch, startOffset);
+    }
+
+    /// The owner-epoch history, oldest first, as last made durable. Reads memory only.
+    public List<EpochStart> epochHistory() {
+        return epochs.entries();
+    }
+
+    /// Drop every epoch entry starting above `offset`, durably -- for a log truncated back to `offset`,
+    /// where no epoch began past it.
+    public Result<Unit> truncateEpochsAbove(long offset) {
+        return epochs.truncateAbove(offset);
+    }
+
+    /// Delete the log's files -- the log, its epoch history and any stale temp -- after [#close], when the
+    /// log itself is being discarded (a deleted stream). Best effort per file; the first failure is returned.
+    public Result<Unit> deleteFiles() {
+        var sidecar = EpochHistory.sidecarOf(file);
+
+        return Result.allOf(FileOps.deleteIfExists(file),
+                            FileOps.deleteIfExists(sidecar),
+                            FileOps.deleteIfExists(sidecar.resolveSibling(sidecar.getFileName() + ".tmp")))
+                     .mapToUnit();
+    }
+
+    /// READ-ONLY (#1569 A3): the owner-epoch history of the log at `file` as it is on the volume, without
+    /// opening the log; empty when it has none, a failure when its sidecar is damaged.
+    public static Result<List<EpochStart>> readEpochHistory(Path file) {
+        return EpochHistory.read(file.toAbsolutePath());
+    }
+
+    /// Called by [StorageInstance#seal] only, after the sealed block is durable and its ref recorded --
+    /// package-private so the ordering stays inside the storage engine. Never lowers the watermark.
+    Unit markSealed(long toOffset) {
+        sealedThrough.accumulateAndGet(toOffset, Math::max);
+
+        return unit();
     }
 
     /// Flush + fsync + close the channel. Best-effort: a close-time I/O fault is logged, not
@@ -232,7 +366,7 @@ public final class PartitionWal implements AutoCloseable {
         syncFailure.fold(this::closeTimeSync, _ -> unit());
         Result.lift(CLOSE_FAILED,
                     () -> channel.close())
-              .onFailure(cause -> log.warn("PartitionWal close issue for {}: {}",
+              .onFailure(cause -> log.warn("AppendLog close issue for {}: {}",
                                            file,
                                            cause.message()));
     }
@@ -240,7 +374,7 @@ public final class PartitionWal implements AutoCloseable {
     private Unit closeTimeSync() {
         Result.lift(CLOSE_FAILED,
                     () -> channel.force(false))
-              .onFailure(cause -> log.warn("PartitionWal close-time fsync issue for {}: {}",
+              .onFailure(cause -> log.warn("AppendLog close-time fsync issue for {}: {}",
                                            file,
                                            cause.message()));
 
@@ -391,7 +525,7 @@ public final class PartitionWal implements AutoCloseable {
     /// truncate) is refused with the stored cause.
     private void failStop(Cause cause) {
         syncFailure = Option.some(new WalError.FailStopped(cause.message()));
-        log.error("PartitionWal fail-stopped for {} — appends refused; "
+        log.error("AppendLog fail-stopped for {} — appends refused; "
                  + "reopen (node restart) recovers the valid prefix: {}",
                   file,
                   cause.message());
@@ -410,7 +544,7 @@ public final class PartitionWal implements AutoCloseable {
 
     // === replay path ===
     private Result<ByteBuffer> readRegion() {
-        return FileOps.readBytes(file).map(PartitionWal::wrapBigEndian);
+        return FileOps.readBytes(file).map(AppendLog::wrapBigEndian);
     }
 
     private Unit replayScan(ByteBuffer buf, long afterOffset, Consumer<WalRecord> consumer) {
@@ -494,25 +628,68 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     // === open / recovery ===
-    private static Result<PartitionWal> recover(Path file) {
-        return openChannel(file).flatMap(channel -> recoverFrom(file, channel));
+    private static Result<AppendLog> recover(Path file,
+                                             TornTailSink sink,
+                                             Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+        return openChannel(file).flatMap(channel -> recoverFrom(file, channel, sink, sidecarWriter));
     }
 
-    private static Result<PartitionWal> recoverFrom(Path file, FileChannel channel) {
+    /// The epoch history is loaded before the torn tail is cut: a sidecar that cannot be read refuses the
+    /// open (closing the channel) with the log file untouched -- the ranking it feeds cannot be trusted, and
+    /// an operator must look before anything is discarded.
+    private static Result<AppendLog> recoverFrom(Path file,
+                                                 FileChannel channel,
+                                                 TornTailSink sink,
+                                                 Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+        return EpochHistory.load(file, sidecarWriter)
+                           .onFailure(_ -> closeQuietly(file, channel))
+                           .flatMap(history -> recoverWith(file, channel, sink, history));
+    }
+
+    private static Result<AppendLog> recoverWith(Path file,
+                                                 FileChannel channel,
+                                                 TornTailSink sink,
+                                                 EpochHistory history) {
         return FileOps.readBytes(file)
-                      .map(PartitionWal::wrapBigEndian)
-                      .map(buf -> scan(buf, Long.MIN_VALUE, NO_OP))
-                      .flatMap(result -> truncateAndBuild(file, channel, result));
+                      .map(AppendLog::extentOf)
+                      .onSuccess(extent -> reportTornTail(file, extent, sink))
+                      .flatMap(extent -> truncateAndBuild(file,
+                                                          channel,
+                                                          new ScanResult(extent.validBytes(),
+                                                                         extent.headOffset()),
+                                                          history));
     }
 
-    private static Result<PartitionWal> truncateAndBuild(Path file, FileChannel channel, ScanResult result) {
+    private static void closeQuietly(Path file, FileChannel channel) {
+        Result.lift(CLOSE_FAILED, channel::close).onFailure(cause -> log.warn("AppendLog close issue for {}: {}",
+                                                                              file,
+                                                                              cause.message()));
+    }
+
+    /// #1569 A10: cutting a torn tail discards bytes, so it is never silent -- a WARN naming the log, the
+    /// byte range cut and the last valid offset, and the same fact to `sink`, which the node turns into a
+    /// cluster event. The WARN is written here, first and unconditionally, so a sink only emits.
+    private static void reportTornTail(Path file, LogExtent extent, TornTailSink sink) {
+        if (extent.fileBytes() > extent.validBytes()) {
+            var torn = new TornTail(file, extent.validBytes(), extent.fileBytes(), extent.headOffset());
+
+            log.warn("{}", torn.message());
+            sink.accept(torn);
+        }
+    }
+
+    private static Result<AppendLog> truncateAndBuild(Path file,
+                                                      FileChannel channel,
+                                                      ScanResult result,
+                                                      EpochHistory history) {
         return Result.lift(t -> new WalError.OpenFailed(file,
                                                         t.getMessage()),
                            () -> channel.truncate(result.validEnd()))
-                     .map(_ -> new PartitionWal(file,
-                                                channel,
-                                                result.validEnd(),
-                                                result.lastOffset()));
+                     .map(_ -> new AppendLog(file,
+                                             channel,
+                                             result.validEnd(),
+                                             result.lastOffset(),
+                                             history));
     }
 
     private static Result<FileChannel> openChannel(Path file) {
@@ -624,10 +801,66 @@ public final class PartitionWal implements AutoCloseable {
         return unit();
     }
 
+    /// Opens a log by name: [StorageInstance#openLog] is the production opener, so a caller holding one
+    /// never learns where the storage instance keeps its logs.
+    @FunctionalInterface
+    public interface Opener {
+        Result<AppendLog> open(String name);
+
+        /// A standalone opener laying logs out as `<root>/<name>.wal` -- the layout of
+        /// [StorageInstance#openLog] -- for wiring that has no storage instance (tests, tools).
+        static Opener directory(Path root) {
+            return name -> AppendLog.open(root.resolve(name + ".wal"));
+        }
+    }
+
     /// A single replayable event: caller-supplied `offset`, append `timestampMillis`, opaque `payload`.
     public record WalRecord(long offset, long timestampMillis, byte[] payload) {}
 
     private record ScanResult(long validEnd, long lastOffset) {}
+
+    /// Owner epoch `ownerEpoch` began writing the log at `startOffset`.
+    public record EpochStart(long ownerEpoch, long startOffset) {}
+
+    /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record.
+    public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {}
+
+    /// A torn tail cut by recovery: bytes `[validEnd, fileBytes)` of `file` were discarded, and
+    /// `lastValidOffset` (`-1` for none) is the last record kept.
+    public record TornTail(Path file, long validEnd, long fileBytes, long lastValidOffset) {
+        /// What the warning is about: the log file.
+        public String subject() {
+            return file.toString();
+        }
+
+        /// The operator-facing text, identical in the WARN and in whatever the sink emits.
+        public String message() {
+            return "Append log " + file
+                 + " has a torn tail: truncating bytes [" + validEnd
+                 + ", " + fileBytes
+                 + ") past the last valid record (offset " + lastValidOffset
+                 + "); a record in that range was never acknowledged";
+        }
+    }
+
+    /// Receives every [TornTail] a recovery cuts (#1569 A10). Shaped like #1574's `OperatorWarningSink` --
+    /// one `accept`, a [#logOnly] default, one sink per storage instance and never a static one -- so the
+    /// node wires it with a single adapter, `tail -> operatorSink.accept(OperatorWarning.operatorWarning(code,
+    /// tail.subject(), tail.message()))`, calling the sink directly because the WARN is already written here.
+    /// The storage engine has no event plumbing of its own.
+    @FunctionalInterface
+    public interface TornTailSink {
+        @Contract
+        void accept(TornTail tornTail);
+
+        /// Emits nothing: the WARN [AppendLog] writes is the whole report.
+        static TornTailSink logOnly() {
+            return TornTailSink::ignore;
+        }
+
+        @Contract
+        private static void ignore(TornTail tornTail) {}
+    }
 
     /// Failures surfaced by the WAL surface. I/O faults carry the underlying detail message; the
     /// enum holds the single fixed-message state error.
@@ -690,6 +923,33 @@ public final class PartitionWal implements AutoCloseable {
             @Override
             public String message() {
                 return "WAL close failed: " + detail;
+            }
+        }
+
+        /// A [#recordEpochStart] that would move the history backwards (#1567 A11).
+        record EpochRegression(long ownerEpoch, long startOffset, long lastEpoch, long lastStart) implements WalError {
+            @Override
+            public String message() {
+                return "Epoch start refused: epoch %d at offset %d does not follow epoch %d at offset %d".formatted(ownerEpoch,
+                                                                                                                    startOffset,
+                                                                                                                    lastEpoch,
+                                                                                                                    lastStart);
+            }
+        }
+
+        /// The epoch-history sidecar is damaged; the log is not opened. Recovery: inspect the sidecar -- it
+        /// ranks this replica against others after an ownership move, so it is never silently dropped.
+        record EpochHistoryCorrupt(Path sidecar, String detail) implements WalError {
+            @Override
+            public String message() {
+                return "Epoch history %s is damaged: %s".formatted(sidecar, detail);
+            }
+        }
+
+        record EpochWriteFailed(Path sidecar, String detail) implements WalError {
+            @Override
+            public String message() {
+                return "Epoch history %s could not be written durably: %s".formatted(sidecar, detail);
             }
         }
     }
