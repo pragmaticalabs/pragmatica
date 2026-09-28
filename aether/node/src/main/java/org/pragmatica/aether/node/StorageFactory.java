@@ -20,12 +20,14 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.parse.TimeSpan;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
@@ -625,25 +627,53 @@ public final class StorageFactory {
         }
     }
 
-    /// The streams disk-tier cap (#1604): the configured value when set, else derived from the usable space of
-    /// the filesystem that will hold `segmentsDir` (its nearest existing ancestor, before it is created). A
-    /// configured cap above the usable space is kept, with a WARN: the operator may be about to grow the
-    /// volume, and refusing boot would be worse than a loud note. An unreadable filesystem falls back to the
-    /// floor, loudly.
+    /// The streams disk-tier cap (#1604): the configured value when set, else derived from the space the tier can
+    /// use -- the usable space of the filesystem that will hold `segmentsDir` (its nearest existing ancestor,
+    /// before it is created) PLUS the bytes the tier already holds there. A configured cap above the usable space
+    /// is kept, with a WARN: the operator may be about to grow the volume, and refusing boot would be worse than
+    /// a loud note. An unreadable filesystem falls back to the floor, loudly.
+    ///
+    /// Derived, never persisted (#1616 R1): a remembered first-boot cap goes stale when the volume is resized or
+    /// moved to another node. Counting the tier's own bytes is what makes it restart-stable -- usable space alone
+    /// excludes them, so a cap measured on it shrank at every restart by 40% of what the tier held, and a healthy
+    /// node could come back above its refusal threshold. The cap still moves when OTHER data on the same
+    /// filesystem grows or shrinks; that is intended -- it is a fraction of what the node can actually use.
     static long streamDiskMaxBytes(long configured, Path segmentsDir) {
-        var usable = usableSpace(segmentsDir);
+        return streamDiskMaxBytes(configured, segmentsDir, StorageFactory::usableSpace);
+    }
+
+    /// As above with the filesystem's usable-space reading injected, for a test that needs a disk larger than
+    /// the one it runs on.
+    static long streamDiskMaxBytes(long configured, Path segmentsDir, Fn1<Option<Long>, Path> usableSpace) {
+        var usable = usableSpace.apply(segmentsDir);
 
         return configured > 0
                ? configuredStreamDiskCap(configured, segmentsDir, usable)
-               : derivedStreamDiskCap(segmentsDir, usable);
+               : derivedStreamDiskCap(segmentsDir, usable.map(space -> space + tierBytes(segmentsDir)));
     }
 
-    /// Pure derivation, package-visible for its test.
-    static long derivedStreamDiskCap(long usableBytes) {
-        var fraction = (long)(usableBytes * STREAM_DISK_FRACTION);
-        var ceiling = Math.max(STREAM_DISK_FLOOR_BYTES, usableBytes - STREAM_DISK_HEADROOM_BYTES);
+    /// Pure derivation over the tier's usable base (free space plus what the tier already holds), package-visible
+    /// for its test.
+    static long derivedStreamDiskCap(long baseBytes) {
+        var fraction = (long)(baseBytes * STREAM_DISK_FRACTION);
+        var ceiling = Math.max(STREAM_DISK_FLOOR_BYTES, baseBytes - STREAM_DISK_HEADROOM_BYTES);
 
         return Math.min(Math.max(fraction, STREAM_DISK_FLOOR_BYTES), ceiling);
+    }
+
+    /// Bytes of the regular files under `segmentsDir`, read-only; `0` when it does not exist yet or cannot be walked.
+    static long tierBytes(Path segmentsDir) {
+        return Files.isDirectory(segmentsDir)
+               ? FileOps.walk(segmentsDir, FileOps::isRegularFile)
+                        .map(StorageFactory::totalSize)
+                        .or(0L)
+               : 0L;
+    }
+
+    private static long totalSize(List<Path> files) {
+        return files.stream()
+                    .mapToLong(file -> FileOps.size(file).or(0L))
+                    .sum();
     }
 
     private static long configuredStreamDiskCap(long configured, Path segmentsDir, Option<Long> usable) {
@@ -660,7 +690,7 @@ public final class StorageFactory {
     private static long derivedStreamDiskCap(Path segmentsDir, Option<Long> usable) {
         var cap = usable.map(StorageFactory::derivedStreamDiskCap).or(STREAM_DISK_FLOOR_BYTES);
 
-        usable.onPresent(space -> log.info("Streams disk tier cap derived as {} bytes ({} of the {} bytes usable at {}); "
+        usable.onPresent(space -> log.info("Streams disk tier cap derived as {} bytes ({} of the {} bytes usable by the tier at {}); "
                                           + "set [streaming] segment_disk_max_bytes to override",
                                            cap,
                                            STREAM_DISK_FRACTION,
