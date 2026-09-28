@@ -88,8 +88,10 @@ class RollbackManagerTest {
             // rollback target again.
             assertThat(updated.previousVersion()).isEqualTo(Option.some(V2));
             assertThat(updated.failedVersions()).containsExactly(V2);
-            assertThat(updated.canRollback(config, 1000L + config.cooldown().millis() + 1)
-                              .fold(cause -> cause, _ -> null)).isEqualTo(RollbackError.General.TARGET_PREVIOUSLY_FAILED);
+            var decision = updated.canRollback(config, 1000L + config.cooldown().millis() + 1);
+
+            decision.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"));
+            decision.onFailure(cause -> assertThat(cause).isEqualTo(RollbackError.General.TARGET_PREVIOUSLY_FAILED));
         }
 
         @Test
