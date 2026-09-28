@@ -35,7 +35,9 @@ jobs:
 
       - name: Build and test all modules
         run: mvn install -B -pl '!examples'
-        timeout-minutes: 45
+        # 45 -> 60 (2026-09-28): rc4 alone used 42.5 of 45 min, and #1554's Ember tests pushed it over
+        # (timed out mid-suite, not a hang). Structural fix (split or parallelize the job) tracked separately.
+        timeout-minutes: 60
 
       - name: Run postgres-async integration tests
         run: mvn test -B -pl integrations/db/postgres-async -Dpostgres-async.skipTests=false
