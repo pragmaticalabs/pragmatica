@@ -87,7 +87,7 @@ class ClusterEventOwnerFailoverTest {
         var dropped = producers.stream()
                                .mapToLong(id -> droppedOn(id))
                                .sum();
-        var held = accepted - delivered - dropped;
+        var held = sum(producers, "held");
 
         report(ownerId, "-", producers, phase.sent(), landed, dropped);
         log.info("FAILOVER-PROBE accepted={} delivered={} held={} deliveredButNotInLog={}",
@@ -100,7 +100,7 @@ class ClusterEventOwnerFailoverTest {
         assertThat(accepted).as("every raised event reached redelivery").isGreaterThanOrEqualTo(phase.sent().size());
         assertThat(dropped).as("nothing was given up on inside the horizon").isZero();
         assertThat(landed.values()).as("no tag landed twice as read").allMatch(count -> count == 1L);
-        assertThat(held).as("control: publishes after the owner's death are held, not lost").isPositive();
+        assertThat(held).as("publishes after the owner's death are held, not lost").isPositive();
         // An event the owner ACKED and then lost before replicating it (EVENTUAL, min-sync 1) counts as delivered
         // but is not in the log. That is the stream's acknowledgement contract, not a redelivery loss, so the log
         // may hold fewer than were delivered, never more.

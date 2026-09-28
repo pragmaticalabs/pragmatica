@@ -562,6 +562,8 @@ public final class ClusterEventAggregator {
     public Map<String, Long> redeliveryCounters() {
         return Map.of("accepted",
                       redelivery.accepted(),
+                      "held",
+                      redelivery.held(),
                       "inFlight",
                       redelivery.inFlight(),
                       "delivered",

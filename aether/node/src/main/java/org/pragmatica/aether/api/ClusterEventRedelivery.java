@@ -102,6 +102,7 @@ final class ClusterEventRedelivery {
     private final AtomicLong outcomeUnknown = new AtomicLong();
     private final AtomicLong inFlight = new AtomicLong();
     private final AtomicLong accepted = new AtomicLong();
+    private final AtomicLong held = new AtomicLong();
     private final Map<String, AtomicLong> failuresByCause = new ConcurrentHashMap<>();
     private final AtomicBoolean expiryReported = new AtomicBoolean();
 
@@ -155,6 +156,12 @@ final class ClusterEventRedelivery {
     /// `accepted - delivered - dropped` is the number held (waiting or in flight).
     long accepted() {
         return accepted.get();
+    }
+
+    /// Events held for redelivery right now: their first publish failed, and they have neither landed nor been
+    /// dropped since. Waiting and in-flight retries alike.
+    long held() {
+        return held.get();
     }
 
     /// Publish attempts started and not yet settled, first attempts and retries alike.
@@ -211,19 +218,26 @@ final class ClusterEventRedelivery {
     private Unit onFirstFailure(ClusterEvent event, Cause cause) {
         return isPermanent(cause)
                ? drop(DropReason.PERMANENT, event)
-               : enqueue(Pending.pending(event, clock.getAsLong()));
+               : hold(Pending.pending(event, clock.getAsLong()));
+    }
+
+    private Unit hold(Pending pending) {
+        held.incrementAndGet();
+
+        return enqueue(pending);
     }
 
     private void retry(Pending pending) {
         retried.incrementAndGet();
-        attempt(pending.event()).onFailure(cause -> onRetryFailure(pending, cause));
+        attempt(pending.event()).onSuccess(_ -> held.decrementAndGet())
+                                .onFailure(cause -> onRetryFailure(pending, cause));
     }
 
     private Unit onRetryFailure(Pending pending, Cause cause) {
         var now = clock.getAsLong();
 
         if (isPermanent(cause)) {
-            return drop(DropReason.PERMANENT, pending.event());
+            return dropHeld(DropReason.PERMANENT, pending.event());
         }
 
         return pending.expiredAt(now)
@@ -239,7 +253,7 @@ final class ClusterEventRedelivery {
     private Unit enqueue(Pending pending) {
         synchronized (lock) {
             if (waiting.size() >= CAPACITY) {
-                drop(DropReason.OVERFLOW,
+                dropHeld(DropReason.OVERFLOW,
                      waiting.pollFirst().event());
             }
 
@@ -281,7 +295,14 @@ final class ClusterEventRedelivery {
                       pending.attempts());
         }
 
-        return drop(DropReason.EXPIRED, pending.event());
+        return dropHeld(DropReason.EXPIRED, pending.event());
+    }
+
+    /// Drops an event that was being held for redelivery.
+    private Unit dropHeld(DropReason reason, ClusterEvent event) {
+        held.decrementAndGet();
+
+        return drop(reason, event);
     }
 
     private Unit drop(DropReason reason, ClusterEvent event) {

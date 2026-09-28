@@ -79,6 +79,7 @@ class ClusterEventRedeliveryTest {
         assertThat(redelivery.waiting()).isZero();
         assertThat(redelivery.outcomeUnknown()).isEqualTo(3L);
         assertThat(redelivery.retried()).isEqualTo(3L);
+        assertThat(redelivery.held()).as("nothing is held once it landed").isZero();
     }
 
     @Test
@@ -125,6 +126,7 @@ class ClusterEventRedeliveryTest {
 
         assertThat(redelivery.waiting()).isZero();
         assertThat(redelivery.dropped(EXPIRED)).isEqualTo(1L);
+        assertThat(redelivery.held()).isZero();
         assertThat(landed).isEmpty();
     }
 
