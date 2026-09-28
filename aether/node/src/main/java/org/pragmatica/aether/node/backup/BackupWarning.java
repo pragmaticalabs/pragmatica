@@ -28,7 +28,10 @@ public record BackupWarning(Code code, String detail) {
         /// The local repository could not take a commit (disk, permissions, git missing).
         BACKUP_COMMIT_FAILED,
         /// A failing or gated backup is current again.
-        BACKUP_RECOVERED
+        BACKUP_RECOVERED,
+        /// A head that stayed ahead of this cluster's state was replaced once this cluster's revision passed
+        /// it (hazard d). The replaced commit stays in git history. Never an all-clear.
+        BACKUP_HEAD_REPLACED
     }
 
     public static BackupWarning backupWarning(Code code, String detail) {
