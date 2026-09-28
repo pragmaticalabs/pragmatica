@@ -200,11 +200,11 @@ public final class OwnerActivation {
                 return ("Owner promotion of %s[%d] refused: catch-up source %s (head %d) holds none of the records to "
                        + "compare with %s (head %d) — its window is evicted — so its suffix cannot be verified; the "
                        + "partition waits for an operator to pick the source").formatted(streamName,
-                                                                                          partition,
-                                                                                          origin,
-                                                                                          originHead,
-                                                                                          other,
-                                                                                          otherHead);
+                                                                                         partition,
+                                                                                         origin,
+                                                                                         originHead,
+                                                                                         other,
+                                                                                         otherHead);
             }
         }
 
@@ -531,11 +531,11 @@ public final class OwnerActivation {
                                        PeerWatermark highest,
                                        List<PeerWatermark> others) {
         return verifySourceOverlap(stream, partition, local, highest).flatMap(_ -> verifySourceAgainstPeers(stream,
-                                                                                                      partition,
-                                                                                                      local,
-                                                                                                      highest,
-                                                                                                      others))
-                            .flatMap(_ -> pullSuffix(stream, partition, highest));
+                                                                                                            partition,
+                                                                                                            local,
+                                                                                                            highest,
+                                                                                                            others))
+                                  .flatMap(_ -> pullSuffix(stream, partition, highest));
     }
 
     /// Pairwise agreement of the source with every other responder (v1555 on #1555). The local log covers only
@@ -646,7 +646,11 @@ public final class OwnerActivation {
         var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
 
         return Promise.all(ranges.read(self, stream, partition, from, to),
-                           ranges.read(source.node(), stream, partition, from, to))
+                           ranges.read(source.node(),
+                                       stream,
+                                       partition,
+                                       from,
+                                       to))
                       .flatMap((mine, theirs) -> sourceAgreesOrRefuse(stream, partition, local, source, mine, theirs));
     }
 

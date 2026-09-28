@@ -14,6 +14,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+
 /// #1555: the two remote reads the owner promotion gate makes of a peer, over the catch-up read class the
 /// gate's catch-up then pulls with — the peer's APPENDED head (the probe) and the peer's appended records in an
 /// offset range (the overlap verification).
@@ -48,12 +49,12 @@ public sealed interface OwnerPeerReads {
     /// The peer's appended records `from .. to`, starting at the peer's oldest available offset when that is
     /// above `from`. Empty when the peer holds none of the range.
     static Promise<List<OffHeapRingBuffer.RawEvent>> appendedRange(PageRead read,
-                                                                    NodeId target,
-                                                                    String streamName,
-                                                                    int partition,
-                                                                    long from,
-                                                                    long to,
-                                                                    int page) {
+                                                                   NodeId target,
+                                                                   String streamName,
+                                                                   int partition,
+                                                                   long from,
+                                                                   long to,
+                                                                   int page) {
         return pageRange(read, target, streamName, partition, from, to, page, List.of());
     }
 
@@ -64,7 +65,13 @@ public sealed interface OwnerPeerReads {
                                                long cursor,
                                                int page) {
         return read.read(target, streamName, partition, cursor, page)
-                   .fold(result -> result.fold(cause -> watermarkRefused(read, target, streamName, partition, cursor, page, cause),
+                   .fold(result -> result.fold(cause -> watermarkRefused(read,
+                                                                         target,
+                                                                         streamName,
+                                                                         partition,
+                                                                         cursor,
+                                                                         page,
+                                                                         cause),
                                                answer -> continueWatermark(read,
                                                                            target,
                                                                            streamName,
@@ -83,7 +90,7 @@ public sealed interface OwnerPeerReads {
                                                   Cause cause) {
         return isNotHeld(cause)
                ? Promise.success(-1L)
-               : resumeAt(cause, cursor).fold(cause::<Long>promise,
+               : resumeAt(cause, cursor).fold(cause::<Long> promise,
                                               oldest -> pageWatermark(read, target, streamName, partition, oldest, page));
     }
 
@@ -108,14 +115,18 @@ public sealed interface OwnerPeerReads {
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> pageRange(PageRead read,
-                                                                        NodeId target,
-                                                                        String streamName,
-                                                                        int partition,
-                                                                        long cursor,
-                                                                        long to,
-                                                                        int page,
-                                                                        List<OffHeapRingBuffer.RawEvent> gathered) {
-        return read.read(target, streamName, partition, cursor, (int) Math.min(page, to - cursor + 1))
+                                                                       NodeId target,
+                                                                       String streamName,
+                                                                       int partition,
+                                                                       long cursor,
+                                                                       long to,
+                                                                       int page,
+                                                                       List<OffHeapRingBuffer.RawEvent> gathered) {
+        return read.read(target,
+                         streamName,
+                         partition,
+                         cursor,
+                         (int) Math.min(page, to - cursor + 1))
                    .fold(result -> result.fold(cause -> rangeRefused(read,
                                                                      target,
                                                                      streamName,
@@ -136,38 +147,55 @@ public sealed interface OwnerPeerReads {
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> rangeRefused(PageRead read,
-                                                                           NodeId target,
-                                                                           String streamName,
-                                                                           int partition,
-                                                                           long cursor,
-                                                                           long to,
-                                                                           int page,
-                                                                           List<OffHeapRingBuffer.RawEvent> gathered,
-                                                                           Cause cause) {
-        return resumeAt(cause, cursor).fold(cause::<List<OffHeapRingBuffer.RawEvent>>promise,
+                                                                          NodeId target,
+                                                                          String streamName,
+                                                                          int partition,
+                                                                          long cursor,
+                                                                          long to,
+                                                                          int page,
+                                                                          List<OffHeapRingBuffer.RawEvent> gathered,
+                                                                          Cause cause) {
+        return resumeAt(cause, cursor).fold(cause::<List<OffHeapRingBuffer.RawEvent>> promise,
                                             oldest -> oldest > to
                                                       ? Promise.success(gathered)
-                                                      : pageRange(read, target, streamName, partition, oldest, to, page, gathered));
+                                                      : pageRange(read,
+                                                                  target,
+                                                                  streamName,
+                                                                  partition,
+                                                                  oldest,
+                                                                  to,
+                                                                  page,
+                                                                  gathered));
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> continueRange(PageRead read,
-                                                                            NodeId target,
-                                                                            String streamName,
-                                                                            int partition,
-                                                                            long to,
-                                                                            int page,
-                                                                            List<OffHeapRingBuffer.RawEvent> gathered,
-                                                                            StreamForwardClient.ReadForwardResult answer) {
+                                                                           NodeId target,
+                                                                           String streamName,
+                                                                           int partition,
+                                                                           long to,
+                                                                           int page,
+                                                                           List<OffHeapRingBuffer.RawEvent> gathered,
+                                                                           StreamForwardClient.ReadForwardResult answer) {
         var pageEvents = answer.events()
                                .stream()
                                .filter(event -> event.offset() <= to)
-                               .map(event -> OffHeapRingBuffer.RawEvent.rawEvent(event.offset(), event.data(), event.timestamp()))
+                               .map(event -> OffHeapRingBuffer.RawEvent.rawEvent(event.offset(),
+                                                                                 event.data(),
+                                                                                 event.timestamp()))
                                .toList();
         var all = Stream.concat(gathered.stream(), pageEvents.stream()).toList();
 
-        return pageEvents.isEmpty() || pageEvents.getLast().offset() >= to
+        return pageEvents.isEmpty() || pageEvents.getLast()
+                                                 .offset() >= to
                ? Promise.success(all)
-               : pageRange(read, target, streamName, partition, pageEvents.getLast().offset() + 1, to, page, all);
+               : pageRange(read,
+                           target,
+                           streamName,
+                           partition,
+                           pageEvents.getLast().offset() + 1,
+                           to,
+                           page,
+                           all);
     }
 
     private static boolean isNotHeld(Cause cause) {

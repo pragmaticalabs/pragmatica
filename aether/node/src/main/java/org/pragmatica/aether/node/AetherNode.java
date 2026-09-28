@@ -5139,9 +5139,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 Option.some(ownershipEpochHighWater),
                                                                                                                 linearizableBarrier,
                                                                                                                 (stream, partition, fromOffset, maxEvents) -> streamPartitionManager.readServing(stream,
-                                                                                                                                                                                               partition,
-                                                                                                                                                                                               fromOffset,
-                                                                                                                                                                                               maxEvents)
+                                                                                                                                                                                                 partition,
+                                                                                                                                                                                                 fromOffset,
+                                                                                                                                                                                                 maxEvents)
                                                                                                                                                                                     .async());
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
