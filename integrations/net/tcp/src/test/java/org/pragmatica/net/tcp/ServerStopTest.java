@@ -21,6 +21,7 @@ import java.net.DatagramSocket;
 import java.net.ServerSocket;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.channel.ChannelHandler;
@@ -28,6 +29,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -38,6 +40,9 @@ import static org.pragmatica.net.tcp.ServerConfig.serverConfig;
 /// Ports come from the OS (bound to 0, then released) so the tests do not collide with other modules
 /// running concurrently (#939).
 class ServerStopTest {
+    /// Channel-close bound + group-termination bound, plus slack.
+    private static final long STOP_BOUND_MS = Server.CHANNEL_CLOSE_TIMEOUT_MS + Server.SHUTDOWN_TIMEOUT_MS + 1_000L + 3_000L;
+
 
     @Test
     void stop_resolvesOnlyAfterTheEventLoopGroupsTerminate() throws InterruptedException {
@@ -83,6 +88,48 @@ class ServerStopTest {
         }
     }
 
+    /// #1614: a wedged boss loop never completes the server-channel close. The close is bounded, so the group
+    /// shutdown is still requested and `stop()` fails typed within the bound instead of hanging.
+    @Test
+    void stop_withAWedgedBossLoop_asksBothGroupsToShutDown_andFailsWithinTheBound() throws InterruptedException {
+        var server = start(serverConfig("stop-wedged-boss", freeTcpPort()));
+
+        assertStopBoundedWhileWedged(server, server.bossGroup().next());
+    }
+
+    /// #1614: the same for the loop the UDP channel is registered on — a hang rc4 did not have, because rc4 never
+    /// waited for the UDP close.
+    @Test
+    void stop_withAWedgedUdpLoop_asksBothGroupsToShutDown_andFailsWithinTheBound() throws InterruptedException {
+        var port = freeTcpAndUdpPort();
+        var server = start(serverConfig("stop-wedged-udp", port).withUdpPort(port));
+
+        assertThat(server.udpChannel().isPresent()).as("control: UDP bound").isTrue();
+        assertStopBoundedWhileWedged(server, server.udpChannel().unwrap().eventLoop());
+    }
+
+    private static void assertStopBoundedWhileWedged(Server server, Executor loop) throws InterruptedException {
+        var release = new CountDownLatch(1);
+        var blocking = new CountDownLatch(1);
+
+        loop.execute(() -> hold(blocking, release));
+        assertThat(blocking.await(5, TimeUnit.SECONDS)).as("the loop is wedged").isTrue();
+
+        try {
+            var stopped = server.stop(() -> Promise.success(Unit.unit()));
+            var outcome = stopped.await(timeSpan(STOP_BOUND_MS).millis());
+
+            assertThat(stopped.isResolved()).as("stop() resolves within %d ms although a loop is wedged", STOP_BOUND_MS)
+                                            .isTrue();
+            assertThat(outcome.isFailure()).as("a wedged loop is reported, not hidden").isTrue();
+            outcome.onFailure(cause -> assertThat(cause).isInstanceOf(CoreError.Timeout.class));
+            assertThat(server.bossGroup().isShuttingDown()).as("boss group asked to shut down").isTrue();
+            assertThat(server.workerGroup().isShuttingDown()).as("worker group asked to shut down").isTrue();
+        } finally {
+            release.countDown();
+        }
+    }
+
     private static Server start(ServerConfig config) {
         return Server.server(config, ServerStopTest::freshHandlers, ServerStopTest::freshHandlers)
                      .await(timeSpan(10).seconds())
@@ -101,7 +148,7 @@ class ServerStopTest {
     private static void hold(CountDownLatch blocking, CountDownLatch release) {
         blocking.countDown();
         try {
-            release.await(10, TimeUnit.SECONDS);
+            release.await(30, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

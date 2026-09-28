@@ -70,7 +70,9 @@ public interface Server {
     ///
     /// @return resolves once both event loop groups have terminated, with the intermediate operation's outcome. It may
     ///         FAIL with the group shutdown's cause (a failed or timed-out termination); a caller in a shutdown sequence
-    ///         must not abort on it (#1610).
+    ///         must not abort on it (#1610). Channel closes and group termination are each bounded, so a wedged event
+    ///         loop cannot hang it; an `intermediateOperation` that never resolves DOES hang it — that bound is the
+    ///         caller's.
     Promise<Unit> stop(Supplier<Promise<Unit>> intermediateOperation);
 
     /// Create a server with the given configuration (TCP only).
@@ -118,7 +120,7 @@ public interface Server {
             public Promise<Unit> stop(Supplier<Promise<Unit>> intermediate) {
                 log.trace("Stopping {}: closing server channel", name());
 
-                return Promise.all(completion(serverChannel.close()),
+                return Promise.all(closed(serverChannel),
                                    udpClosed())
                               .id()
                               .fold(_ -> intermediate.get())
@@ -126,7 +128,7 @@ public interface Server {
             }
 
             private Promise<Unit> udpClosed() {
-                return udpChannel.map(channel -> completion(channel.close()))
+                return udpChannel.map(Server::closed)
                                  .or(Promise.unitPromise());
             }
 
@@ -136,16 +138,17 @@ public interface Server {
 
             private Promise<Unit> shutdownGroups() {
                 log.debug("Stopping {}: shutting down boss and worker groups", name());
+                // Both shutdowns are requested before either is awaited; the outcome is the first failure, as
+                // the typed cause itself rather than an `all(...)` composite.
+                var bossTerminated = terminated(bossGroup);
+                var workerTerminated = terminated(workerGroup);
 
-                return Promise.all(terminated(bossGroup),
-                                   terminated(workerGroup))
-                              .id()
-                              .mapToUnit()
-                              .onSuccessRun(() -> log.info("Server {} stopped",
-                                                           name()))
-                              .onFailure(cause -> log.warn("Server {} did not stop cleanly: {}",
-                                                           name(),
-                                                           cause.message()));
+                return bossTerminated.fold(bossOutcome -> firstFailureOf(bossOutcome, workerTerminated))
+                                     .onSuccessRun(() -> log.info("Server {} stopped",
+                                                                  name()))
+                                     .onFailure(cause -> log.warn("Server {} did not stop cleanly: {}",
+                                                                  name(),
+                                                                  cause.message()));
             }
 
             @Override
@@ -218,14 +221,28 @@ public interface Server {
         return promise;
     }
 
-    /// No quiet period (#1610, as #929 did for SWIM): the caller's intermediate operation is the drain, and a
-    /// server with live peers may never go quiet, so Netty's default 2 s quiet period would stretch every stop
-    /// towards its timeout. The timeout is enforced on the event loop itself, so a wedged loop cannot enforce
-    /// it; the caller-side [Promise#timeout] bounds the wait regardless.
+    /// No quiet period (#1610). A quiet period never protected in-flight writes here: in Netty 4.2.9
+    /// `SingleThreadIoEventLoop.run` calls `ioHandler.prepareToDestroy()` on the first iteration after shutdown
+    /// begins, and `NioIoHandler.prepareToDestroy` closes every registered channel — before `confirmShutdown`
+    /// ever consults the quiet period. The period would only delay termination (and a loop with live peers may
+    /// never go quiet, stretching every stop to the timeout). The timeout is enforced on the event loop
+    /// itself, so a wedged loop cannot enforce it; the caller-side [Promise#timeout] bounds the wait regardless.
     long SHUTDOWN_TIMEOUT_MS = 5_000L;
+    /// Bound on each channel close in [#stop]. A close runs on the channel's event loop, so a wedged loop never
+    /// completes it; without this bound `stop()` would hang there and never ask the groups to shut down (#1614).
+    long CHANNEL_CLOSE_TIMEOUT_MS = 2_000L;
+
+    /// A channel close, bounded; its outcome is not what `stop()` reports — the group shutdown runs either way.
+    private static Promise<Unit> closed(Channel channel) {
+        return completion(channel.close()).timeout(timeSpan(CHANNEL_CLOSE_TIMEOUT_MS).millis());
+    }
 
     private static Promise<Unit> terminated(EventLoopGroup group) {
         return completion(group.shutdownGracefully(0, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)).timeout(timeSpan(SHUTDOWN_TIMEOUT_MS + 1_000L).millis());
+    }
+
+    private static Promise<Unit> firstFailureOf(Result<Unit> first, Promise<Unit> second) {
+        return second.fold(secondOutcome -> resolved(first.flatMap(_ -> secondOutcome)));
     }
 
     /// A Netty future as a promise: success, or its failure cause.
