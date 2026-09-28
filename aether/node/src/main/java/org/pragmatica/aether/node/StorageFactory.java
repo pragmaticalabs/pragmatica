@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,15 +16,18 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.parse.TimeSpan;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
@@ -65,7 +69,12 @@ public final class StorageFactory {
     /// Durable segment-block cap on the local disk tier. Larger than the memory tier: this is the
     /// substrate that lets sealed segments survive a same-node restart. Not pre-allocated — it is a
     /// reservation ceiling enforced per-write by `LocalDiskTier`.
-    private static final long STREAM_DISK_BYTES = 4L * 1024 * 1024 * 1024;
+    /// #1604: the derived streams disk-tier cap is this fraction of the usable space on the segments
+    /// filesystem at boot, clamped to [[#STREAM_DISK_FLOOR_BYTES], usable - [#STREAM_DISK_HEADROOM_BYTES]]: the
+    /// WAL usually shares the disk and must keep room to grow while seals catch up.
+    static final double STREAM_DISK_FRACTION = 0.4;
+    static final long STREAM_DISK_FLOOR_BYTES = 1024L * 1024 * 1024;
+    static final long STREAM_DISK_HEADROOM_BYTES = 2L * 1024 * 1024 * 1024;
     private static final int STREAM_SNAPSHOT_MUTATION_THRESHOLD = 100;
     private static final long STREAM_SNAPSHOT_INTERVAL_MILLIS = 30_000L;
     private static final int STREAM_SNAPSHOT_RETENTION_COUNT = 5;
@@ -255,8 +264,17 @@ public final class StorageFactory {
     }
 
     /// #250: same fan-out as [#compositeDemotionManager], for garbage collection.
+    /// Every setup's collector is TICKED here, but only the shared-view ones are leader-pinned: `streams` is an
+    /// instance per node over that node's own disk, activated at build ([#assembleStreamSetup]) and left alone
+    /// by leader activation, or every non-leader would stop reclaiming its disk (#1604).
     public static StorageGarbageCollector compositeGarbageCollector(Map<String, StorageSetup> setups) {
         var collectors = setups.values().stream().map(StorageSetup::garbageCollector).toList();
+        var leaderPinned = setups.entrySet()
+                                 .stream()
+                                 .filter(entry -> !STREAMS_NAME.equals(entry.getKey()))
+                                 .map(entry -> entry.getValue()
+                                                    .garbageCollector())
+                                 .toList();
 
         return new StorageGarbageCollector() {
             @Override
@@ -276,18 +294,18 @@ public final class StorageFactory {
 
             @Override
             public Result<Unit> activate() {
-                return Result.allOf(collectors.stream().map(StorageGarbageCollector::activate).toList()).map(_ -> unit());
+                return Result.allOf(leaderPinned.stream().map(StorageGarbageCollector::activate).toList()).map(_ -> unit());
             }
 
             @Override
             public Result<Unit> deactivate() {
-                return Result.allOf(collectors.stream().map(StorageGarbageCollector::deactivate).toList()).map(_ -> unit());
+                return Result.allOf(leaderPinned.stream().map(StorageGarbageCollector::deactivate).toList()).map(_ -> unit());
             }
 
             @Override
             public boolean isActive() {
-                return collectors.stream()
-                                 .allMatch(StorageGarbageCollector::isActive);
+                return leaderPinned.stream()
+                                   .allMatch(StorageGarbageCollector::isActive);
             }
         };
     }
@@ -503,14 +521,20 @@ public final class StorageFactory {
     /// memory+DHT when `streamDataDir` is not writable (mirrors `createOne`'s
     /// `handleDiskTierUnavailable`), so node boot never fails on an unmountable data dir.
     static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
-        return plainStreamStorage(dhtClient, streamDataDir, nodeId, Option.none());
+        return plainStreamStorage(dhtClient,
+                                  streamDataDir,
+                                  nodeId,
+                                  StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                  Option.none());
     }
 
     private static Result<StorageSetup> plainStreamStorage(Option<DHTClient> dhtClient,
                                                            Path streamDataDir,
                                                            String nodeId,
+                                                           long diskMaxBytes,
                                                            Option<Path> logRoot) {
-        var build = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
+        var segmentsDir = streamDataDir.resolve("segments");
+        var build = buildStreamTiers(dhtClient, segmentsDir, streamDiskMaxBytes(diskMaxBytes, segmentsDir));
 
         return assembleStreamSetup(build.tiers(),
                                    streamDataDir.resolve("snapshots"),
@@ -564,17 +588,20 @@ public final class StorageFactory {
                                                        .flatMap(_ -> plainStreamStorage(request.dhtClient(),
                                                                                         request.streamDataDir(),
                                                                                         request.nodeId(),
+                                                                                        request.diskMaxBytes(),
                                                                                         request.logRoot()))
                                                        .map(setup -> new PendingSetup(setup,
                                                                                       Option.none())),
                             ring -> armEncryptedStreamTiers(request.dhtClient(),
                                                             segmentsDir,
-                                                            ring).flatMap(build -> assembleStreamSetup(build.tiers(),
-                                                                                                       snapshotDir,
-                                                                                                       request.nodeId(),
-                                                                                                       build.dhtMarkerCheck(),
-                                                                                                       request.logRoot()).map(setup -> new PendingSetup(setup,
-                                                                                                                                                        build.armedDisk()))));
+                                                            ring,
+                                                            streamDiskMaxBytes(request.diskMaxBytes(),
+                                                                               segmentsDir)).flatMap(build -> assembleStreamSetup(build.tiers(),
+                                                                                                                                  snapshotDir,
+                                                                                                                                  request.nodeId(),
+                                                                                                                                  build.dhtMarkerCheck(),
+                                                                                                                                  request.logRoot()).map(setup -> new PendingSetup(setup,
+                                                                                                                                                                                   build.armedDisk()))));
     }
 
     /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
@@ -583,17 +610,109 @@ public final class StorageFactory {
     /// `logRoot` is the stream WAL base directory -- the `streams` instance's append-log root (#1567), so its
     /// partition logs open through [StorageInstance#openLog] under the instance; [Option#none] when streams
     /// run without a WAL.
+    ///
+    /// `diskMaxBytes` is `[streaming] segment_disk_max_bytes`; [StreamingConfig#DERIVE_SEGMENT_DISK_MAX_BYTES]
+    /// derives the cap from the filesystem ([#streamDiskMaxBytes], #1604).
     record StreamSetupRequest(Option<DHTClient> dhtClient,
                               Path streamDataDir,
                               String nodeId,
                               Option<EncryptionKeyring> keyring,
+                              long diskMaxBytes,
                               Option<Path> logRoot) {
         StreamSetupRequest(Option<DHTClient> dhtClient,
                            Path streamDataDir,
                            String nodeId,
                            Option<EncryptionKeyring> keyring) {
-            this(dhtClient, streamDataDir, nodeId, keyring, Option.none());
+            this(dhtClient, streamDataDir, nodeId, keyring, StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES, Option.none());
         }
+    }
+
+    /// The streams disk-tier cap (#1604): the configured value when set, else derived from the space the tier can
+    /// use -- the usable space of the filesystem that will hold `segmentsDir` (its nearest existing ancestor,
+    /// before it is created) PLUS the bytes the tier already holds there. A configured cap above the usable space
+    /// is kept, with a WARN: the operator may be about to grow the volume, and refusing boot would be worse than
+    /// a loud note. An unreadable filesystem falls back to the floor, loudly.
+    ///
+    /// Derived, never persisted (#1616 R1): a remembered first-boot cap goes stale when the volume is resized or
+    /// moved to another node. Counting the tier's own bytes is what makes it restart-stable -- usable space alone
+    /// excludes them, so a cap measured on it shrank at every restart by 40% of what the tier held, and a healthy
+    /// node could come back above its refusal threshold. The cap still moves when OTHER data on the same
+    /// filesystem grows or shrinks; that is intended -- it is a fraction of what the node can actually use.
+    static long streamDiskMaxBytes(long configured, Path segmentsDir) {
+        return streamDiskMaxBytes(configured, segmentsDir, StorageFactory::usableSpace);
+    }
+
+    /// As above with the filesystem's usable-space reading injected, for a test that needs a disk larger than
+    /// the one it runs on.
+    static long streamDiskMaxBytes(long configured, Path segmentsDir, Fn1<Option<Long>, Path> usableSpace) {
+        var usable = usableSpace.apply(segmentsDir);
+
+        return configured > 0
+               ? configuredStreamDiskCap(configured, segmentsDir, usable)
+               : derivedStreamDiskCap(segmentsDir, usable.map(space -> space + tierBytes(segmentsDir)));
+    }
+
+    /// Pure derivation over the tier's usable base (free space plus what the tier already holds), package-visible
+    /// for its test.
+    static long derivedStreamDiskCap(long baseBytes) {
+        var fraction = (long)(baseBytes * STREAM_DISK_FRACTION);
+        var ceiling = Math.max(STREAM_DISK_FLOOR_BYTES, baseBytes - STREAM_DISK_HEADROOM_BYTES);
+
+        return Math.min(Math.max(fraction, STREAM_DISK_FLOOR_BYTES), ceiling);
+    }
+
+    /// Bytes of the regular files under `segmentsDir`, read-only; `0` when it does not exist yet or cannot be walked.
+    static long tierBytes(Path segmentsDir) {
+        return Files.isDirectory(segmentsDir)
+               ? FileOps.walk(segmentsDir, FileOps::isRegularFile)
+                        .map(StorageFactory::totalSize)
+                        .or(0L)
+               : 0L;
+    }
+
+    private static long totalSize(List<Path> files) {
+        return files.stream()
+                    .mapToLong(file -> FileOps.size(file).or(0L))
+                    .sum();
+    }
+
+    private static long configuredStreamDiskCap(long configured, Path segmentsDir, Option<Long> usable) {
+        usable.filter(space -> configured > space)
+              .onPresent(space -> log.warn("[streaming] segment_disk_max_bytes = {} exceeds the {} bytes usable at {}; "
+                                          + "stream seals will fail with TierFull before the cap is reached",
+                                           configured,
+                                           space,
+                                           segmentsDir));
+
+        return configured;
+    }
+
+    private static long derivedStreamDiskCap(Path segmentsDir, Option<Long> usable) {
+        var cap = usable.map(StorageFactory::derivedStreamDiskCap).or(STREAM_DISK_FLOOR_BYTES);
+
+        usable.onPresent(space -> log.info("Streams disk tier cap derived as {} bytes ({} of the {} bytes usable by the tier at {}); "
+                                          + "set [streaming] segment_disk_max_bytes to override",
+                                           cap,
+                                           STREAM_DISK_FRACTION,
+                                           space,
+                                           segmentsDir))
+              .onEmpty(() -> log.warn("Usable space at {} could not be read; streams disk tier cap falls back to {} bytes",
+                                      segmentsDir,
+                                      cap));
+
+        return cap;
+    }
+
+    private static Option<Long> usableSpace(Path dir) {
+        return nearestExisting(dir.toAbsolutePath()).flatMap(existing -> Result.lift(Causes::fromThrowable,
+                                                                                     () -> Files.getFileStore(existing).getUsableSpace())
+                                                                               .option());
+    }
+
+    private static Option<Path> nearestExisting(Path dir) {
+        return Files.exists(dir)
+               ? Option.some(dir)
+               : Option.option(dir.getParent()).flatMap(StorageFactory::nearestExisting);
     }
 
     /// #849: the streams DHT tier goes through [#maybeEncryptDht] like every `<name>-blocks`
@@ -605,11 +724,12 @@ public final class StorageFactory {
     /// ever written for `stream-segments`.
     private static Result<TierBuild> armEncryptedStreamTiers(Option<DHTClient> dhtClient,
                                                              Path segmentsDir,
-                                                             EncryptionKeyring keyring) {
+                                                             EncryptionKeyring keyring,
+                                                             long diskMaxBytes) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
 
-        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES)
+        return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes)
                             .flatMap(LocalDiskTier::open)
                             .fold(cause -> {
                                       warnNoDurableStreamTier(segmentsDir, cause);
@@ -625,11 +745,11 @@ public final class StorageFactory {
 
     /// The disk tier is constructed read-only and then OPENED (#1569 A3): this node owns its stream data
     /// directory, and opening is the step that creates it and sweeps stale partial blocks.
-    private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
+    private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir, long diskMaxBytes) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
 
-        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES)
+        return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes)
                             .flatMap(LocalDiskTier::open)
                             .fold(cause -> {
                                       warnNoDurableStreamTier(segmentsDir, cause);
@@ -693,6 +813,13 @@ public final class StorageFactory {
         var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
+        // #1604: NOT leader-pinned, deliberately -- do not move it back into leader activation. This instance's
+        // metadata store and disk tier are node-private, so this node's records are the authority on them, and
+        // GC deletes only from private tiers (deleteFromPrivateTiers skips the shared DHT tier). Pinned to the
+        // leader, every other node would never reclaim its own disk once retention stopped deleting blocks.
+        garbageCollector.activate()
+                        .onFailure(cause -> log.warn("Streams garbage collector could not be activated: {}",
+                                                     cause.message()));
 
         return restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate).map(_ -> {
             log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());

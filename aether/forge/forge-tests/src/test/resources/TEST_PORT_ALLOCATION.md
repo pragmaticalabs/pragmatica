@@ -35,6 +35,8 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | MultiPartitionCrashDurabilityTest | 17500 | 17600          | 0          | 5 nodes (shared cluster, app-http 17700; #431 multi-partition WAL crash-durability, per-partition replay) |
 | DeclarativeStreamConsumerTest | 18000     | 18100          | 0          | 5 nodes (shared cluster, app-http 18200; #488 declarative consumer delivery + #526 app-typed round trip) |
 | DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
+| DurableTopicDeliveryForgeTest | 19000     | 19100          | 0          | 5 nodes (shared cluster, app-http 19200; #386 composed durable pub/sub path, Heavy) |
+| DurableEntityForgeTest        | 24300     | 24320          | 0          | 5 nodes (shared cluster, app-http 24340, SWIM UDP 24400-24404; durable entities, Heavy). Moved off 19000, which it shared unregistered with the row above (#1627) |
 | CoordinationSlopeInstrumentTest | 20000  | 20100          | 0          | 3 nodes (shared cluster, app-http 20200; #591 validates the coordination-load sampler against live endpoints) |
 | MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
 | CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |
