@@ -10,11 +10,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
 
 import org.slf4j.Logger;
@@ -207,12 +204,16 @@ public final class RetentionEnforcer implements AutoCloseable {
                : now - ref.maxTimestamp();
     }
 
+    /// Drops the segment's REF, never its block (#1604). Blocks are content-addressed and the segment encoding
+    /// carries no stream or partition, so identical events in two partitions share one block; deleting it by id
+    /// took the other partition's in-retention data with it. The dropped ref gives back its reference, and the
+    /// block goes when none is left, through the storage garbage collector -- the single delete path, which
+    /// never touches a cluster-shared tier.
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = SegmentIndex.buildRefName(streamName, partition, ref);
 
-        storage.resolveRef(refName)
-               .map(blockId -> deleteBlockAndRef(refName, blockId))
-               .onPresent(promise -> promise.onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause)));
+        storage.deleteRef(refName)
+               .onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause));
         index.removeSegment(streamName, partition, ref.startOffset());
         log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
                   streamName,
@@ -222,16 +223,12 @@ public final class RetentionEnforcer implements AutoCloseable {
                   ref.maxTimestamp());
     }
 
-    private Promise<Unit> deleteBlockAndRef(String refName, BlockId blockId) {
-        return storage.deleteRef(refName)
-                      .flatMap(_ -> storage.delete(blockId));
-    }
 
     private static void logDeleteFailure(String streamName,
                                          int partition,
                                          SegmentIndex.SegmentRef ref,
                                          org.pragmatica.lang.Cause cause) {
-        log.warn("Failed to delete segment block {}/{}:[{}-{}]: {}",
+        log.warn("Failed to drop the ref of expired segment {}/{}:[{}-{}]: {}",
                  streamName,
                  partition,
                  ref.startOffset(),
