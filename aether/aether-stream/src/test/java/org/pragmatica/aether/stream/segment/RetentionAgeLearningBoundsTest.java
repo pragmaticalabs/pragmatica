@@ -48,18 +48,28 @@ class RetentionAgeLearningBoundsTest {
                                                          .allSatisfy(ref -> assertThat(ref.maxTimestamp()).isPositive());
     }
 
-    /// Fixed-rate ticks can overlap a long pass: the second call joins the running pass, so every block is read
-    /// once, not twice.
+    /// Fixed-rate ticks can overlap a long pass: the second call joins the running pass instead of starting its
+    /// own. Counted by passes, not by block reads -- the storage instance already coalesces concurrent reads of
+    /// one block, so read counts cannot tell one pass from two. Each pass under pressure runs the pressure relief
+    /// exactly once, so the relief count IS the pass count.
     @Test
     void overlappingPasses_runOnce() {
         var tier = new CountingTier();
         var setup = restartedWith(tier, SEGMENTS);
-        var first = setup.enforcer().enforceNow();
-        var second = setup.enforcer().enforceNow();
+        var passes = new AtomicInteger();
+        var enforcer = RetentionEnforcer.retentionEnforcer(setup.storage(),
+                                                           setup.index(),
+                                                           WINDOW_MS,
+                                                           RetentionEnforcer.SegmentRetentionFloor.NONE,
+                                                           SegmentReader.segmentReader(setup.storage(), setup.index()),
+                                                           () -> 0.9,
+                                                           passes::incrementAndGet);
+        var first = enforcer.enforceNow();
+        var second = enforcer.enforceNow();
 
-        assertThat(first.await().unwrap()).isEqualTo(second.await().unwrap());
-        assertThat(tier.reads.get()).as("each block read once: the second call joined the running pass")
-                                    .isEqualTo(SEGMENTS);
+        first.await();
+        second.await();
+        assertThat(passes.get()).as("one pass ran; the overlapping call joined it").isEqualTo(1);
     }
 
     /// A block that cannot be read (a missing key, a damaged block) is remembered: the next pass does not read
@@ -101,7 +111,7 @@ class RetentionAgeLearningBoundsTest {
 
         index.rebuildFromRefs(allRefs(storage, segments));
 
-        return new Setup(index, enforcer(storage, index));
+        return new Setup(storage, index, enforcer(storage, index));
     }
 
     private static Map<String, BlockId> allRefs(StorageInstance storage, int segments) {
@@ -128,7 +138,7 @@ class RetentionAgeLearningBoundsTest {
         return ByteBuffer.allocate(21).order(ByteOrder.BIG_ENDIAN).putLong(offset).putLong(eventTime).putInt(1).put((byte) offset).array();
     }
 
-    private record Setup(SegmentIndex index, RetentionEnforcer enforcer) {}
+    private record Setup(StorageInstance storage, SegmentIndex index, RetentionEnforcer enforcer) {}
 
     /// A memory tier whose reads take a moment and are counted, with the peak number in flight at once.
     private static final class CountingTier implements StorageTier {
