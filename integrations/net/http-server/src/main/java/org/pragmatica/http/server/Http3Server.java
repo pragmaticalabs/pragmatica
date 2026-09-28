@@ -32,6 +32,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
 
@@ -61,7 +62,7 @@ import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.Promise.resolved;
 
 
 /// HTTP/3 server implementation using Netty QUIC transport.
@@ -91,27 +92,42 @@ final class Http3Server {
         return port;
     }
 
+    /// #1612: the same dependent, bounded chain as [NettyHttpServer#stop()] — the datagram channel close is
+    /// bounded, then an owned group is shut down with no quiet period (see [ServerShutdown]) and awaited,
+    /// bounded, and the first failure is reported typed. A shared group belongs to its owner and is left
+    /// running. Before #1612 this already waited for termination, but unbounded, with the default quiet
+    /// period, and reporting success whatever the outcome.
     Promise<Unit> stop() {
-        return Promise.promise(this::initiateShutdown);
-    }
-
-    private void initiateShutdown(Promise<Unit> promise) {
         log.info("Stopping HTTP/3 server on port {}", port);
-        serverChannel.onPresent(channel -> channel.close()
-                                                  .addListener(_ -> cleanupAndComplete(promise)))
-                     .onEmpty(() -> cleanupAndComplete(promise));
+
+        return serverChannel.map(ServerShutdown::closed)
+                            .or(Promise.unitPromise())
+                            .fold(this::shutdownGroupThen);
     }
 
-    private void cleanupAndComplete(Promise<Unit> promise) {
-        if (!ownsGroup) {
-            promise.succeed(unit());
+    /// Package-private for the #1612 stop tests: the owned group and the datagram channel, to wedge the channel's
+    /// loop or confirm termination.
+    Option<EventLoopGroup> workerGroup() {
+        return workerGroup;
+    }
 
-            return;
-        }
+    Option<Channel> serverChannel() {
+        return serverChannel;
+    }
 
-        workerGroup.map(EventLoopGroup::shutdownGracefully)
-                   .onPresent(f -> f.addListener(_ -> promise.succeed(unit())))
-                   .onEmpty(() -> promise.succeed(unit()));
+    private Promise<Unit> shutdownGroupThen(Result<Unit> closeOutcome) {
+        return shutdownOwnedGroup().fold(groupOutcome -> resolved(closeOutcome.flatMap(_ -> groupOutcome)))
+                                   .onSuccessRun(() -> log.info("HTTP/3 server on port {} stopped", port))
+                                   .onFailure(cause -> log.warn("HTTP/3 server on port {} did not stop cleanly: {}",
+                                                                port,
+                                                                cause.message()));
+    }
+
+    private Promise<Unit> shutdownOwnedGroup() {
+        return ownsGroup
+               ? workerGroup.map(ServerShutdown::terminated)
+                            .or(Promise.unitPromise())
+               : Promise.unitPromise();
     }
 
     /// Create and start an HTTP/3 server with its own event loop group.
@@ -170,12 +186,20 @@ final class Http3Server {
             log.info("HTTP/3 QUIC server '{}' started on port {}", config.name(), config.port());
             promise.succeed(new Http3Server(config.port(), Option.option(group), Option.option(channel), ownsGroup));
         } else {
-            if (ownsGroup) {
-                group.shutdownGracefully();
-            }
+            // #1612: the group this create made is terminated (bounded) BEFORE the failure is reported; the bind
+            // failure is what the create reports, and a termination failure is only logged.
+            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause());
 
-            promise.fail(new HttpServerError.BindFailed(config.port(), future.cause()));
+            releaseGroupOnBindFailure(ownsGroup, group).onResultRun(() -> promise.fail(bindFailed));
         }
+    }
+
+    private static Promise<Unit> releaseGroupOnBindFailure(boolean ownsGroup, EventLoopGroup group) {
+        return ownsGroup
+               ? ServerShutdown.terminated(group)
+                               .onFailure(cause -> log.warn("HTTP/3 server event loop did not terminate after a failed bind: {}",
+                                                            cause.message()))
+               : Promise.unitPromise();
     }
 
     /// Initializer for each new QUIC connection.
