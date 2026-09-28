@@ -417,7 +417,8 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `DEPLOYMENT_FAILED` -- an artifact deployment failed on a node (`details` carries `reason`). Severity WARNING.
 - `SCALE_UP` -- an artifact was scaled up to more instances. Severity INFO.
 - `SCALE_DOWN` -- an artifact was scaled down to fewer instances. Severity INFO.
-- `SLICE_FAILURE` -- all instances of a slice method failed. Severity CRITICAL.
+- `SLICE_FAILURE` -- every live instance of a slice version reported only bridge-level defects within the detection window (leader-detected, #1573). Severity CRITICAL.
+- `AUTO_ROLLBACK` -- the leader committed an automatic rollback. `details`: `artifact`, `from`, `to`, `rollbackNumber`, `windowMs`, `requestId`, and `defects.<nodeId>` per hosting node. Severity CRITICAL.
 - `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
 - `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
 - `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
