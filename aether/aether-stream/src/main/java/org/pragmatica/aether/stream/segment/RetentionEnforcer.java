@@ -23,6 +23,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.storage.EncryptionError;
+import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageInstance;
 
 import org.slf4j.Logger;
@@ -85,7 +87,8 @@ public final class RetentionEnforcer implements AutoCloseable {
     private final PressureRelief relief;
     /// Set while the durable tier is at or above [SegmentTierPressure#WARN_AT], so one episode warns once.
     private final AtomicBoolean underPressure = new AtomicBoolean(false);
-    /// Segments whose block could not be read for its age, remembered for the process lifetime (#1616 R3).
+    /// Segments whose block could not be read for its age for a reason no retry changes, remembered for the process
+    /// lifetime (#1616 R3, #1630).
     private final Set<String> unreadableAges = ConcurrentHashMap.newKeySet();
     private final AtomicInteger unreadableReported = new AtomicInteger();
     /// The pass in flight, or [#IDLE] (#1616 R2).
@@ -379,13 +382,16 @@ public final class RetentionEnforcer implements AutoCloseable {
 
     /// FER: the segment stays unknown-aged, which withholds it from age-based reclamation; nothing is lost.
     ///
-    /// Only a DETERMINISTIC failure is remembered (#1616 R3, narrowed): a block that is gone or that does not
-    /// decode (corrupt, or read without its key) will fail the same way every time, so it is not read again and
-    /// is counted into [#reportUnreadableAges]. A TRANSIENT failure -- a read timeout, an I/O error -- is not
-    /// remembered and the next pass retries it: remembering it would pin the segment against age-out until a
-    /// restart, which is exactly what pressure relief needs to reclaim.
+    /// Only a TRANSIENT failure is retried (#1630, inverting #1616 R3's allow-list): a timeout or an I/O error
+    /// ([#isTransient]) is not remembered, and the next pass retries it -- remembering it would pin the segment
+    /// against age-out until a restart, which is exactly what pressure relief needs to reclaim. EVERY OTHER failure
+    /// is deterministic: a block that is gone, that fails its content check ([StorageError.IntegrityError]), that
+    /// cannot be decrypted with the keys this node holds ([EncryptionError], a missing or wrong key), or that does
+    /// not decode will fail the same way on every pass, so it is remembered, not read again, and counted into
+    /// [#reportUnreadableAges]'s one WARN. An allow-list of deterministic causes let every unlisted one -- a missing
+    /// key among them -- be re-read on every pass forever, withheld and logged only at DEBUG.
     private Unit ageUnreadable(PendingAge pending, Cause cause) {
-        if (isDeterministic(cause)) {
+        if (!isTransient(cause)) {
             unreadableAges.add(pending.id());
         }
 
@@ -398,8 +404,11 @@ public final class RetentionEnforcer implements AutoCloseable {
         return unit();
     }
 
-    private static boolean isDeterministic(Cause cause) {
-        return cause == SegmentError.General.SEGMENT_DATA_NOT_FOUND || cause instanceof SegmentError.CorruptRecord;
+    /// What a retry can change: a cause classed transient ([Cause#isTransient] -- a promise timeout,
+    /// [org.pragmatica.lang.io.CoreError.Timeout], is), an I/O error reading a tier ([StorageError.ReadError]), or a
+    /// tier not yet admitted for reads ([StorageError.TierNotAdmitted], a bounded wait on the DHT marker check).
+    private static boolean isTransient(Cause cause) {
+        return cause.isTransient() || cause instanceof StorageError.ReadError || cause instanceof StorageError.TierNotAdmitted;
     }
 
     /// One WARN when a pass found segments whose age cannot be read -- never silently aged out, never re-read.
