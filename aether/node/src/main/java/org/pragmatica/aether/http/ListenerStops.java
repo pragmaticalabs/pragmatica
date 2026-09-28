@@ -12,6 +12,7 @@ import org.slf4j.Logger;
 import static org.pragmatica.lang.Promise.resolved;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// How the node's HTTP/1.1 + HTTP/3 listener pairs are stopped (#1612).
 ///
 /// A listener's `stop()` can FAIL, for example when a channel close or an event-loop termination times out.
@@ -25,7 +26,7 @@ public sealed interface ListenerStops {
         return h1Stop.fold(h1Outcome -> h3Stop.fold(h3Outcome -> resolved(h1Outcome.flatMap(_ -> h3Outcome))));
     }
 
-    /// For certificate rotation: a failed stop is logged and the restart goes ahead. This is forward recovery.
+    /// For certificate rotation: a failed stop is logged and the restart goes ahead. This is forward recovery (FER).
     /// Aborting would leave the node with no listener at all, while a restart succeeds whenever the channel did
     /// close, and a port still bound makes the restart fail visibly.
     static Promise<Unit> stoppedForRestart(Promise<Unit> stop, Logger log, String listeners) {

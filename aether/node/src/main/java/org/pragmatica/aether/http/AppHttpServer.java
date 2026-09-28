@@ -624,10 +624,10 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                log,
                                                "App HTTP listeners")
                             .flatMap(_ -> restartWithNewBundle(newBundle))
-                      .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
-                                                                                                pair.h3(),
-                                                                                                currentRoutes)))
-                      .mapToUnit();
+                            .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
+                                                                                                      pair.h3(),
+                                                                                                      currentRoutes)))
+                            .mapToUnit();
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {

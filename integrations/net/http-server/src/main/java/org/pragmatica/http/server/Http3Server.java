@@ -151,10 +151,10 @@ final class Http3Server {
     /// failed create reports.
     @SuppressWarnings("JBCT-UTIL-01")
     static Promise<Http3Server> bind(HttpServerConfig config,
-                                             QuicSslContext quicSslContext,
-                                             BiConsumer<HttpRequest, ResponseWriter> handler,
-                                             EventLoopGroup group,
-                                             boolean ownsGroup) {
+                                     QuicSslContext quicSslContext,
+                                     BiConsumer<HttpRequest, ResponseWriter> handler,
+                                     EventLoopGroup group,
+                                     boolean ownsGroup) {
         var maxContentLength = config.maxContentLength();
         var codec = Http3.newQuicServerCodecBuilder()
                          .sslContext(quicSslContext)

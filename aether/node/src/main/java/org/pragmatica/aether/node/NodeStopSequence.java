@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// The ordered, promise-chained tail of `AetherNode.stop()`, extracted so the ordering and failure handling
 /// can be tested without assembling a node (#1612).
 ///
@@ -44,11 +45,9 @@ sealed interface NodeStopSequence {
         return steps.deactivateDeployment()
                     .get()
                     .flatMap(_ -> continuingPast("Management server",
-                                                 steps.managementServer()
-                                                      .get()))
+                                                 steps.managementServer().get()))
                     .flatMap(_ -> continuingPast("App HTTP server",
-                                                 steps.appHttpServer()
-                                                      .get()))
+                                                 steps.appHttpServer().get()))
                     .flatMap(_ -> steps.sliceInvoker()
                                        .get())
                     .map(_ -> steps.storage()

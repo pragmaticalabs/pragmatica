@@ -2037,9 +2037,8 @@ public interface AetherNode extends ManageableNode {
                                                                          appHttpServer::stop,
                                                                          sliceInvoker::stop,
                                                                          this::shutdownStorage,
-                                                                         clusterNode::stop))
-                                       .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                self()));
+                                                                         clusterNode::stop)).onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                                                                     self()));
             }
 
             /// #1078: the three node-owned storage instances (`content`, `artifacts`, `streams`)
