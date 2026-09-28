@@ -98,7 +98,10 @@ public final class RetentionEnforcer implements AutoCloseable {
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
                                                       SegmentIndex index,
                                                       RetentionPolicy retentionPolicy) {
-        return new RetentionEnforcer(storage, index, retentionPolicy, SegmentRetentionFloor.NONE,
+        return new RetentionEnforcer(storage,
+                                     index,
+                                     retentionPolicy,
+                                     SegmentRetentionFloor.NONE,
                                      none(),
                                      SegmentTierPressure.NONE,
                                      PressureRelief.NONE);
@@ -108,7 +111,10 @@ public final class RetentionEnforcer implements AutoCloseable {
                                                       SegmentIndex index,
                                                       RetentionPolicy retentionPolicy,
                                                       SegmentRetentionFloor retentionFloor) {
-        return new RetentionEnforcer(storage, index, retentionPolicy, retentionFloor,
+        return new RetentionEnforcer(storage,
+                                     index,
+                                     retentionPolicy,
+                                     retentionFloor,
                                      none(),
                                      SegmentTierPressure.NONE,
                                      PressureRelief.NONE);
@@ -205,7 +211,7 @@ public final class RetentionEnforcer implements AutoCloseable {
         return closed.get()
                ? Promise.success(0)
                : learnUnknownAges().map(_ -> reclaimExpired(System.currentTimeMillis()))
-                                   .map(this::relieveUnderPressure);
+                                 .map(this::relieveUnderPressure);
     }
 
     /// Under pressure the refs just dropped must free their blocks in this pass, not after the collector's
@@ -269,8 +275,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// direction that cannot delete data -- and is tried again next pass.
     private Promise<Unit> learnUnknownAges() {
         return ageReader.fold(Promise::unitPromise,
-                              reader -> Promise.allOf(unknownAgeReads(reader))
-                                               .mapToUnit());
+                              reader -> Promise.allOf(unknownAgeReads(reader)).mapToUnit());
     }
 
     private List<Promise<Unit>> unknownAgeReads(SegmentReader reader) {
@@ -281,23 +286,26 @@ public final class RetentionEnforcer implements AutoCloseable {
     }
 
     private Stream<Promise<Unit>> unknownAgeReads(SegmentReader reader, SegmentIndex.PartitionKey key) {
-        return index.listSegments(key.streamName(), key.partition())
+        return index.listSegments(key.streamName(),
+                                  key.partition())
                     .stream()
                     .filter(ref -> ref.maxTimestamp() <= 0)
                     .map(ref -> learnAge(reader, key, ref));
     }
 
     private Promise<Unit> learnAge(SegmentReader reader, SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref) {
-        return reader.maxEventTimestamp(key.streamName(), key.partition(), ref)
+        return reader.maxEventTimestamp(key.streamName(),
+                                        key.partition(),
+                                        ref)
                      .map(latest -> recordAge(key, ref, latest))
                      .recover(cause -> ageUnreadable(key, ref, cause));
     }
 
     private Unit recordAge(SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref, Option<Long> latest) {
         latest.onPresent(timestamp -> index.recordMaxTimestamp(key.streamName(),
-                                                                key.partition(),
-                                                                ref.startOffset(),
-                                                                timestamp));
+                                                               key.partition(),
+                                                               ref.startOffset(),
+                                                               timestamp));
 
         return unit();
     }
@@ -380,8 +388,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = SegmentIndex.buildRefName(streamName, partition, ref);
 
-        storage.deleteRef(refName)
-               .onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause));
+        storage.deleteRef(refName).onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause));
         index.removeSegment(streamName, partition, ref.startOffset());
         log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
                   streamName,
@@ -391,11 +398,7 @@ public final class RetentionEnforcer implements AutoCloseable {
                   ref.maxTimestamp());
     }
 
-
-    private static void logDeleteFailure(String streamName,
-                                         int partition,
-                                         SegmentIndex.SegmentRef ref,
-                                         Cause cause) {
+    private static void logDeleteFailure(String streamName, int partition, SegmentIndex.SegmentRef ref, Cause cause) {
         log.warn("Failed to drop the ref of expired segment {}/{}:[{}-{}]: {}",
                  streamName,
                  partition,

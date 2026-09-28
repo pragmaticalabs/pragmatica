@@ -70,9 +70,7 @@ public final class SegmentReader {
     }
 
     private static Option<Long> latestTimestamp(List<RawEvent> events) {
-        return Option.from(events.stream()
-                                 .map(RawEvent::timestamp)
-                                 .max(Long::compare));
+        return Option.from(events.stream().map(RawEvent::timestamp).max(Long::compare));
     }
 
     private Promise<List<RawEvent>> readFromSegmentRefs(String streamName,

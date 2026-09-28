@@ -269,7 +269,8 @@ public final class StorageFactory {
         var leaderPinned = setups.entrySet()
                                  .stream()
                                  .filter(entry -> !STREAMS_NAME.equals(entry.getKey()))
-                                 .map(entry -> entry.getValue().garbageCollector())
+                                 .map(entry -> entry.getValue()
+                                                    .garbageCollector())
                                  .toList();
 
         return new StorageGarbageCollector() {
@@ -581,11 +582,12 @@ public final class StorageFactory {
                             ring -> armEncryptedStreamTiers(request.dhtClient(),
                                                             segmentsDir,
                                                             ring,
-                                                            streamDiskMaxBytes(request.diskMaxBytes(), segmentsDir)).flatMap(build -> assembleStreamSetup(build.tiers(),
-                                                                                                       snapshotDir,
-                                                                                                       request.nodeId(),
-                                                                                                       build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
-                                                                                                                                                             build.armedDisk()))));
+                                                            streamDiskMaxBytes(request.diskMaxBytes(),
+                                                                               segmentsDir)).flatMap(build -> assembleStreamSetup(build.tiers(),
+                                                                                                                                  snapshotDir,
+                                                                                                                                  request.nodeId(),
+                                                                                                                                  build.dhtMarkerCheck()).map(setup -> new PendingSetup(setup,
+                                                                                                                                                                                        build.armedDisk()))));
     }
 
     /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
@@ -599,7 +601,10 @@ public final class StorageFactory {
                               String nodeId,
                               Option<EncryptionKeyring> keyring,
                               long diskMaxBytes) {
-        StreamSetupRequest(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId, Option<EncryptionKeyring> keyring) {
+        StreamSetupRequest(Option<DHTClient> dhtClient,
+                           Path streamDataDir,
+                           String nodeId,
+                           Option<EncryptionKeyring> keyring) {
             this(dhtClient, streamDataDir, nodeId, keyring, StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES);
         }
     }
@@ -619,7 +624,7 @@ public final class StorageFactory {
 
     /// Pure derivation, package-visible for its test.
     static long derivedStreamDiskCap(long usableBytes) {
-        var fraction = (long) (usableBytes * STREAM_DISK_FRACTION);
+        var fraction = (long)(usableBytes * STREAM_DISK_FRACTION);
         var ceiling = Math.max(STREAM_DISK_FLOOR_BYTES, usableBytes - STREAM_DISK_HEADROOM_BYTES);
 
         return Math.min(Math.max(fraction, STREAM_DISK_FLOOR_BYTES), ceiling);
@@ -637,11 +642,10 @@ public final class StorageFactory {
     }
 
     private static long derivedStreamDiskCap(Path segmentsDir, Option<Long> usable) {
-        var cap = usable.map(StorageFactory::derivedStreamDiskCap)
-                        .or(STREAM_DISK_FLOOR_BYTES);
+        var cap = usable.map(StorageFactory::derivedStreamDiskCap).or(STREAM_DISK_FLOOR_BYTES);
 
         usable.onPresent(space -> log.info("Streams disk tier cap derived as {} bytes ({} of the {} bytes usable at {}); "
-                                           + "set [streaming] segment_disk_max_bytes to override",
+                                          + "set [streaming] segment_disk_max_bytes to override",
                                            cap,
                                            STREAM_DISK_FRACTION,
                                            space,
@@ -655,16 +659,14 @@ public final class StorageFactory {
 
     private static Option<Long> usableSpace(Path dir) {
         return nearestExisting(dir.toAbsolutePath()).flatMap(existing -> Result.lift(Causes::fromThrowable,
-                                                                                     () -> Files.getFileStore(existing)
-                                                                                                .getUsableSpace())
+                                                                                     () -> Files.getFileStore(existing).getUsableSpace())
                                                                                .option());
     }
 
     private static Option<Path> nearestExisting(Path dir) {
         return Files.exists(dir)
                ? Option.some(dir)
-               : Option.option(dir.getParent())
-                       .flatMap(StorageFactory::nearestExisting);
+               : Option.option(dir.getParent()).flatMap(StorageFactory::nearestExisting);
     }
 
     /// #849: the streams DHT tier goes through [#maybeEncryptDht] like every `<name>-blocks`
@@ -682,18 +684,18 @@ public final class StorageFactory {
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.some(keyring));
 
         return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes).fold(cause -> {
-                                                                                    log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
-                                                                                             cause.message());
+                                                                               log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
+                                                                                        cause.message());
 
-                                                                                    return Result.success(withDht(dhtBuild,
-                                                                                                                  List.of(memoryTier)));
-                                                                                },
-                                                                                disk -> EncryptingStorageTier.armLocalDisk(disk,
-                                                                                                                           segmentsDir,
-                                                                                                                           keyring).map(armed -> withDht(dhtBuild,
-                                                                                                                                                         List.of(memoryTier,
-                                                                                                                                                                 armed.tier()),
-                                                                                                                                                         Option.some(armed))));
+                                                                               return Result.success(withDht(dhtBuild,
+                                                                                                             List.of(memoryTier)));
+                                                                           },
+                                                                           disk -> EncryptingStorageTier.armLocalDisk(disk,
+                                                                                                                      segmentsDir,
+                                                                                                                      keyring).map(armed -> withDht(dhtBuild,
+                                                                                                                                                    List.of(memoryTier,
+                                                                                                                                                            armed.tier()),
+                                                                                                                                                    Option.some(armed))));
     }
 
     private static TierBuild buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir, long diskMaxBytes) {
@@ -701,14 +703,14 @@ public final class StorageFactory {
         var dhtBuild = maybeEncryptDht(STREAMS_NAME, dhtClient, STREAM_SEGMENTS_DHT_PREFIX, Option.empty());
 
         return LocalDiskTier.localDiskTier(segmentsDir, diskMaxBytes).fold(cause -> {
-                                                                                    log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
-                                                                                             cause.message());
+                                                                               log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
+                                                                                        cause.message());
 
-                                                                                    return withDht(dhtBuild,
-                                                                                                   List.of(memoryTier));
-                                                                                },
-                                                                                disk -> withDht(dhtBuild,
-                                                                                                List.of(memoryTier, disk)));
+                                                                               return withDht(dhtBuild,
+                                                                                              List.of(memoryTier));
+                                                                           },
+                                                                           disk -> withDht(dhtBuild,
+                                                                                           List.of(memoryTier, disk)));
     }
 
     private static Result<StorageSetup> assembleStreamSetup(List<StorageTier> tiers,
@@ -728,10 +730,10 @@ public final class StorageFactory {
         var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
-
         // #1604: this node's streams instance is its own -- its collector runs here, never leader-pinned.
         garbageCollector.activate()
-                        .onFailure(cause -> log.warn("Streams garbage collector could not be activated: {}", cause.message()));
+                        .onFailure(cause -> log.warn("Streams garbage collector could not be activated: {}",
+                                                     cause.message()));
 
         return restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate).map(_ -> {
             log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());

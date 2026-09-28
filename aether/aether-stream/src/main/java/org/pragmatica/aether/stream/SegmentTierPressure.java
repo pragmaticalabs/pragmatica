@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.TierLevel;
 
+
 /// How full this node's durable tier for sealed stream segments is (#1604): used / max of the local-disk tier,
 /// `0` when there is none. Sealed segments can land only there, so a full tier stops every seal, the WAL can no
 /// longer be truncated, and the WAL disk fills next. Two thresholds act on it before that:
@@ -18,9 +19,7 @@ import org.pragmatica.storage.TierLevel;
 public interface SegmentTierPressure {
     double WARN_AT = 0.85;
     double REFUSE_AT = 0.95;
-
     SegmentTierPressure NONE = () -> 0.0;
-
     double utilization();
 
     /// The local-disk tier of `storage`, read live: two counters per call, no I/O.

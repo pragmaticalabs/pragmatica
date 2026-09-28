@@ -88,8 +88,9 @@ public final class SegmentIndex {
     /// present with an unknown timestamp is updated; a known one is never overwritten.
     @Contract
     public void recordMaxTimestamp(String streamName, int partition, long startOffset, long maxTimestamp) {
-        option(partitions.get(PartitionKey.partitionKey(streamName, partition)))
-            .onPresent(map -> map.computeIfPresent(startOffset, (_, ref) -> withKnownTimestamp(ref, maxTimestamp)));
+        option(partitions.get(PartitionKey.partitionKey(streamName, partition))).onPresent(map -> map.computeIfPresent(startOffset,
+                                                                                                                       (_, ref) -> withKnownTimestamp(ref,
+                                                                                                                                                      maxTimestamp)));
     }
 
     private static SegmentRef withKnownTimestamp(SegmentRef ref, long maxTimestamp) {

@@ -135,8 +135,7 @@ public final class ConfigValidator {
         }
         // #1604: 0 means "derive from the filesystem"; a negative cap has no meaning.
         if (streaming.segmentDiskMaxBytes() < 0) {
-            errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: "
-                      + streaming.segmentDiskMaxBytes());
+            errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
         }
     }
 

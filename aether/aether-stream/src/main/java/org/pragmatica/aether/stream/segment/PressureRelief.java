@@ -12,6 +12,7 @@ import org.pragmatica.storage.StorageGarbageCollector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// What retention runs under disk pressure after dropping expired refs (#1604): make the drops durable, then
 /// collect the blocks they orphaned at once instead of after the collector's grace period. GC stays the single
 /// delete path; this only lets it collect early what the grace period protects, once that protection holds.
@@ -19,7 +20,6 @@ import org.slf4j.LoggerFactory;
 public interface PressureRelief {
     Logger LOG = LoggerFactory.getLogger(PressureRelief.class);
     PressureRelief NONE = () -> 0;
-
     /// Blocks collected.
     int relieve();
 
@@ -32,7 +32,7 @@ public interface PressureRelief {
 
     private static int collectIn(Result<MetadataSnapshot> durable, StorageGarbageCollector collector) {
         return durable.onFailure(cause -> LOG.warn("Disk pressure: the forced metadata snapshot failed, so nothing is "
-                                                   + "collected early this pass: {}",
+                                                  + "collected early this pass: {}",
                                                    cause.message()))
                       .map(collector::collectOrphansDurableIn)
                       .or(0);

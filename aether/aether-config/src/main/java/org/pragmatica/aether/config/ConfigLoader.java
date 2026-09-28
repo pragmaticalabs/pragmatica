@@ -170,7 +170,6 @@ public final class ConfigLoader {
                                               "streaming",
                                               "caught_up_max_lag_offsets",
                                               defaults.caughtUpMaxLagOffsets());
-
         var segmentDiskMaxBytes = parseDataSize(doc,
                                                 "streaming",
                                                 "segment_disk_max_bytes",
