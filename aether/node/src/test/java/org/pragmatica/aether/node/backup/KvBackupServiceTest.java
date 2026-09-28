@@ -100,6 +100,9 @@ class KvBackupServiceTest {
             put(service, ConfigKey.forKey("a"), value);
             scheduler.runUntilIdle();
             put(service, ConfigKey.forKey("a"), value);
+
+            assertThat(scheduler.pending()).as("a Put that leaves the value unchanged does not even mark the backup dirty")
+                                           .isZero();
             scheduler.runUntilIdle();
 
             assertThat(commitCount(remote)).isEqualTo(2);
@@ -186,6 +189,21 @@ class KvBackupServiceTest {
 
             service.onLeaderChange(leaderChange(false));
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle();
+
+            assertThat(commitCount(remote)).as("only the flush made while still leader")
+                                           .isEqualTo(1);
+        }
+
+        /// A flush already scheduled when leadership is lost must not run: the new leader owns the backup.
+        @Test
+        void aPendingFlush_doesNotRun_afterLeadershipIsLost() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            assertThat(scheduler.pending()).isEqualTo(1);
+            service.onLeaderChange(leaderChange(false));
             scheduler.runUntilIdle();
 
             assertThat(commitCount(remote)).as("only the flush made while still leader")
