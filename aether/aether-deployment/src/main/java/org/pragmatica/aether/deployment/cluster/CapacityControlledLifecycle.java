@@ -343,7 +343,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                              Option.some(new CapacityReservationValue(source.value(),
                                                                                                                       binding,
                                                                                                                       intendedRole.toLowerCase(java.util.Locale.ROOT),
-                                                                                                                      CapacityReservationPhase.DISPATCHED))),
+                                                                                                                      CapacityReservationPhase.DISPATCHED)))),
                                             List.of(configWitness(config))));
     }
 
