@@ -215,6 +215,8 @@ import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
+import org.pragmatica.aether.stream.SegmentTierPressure;
+import org.pragmatica.aether.stream.segment.PressureRelief;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
@@ -841,14 +843,20 @@ public interface AetherNode extends ManageableNode {
     /// stuck members toward effective quorum, so a genuinely partitioned member (FAULTY / UNKNOWN —
     /// no probe-acks reach this node) contributes 0 and the genuine self-fence proceeds, while a
     /// single dead member no longer vetoes suppression for the reachable rest.
-    private static QuorumCoConfirmation buildQuorumCoConfirmation(MembershipFsm membershipFsm,
-                                                                  CoreSwimHealthDetector swimHealthDetector,
-                                                                  Set<NodeId> voters) {
-        var counted = voters;
+    ///
+    /// #1560: both sets are narrowed to the installed voters, but the counted set is NEVER the voter
+    /// set itself. The voter set is health-blind, so counting it re-admitted every peer the FSM had
+    /// already demoted (DEPARTING / DEAD) as a "stuck" member; on an isolated core SWIM still reads
+    /// those peers SUSPECTED (Lifeguard stretches suspicion while every local probe fails), so the
+    /// fence was suppressed with effective quorum 5 of 5 while the node could reach nobody.
+    static QuorumCoConfirmation buildQuorumCoConfirmation(MembershipFsm membershipFsm,
+                                                          Function<NodeId, SwimHealth> swimHealth,
+                                                          Set<NodeId> voters) {
+        var counted = membershipFsm.coreCountedMembers().stream().filter(voters::contains).collect(Collectors.toSet());
         var strict = membershipFsm.strictCoreMembers().stream().filter(voters::contains).collect(Collectors.toSet());
         var stuck = counted.stream().filter(id -> !strict.contains(id)).toList();
-        var swimAliveStuck = stuck.stream().filter(id -> swimAliveForCoConfirmation(swimHealthDetector, id)).toList();
-        var swimDeadStuck = stuck.stream().filter(id -> !swimAliveForCoConfirmation(swimHealthDetector, id)).toList();
+        var swimAliveStuck = stuck.stream().filter(id -> swimAliveForCoConfirmation(swimHealth, id)).toList();
+        var swimDeadStuck = stuck.stream().filter(id -> !swimAliveForCoConfirmation(swimHealth, id)).toList();
 
         return QuorumCoConfirmation.quorumCoConfirmation(strict.size(), counted.size(), swimAliveStuck, swimDeadStuck);
     }
@@ -856,8 +864,8 @@ public interface AetherNode extends ManageableNode {
     /// Raw-SWIM aliveness for the Fix C stuck-member discrimination: a stuck (SUSPECT) member counts
     /// as alive when the SWIM protocol layer reports HEALTHY or SUSPECTED — distinguishing a wedged
     /// promotion (reachable, refuting) from a real partition (FAULTY / UNKNOWN).
-    private static boolean swimAliveForCoConfirmation(CoreSwimHealthDetector swimHealthDetector, NodeId id) {
-        var health = swimHealthDetector.healthOf(id);
+    private static boolean swimAliveForCoConfirmation(Function<NodeId, SwimHealth> swimHealth, NodeId id) {
+        var health = swimHealth.apply(id);
 
         return health == SwimHealth.HEALTHY || health == SwimHealth.SUSPECTED;
     }
@@ -1664,6 +1672,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                  streamDataDir(config),
                                                                                                  config.self().id(),
                                                                                                  streamsKeyring,
+                                                                                                 config.streaming()
+                                                                                                       .segmentDiskMaxBytes(),
                                                                                                  resolveStreamWalDir(config)));
 
         if (storageSetupsResult.isFailure()) {
@@ -4138,7 +4148,7 @@ public interface AetherNode extends ManageableNode {
         // fails both (unreachable members are NOT SWIM-alive and age out of SUSPECT), so the real
         // self-fence is never masked.
         quorumLossDetector.setCoConfirmationSupplier(() -> buildQuorumCoConfirmation(membershipFsm,
-                                                                                     swimHealthDetector,
+                                                                                     swimHealthDetector::healthOf,
                                                                                      installedVoterIds(clusterNode)));
         // A6: gate the quorum-loss self-drain with the SAME cold-boot window the SWIM FAULTY-suppression
         // uses. On a simultaneous full-cluster restart SWIM's first probe-acks lag the QUIC attach, so the
@@ -4652,12 +4662,20 @@ public interface AetherNode extends ManageableNode {
         // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
         var streamSegmentReader = SegmentReader.segmentReader(streamStorage, streamSegmentIndex);
+        // #1604: the durable segment tier's pressure -- retention warns at 85%, owner publishes are refused at 95%.
+        var streamSegmentTierPressure = SegmentTierPressure.localDiskOf(streamStorage);
+
+        streamPartitionManager.segmentTierPressure(streamSegmentTierPressure);
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
                                                                           DEFAULT_STREAM_RETENTION_MS,
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
-                                                                                                                      partition));
+                                                                                                                      partition),
+                                                                          streamSegmentReader,
+                                                                          streamSegmentTierPressure,
+                                                                          PressureRelief.snapshotBounded(streamStorageSetup.snapshotManager(),
+                                                                                                         streamStorageSetup.garbageCollector()));
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
@@ -5169,6 +5187,13 @@ public interface AetherNode extends ManageableNode {
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  bootstrapAdminKeyRegistrar::onLeaderChange));
+        // #1529 part 1: the leader mints the cluster lineage/incarnation at genesis if absent. Same
+        // self-healing, leader-armed shape as the bootstrap admin key; a restored value is left alone.
+        var clusterIncarnationRegistrar = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
+                                                                                                                                         clusterCommandApplier));
+
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 clusterIncarnationRegistrar::onLeaderChange));
         // Publish-side mirror: same forward client + HRW owner resolver the read router uses, so a
         // management publish landing on a metadata-only node write-forwards to the owner (#265) instead
         // of failing PARTITION_NOT_LOCAL on a local append.
@@ -6105,7 +6130,7 @@ public interface AetherNode extends ManageableNode {
 
     private static boolean swimAliveIfPublished(CoreSwimHealthDetector swimHealthDetector, NodeId nodeId) {
         return Option.option(swimHealthDetector)
-                     .map(detector -> swimAliveForCoConfirmation(detector, nodeId))
+                     .map(detector -> swimAliveForCoConfirmation(detector::healthOf, nodeId))
                      .or(false);
     }
 
