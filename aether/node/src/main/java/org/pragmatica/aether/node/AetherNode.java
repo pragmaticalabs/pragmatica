@@ -1522,23 +1522,23 @@ public interface AetherNode extends ManageableNode {
     /// pulled. Offsets a side no longer holds are not compared: the local read starts at the ring's tail, and a
     /// peer that answers "expired" contributes nothing.
     private static Promise<List<OffHeapRingBuffer.RawEvent>> readOwnerRange(NodeId self,
-                                                                          StreamPartitionManager manager,
-                                                                          StreamForwardClient forwardClient,
-                                                                          NodeId node,
-                                                                          String streamName,
-                                                                          int partition,
-                                                                          long from,
-                                                                          long to) {
+                                                                            StreamPartitionManager manager,
+                                                                            StreamForwardClient forwardClient,
+                                                                            NodeId node,
+                                                                            String streamName,
+                                                                            int partition,
+                                                                            long from,
+                                                                            long to) {
         return node.equals(self)
                ? readLocalRange(manager, streamName, partition, from, to)
                : readPeerRange(forwardClient, node, streamName, partition, from, to);
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> readLocalRange(StreamPartitionManager manager,
-                                                                          String streamName,
-                                                                          int partition,
-                                                                          long from,
-                                                                          long to) {
+                                                                            String streamName,
+                                                                            int partition,
+                                                                            long from,
+                                                                            long to) {
         var start = Math.max(from,
                              manager.partitionInfo(streamName, partition)
                                     .map(StreamPartitionManager.PartitionInfo::tailOffset)
@@ -1546,18 +1546,21 @@ public interface AetherNode extends ManageableNode {
 
         return start > to
                ? Promise.success(List.of())
-               : manager.readAppended(streamName, partition, start, (int) (to - start + 1))
+               : manager.readAppended(streamName,
+                                      partition,
+                                      start,
+                                      (int)(to - start + 1))
                         .async();
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> readPeerRange(StreamForwardClient forwardClient,
-                                                                         NodeId target,
-                                                                         String streamName,
-                                                                         int partition,
-                                                                         long from,
-                                                                         long to) {
+                                                                           NodeId target,
+                                                                           String streamName,
+                                                                           int partition,
+                                                                           long from,
+                                                                           long to) {
         return pagePeerRange(forwardClient, target, streamName, partition, from, to, List.of()).fold(result -> result.fold(AetherNode::nothingWhenExpired,
-                                                                                                                              Promise::success));
+                                                                                                                           Promise::success));
     }
 
     /// A peer whose ring and tier no longer hold the start of the range answers `CursorExpired`, which travels
@@ -1570,12 +1573,12 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> pagePeerRange(StreamForwardClient forwardClient,
-                                                                         NodeId target,
-                                                                         String streamName,
-                                                                         int partition,
-                                                                         long cursor,
-                                                                         long to,
-                                                                         List<OffHeapRingBuffer.RawEvent> gathered) {
+                                                                           NodeId target,
+                                                                           String streamName,
+                                                                           int partition,
+                                                                           long cursor,
+                                                                           long to,
+                                                                           List<OffHeapRingBuffer.RawEvent> gathered) {
         return forwardClient.readRemoteCatchup(target,
                                                streamName,
                                                partition,
@@ -1591,22 +1594,31 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> continuePeerRange(StreamForwardClient forwardClient,
-                                                                             NodeId target,
-                                                                             String streamName,
-                                                                             int partition,
-                                                                             long to,
-                                                                             List<OffHeapRingBuffer.RawEvent> gathered,
-                                                                             StreamForwardClient.ReadForwardResult result) {
+                                                                               NodeId target,
+                                                                               String streamName,
+                                                                               int partition,
+                                                                               long to,
+                                                                               List<OffHeapRingBuffer.RawEvent> gathered,
+                                                                               StreamForwardClient.ReadForwardResult result) {
         var page = result.events()
                          .stream()
                          .filter(event -> event.offset() <= to)
-                         .map(event -> OffHeapRingBuffer.RawEvent.rawEvent(event.offset(), event.data(), event.timestamp()))
+                         .map(event -> OffHeapRingBuffer.RawEvent.rawEvent(event.offset(),
+                                                                           event.data(),
+                                                                           event.timestamp()))
                          .toList();
         var all = Stream.concat(gathered.stream(), page.stream()).toList();
 
-        return page.isEmpty() || page.getLast().offset() >= to
+        return page.isEmpty() || page.getLast()
+                                     .offset() >= to
                ? Promise.success(all)
-               : pagePeerRange(forwardClient, target, streamName, partition, page.getLast().offset() + 1, to, all);
+               : pagePeerRange(forwardClient,
+                               target,
+                               streamName,
+                               partition,
+                               page.getLast().offset() + 1,
+                               to,
+                               all);
     }
 
     /// The remote read failure travels as its message only ([StreamForwardError.ReadForwardFailed]), so the

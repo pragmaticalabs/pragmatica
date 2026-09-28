@@ -277,7 +277,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
     /// a replica. Default: [#ADMIT_ALL]. Volatile: set once at wiring, read on every owner-path append.
     private volatile OwnerWriteAdmission ownerWriteAdmission = ADMIT_ALL;
-
     /// Owner promotion gate (#1555), consulted by every application append (after the committed-owner
     /// admission) and by owner-role reads ([#readServing], [#mayServeAsOwner]). Default: [#ADMIT_OWNER].
     /// Volatile: set once at wiring.

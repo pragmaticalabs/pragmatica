@@ -230,8 +230,7 @@ public final class StreamReadRouter {
                                   partitionManager.nextExpectedOffset(streamName, partition),
                                   partitionManager.earliestRetainedOffset(streamName, partition),
                                   replicas,
-                                  partitionManager.ownerActivationBlock(streamName, partition)
-                                                  .map(Cause::message));
+                                  partitionManager.ownerActivationBlock(streamName, partition).map(Cause::message));
     }
 
     private static ReplicaView toReplicaView(ReplicaDescriptor descriptor,

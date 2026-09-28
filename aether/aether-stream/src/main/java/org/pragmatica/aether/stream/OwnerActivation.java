@@ -148,7 +148,6 @@ public final class OwnerActivation {
     /// refusing, and the block is readable on [#blockOf] until an activation succeeds or ownership leaves this node.
     public sealed interface ActivationBlock extends Cause {
         String streamName();
-
         int partition();
 
         /// `peer` holds, at an offset both hold, a record different from the local one: one of the two is a
@@ -157,8 +156,12 @@ public final class OwnerActivation {
             @Override
             public String message() {
                 return ("Owner promotion of %s[%d] refused: %s disagrees with the local log where both hold records "
-                        + "(local head %d, peer head %d); one of them is a divergent tail and the partition waits "
-                        + "for an operator to pick the source").formatted(streamName, partition, peer, localHead, peerHead);
+                       + "(local head %d, peer head %d); one of them is a divergent tail and the partition waits "
+                       + "for an operator to pick the source").formatted(streamName,
+                                                                         partition,
+                                                                         peer,
+                                                                         localHead,
+                                                                         peerHead);
             }
         }
 
@@ -172,8 +175,8 @@ public final class OwnerActivation {
             @Override
             public String message() {
                 return ("Owner promotion of %s[%d] blocked for longer than %s: %s did not answer the watermark probe "
-                        + "and may hold acknowledged records (responders: %s); the partition waits for them or for "
-                        + "an operator").formatted(streamName, partition, blockedLongerThan, unreachable, responders);
+                       + "and may hold acknowledged records (responders: %s); the partition waits for them or for "
+                       + "an operator").formatted(streamName, partition, blockedLongerThan, unreachable, responders);
             }
         }
     }
@@ -201,10 +204,8 @@ public final class OwnerActivation {
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
 
     private final Set<PartitionKey> inFlight = ConcurrentHashMap.newKeySet();
-
     /// The block currently reported for each partition; the alarm fires when it first appears or changes.
     private final Map<PartitionKey, ActivationBlock> blocks = new ConcurrentHashMap<>();
-
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
 
@@ -403,7 +404,8 @@ public final class OwnerActivation {
                                              int partition,
                                              List<NodeId> peers,
                                              List<Result<PeerWatermark>> results) {
-        var answered = results.stream().flatMap(result -> result.option().stream()).toList();
+        var answered = results.stream().flatMap(result -> result.option()
+                                                                .stream()).toList();
 
         return answered.size() < peers.size()
                ? holdersUnreachable(stream, partition, peers, answered)
@@ -425,7 +427,9 @@ public final class OwnerActivation {
             report(key,
                    new ActivationBlock.HoldersUnreachable(stream,
                                                           partition,
-                                                          peers.stream().filter(peer -> !responders.contains(peer)).toList(),
+                                                          peers.stream()
+                                                               .filter(peer -> !responders.contains(peer))
+                                                               .toList(),
                                                           responders,
                                                           unreachableAlarmAfter));
         }
@@ -435,14 +439,17 @@ public final class OwnerActivation {
 
     private Promise<Unit> catchUpFromHighest(String stream, int partition, List<PeerWatermark> answered) {
         clearUnreachable(PartitionKey.partitionKey(stream, partition));
-
         var local = selfWatermark.localWatermark(stream, partition);
         var source = Option.from(answered.stream()
                                          .filter(peer -> peer.watermark() > local)
                                          .max(Comparator.comparingLong(PeerWatermark::watermark)));
-        var others = answered.stream().filter(peer -> source.filter(peer::equals).isEmpty()).toList();
+        var others = answered.stream().filter(peer -> source.filter(peer::equals)
+                                                            .isEmpty()).toList();
 
-        return verifyAgreement(stream, partition, local, others).flatMap(_ -> catchUpFrom(stream, partition, local, source));
+        return verifyAgreement(stream, partition, local, others).flatMap(_ -> catchUpFrom(stream,
+                                                                                          partition,
+                                                                                          local,
+                                                                                          source));
     }
 
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
@@ -458,9 +465,7 @@ public final class OwnerActivation {
     /// Every responder that is not the catch-up source must agree with the local log where both hold records:
     /// a lower (or equal) peer that disagrees means the local tail, or the peer's, belongs to another lineage.
     private Promise<Unit> verifyAgreement(String stream, int partition, long local, List<PeerWatermark> others) {
-        return Promise.allOf(others.stream()
-                                   .map(peer -> verifyOverlap(stream, partition, local, peer))
-                                   .toList())
+        return Promise.allOf(others.stream().map(peer -> verifyOverlap(stream, partition, local, peer)).toList())
                       .flatMap(results -> Result.allOf(results).async())
                       .mapToUnit();
     }
@@ -486,7 +491,11 @@ public final class OwnerActivation {
         var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
 
         return Promise.all(ranges.read(self, stream, partition, from, to),
-                           ranges.read(peer.node(), stream, partition, from, to))
+                           ranges.read(peer.node(),
+                                       stream,
+                                       partition,
+                                       from,
+                                       to))
                       .flatMap((mine, theirs) -> agreeOrRefuse(stream, partition, local, peer, mine, theirs));
     }
 
@@ -498,7 +507,11 @@ public final class OwnerActivation {
                                         List<OffHeapRingBuffer.RawEvent> theirs) {
         return agree(mine, theirs)
                ? Promise.success(Unit.unit())
-               : refuseDivergent(new ActivationBlock.DivergentPeer(stream, partition, peer.node(), local, peer.watermark()));
+               : refuseDivergent(new ActivationBlock.DivergentPeer(stream,
+                                                                   partition,
+                                                                   peer.node(),
+                                                                   local,
+                                                                   peer.watermark()));
     }
 
     /// Two ranges agree when every offset present in both holds the same record there.
@@ -513,7 +526,8 @@ public final class OwnerActivation {
 
     /// Logged by the alarm, once; every refused demand re-detects it silently.
     private Promise<Unit> refuseDivergent(ActivationBlock.DivergentPeer block) {
-        report(PartitionKey.partitionKey(block.streamName(), block.partition()), block);
+        report(PartitionKey.partitionKey(block.streamName(), block.partition()),
+               block);
 
         return block.promise();
     }
