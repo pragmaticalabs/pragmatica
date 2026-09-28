@@ -35,8 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// installs another manifest. The restore increments the cluster incarnation, and the manifest carries
 /// it: a newer incarnation resets the worker's revision latch.
 ///
-/// The lagging-core refusal within ONE incarnation is `WorkerMetadataChannelTest.laggingCoreRefusesWorkersInstalledRevision`;
-/// the arm below pins that a manifest from an OLDER incarnation is refused however high its revision.
+/// The lagging-core refusal within ONE incarnation is `WorkerMetadataChannelTest.laggingCoreRefusesWorkersInstalledRevision`
+/// on the SERVER side; that refusal masks the worker's own latch, so the same-incarnation arm below strips the
+/// worker's minimum from the request to reach it. The other arm pins that a manifest from an OLDER incarnation
+/// is refused however high its revision.
 class WorkerMetadataColdRestartTest {
     private static final NodeId CORE = new NodeId("core");
     private static final NodeId WORKER = new NodeId("worker");
@@ -99,6 +101,43 @@ class WorkerMetadataColdRestartTest {
 
         assertThat(configValue()).as("a core still serving the previous incarnation cannot overwrite the current one")
                                  .isEqualTo("current-run");
+    }
+
+    /// Only a newer incarnation resets the latch (v1635's M3): within the installed incarnation a manifest at a
+    /// lower revision is still behind the worker. The lagging core is shown the request WITHOUT the worker's
+    /// minimum revision, so it answers with a real manifest instead of `core-behind-worker`.
+    @Test
+    void survivingWorker_refusesALowerRevisionWithinTheSameIncarnation() {
+        var current = new Core(1L);
+
+        current.seed(5, "installed");
+        exchange(current);
+        assertThat(configValue()).isEqualTo("installed");
+
+        var lagging = new Core(1L);
+
+        lagging.seed(2, "lagging");
+        exchangeWithoutMinimum(lagging);
+
+        assertThat(configValue()).as("a lower revision of the same incarnation cannot overwrite the installed projection")
+                                 .isEqualTo("installed");
+    }
+
+    private void exchangeWithoutMinimum(Core core) {
+        for (var round = 0; round < 3; round++) {
+            client.tick();
+            var sent = List.copyOf(requests);
+
+            requests.clear();
+            sent.stream().map(WorkerMetadataColdRestartTest::withoutMinimum).forEach(requests::add);
+            pump(core);
+        }
+    }
+
+    private static ProtocolMessage withoutMinimum(ProtocolMessage request) {
+        return request instanceof WorkerMetadataMessage.ManifestRequest manifest
+               ? new WorkerMetadataMessage.ManifestRequest(manifest.sender(), manifest.requestId(), 0L, manifest.knownIncarnation())
+               : request;
     }
 
     private String configValue() {
