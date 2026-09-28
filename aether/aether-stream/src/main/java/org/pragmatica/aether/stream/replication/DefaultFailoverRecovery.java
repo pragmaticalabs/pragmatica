@@ -8,9 +8,13 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.stream.replication.FailoverRecovery.RecoveryResult.recoveryResult;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
@@ -24,6 +28,8 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 /// the run completes instead of when the next live batch's barrier happens to cover them. A failed
 /// barrier fails the run: the events landed in RAM but were never made durable or visible here.
 final class DefaultFailoverRecovery implements FailoverRecovery {
+    private static final Logger log = LoggerFactory.getLogger(DefaultFailoverRecovery.class);
+
     private final ReplicaRegistry registry;
     private final AlignedRecovery partitionRecovery;
     private final CatchupTransport transport;
@@ -90,7 +96,20 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
                                                    response.fromOffset(),
                                                    response.toOffset(),
                                                    response.history())
-                                .flatMap(_ -> applyPayloads(streamName, partition, response));
+                                .flatMap(_ -> applyPayloads(streamName, partition, response))
+                                .onFailure(_ -> trimAfterFailedApply(streamName, partition));
+    }
+
+    /// #1638 B1: a page whose apply failed after its provenance was installed leaves entries above the head; they are
+    /// dropped so the retry installs cleanly. Recovery: FER -- a trim that fails is logged, and the next open trims
+    /// (trim at open) whatever it left.
+    @Contract
+    private void trimAfterFailedApply(String streamName, int partition) {
+        partitionRecovery.trimProvenance(streamName, partition)
+                         .onFailure(cause -> log.warn("Stream {}[{}]: trimming provenance after a failed apply failed: {}",
+                                                      streamName,
+                                                      partition,
+                                                      cause.message()));
     }
 
     /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded.

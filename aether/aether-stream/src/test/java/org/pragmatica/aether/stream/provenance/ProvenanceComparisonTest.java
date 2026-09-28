@@ -109,6 +109,19 @@ class ProvenanceComparisonTest {
             assertThat(ProvenanceComparison.firstDivergence(a, otherDecision, 0, 20)).isEqualTo(Option.some(10L));
         }
 
+        /// #1638 N1 (v1638 probe4): a synthetic entry without its `d` names no decision, so two of them are UNDEFINED and
+        /// never equal -- not `Unknown("")` twice.
+        @Test
+        void syntheticEntriesWithoutD_neverCompareEqual() {
+            var x = new ProvenanceEntry(ProvenanceEntry.ProvenanceKind.UNATTRIBUTED, E1, Option.none(), 0);
+            var y = new ProvenanceEntry(ProvenanceEntry.ProvenanceKind.UNKNOWN, E1, Option.none(), 0);
+            var z = new ProvenanceEntry(ProvenanceEntry.ProvenanceKind.UNATTRIBUTED, E1, Option.some(""), 0);
+
+            assertThat(ProvenanceComparison.diverge(copy(0, 9, x), copy(0, 9, y))).isTrue();
+            assertThat(ProvenanceComparison.diverge(copy(0, 9, x), copy(0, 9, x))).isTrue();
+            assertThat(ProvenanceComparison.diverge(copy(0, 9, z), copy(0, 9, z))).isTrue();
+        }
+
         @Test
         void copyHoldingNothing_neverDiverges() {
             var empty = copy(0, -1);

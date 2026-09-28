@@ -36,6 +36,7 @@ class PartitionProvenanceRecordingTest {
     private static final int PARTITION = 0;
     private static final Epoch E1 = Epoch.epoch(1, 0);
     private static final Epoch E2 = Epoch.epoch(2, 0);
+    private static final Epoch E3 = Epoch.epoch(3, 0);
     private static final byte[] PAYLOAD = "e".getBytes(UTF_8);
 
     @TempDir
@@ -126,6 +127,77 @@ class PartitionProvenanceRecordingTest {
 
     @Nested
     class CatchUpInstall {
+        /// #1638 B1 (v1638 probe3): re-installing entries this log already holds -- not only its last one -- is a no-op,
+        /// not a refusal. Red under "no skip of held entries".
+        @Test
+        void reinstallingHeldEntries_isIdempotent() {
+            live(0, E1);
+            live(1, E2);
+            live(2, E3);
+
+            install(1, 2, at(E1, 0), at(E2, 1), at(E3, 2)).onFailure(cause -> fail("identical histories: " + cause.message()));
+
+            assertThat(history()).containsExactly(at(E1, 0), at(E2, 1), at(E3, 2));
+        }
+
+        /// #1638 B1 (v1638 probe6): a page whose apply failed after its install left entries above the head; trimming
+        /// drops them, and the retry of the same page installs and applies cleanly.
+        @Test
+        void failedApply_trimmed_thenTheRetryInstallsCleanly() {
+            live(0, E1);
+            live(1, E1);
+            live(2, E1);
+            var slice = new ProvenanceEntry[]{at(E1, 0), at(E2, 4), at(E3, 6)};
+
+            install(3, 9, slice).onFailure(cause -> fail(cause.message()));
+            manager.trimProvenanceAboveHead(STREAM, PARTITION).onFailure(cause -> fail(cause.message()));
+            assertThat(history()).as("nothing above the head survives the failed apply").containsExactly(at(E1, 0));
+
+            install(3, 9, slice).onFailure(cause -> fail("the retry: " + cause.message()));
+            for (var offset = 3; offset <= 9; offset++) {
+                caughtUp(offset);
+            }
+
+            assertThat(history()).containsExactly(slice);
+        }
+
+        /// #1638 S3: N13 compares over every offset this copy HOLDS up to the page's end, not only below `from` -- a
+        /// re-verifying pull starts below the head. Here the copy holds e1 records 0..4, the pull starts at 3, and the
+        /// source says e2 began at 4: refused at 4. Red under "N13 narrowed to the spec's `[0, from - 1]`" (which would
+        /// record e2@4 over e1 records).
+        @Test
+        void mismatchInTheWidenedOverlap_isRefused() {
+            for (var offset = 0; offset < 5; offset++) {
+                live(offset, E1);
+            }
+
+            install(3, 8, at(E1, 0), at(E2, 4)).onSuccess(_ -> fail("a divergence at a held offset above `from` must refuse"))
+                                               .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ProvenanceMismatch(STREAM,
+                                                                                                                                  PARTITION,
+                                                                                                                                  4)));
+            assertThat(history()).containsExactly(at(E1, 0));
+        }
+
+        /// #1638 S1 (v1638 probe1/probe2): an entry above the head -- a crash between its durable record and its first
+        /// frame, or an install whose apply never happened -- is dropped when the partition is reopened, so the copy is
+        /// never ranked by an epoch it holds no record of. Red under "no trim at open".
+        @Test
+        void ghostEntryAboveTheHead_isTrimmedAtOpen() {
+            live(0, E1);
+            live(1, E1);
+            live(2, E1);
+            install(3, 9, at(E1, 0), at(E3, 6)).onFailure(cause -> fail(cause.message()));
+            assertThat(history()).as("the ghost is on the volume").containsExactly(at(E1, 0), at(E3, 6));
+
+            manager.close();
+            manager = open();
+
+            var local = manager.localProvenance(STREAM, PARTITION).unwrap().unwrap();
+
+            assertThat(local.head()).isEqualTo(2L);
+            assertThat(local.history()).as("trimmed at open").containsExactly(at(E1, 0));
+        }
+
         /// N13 holds (the replica's own prefix matches the slice): the slice's entries past the replica's head are
         /// recorded. Red under "skip the install".
         @Test

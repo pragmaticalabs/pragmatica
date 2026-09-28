@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.forward;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +20,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
+import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
@@ -28,6 +30,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -121,9 +124,46 @@ class CatchUpProvenanceTest {
         assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("nothing of the page landed").isEqualTo(2L);
     }
 
+    /// #1638 B1 through the real backfill: the page's apply fails at offset 3 (the first e2 record) after its slice was
+    /// installed. The backfill trims what no record reaches -- e2@3 above head 2 -- and the retry catches up to the
+    /// owner's history. Red under "no trim on a failed apply".
+    @Test
+    void failedApply_isTrimmed_andTheRetryCatchesUp() {
+        publish(E1, 3);
+        publish(E2, 3);
+        var failAt3Once = new AtomicBoolean(true);
+
+        backfill(failingOnceAt(3, failAt3Once)).backfill(STREAM, PARTITION)
+                                               .await()
+                                               .onSuccess(_ -> fail("the apply was injected to fail at offset 3"));
+
+        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(3L);
+        assertThat(replica.epochHistory(STREAM, PARTITION).unwrap()).as("e2@3 trimmed: no record reaches it")
+                                                                    .containsExactly(at(E1, 0));
+
+        backfill().backfill(STREAM, PARTITION).await().onFailure(cause -> fail("the retry: " + cause.message()));
+
+        assertThat(replica.epochHistory(STREAM, PARTITION).unwrap()).isEqualTo(owner.epochHistory(STREAM, PARTITION).unwrap());
+    }
+
+    private AlignedRecovery failingOnceAt(long offset, AtomicBoolean armed) {
+        var real = replica.alignedRecovery();
+
+        return AlignedRecovery.alignedRecovery((stream, partition, at, payload, timestamp) -> at == offset && armed.getAndSet(false)
+                                                                                           ? Causes.cause("injected apply failure").<Long> result()
+                                                                                           : real.appendRecovered(stream, partition, at, payload, timestamp),
+                                               real::installProvenance,
+                                               real::installUnattributed,
+                                               real::trimProvenance);
+    }
+
     private PartitionBackfill backfill() {
+        return backfill(replica.alignedRecovery());
+    }
+
+    private PartitionBackfill backfill(AlignedRecovery recovery) {
         return partitionBackfill(registry,
-                                 replica.alignedRecovery(),
+                                 recovery,
                                  forwardCatchupTransport(client, 100),
                                  ReplicationTransport.NOOP,
                                  (_, _, _) -> Promise.success(owner.nextExpectedOffset(STREAM, PARTITION) - 1),

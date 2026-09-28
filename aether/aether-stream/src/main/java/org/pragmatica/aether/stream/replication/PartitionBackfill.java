@@ -884,7 +884,20 @@ public final class PartitionBackfill {
                                                             partition,
                                                             response.fromOffset(),
                                                             payloads,
-                                                            timestamps));
+                                                            timestamps))
+                                .onFailure(_ -> trimAfterFailedApply(streamName, partition));
+    }
+
+    /// #1638 B1: a page whose apply failed after its provenance was installed leaves entries above the head; they are
+    /// dropped so the retry installs cleanly. Recovery: FER -- a trim that fails is logged, and the next open trims
+    /// (trim at open) whatever it left.
+    @Contract
+    private void trimAfterFailedApply(String streamName, int partition) {
+        partitionRecovery.trimProvenance(streamName, partition)
+                         .onFailure(cause -> log.warn("Stream {}[{}]: trimming provenance after a failed apply failed: {}",
+                                                      streamName,
+                                                      partition,
+                                                      cause.message()));
     }
 
     /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded ([#applyEvents]).

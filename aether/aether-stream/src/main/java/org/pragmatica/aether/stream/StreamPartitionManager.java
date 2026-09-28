@@ -2548,8 +2548,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// this copy on the partition flag ([PartitionFlags]), which survives a restart and blocks the partition
     /// cluster-wide until operator resolution (AD14).
     ///
-    /// Then every slice entry starting at or after `fromOffset` is recorded, in order; one already recorded is a
-    /// no-op. A partition that keeps no log records no provenance, and this is a no-op for it.
+    /// Then every slice entry starting in `[fromOffset, toOffset]` that this log does not already hold is recorded, in
+    /// order; one it already holds (same key, same start) is skipped, so a re-install is idempotent. If the page's
+    /// apply then fails, the caller trims what no record reaches ([#trimProvenanceAboveHead]). A partition that keeps
+    /// no log records no provenance, and this is a no-op for it.
     public Result<Unit> installProvenance(String streamName,
                                           int partition,
                                           long fromOffset,
@@ -2598,17 +2600,43 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new StreamError.ProvenanceMismatch(streamName, partition, offset).result();
     }
 
+    /// Records, in order, the slice entries in `[fromOffset, toOffset]` this log does not already hold (#1638 B1): an
+    /// entry already present -- same key, same start -- is skipped, so re-installing a page (a retry after a failed
+    /// apply, an overlapping pull) is idempotent. The first refusal stops the install.
     private static Result<Unit> recordSlice(AppendLog wal,
                                             long fromOffset,
                                             long toOffset,
                                             List<ProvenanceEntry> slice) {
-        return Result.allOf(slice.stream()
-                                 .filter(entry -> entry.startOffset() >= fromOffset && entry.startOffset() <= toOffset)
-                                 .map(entry -> entry.key()
-                                                    .flatMap(key -> wal.recordEpochStart(key,
-                                                                                         entry.startOffset(),
-                                                                                         ProvenanceEntry.ORDER)))
-                                 .toList()).mapToUnit();
+        var held = wal.epochHistory();
+
+        return slice.stream()
+                    .filter(entry -> entry.startOffset() >= fromOffset && entry.startOffset() <= toOffset)
+                    .reduce(Result.unitResult(),
+                            (recorded, entry) -> recorded.flatMap(_ -> recordUnlessHeld(wal, held, entry)),
+                            (left, right) -> left.flatMap(_ -> right));
+    }
+
+    private static Result<Unit> recordUnlessHeld(AppendLog wal,
+                                                 List<AppendLog.EpochStart> held,
+                                                 ProvenanceEntry entry) {
+        return entry.key()
+                    .flatMap(key -> held.contains(new AppendLog.EpochStart(key,
+                                                                           entry.startOffset()))
+                                    ? Result.unitResult()
+                                    : wal.recordEpochStart(key,
+                                                           entry.startOffset(),
+                                                           ProvenanceEntry.ORDER));
+    }
+
+    /// Drops the provenance entries no held record reaches (#1638 B1): a catch-up records the source's slice BEFORE
+    /// applying the page -- an entry must be durable before the first record of its epoch -- so an apply that then
+    /// fails (fence, gap, I/O) leaves entries above the head, which would make every retry of the page refused and
+    /// rank this copy by an epoch it never received. Called by every catch-up apply on failure. A partition that keeps
+    /// no log has nothing to trim.
+    public Result<Unit> trimProvenanceAboveHead(String streamName, int partition) {
+        return walFor(streamName, partition).map(wal -> wal.truncateEpochsAboveHead(nextExpectedOffset(streamName,
+                                                                                                       partition) - 1))
+                     .or(Result::unitResult);
     }
 
     /// The seam every catch-up apply lands through (#1505, #1596): records are appended unattributed and fenced with
@@ -2622,7 +2650,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                      ownerEpochSource.currentOwnerEpoch(streamName,
                                                                                                                                                         partition)),
                                                this::installProvenance,
-                                               this::installUnattributed);
+                                               this::installUnattributed,
+                                               this::trimProvenanceAboveHead);
     }
 
     /// Records about to be applied up to `toOffset` carry no provenance (#1596: a sealed segment without a slice).
@@ -4165,8 +4194,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                      Option<AppendLog> wal,
                                                      LastSealedOffsetSource lastSealedOffset) {
             return wal.onPresent(ring::attachWal)
-                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
+                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset).flatMap(_ -> trimAtOpen(w,
+                                                                                                                     ring)))
                       .or(() -> success(unit()));
+        }
+
+        /// #1638 S1, trim at open: once the ring holds the recovered head, drop every provenance entry above it -- one a
+        /// crash left between its durable record and the first frame of its epoch, or a catch-up whose apply did not
+        /// happen. Such a ghost would rank this copy by an epoch it holds no record of (`LogProvenance.SOURCE_ORDER`),
+        /// and a promotion that picked it would lose the acked records above its head.
+        private static Result<Unit> trimAtOpen(AppendLog wal, OffHeapRingBuffer ring) {
+            return wal.truncateEpochsAboveHead(ring.headOffset());
         }
 
         /// Place the WAL's un-sealed tail (records above the durable last-sealed offset `base`) at its

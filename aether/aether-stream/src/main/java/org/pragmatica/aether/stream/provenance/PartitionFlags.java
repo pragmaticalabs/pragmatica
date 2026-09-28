@@ -184,8 +184,9 @@ final class KvPartitionFlags implements PartitionFlags {
                                   PartitionRecoveryReason reason) {
         var flag = flag(raised);
 
-        log.error("STREAM_PARTITION_FLAGGED {}[{}]: {} ({}). The partition has no owner and serves no reads until an operator "
-                 + "resolves it (pick-source or accept-loss); record digest {}, reasons {}",
+        log.error("STREAM_PARTITION_FLAGGED {}[{}]: {} ({}). Flagged; enforcement (no owner, no reads until an operator "
+                 + "resolves it by pick-source or accept-loss) arrives with the promotion gate (#1596 gate, S6); record "
+                 + "digest {}, reasons {}",
                   key.stream(),
                   key.partition(),
                   reason.kind(),

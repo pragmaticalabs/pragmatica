@@ -40,6 +40,9 @@ public interface AlignedRecovery {
     /// without a slice, #1596): mark what lies past this copy's head as `UNKNOWN(d)`, which equals no other copy's
     /// range, so a comparison over it fails closed.
     Result<Unit> installUnattributed(String streamName, int partition, long toOffset);
+    /// A page's apply failed after its provenance was installed (#1638 B1): drop the entries no held record reaches, so
+    /// the retry installs cleanly and the copy is never ranked by an epoch it did not receive.
+    Result<Unit> trimProvenance(String streamName, int partition);
 
     @FunctionalInterface
     interface Appender {
@@ -60,7 +63,15 @@ public interface AlignedRecovery {
         Result<Unit> installUnattributed(String streamName, int partition, long toOffset);
     }
 
-    static AlignedRecovery alignedRecovery(Appender appender, Installer installer, UnattributedInstaller unattributed) {
+    @FunctionalInterface
+    interface Trimmer {
+        Result<Unit> trimProvenance(String streamName, int partition);
+    }
+
+    static AlignedRecovery alignedRecovery(Appender appender,
+                                           Installer installer,
+                                           UnattributedInstaller unattributed,
+                                           Trimmer trimmer) {
         return new AlignedRecovery() {
             @Override
             public Result<Long> appendRecovered(String streamName,
@@ -84,12 +95,20 @@ public interface AlignedRecovery {
             public Result<Unit> installUnattributed(String streamName, int partition, long toOffset) {
                 return unattributed.installUnattributed(streamName, partition, toOffset);
             }
+
+            @Override
+            public Result<Unit> trimProvenance(String streamName, int partition) {
+                return trimmer.trimProvenance(streamName, partition);
+            }
         };
     }
 
     /// A seam that installs NO provenance, for appliers whose partitions keep no log and so record none (test
     /// doubles). Never production: a catch-up through it leaves the applied records unattributed.
     static AlignedRecovery appendOnly(Appender appender) {
-        return alignedRecovery(appender, (_, _, _, _, _) -> Result.unitResult(), (_, _, _) -> Result.unitResult());
+        return alignedRecovery(appender,
+                               (_, _, _, _, _) -> Result.unitResult(),
+                               (_, _, _) -> Result.unitResult(),
+                               (_, _) -> Result.unitResult());
     }
 }

@@ -12,6 +12,7 @@ import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentIndex.SegmentRef;
 import org.pragmatica.aether.stream.segment.SegmentReader;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -170,7 +171,20 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
                                                                                                             first,
                                                                                                             last,
                                                                                                             slice).async())
-                            .flatMap(_ -> applyEvents(streamName, partition, events).async());
+                            .flatMap(_ -> applyEvents(streamName, partition, events).async())
+                            .onFailure(_ -> trimAfterFailedApply(streamName, partition));
+    }
+
+    /// #1638 B1: a page whose apply failed after its provenance was installed leaves entries above the head; they are
+    /// dropped so the retry installs cleanly. Recovery: FER -- a trim that fails is logged, and the next open trims
+    /// (trim at open) whatever it left.
+    @Contract
+    private void trimAfterFailedApply(String streamName, int partition) {
+        partitionRecovery.trimProvenance(streamName, partition)
+                         .onFailure(cause -> log.warn("Stream {}[{}]: trimming provenance after a failed apply failed: {}",
+                                                      streamName,
+                                                      partition,
+                                                      cause.message()));
     }
 
     /// The slice of the segment holding `offset`, decoded; none when no segment holds it, when the segment carries

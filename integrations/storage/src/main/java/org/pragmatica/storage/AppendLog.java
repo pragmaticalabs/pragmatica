@@ -348,6 +348,22 @@ public final class AppendLog implements AutoCloseable {
         return epochs.truncateAbove(offset);
     }
 
+    /// Drop every epoch entry that no written record reaches (#1596): an entry is recorded durably BEFORE the first
+    /// frame of its epoch, so a crash between the two, or a caller whose appends after recording did not happen,
+    /// leaves an entry starting above the head. `knownHead` is the caller's head of the log's data -- a log whose
+    /// sealed prefix was truncated away reopens with no records while the data continues in sealed blocks -- and
+    /// the bound is the larger of it and the last written offset, read under the write lock, so an entry a
+    /// concurrent attributed write has just used is never dropped. With neither known (`-1`), nothing is dropped.
+    public Result<Unit> truncateEpochsAboveHead(long knownHead) {
+        synchronized (writeLock) {
+            var head = Math.max(knownHead, lastOffset);
+
+            return head < 0
+                   ? Result.unitResult()
+                   : epochs.truncateAbove(head);
+        }
+    }
+
     /// Delete the log's files -- the log, its epoch history and any stale temp -- after [#close], when the
     /// log itself is being discarded (a deleted stream). Best effort per file; the first failure is returned.
     public Result<Unit> deleteFiles() {

@@ -29,6 +29,12 @@ import static org.pragmatica.lang.Option.some;
 ///
 /// Non-divergent implies prefix: each epoch has one writer and each offset is written once, so equal
 /// provenance means equal payload `[unverified: no two owners share an epoch -- #1230, #1529; #1625]`.
+///
+/// `[unverified: #1648 -- the same owner can re-write an offset under the SAME epoch.]` The owner replicates an append
+/// before its own fsync, and the ownership writer keeps the epoch when the HRW owner is unchanged, so after a fast
+/// restart that loses the owner's unfsynced tail the owner writes that offset again, with different content, under the
+/// same epoch. A replica that already holds the first write compares prov-equal: a false CONSISTENT this rule cannot
+/// see. Pre-existing; the likely fix is that an owner restart mints a new epoch.
 public sealed interface ProvenanceComparison {
     /// Why a lone copy cannot be compared at all (§7.5.3 reasons).
     enum Incompleteness {
@@ -126,9 +132,17 @@ public sealed interface ProvenanceComparison {
     private static boolean equal(OffsetProvenance left, OffsetProvenance right) {
         return switch (left) {
             case OffsetProvenance.None none -> right instanceof OffsetProvenance.None other && none.base() == other.base();
-            case OffsetProvenance.Owned owned -> right instanceof OffsetProvenance.Owned other && owned.entry().epoch().equals(other.entry().epoch());
+            case OffsetProvenance.Owned owned -> right instanceof OffsetProvenance.Owned other && sameDecision(owned.entry(),
+                                                                                                               other.entry());
             case OffsetProvenance.Undefined _ -> false;
         };
+    }
+
+    private static boolean sameDecision(ProvenanceEntry left, ProvenanceEntry right) {
+        return left.identified()
+               && right.identified()
+               && left.epoch()
+                      .equals(right.epoch());
     }
 
     /// The provenance of one offset of one copy.

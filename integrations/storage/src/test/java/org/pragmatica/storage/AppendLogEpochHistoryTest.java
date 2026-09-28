@@ -245,6 +245,40 @@ class AppendLogEpochHistoryTest {
         assertThat(AppendLog.inspect(file()).unwrap().headOffset()).as("no frame was written").isEqualTo(-1L);
     }
 
+    /// #1638 S1 (v1638 probe2): a crash between an entry's durable record and the first frame of its epoch leaves the
+    /// entry above the head. Trimming at the head drops it, bounded by the larger of the caller's head and the last
+    /// written offset, and does nothing when neither is known.
+    @Test
+    void truncateEpochsAboveHead_dropsEntriesNoRecordReaches() {
+        var wal = AppendLog.open(file()).unwrap();
+
+        wal.write(0, "a".getBytes(StandardCharsets.UTF_8), 1L, key(1), NUMERIC).onFailure(c -> fail(c.message()));
+        wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(2), 5, NUMERIC).onFailure(c -> fail("the crash left this entry: " + c.message()));
+        wal.recordEpochStart(key(3), 9, NUMERIC).onFailure(c -> fail(c.message()));
+
+        wal.truncateEpochsAboveHead(6).onFailure(c -> fail(c.message()));
+        assertThat(wal.epochHistory()).as("a caller head above the last write keeps what it reaches")
+                                      .containsExactly(start(1, 0), start(2, 5));
+
+        wal.truncateEpochsAboveHead(-1).onFailure(c -> fail(c.message()));
+        assertThat(wal.epochHistory()).as("bounded by the last written offset, 1").containsExactly(start(1, 0));
+        wal.close();
+
+        assertThat(AppendLog.readEpochHistory(file()).unwrap()).as("durably").containsExactly(start(1, 0));
+    }
+
+    @Test
+    void truncateEpochsAboveHead_withNoHeadKnown_dropsNothing() {
+        var wal = AppendLog.open(file()).unwrap();
+
+        wal.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
+        wal.truncateEpochsAboveHead(-1).onFailure(c -> fail(c.message()));
+
+        assertThat(wal.epochHistory()).containsExactly(start(1, 0));
+        wal.close();
+    }
+
     private static AppendLog.EpochKey key(long epoch) {
         return key(Long.toString(epoch));
     }

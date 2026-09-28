@@ -145,6 +145,26 @@ class SegmentReplayProvenanceTest {
                           .containsExactly(PartitionRecoveryReasonKind.MARKED_DIVERGED);
     }
 
+    /// #1638 S3/V4: a replay across two segments sealed at different times takes the slice of the segment holding the
+    /// LAST replayed record -- the later seal, which covers every record read. The first segment's slice (sealed before
+    /// e2 began) would leave e2's records attributed to e1. Red under "replay takes the first segment's slice".
+    @Test
+    void replayAcrossSegmentsSealedAtDifferentTimes_takesTheLastSegmentsSlice() {
+        var log = AppendLog.open(ownerWal.resolve("owner.wal")).unwrap();
+
+        log.recordEpochStart(at(E1, 0).key().unwrap(), 0, ProvenanceEntry.ORDER).onFailure(cause -> fail(cause.message()));
+        sink.seal(segment(0, 4), Option.some(log)).await().onFailure(cause -> fail(cause.message()));
+        log.recordEpochStart(at(E2, 5).key().unwrap(), 5, ProvenanceEntry.ORDER).onFailure(cause -> fail(cause.message()));
+        sink.seal(segment(5, 9), Option.some(log)).await().onFailure(cause -> fail(cause.message()));
+        log.close();
+
+        replay();
+
+        assertThat(node.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(10L);
+        assertThat(node.localProvenance(STREAM, PARTITION).unwrap().unwrap().history()).containsExactly(at(E1, 0), at(E2, 5));
+        assertThat(raised).isEmpty();
+    }
+
     private void holdE1ThenE2() {
         LongStream.range(0, 5).forEach(offset -> live(offset, E1));
         LongStream.range(5, 10).forEach(offset -> live(offset, E2));
@@ -172,6 +192,17 @@ class SegmentReplayProvenanceTest {
         governorFailoverHandler(replicaRegistry(), node.alignedRecovery(), node::syncReplicated)
             .handleFailover(STREAM, PARTITION, watermarkTracker(), index, reader)
             .await();
+    }
+
+    private static SealedSegment segment(long start, long end) {
+        var count = (int) (end - start + 1);
+        var buffer = ByteBuffer.allocate(count * (Long.BYTES + Long.BYTES + Integer.BYTES + 3)).order(ByteOrder.BIG_ENDIAN);
+
+        for (var offset = start; offset <= end; offset++) {
+            buffer.putLong(offset).putLong(1L).putInt(3).put(String.format("s%02d", offset).getBytes());
+        }
+
+        return SealedSegment.sealedSegment(STREAM, PARTITION, start, end, count, 1L, 1L, buffer.array());
     }
 
     private static SealedSegment segment() {
