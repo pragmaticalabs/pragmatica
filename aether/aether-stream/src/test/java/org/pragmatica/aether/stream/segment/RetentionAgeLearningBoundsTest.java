@@ -118,7 +118,8 @@ class RetentionAgeLearningBoundsTest {
     }
 
     /// #1616 R2d: a pass frees its slot BEFORE resuming the callers waiting on it, so a waiter that immediately
-    /// asks for another pass gets a new one rather than the result of the pass that just ended.
+    /// asks for another pass gets a new one rather than the result of the pass that just ended. The waiter here
+    /// is a JOINER: it holds the pass's own promise, whose continuations run as it resolves.
     @Test
     void aWaitersImmediateCall_startsANewPass() {
         var tier = new CountingTier();
@@ -132,11 +133,14 @@ class RetentionAgeLearningBoundsTest {
                                                            () -> 0.9,
                                                            passes::incrementAndGet);
 
-        enforcer.enforceNow()
-                .flatMap(_ -> enforcer.enforceNow())
-                .await();
+        var first = enforcer.enforceNow();
+        var joined = enforcer.enforceNow();
 
-        assertThat(passes.get()).isEqualTo(2);
+        joined.flatMap(_ -> enforcer.enforceNow())
+              .await();
+        first.await();
+
+        assertThat(passes.get()).as("the joiner's follow-up call ran a pass of its own").isEqualTo(2);
     }
 
     private static Setup restartedWith(CountingTier tier, int segments) {
