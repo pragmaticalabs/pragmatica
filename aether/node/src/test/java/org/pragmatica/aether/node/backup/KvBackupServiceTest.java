@@ -433,12 +433,12 @@ class KvBackupServiceTest {
 
             assertThat(warnings).as("the new episode starts its own bound")
                                 .extracting(BackupWarning::code)
-                                .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_RECOVERED);
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_HEAD_REPLACED);
 
             scheduler.advance(KvBackupService.Timing.DEFAULT_HEAD_AHEAD_WARN_MILLIS + 2 * TIMING.maxRetryMillis());
 
             assertThat(warnings).extracting(BackupWarning::code)
-                                .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_RECOVERED, Code.BACKUP_HEAD_AHEAD);
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_HEAD_REPLACED, Code.BACKUP_HEAD_AHEAD);
         }
 
         /// Hazard (d), pinned as it is (v1621's probe): under the interim old persistence path a cold restart
@@ -467,6 +467,11 @@ class KvBackupServiceTest {
             assertThat(remoteDocument(remote).entries()).doesNotContainKey(ConfigKey.forKey("seed"))
                                                         .containsKey(ConfigKey.forKey("after-overtake"));
             assertThat(commitCount(remote)).as("the replaced head is still in history").isGreaterThan(1);
+            // Not an all-clear: the replacement of a newer head is its own WARN, naming what was replaced.
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_HEAD_REPLACED);
+            assertThat(warnings.getLast()
+                               .detail()).contains("REPLACED", "revision 5000", "git history");
         }
     }
 

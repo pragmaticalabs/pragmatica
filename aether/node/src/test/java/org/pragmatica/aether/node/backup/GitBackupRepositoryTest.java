@@ -6,14 +6,19 @@ package org.pragmatica.aether.node.backup;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Map;
 
 import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+
+import com.sun.net.httpserver.HttpServer;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -174,6 +179,47 @@ class GitBackupRepositoryTest {
 
         assertThat(fetched.isFailure()).isTrue();
         assertThat(elapsedMillis).as("bounded by the 2s timeout").isLessThan(15_000);
+    }
+
+    /// The https side: a remote that demands credentials must fail with git's "terminal prompts disabled",
+    /// never wait on a credential prompt. The server answers every request 401; git's own global and system
+    /// config (a credential helper) and any askpass are neutralised so the prompt guard is the only thing
+    /// that can answer.
+    @Test
+    @Timeout(60)
+    void anHttpsRemoteDemandingCredentials_failsWithoutPrompting() throws IOException {
+        var server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+
+        server.createContext("/", exchange -> {
+            exchange.getResponseHeaders()
+                    .add("WWW-Authenticate", "Basic realm=\"backup\"");
+            exchange.sendResponseHeaders(401, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"),
+                                                                     Option.some("http://127.0.0.1:" + server.getAddress()
+                                                                                                             .getPort()
+                                                                                 + "/backup.git"),
+                                                                     "backup",
+                                                                     TimeSpan.timeSpan(20).seconds(),
+                                                                     Map.of("GIT_ASKPASS",
+                                                                            "",
+                                                                            "SSH_ASKPASS",
+                                                                            "",
+                                                                            "GIT_CONFIG_GLOBAL",
+                                                                            "/dev/null",
+                                                                            "GIT_CONFIG_NOSYSTEM",
+                                                                            "1"));
+
+            repository.prepare();
+            var fetched = repository.fetchRemoteHead();
+
+            assertThat(fetched.fold(Cause::message, _ -> "fetched")).contains("terminal prompts disabled");
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test

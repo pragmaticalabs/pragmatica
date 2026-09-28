@@ -29,6 +29,9 @@ public record BackupWarning(Code code, String detail) {
         BACKUP_COMMIT_FAILED,
         /// A failing or gated backup is current again.
         BACKUP_RECOVERED,
+        /// A head that stayed ahead of this cluster's state was replaced once this cluster's revision passed
+        /// it (hazard d). The replaced commit stays in git history. Never an all-clear.
+        BACKUP_HEAD_REPLACED,
         /// #1533: the cold-restart restore cannot read the backup (unreachable, undecodable); cluster-state
         /// writes stay refused until it can, or until a restart with `[backup] restore = "fresh"`.
         BACKUP_RESTORE_BLOCKED,

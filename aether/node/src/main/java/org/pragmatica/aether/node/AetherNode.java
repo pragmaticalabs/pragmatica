@@ -2061,15 +2061,17 @@ public interface AetherNode extends ManageableNode {
                 // it ever gain a failure path, every stop below — management server, app HTTP, slice
                 // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
                 // that point rather than leaving the node half-stopped.
-                return clusterDeploymentManager.deactivate()
-                                               .flatMap(_ -> managementServer.map(ManagementServer::stop)
-                                                                             .or(Promise.unitPromise()))
-                                               .flatMap(_ -> appHttpServer.stop())
-                                               .flatMap(_ -> sliceInvoker.stop())
-                                               .map(_ -> shutdownStorage())
-                                               .flatMap(_ -> clusterNode.stop())
-                                               .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                        self()));
+                //
+                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
+                // skipped past rather than ending the shutdown.
+                return NodeStopSequence.run(NodeStopSequence.Steps.steps(clusterDeploymentManager::deactivate,
+                                                                         () -> managementServer.map(ManagementServer::stop)
+                                                                                               .or(Promise.unitPromise()),
+                                                                         appHttpServer::stop,
+                                                                         sliceInvoker::stop,
+                                                                         this::shutdownStorage,
+                                                                         clusterNode::stop)).onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                                                                     self()));
             }
 
             /// #1078: the three node-owned storage instances (`content`, `artifacts`, `streams`)

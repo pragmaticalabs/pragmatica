@@ -87,6 +87,8 @@ public final class KvBackupService {
     // Owned by the worker thread only.
     private Option<String> lastWrittenBody = Option.none();
     private boolean pendingPush;
+    // The newer head the current head-ahead episode is waiting behind; worker thread only.
+    private Option<BackupHeader> aheadHead = Option.none();
 
     /// One-shot scheduling seam. Production passes a single-threaded executor — every flush runs on it,
     /// which is what makes the worker-owned fields safe; tests pass a manual scheduler.
@@ -636,12 +638,14 @@ public final class KvBackupService {
     /// the previous leader's last flush racing this leader's apply lag — and resolves by itself, so the pass
     /// re-runs on backoff and stays quiet. A head still ahead after [Timing#headAheadWarnMillis] is warned
     /// once per episode; the episode ends when this cluster's state passes the head, and a later one warns
-    /// again.
+    /// again. `[unverified: a false-positive BACKUP_HEAD_AHEAD WARN needs >30 s apply lag in a newly elected
+    /// leader; election catch-up criterion not checked]`
     @Contract
     private void onHeadAhead(Outcome outcome) {
         var now = clock.getAsLong();
         // Re-read the head on the next pass: an unchanged body must not short-circuit past it.
         lastWrittenBody = Option.none();
+        aheadHead = outcome.head();
         headAheadSince.compareAndSet(-1, now);
         if (now - headAheadSince.get() >= timing.headAheadWarnMillis()) {
             enter(Status.HEAD_AHEAD, headAheadDetail(outcome, (now - headAheadSince.get()) / 1000));
@@ -698,9 +702,22 @@ public final class KvBackupService {
         retryDelay.set(timing.initialRetryMillis());
         var previous = status.getAndSet(Status.CURRENT);
 
-        if (previous != Status.CURRENT) {
+        if (previous == Status.HEAD_AHEAD) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_HEAD_REPLACED, headReplacedDetail()));
+        } else if (previous != Status.CURRENT) {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED, "the KV backup is current again"));
         }
+    }
+
+    /// A warned head-ahead episode ends only by this cluster's state overtaking the head and being written
+    /// OVER it — hazard (d): the newer head is replaced, not merely delayed. That is never an all-clear.
+    private String headReplacedDetail() {
+        return "this cluster's state has REPLACED the newer backup head (incarnation " + aheadHead.map(BackupHeader::incarnation)
+                                                                                                  .or(0L)
+             + ", revision " + aheadHead.map(BackupHeader::revision)
+                                        .or(0L)
+             + ") it had been waiting behind; git history retains the replaced commit. If this cluster was"
+             + " restored from an older snapshot, the replaced head holds newer state — see #1533";
     }
 
     @Contract
