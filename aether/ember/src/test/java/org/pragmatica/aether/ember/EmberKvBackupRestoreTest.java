@@ -24,8 +24,10 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
@@ -105,6 +107,14 @@ class EmberKvBackupRestoreTest {
         assertThat(applyProbe(cluster.allNodes()
                                      .getFirst())).as("still refused while the backup cannot be read")
                                                   .isInstanceOf(RestoreGate.RestorePending.class);
+        // Runtime state is never held hostage by the restore: the DHT core partition is owned while
+        // cluster-state writes are still refused (the config seed is submitted apart from it).
+        awaitTrue("the DHT core partition is owned while the restore is blocked",
+                  () -> cluster.allNodes()
+                               .stream()
+                               .allMatch(node -> node.kvStore()
+                                                     .get(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core"))
+                                                     .isPresent()));
 
         git(temp, "init", "--quiet", "--bare", remote.toString());
 
@@ -113,6 +123,13 @@ class EmberKvBackupRestoreTest {
             assertThat(applyProbe(node)).as("the same write after the decision, on %s", node.self())
                                         .isNull();
         }
+        // The seed the gate refused is re-driven by the decision's commit, not left to a later event.
+        awaitTrue("the cluster config is seeded after the decision",
+                  () -> cluster.allNodes()
+                               .stream()
+                               .allMatch(node -> node.kvStore()
+                                                     .get(ClusterConfigKey.CURRENT)
+                                                     .isPresent()));
         awaitTrue("genesis minted after the decision",
                   () -> cluster.allNodes()
                                .stream()
