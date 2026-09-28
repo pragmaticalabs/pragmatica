@@ -30,19 +30,13 @@ that threat model requires signed producer envelopes and is outside this change.
 
 `MetricObservation` contains `incarnation`, monotonic producer `sequence`, original UTC
 `observedAtMs`, and an immutable metric-value map. The ping map key or pong sender identifies the
-producer. Forwarders preserve the complete envelope unchanged. A receiver accepts a version only
-if its incarnation is newer or its sequence is greater within the same incarnation. Membership
-removal retires the retained producer watermark and history. Worker identities are not reused.
-Producer incarnation is a durable per-node process counter, allocated before metrics startup from
-`producer-incarnation.bin` under the node's configured/default control directory. Allocation locks
-the counter, validates the retained value, increments it, forces a temporary file, atomically renames
-it and forces the directory before use. Persistence failure or exhaustion refuses startup. Retain
-this directory across restarts; loss requires a fresh node identity. UTC clock rollback cannot lower
-the counter. Metric replay ordering and governor membership evidence use this durable process
-counter; metrics also carry a per-process sequence. Direct pongs carry this same process epoch
-for health evidence. SWIM retains its separate boot/refutation incarnation only inside SWIM;
-wall-clock regression there cannot regress the process epoch accepted by the health index.
-This is a #1390 requirement, not a property of rc4's wall-clock-derived startup incarnation.
+producer. Forwarders preserve the complete envelope unchanged. `incarnation` is the producer's
+per-process random boot token, compared by EQUALITY only: a receiver accepts a sample from a
+different token (a new process) regardless of sequence, and within one token only a greater
+sequence. Membership removal retires the retained producer watermark and history. Worker identities
+are not reused. The token is drawn once per process and never persisted; direct pongs and governor
+health evidence carry the same token, and SWIM carries it alongside its separate refutation
+incarnation (owner ruling, session 28, replacing #1390's durable producer counter).
 
 Both raw and typed ingestion require the producer to be known and eligible in authoritative
 membership. This predicate defaults to deny until assembly wires it. Current views and relay

@@ -6,23 +6,24 @@
 # slice loader resolves @ResourceQualifier(config = "streams.multipart-events")
 # lookups (see @EventStreamPublisher / @EventStreamReader) against it.
 #
-# Multi-partition, RF=2 / synchronously-replicated config for the #429 multi-partition
+# Multi-partition, RF=3 / synchronously-replicated config for the #429 multi-partition
 # e2e fixture and the #430 publish-under-reshuffle chaos test:
 #   - partitions        = 4  -> four independent logs; keyless app publishes round-robin
 #     across them (DefaultStreamPublisher#resolvePartition), so a single publisher instance
 #     spreads events over all four partitions and HRW places their owners across the cluster.
-#   - replicas          = 2  -> replication factor (RF): copies incl owner (owner + 1 replica),
+#   - replicas          = 3  -> replication factor (RF): copies incl owner (owner + 2 replicas),
 #     so every partition has a promotable CAUGHT_UP non-owner replica for owner-kill failover.
-#   - min-sync-replicas = 2  -> owner + 1 in-sync per write: each publish AWAITs a replica
-#     ack before it returns, so an ACKED write is on >=2 nodes and survives loss of one owner
-#     (synchronous replication). This is the durability guarantee #430 asserts.
+#     3 is the stream replication minimum (#1547); a value below it is refused as a binding at publish.
+#   - min-sync-replicas = 2  -> DECLARED: owner + 1 in-sync peer per write, the durability #430 means
+#     to assert. Until #1549 this key does not reach the runtime (the provisioning binder reads
+#     min_sync_replicas and defaults to 0), so every publish actually acks on the owner alone.
 #   - retention  = count     -> count-based eviction (never time-based) so a slow consumer is
 #     never evicted mid-test; retention-value is far larger than any test event count, so
 #     nothing is ever dropped (no spurious CursorExpired).
 
 [streams.multipart-events]
 partitions = 4
-replicas = 2
+replicas = 3
 min-sync-replicas = 2
 retention = "count"
 retention-value = "100000"

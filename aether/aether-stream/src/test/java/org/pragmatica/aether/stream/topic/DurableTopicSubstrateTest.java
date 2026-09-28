@@ -50,7 +50,7 @@ class DurableTopicSubstrateTest {
 
     @Test
     void activateTopic_createsTopicAndDlqStreams_inOneStep() {
-        substrate.activateTopic(ADDRESS, spec(2, 2, "7d")).onFailure(cause -> fail(cause.message()));
+        substrate.activateTopic(ADDRESS, spec(2, 3, "7d")).onFailure(cause -> fail(cause.message()));
         assertThat(manager.partitionBuffer("topic:" + ADDRESS, 0).isPresent()).isTrue();
         assertThat(manager.partitionBuffer("topic:" + ADDRESS, 1).isPresent()).isTrue();
         assertThat(manager.partitionBuffer("topic:" + ADDRESS + ".dlq", 0).isPresent()).isTrue();
@@ -58,9 +58,9 @@ class DurableTopicSubstrateTest {
 
     @Test
     void activateTopic_isIdempotent_secondActivationSucceeds() {
-        substrate.activateTopic(ADDRESS, spec(1, 2, "7d")).onFailure(cause -> fail(cause.message()));
+        substrate.activateTopic(ADDRESS, spec(1, 3, "7d")).onFailure(cause -> fail(cause.message()));
         substrate.activateTopic(ADDRESS,
-                                spec(1, 2, "7d"))
+                                spec(1, 3, "7d"))
                  .onFailure(cause -> fail("repeat activation must succeed: " + cause.message()));
     }
 

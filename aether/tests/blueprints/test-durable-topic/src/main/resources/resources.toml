@@ -11,12 +11,12 @@
 # every durable assertion vacuously green. DurableTopicDeliveryForgeTest therefore asserts the
 # topic came up durable rather than trusting this file.
 #
-# Both topics are `partitions = 1, replicas = 2, min_sync_replicas = 2`, and each number is load
+# Every topic is `partitions = 1, replicas = 3, min_sync_replicas = 3`, and each number is load
 # bearing:
 #
-#   - `replicas = 2` + `min_sync_replicas = 2` is the durable tier's only proven scoping
-#     (durable-pubsub-spec §3: a durable declaration outside `min-sync == replicas >= 2` is rejected
-#     at parse). It is also what makes the owner-kill arm mean anything: at RF=1 the ack never
+#   - `replicas = 3` + `min_sync_replicas = 3` is the durable tier's only accepted scoping
+#     (durable-pubsub-spec §3: a durable declaration outside `min-sync == replicas >= 3` is rejected
+#     at parse; 3 is the stream replication minimum, #1547). It is also what makes the owner-kill arm mean anything: at RF=1 the ack never
 #     depended on a second copy, so surviving a kill would prove nothing.
 #   - `partitions = 1` makes two separate assertions sharp. Delivery: with the slice deployed on
 #     every node and exactly one partition, a correctly gated consumer delivers each event ONCE
@@ -30,8 +30,8 @@
 topic_name = "order-events"
 durability = "durable"
 partitions = 1
-replicas = 2
-min_sync_replicas = 2
+replicas = 3
+min_sync_replicas = 3
 retention = "7d"
 
 # The dead-letter path. TWO subscriber methods bind to this ONE topic, which makes them two distinct
@@ -43,8 +43,8 @@ retention = "7d"
 topic_name = "poison-events"
 durability = "durable"
 partitions = 1
-replicas = 2
-min_sync_replicas = 2
+replicas = 3
+min_sync_replicas = 3
 retention = "7d"
 
 # #1333: the projection arm. ONE partition, so the projection's in-process store has exactly one
@@ -55,6 +55,6 @@ retention = "7d"
 topic_name = "projection-events"
 durability = "durable"
 partitions = 1
-replicas = 2
-min_sync_replicas = 2
+replicas = 3
+min_sync_replicas = 3
 retention = "7d"

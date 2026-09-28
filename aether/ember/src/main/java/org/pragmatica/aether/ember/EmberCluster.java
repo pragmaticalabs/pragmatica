@@ -121,13 +121,12 @@ public final class EmberCluster {
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
+    /// Slot each node last ran on, retained after the node is killed — lets [#relaunchNode] start a
+    /// new process at the SAME address as the killed one.
+    private final Map<String, Integer> lastSlotByNodeId = new ConcurrentHashMap<>();
     private final int initialClusterSize;
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
-
-    private final Path consensusBase = Path.of(System.getProperty("java.io.tmpdir"),
-                                               "aether-ember-" + java.util.UUID.randomUUID());
-
     private final int basePort;
     private final int baseMgmtPort;
     private final int baseAppHttpPort;
@@ -420,9 +419,10 @@ public final class EmberCluster {
         dataBaseDir.set(Option.option(baseDir));
     }
 
-    /// Enable production consensus persistence in pre-created per-node directories before the first start.
-    /// The caller provisions <baseDir>/<nodeId> for initial and future nodes, as production provisioning does.
-    /// The participation marker remains durable; this never reasserts newness on restart.
+    /// Enable the git-backed `[backup]` consensus snapshot in pre-created per-node directories before the
+    /// first start. Consensus itself runs in memory (owner ruling, session 28); the backup is what a
+    /// whole-cluster restart restores from. The caller provisions <baseDir>/<nodeId> for initial and
+    /// future nodes. The participation marker remains durable; this never reasserts newness on restart.
     @Contract
     public Unit withConsensusBaseDir(Path baseDir) {
         consensusBaseDir.set(Option.some(baseDir));
@@ -657,6 +657,7 @@ public final class EmberCluster {
             instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, Map.of()));
             nodeInfos.put(nodeId.id(), info);
             slotsByNodeId.put(nodeId.id(), slot);
+            lastSlotByNodeId.put(nodeId.id(), slot);
         }
 
         nodeCounter.set(initialClusterSize);
@@ -1045,12 +1046,35 @@ public final class EmberCluster {
                       node.id());
     }
 
+    /// TEST SEAM (#1528) — start a NEW process under the NodeId of a node this harness killed, as an
+    /// operator restarting a container would. Under terminal removal the running cluster must refuse
+    /// it: the new process carries a fresh boot token. `sameAddress` reuses the killed node's slot
+    /// (same ports); otherwise the next free slot is taken. Harness-scoped; production never calls this.
+    public Promise<NodeId> relaunchNode(String nodeIdStr, boolean sameAddress) {
+        var nodeId = nodeId(nodeIdStr).unwrap();
+        // A force-kill's slot returns to the pool only when the killed node's stop completes, which a
+        // hard kill does not wait for; the same-address relaunch takes the slot back directly.
+        var slot = Option.option(lastSlotByNodeId.get(nodeIdStr))
+                         .filter(_ -> sameAddress)
+                         .onPresent(availableSlots::remove);
+
+        if (sameAddress && slot.isEmpty()) {
+            return EnvironmentError.operationNotSupported("No recorded slot for node: " + nodeIdStr).promise();
+        }
+
+        return addProvisionedNode(nodeId, Map.of(NodeInfo.LABEL_ROLE, "core"), slot);
+    }
+
     private Promise<NodeId> addProvisionedNode(NodeId nodeId, Map<String, String> labels) {
+        return addProvisionedNode(nodeId, labels, Option.none());
+    }
+
+    private Promise<NodeId> addProvisionedNode(NodeId nodeId, Map<String, String> labels, Option<Integer> chosenSlot) {
         if (nodes.containsKey(nodeId.id())) {
             return EnvironmentError.operationNotSupported("Node identity already exists: " + nodeId.id()).promise();
         }
 
-        var slotOpt = Option.option(availableSlots.poll());
+        var slotOpt = chosenSlot.orElse(() -> Option.option(availableSlots.poll()));
 
         if (slotOpt.isEmpty()) {
             log.warn("Slot pool exhausted — no available ports for new node");
@@ -1068,6 +1092,7 @@ public final class EmberCluster {
 
         log.info("Adding new node {} on port {} labels={}", nodeId.id(), port, labels);
         slotsByNodeId.put(nodeId.id(), slot);
+        lastSlotByNodeId.put(nodeId.id(), slot);
         nodeInfos.put(nodeId.id(), info);
         var allNodes = new ArrayList<>(nodeInfos.values());
         var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, false);
@@ -1425,17 +1450,15 @@ public final class EmberCluster {
         }
     }
 
-    /// Genesis identity and consensus storage survive all in-process restarts of this cluster.
+    /// Genesis identity survives all in-process restarts of this cluster. Consensus state is
+    /// in-memory (owner ruling, session 28), so no consensus storage path is injected.
     private ConfigurationProvider nodeConfiguration(NodeId nodeId) {
         var genesis = java.util.stream.IntStream.rangeClosed(1, initialClusterSize)
                                                 .mapToObj(index -> nodeIdPrefix + "-" + index)
                                                 .collect(java.util.stream.Collectors.joining(","));
-        var directory = dataBaseDir.get().or(consensusBase).resolve(nodeId.id()).resolve("consensus");
         var builder = ConfigurationProvider.builder().withSource(new org.pragmatica.config.source.MapConfigSource("ember-node-consensus",
                                                                                                                   Map.of("cluster.genesis_voters",
-                                                                                                                         genesis,
-                                                                                                                         "cluster.consensus_path",
-                                                                                                                         directory.toString()),
+                                                                                                                         genesis),
                                                                                                                   Integer.MAX_VALUE));
 
         configProvider.onPresent(builder::withSource);

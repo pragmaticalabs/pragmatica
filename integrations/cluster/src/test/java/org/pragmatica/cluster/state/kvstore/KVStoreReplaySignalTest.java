@@ -115,16 +115,13 @@ class KVStoreReplaySignalTest {
             .containsExactly(new ReplayKey("drop"));
     }
     @Test
-    void walRecoveryIsSilentAndCommittedRevisionSurvivesSnapshotTransfer() {
+    void committedRevisionSurvivesSnapshotTransfer() {
         var router = MessageRouter.mutable();
         var store = newStore(router);
         var observed = new ArrayList<String>();
         router.addRoute(ValuePut.class, (ValuePut<ReplayKey, String> put) -> observed.add(put.cause().value()));
         store.processCommitted(store.createBatch(List.of(new Put<>(new ReplayKey("live"), "one"))), 7);
         assertThat(store.committedRevision()).isEqualTo(7);
-        assertThat(observed).containsExactly("one");
-        assertThat(store.recoverCommitted(store.createBatch(List.of(new Put<>(new ReplayKey("recovered"), "two"))), 8).isSuccess()).isTrue();
-        assertThat(store.committedRevision()).isEqualTo(8);
         assertThat(observed).containsExactly("one");
         var snapshot = store.makeSnapshot().unwrap();
         var receiving = newStore(MessageRouter.mutable());

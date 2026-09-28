@@ -241,7 +241,7 @@ class AetherNodeContentStorageWarnBootTest {
                                 .tls(Option.none())
                                 .quicTls(TlsConfig.selfSignedMutual())
                                 .certificateProvider(Option.none())
-                                .configProvider(Option.some(HermeticStorage.withControlStorageIn(storageRoot, configProvider)))
+                                .configProvider(Option.some(configProvider))
                                 .environment(environment)
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, storageEncryption.isPresent()))

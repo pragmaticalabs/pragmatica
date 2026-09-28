@@ -41,6 +41,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
@@ -102,7 +103,7 @@ class SealedHistoryRecoveryTest {
                                                                              Option.none(),
                                                                              index::lastSealedOffset);
             substrate = substrate(partitionManager, sealer);
-            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
             appendRecords(substrate);
             awaitAllSealed(sealer);
         }
@@ -166,7 +167,7 @@ class SealedHistoryRecoveryTest {
             var partitionManager = sealingManager(sealer);
             var substrate = substrate(partitionManager, sealer);
 
-            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
             appendRecords(substrate);
             var done = new AtomicBoolean(false);
             var earliestBefore = partitionManager.earliestRetainedOffset(STREAM, PARTITION);
@@ -205,7 +206,7 @@ class SealedHistoryRecoveryTest {
             var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index));
             var substrate = substrate(sealingManager(sealer), sealer);
 
-            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
             appendRecords(substrate);
             awaitAllSealed(sealer);
             reclaimPrefix();
@@ -225,7 +226,7 @@ class SealedHistoryRecoveryTest {
             var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index));
             var substrate = substrate(sealingManager(sealer), sealer);
 
-            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
             appendRecords(substrate);
             awaitAllSealed(sealer);
             var fold = EntityFold.entityFold(KEYSPACE, withCheckpoint(substrate, reclaimPrefix()));
@@ -248,7 +249,7 @@ class SealedHistoryRecoveryTest {
                                                                                     index::lastSealedOffset),
                                       EvictionListener.NOOP);
 
-            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
             appendRecords(substrate);
             var ringEarliest = substrate.earliestRetainedOffset(KEYSPACE, PARTITION);
 
@@ -372,7 +373,7 @@ class SealedHistoryRecoveryTest {
                                                                                 Option.none(),
                                                                                 index::lastSealedOffset),
                                   sealer);
-            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
             appendRecords(substrate);
         }
 
@@ -433,7 +434,7 @@ class SealedHistoryRecoveryTest {
                                                                              Option.none(),
                                                                              index::lastSealedOffset);
             substrate = substrate(partitionManager, EvictionListener.NOOP);
-            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            substrate.ensureLog(KEYSPACE, 1, 3, 1).unwrap();
             appendRecords(substrate);
             ringEarliest = partitionManager.earliestRetainedOffset(STREAM, PARTITION);
         }
@@ -643,13 +644,13 @@ class SealedHistoryRecoveryTest {
         }
 
         @Override
-        public synchronized Promise<Unit> seal(SealedSegment segment) {
+        public synchronized Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
             var promise = Promise.<Unit> promise();
 
             if (open) {
-                sealOffThread(new HeldSeal(segment, promise));
+                sealOffThread(new HeldSeal(segment, log, promise));
             } else {
-                held.add(new HeldSeal(segment, promise));
+                held.add(new HeldSeal(segment, log, promise));
             }
 
             return promise;
@@ -662,11 +663,11 @@ class SealedHistoryRecoveryTest {
         }
 
         private void sealOffThread(HeldSeal seal) {
-            Thread.ofVirtual().start(() -> delegate.seal(seal.segment())
+            Thread.ofVirtual().start(() -> delegate.seal(seal.segment(), seal.log())
                                                    .onResult(seal.promise()::resolve));
         }
 
-        private record HeldSeal(SealedSegment segment, Promise<Unit> promise) {}
+        private record HeldSeal(SealedSegment segment, Option<AppendLog> log, Promise<Unit> promise) {}
     }
 
     private static KVStore<AetherKey, AetherValue> emptyKvStore() {

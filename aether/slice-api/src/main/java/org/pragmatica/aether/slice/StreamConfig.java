@@ -15,7 +15,7 @@ import static org.pragmatica.lang.Option.none;
 /// INCLUDING the owner, that must confirm a write before it resolves (Kafka `min.insync.replicas`):
 /// `<= 1` resolves on the local owner write (0 = eventual, 1 = owner-only), `>= 2` awaits
 /// `minSyncReplicas - 1` distinct non-self replica acks. Invariant: `0 <= minSyncReplicas <= replicas`
-/// and `replicas >= 1`. `consistencyMode` remains the independent READ knob.
+/// and `replicas >= MIN_REPLICAS` for a declared app stream. `consistencyMode` remains the independent READ knob.
 @Codec
 public record StreamConfig(String name,
                            int partitions,
@@ -42,7 +42,15 @@ public record StreamConfig(String name,
     /// the validator agreeing only with the other one.
     private static final String DEFAULT_AUTO_OFFSET_RESET = "earliest";
     private static final long DEFAULT_MAX_EVENT_SIZE_BYTES = 1_048_576L;
-    private static final int DEFAULT_REPLICAS = 1;
+    /// #1547 (owner ruling, session 28): the stream replication factor has a MINIMUM of 3. Under terminal
+    /// removal a dead owner never returns, so at `replicas = 1` losing one node loses every partition it
+    /// owned — the new owner starts at an empty watermark. Clusters form with at least 3 nodes (ruling
+    /// 2026-09-03), so 3 is always placeable at formation. `StreamConfigParser` refuses a declared value
+    /// below this rather than clamping it.
+    public static final int MIN_REPLICAS = 3;
+    /// The default is the minimum: the config binder resolves an absent `replicas` key from [#DEFAULT], so
+    /// this is also the runtime default for every declared stream that omits the key.
+    private static final int DEFAULT_REPLICAS = MIN_REPLICAS;
     private static final int DEFAULT_MIN_SYNC_REPLICAS = 0;
 
     public static final StreamConfig DEFAULT = new StreamConfig("",

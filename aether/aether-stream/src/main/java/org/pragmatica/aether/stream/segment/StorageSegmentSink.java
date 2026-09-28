@@ -7,7 +7,9 @@ package org.pragmatica.aether.stream.segment;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.BlockEncryptor;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.CompressionCodec;
 import org.pragmatica.storage.EncryptionParams;
 import org.pragmatica.storage.StorageInstance;
@@ -61,19 +63,29 @@ public final class StorageSegmentSink implements SegmentSink {
     /// drops its retained copy on that success, so the index must already hold the segment — an
     /// independent `onSuccess` runs asynchronously and could land after the copy was gone, leaving a window
     /// in which a read found the offsets in neither place.
+    ///
+    /// With the partition's log, the block goes through [StorageInstance#seal] (#1567): durable on every
+    /// durable tier, then the ref, then the log's seal bound -- so the log can never be truncated past a
+    /// segment whose block is not on disk. Without one (a manager built with no WAL) there is nothing to
+    /// truncate and [StorageInstance#putRef] stores it, durably on the same tiers.
     @Override
-    public Promise<Unit> seal(SealedSegment segment) {
+    public Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
         var raw = segment.serializedEvents();
         var originalSize = raw.length;
         var compressed = compressionCodec.compress(raw).or(raw);
         var processedData = applyEncryption(compressed);
 
-        return storage.putRef(refName(segment),
-                              processedData.data())
-                      .map(_ -> updateIndex(segment,
-                                            originalSize,
-                                            processedData.encrypted()))
-                      .onSuccess(_ -> logSealed(segment));
+        return store(segment,
+                     log,
+                     processedData.data()).map(_ -> updateIndex(segment,
+                                                                originalSize,
+                                                                processedData.encrypted()))
+                    .onSuccess(_ -> logSealed(segment));
+    }
+
+    private Promise<BlockId> store(SealedSegment segment, Option<AppendLog> log, byte[] block) {
+        return log.fold(() -> storage.putRef(refName(segment), block),
+                        wal -> storage.seal(wal, segment.startOffset(), segment.endOffset(), refName(segment), block));
     }
 
     private ProcessedData applyEncryption(byte[] data) {

@@ -62,8 +62,8 @@ class RabiaVoterRecoveryTest {
         engine = create(A);
         engine.clusterState(ClusterStateNotification.active());
         settle();
-        // The first executor-delivered request completes lazy WAL recovery and checkpoints that
-        // recovered prefix. Measure repeated handoff advertisements only after that required save.
+        // The first executor-delivered request may persist the frozen handoff authority. Measure
+        // repeated handoff advertisements only after that first save.
         engine.handleSyncRequest(new SyncRequest(B));
         settle();
         var saved = counting.authoritySaves;
@@ -219,12 +219,6 @@ class RabiaVoterRecoveryTest {
         private int authoritySaves;
         @Override public org.pragmatica.lang.Result<Option<SavedState<TestCommand>>> loadVerified() {
             return failLoads ? ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.result() : delegate.loadVerified();
-        }
-        @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> append(RabiaProtocolMessage message) {
-            return delegate.append(message);
-        }
-        @Override public org.pragmatica.lang.Result<java.util.List<RabiaProtocolMessage>> loadJournal() {
-            return delegate.loadJournal();
         }
         @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> save(
             org.pragmatica.consensus.StateMachine<TestCommand> machine, Phase phase,

@@ -400,10 +400,6 @@ class RabiaSyncAdoptionResponseQuorumTest {
     /// Persistence reporting a fixed durable snapshot: a node that restarted from disk.
     private static RabiaPersistence<TestCommand> durableAt(Phase phase) {
         record durable(Phase phase) implements RabiaPersistence<TestCommand> {
-            @Override public org.pragmatica.lang.Result<org.pragmatica.lang.Unit> append(RabiaProtocolMessage message) {
-                return org.pragmatica.lang.Result.success(org.pragmatica.lang.Unit.unit());
-            }
-
             @Override
             public Result<Unit> save(StateMachine<TestCommand> stateMachine,
                                      Phase lastCommittedPhase,

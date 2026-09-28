@@ -23,11 +23,11 @@ public sealed interface MembershipEvent {
     record SwimHealthy(long incarnation) implements MembershipEvent {}
 
     /// Fresh direct pong plus trusted worker provisioning or local controller intent.
-    /// processEpoch is the durable producer epoch, not a SWIM incarnation.
-    record WorkerAdmissionHealthy(long processEpoch) implements MembershipEvent {}
+    /// bootToken is the worker's per-process random boot token, not a SWIM incarnation.
+    record WorkerAdmissionHealthy(long bootToken) implements MembershipEvent {}
 
     /// Fresh positive observation from a term-fenced committed governor, never a death signal.
-    record GovernorHealthy(long processEpoch,
+    record GovernorHealthy(long bootToken,
                            String community,
                            org.pragmatica.consensus.NodeId governor,
                            long governorTerm) implements MembershipEvent {}
