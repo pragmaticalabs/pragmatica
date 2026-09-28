@@ -43,6 +43,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -235,7 +236,7 @@ class AutoRollbackOnAllInstancesFailedTest {
         var toml = """
                    config_version = "1.0.0"
                    [cluster]
-                   name = "%s"
+                   name = "auto-rollback"
                    version = "1.0.0"
                    [source.default]
                    type = "forge"
@@ -243,9 +244,11 @@ class AutoRollbackOnAllInstancesFailedTest {
                    count = %d
 
                    %s
-                   """.formatted(before.clusterName(), NODES, rollbackSection);
+                   """.formatted(NODES, rollbackSection);
 
-        assertThat(ClusterBootstrapConfigParser.parse(toml).isSuccess()).as("arming: the document passes apply validation").isTrue();
+        assertThat(ClusterBootstrapConfigParser.parse(toml).fold(Cause::message, _ -> "valid"))
+            .as("arming: the document passes apply validation")
+            .isEqualTo("valid");
         assertThat(RollbackPolicyParser.fromClusterToml(toml).map(RollbackConfig::enabled).or(true)).isFalse();
         var value = new ClusterConfigValue(toml,
                                            before.clusterName(),
