@@ -67,6 +67,42 @@ aether deploy rollback <id>
 
 If health thresholds are breached during any stage, the canary automatically rolls back to the baseline version.
 
+## Automatic Rollback of a Broken Version
+
+Outside a managed deployment (canary, blue-green, rolling), the leader watches for a version that is
+broken on **every** instance and rolls it back to the previous version.
+
+**What counts as broken.** Only failures the slice bridge itself produces: the method threw instead of
+returning, the request could not be decoded or the response encoded, or the method does not exist in
+this version. A failure the slice method returns (a business error) never counts, however often it
+happens. An execution timeout does not count either: a stall is as consistent with overload or a
+downstream outage as with a broken version.
+
+**The verdict.** For a version with at least one ACTIVE instance, every hosting node must report at least
+3 such defects and no success within a 30-second window, and every hosting node's metrics must be
+fresh (a node that stopped reporting makes the version undecidable, never a trigger). Counts come from
+the per-node execution counters each node ships on its cluster-sync pong; only the leader decides.
+[mechanism: `AllInstancesFailedDetector` over per-window deltas of the pong counters]
+
+**When it rolls back.** Only within the bake window after the version became the target (default 15
+minutes). Outside it the same pattern is treated as an incident, not a bad deploy: the `SliceFailure`
+cluster event and the slice-failure alert are raised, but nothing is rolled back. It also never rolls
+back while a managed deployment owns the artifact, never to a version that already failed once, and it
+honours the cooldown (5 minutes) and the rollback budget (2). The rollback record — count, last rollback
+and failed versions — is committed together with the new target, so these limits hold across a leader
+change.
+[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`]
+
+**What it does not detect.** A version that fails only on some instances or only for some requests;
+business-logic regressions; hangs and deadlocks; exceptions thrown asynchronously inside the slice's
+own Promise chain; a version that receives no traffic.
+
+**Recovery.** After an automatic rollback the failed version is recorded and is never an automatic
+rollback target again. Deploy a fixed version, or roll forward manually. When the rollback budget is
+exhausted, automatic rollback stops for that slice; there is no operator surface to reset the budget
+yet. The alert is held in the leader's memory; a leader change clears it, while the cluster event stays
+in the event stream.
+
 ## Blue-Green Deployments
 
 Runs two complete deployment environments simultaneously. Traffic switches atomically between blue (current) and green (new) versions.

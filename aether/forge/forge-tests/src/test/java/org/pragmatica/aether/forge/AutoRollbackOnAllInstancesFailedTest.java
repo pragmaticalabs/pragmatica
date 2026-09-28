@@ -286,10 +286,10 @@ class AutoRollbackOnAllInstancesFailedTest {
 
     private void assertNotRolledBack() {
         assertThat(sliceTarget().map(SliceTargetValue::currentVersion)).as("the target never moved")
-                                                                       .contains(ARTIFACT.version());
+                                                                       .isEqualTo(Option.some(ARTIFACT.version()));
         assertThat(leader().kvStore()
                            .getTyped(PreviousVersionKey.previousVersionKey(ARTIFACT.base()), PreviousVersionValue.class)
-                           .map(PreviousVersionValue::rollbackCount)).contains(0);
+                           .map(PreviousVersionValue::rollbackCount)).isEqualTo(Option.some(0));
     }
 
     private void assertEventAndAlert() {
