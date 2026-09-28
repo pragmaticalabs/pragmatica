@@ -662,7 +662,7 @@ public interface RollbackManager {
                                         RollbackDecision decision,
                                         KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction,
                                         long now) {
-                cluster.<Object>apply(List.of(transaction))
+                cluster.<Object>apply(List.<KVCommand<AetherKey>>of(transaction))
                        .map(results -> accepted(results, transaction.transactionId()))
                        .onSuccess(accepted -> onRollbackCommitted(accepted, event, decision, rollbackArtifact, now))
                        .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
