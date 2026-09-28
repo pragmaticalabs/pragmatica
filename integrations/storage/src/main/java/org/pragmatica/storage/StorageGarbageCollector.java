@@ -36,6 +36,12 @@ public interface StorageGarbageCollector {
     /// since is not orphaned now and is kept; one re-referenced and dropped again after the snapshot is still
     /// safe to delete, because the restored snapshot names no ref to it. Each deletion is the usual
     /// compare-and-remove against the record scanned now (#801). No-ops when not active.
+    ///
+    /// Only the snapshot's LIFECYCLES are consulted, not its refs. That is sound because the snapshot captures
+    /// lifecycles before refs and every writer on `streams` credits a block before naming it (`putRef` and
+    /// dedup increment, then repoint), so a ref to X can appear in the snapshot only with X already credited.
+    /// `createRef` names first and credits after; it has no caller on `streams` today. A future caller of it on
+    /// an instance using this method breaks the condition and must check the snapshot's refs as well.
     default int collectOrphansDurableIn(MetadataSnapshot durable) {
         return 0;
     }

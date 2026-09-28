@@ -6,7 +6,11 @@ package org.pragmatica.aether.stream.segment;
 
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -15,6 +19,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -31,6 +36,10 @@ import static org.pragmatica.lang.Unit.unit;
 
 public final class RetentionEnforcer implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(RetentionEnforcer.class);
+    /// Block reads one age-learning pass keeps in flight at most (#1616 R2).
+    static final int AGE_READ_CONCURRENCY = 8;
+    /// Identity sentinel for "no pass in flight".
+    private static final Promise<Integer> IDLE = Promise.success(0);
     private static final TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5 * 60 * 1000L).millis();
 
     /// How far a partition's sealed log may be reclaimed without destroying state something still needs
@@ -76,6 +85,11 @@ public final class RetentionEnforcer implements AutoCloseable {
     private final PressureRelief relief;
     /// Set while the durable tier is at or above [SegmentTierPressure#WARN_AT], so one episode warns once.
     private final AtomicBoolean underPressure = new AtomicBoolean(false);
+    /// Segments whose block could not be read for its age, remembered for the process lifetime (#1616 R3).
+    private final Set<String> unreadableAges = ConcurrentHashMap.newKeySet();
+    private final AtomicInteger unreadableReported = new AtomicInteger();
+    /// The pass in flight, or [#IDLE] (#1616 R2).
+    private final AtomicReference<Promise<Integer>> passInFlight = new AtomicReference<>(IDLE);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile ScheduledFuture<?> scheduledFuture;
 
@@ -207,11 +221,35 @@ public final class RetentionEnforcer implements AutoCloseable {
 
     /// One retention pass: first learn the age of every segment whose age is unknown (#1604), then reclaim
     /// what the policy expires. Resolves with the number of segments whose refs were dropped.
+    ///
+    /// Single-flight (#1616 R2): ticks are fixed-rate and a pass after a restart can read many blocks, so a call
+    /// while a pass is running joins that pass instead of starting a second one over the same segments.
     Promise<Integer> enforceNow() {
-        return closed.get()
-               ? Promise.success(0)
-               : learnUnknownAges().map(_ -> reclaimExpired(System.currentTimeMillis()))
-                                 .map(this::relieveUnderPressure);
+        if (closed.get()) {
+            return Promise.success(0);
+        }
+
+        var mine = Promise.<Integer> promise();
+        var running = passInFlight.compareAndExchange(IDLE, mine);
+
+        return running == IDLE
+               ? runPass(mine)
+               : running;
+    }
+
+    private Promise<Integer> runPass(Promise<Integer> mine) {
+        return learnUnknownAges().map(_ -> reclaimExpired(System.currentTimeMillis()))
+                               .map(this::relieveUnderPressure)
+                               .fold(result -> finishPass(mine, result));
+    }
+
+    /// The slot is freed BEFORE the joined callers are resumed, so a call made after the pass resolved starts
+    /// a fresh one.
+    private Promise<Integer> finishPass(Promise<Integer> mine, Result<Integer> result) {
+        passInFlight.set(IDLE);
+        mine.resolve(result);
+
+        return mine;
     }
 
     /// Under pressure the refs just dropped must free their blocks in this pass, not after the collector's
@@ -273,32 +311,61 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// would never expire (#1604). Its block's own events carry the true event time, so it is read once and
     /// the result kept in the index; a block that cannot be read keeps its age unknown -- withheld, the
     /// direction that cannot delete data -- and is tried again next pass.
+    ///
+    /// Bounded (#1616 R2): each read decodes a whole block into heap, and after a restart every segment is
+    /// unknown-aged, so the reads go [#AGE_READ_CONCURRENCY] at a time rather than all at once. A block that
+    /// could not be read is remembered for the life of the process and not read again.
     private Promise<Unit> learnUnknownAges() {
         return ageReader.fold(Promise::unitPromise,
-                              reader -> Promise.allOf(unknownAgeReads(reader)).mapToUnit());
+                              reader -> learnInBatches(reader, pendingAges(), 0).map(_ -> reportUnreadableAges()));
     }
 
-    private List<Promise<Unit>> unknownAgeReads(SegmentReader reader) {
+    private List<PendingAge> pendingAges() {
         return index.listPartitionKeys()
                     .stream()
-                    .flatMap(key -> unknownAgeReads(reader, key))
+                    .flatMap(this::pendingAges)
                     .toList();
     }
 
-    private Stream<Promise<Unit>> unknownAgeReads(SegmentReader reader, SegmentIndex.PartitionKey key) {
+    private Stream<PendingAge> pendingAges(SegmentIndex.PartitionKey key) {
         return index.listSegments(key.streamName(),
                                   key.partition())
                     .stream()
                     .filter(ref -> ref.maxTimestamp() <= 0)
-                    .map(ref -> learnAge(reader, key, ref));
+                    .map(ref -> new PendingAge(key, ref))
+                    .filter(pending -> !unreadableAges.contains(pending.id()));
     }
 
-    private Promise<Unit> learnAge(SegmentReader reader, SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref) {
-        return reader.maxEventTimestamp(key.streamName(),
-                                        key.partition(),
-                                        ref)
-                     .map(latest -> recordAge(key, ref, latest))
-                     .recover(cause -> ageUnreadable(key, ref, cause));
+    private Promise<Unit> learnInBatches(SegmentReader reader, List<PendingAge> pending, int from) {
+        if (from >= pending.size()) {
+            return Promise.unitPromise();
+        }
+
+        var batch = pending.subList(from,
+                                    Math.min(from + AGE_READ_CONCURRENCY,
+                                             pending.size()))
+                           .stream()
+                           .map(age -> learnAge(reader, age))
+                           .toList();
+
+        return Promise.allOf(batch).flatMap(_ -> learnInBatches(reader, pending, from + AGE_READ_CONCURRENCY));
+    }
+
+    private Promise<Unit> learnAge(SegmentReader reader, PendingAge pending) {
+        return reader.maxEventTimestamp(pending.key().streamName(),
+                                        pending.key().partition(),
+                                        pending.ref())
+                     .map(latest -> recordAge(pending.key(),
+                                              pending.ref(),
+                                              latest))
+                     .recover(cause -> ageUnreadable(pending, cause));
+    }
+
+    /// A segment whose age is still to be learned; `id` names it for the unreadable set.
+    private record PendingAge(SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref) {
+        String id() {
+            return key.streamName() + "/" + key.partition() + "/" + ref.startOffset();
+        }
     }
 
     private Unit recordAge(SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref, Option<Long> latest) {
@@ -310,14 +377,31 @@ public final class RetentionEnforcer implements AutoCloseable {
         return unit();
     }
 
-    /// FER: the segment stays unknown-aged, which withholds it from age-based reclamation; nothing is lost.
-    private static Unit ageUnreadable(SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref, Cause cause) {
-        log.debug("Age of segment {}/{}:[{}-{}] could not be read from its block; it stays withheld: {}",
-                  key.streamName(),
-                  key.partition(),
-                  ref.startOffset(),
-                  ref.endOffset(),
+    /// FER: the segment stays unknown-aged, which withholds it from age-based reclamation; nothing is lost. It
+    /// is remembered, so no later pass reads it again, and it is counted into [#reportUnreadableAges].
+    private Unit ageUnreadable(PendingAge pending, Cause cause) {
+        unreadableAges.add(pending.id());
+        log.debug("Age of segment {}:[{}-{}] could not be read from its block; it stays withheld: {}",
+                  pending.id(),
+                  pending.ref().startOffset(),
+                  pending.ref().endOffset(),
                   cause.message());
+
+        return unit();
+    }
+
+    /// One WARN when a pass found segments whose age cannot be read -- never silently aged out, never re-read.
+    /// Such a segment is kept until an operator acts (a missing encryption key, a damaged block).
+    /// TODO(#1574): also raise it as an OperatorWarning cluster event.
+    private Unit reportUnreadableAges() {
+        var total = unreadableAges.size();
+
+        if (total > unreadableReported.getAndSet(total)) {
+            log.warn("{} stream segment(s) on this node have blocks whose age cannot be read (for example a missing "
+                    + "encryption key or a damaged block); they are withheld from age-based retention and not read "
+                    + "again until the node restarts",
+                     total);
+        }
 
         return unit();
     }
