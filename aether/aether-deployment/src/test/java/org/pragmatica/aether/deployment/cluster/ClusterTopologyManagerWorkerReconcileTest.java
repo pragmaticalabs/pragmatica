@@ -94,6 +94,41 @@ class ClusterTopologyManagerWorkerReconcileTest {
             count = 3
             """;
 
+    /// Two cloud sources with workers, each pinned to one zone (#1650).
+    private static final String TWO_WORKER_SOURCES_TOML = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [operations.ports]
+            cluster = 6000
+            management = 5160
+            app_http = 8070
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            zone = "nbg1"
+
+            [source.eu-1.core]
+            count = 3
+
+            [source.eu-1.worker]
+            count = 1
+
+            [source.eu-2]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            zone = "fsn1"
+
+            [source.eu-2.worker]
+            count = 1
+            """;
+
     private WorkerRecordingLifecycleManager lifecycleManager;
     private AtomicReference<Option<ClusterConfigValue>> configRef;
     private ClusterTopologyManager ctm;
@@ -232,6 +267,28 @@ class ClusterTopologyManagerWorkerReconcileTest {
         ctm.activate();
 
         assertThat(lifecycleManager.provisionedSourceNames()).containsExactlyInAnyOrder("primary", "secondary");
+    }
+
+    /// #1650: two cloud sources, each backing workers in its own zone. Every worker the leader provisions must
+    /// BOOT with its own source and zone -- the provision context already carried the right source (above), but
+    /// the rendered cloud-init env took `AETHER_SOURCE`/`AETHER_ZONE` from the leader's own process env, and a
+    /// node learns its source only from that variable. Asserted on the user-data the provider receives.
+    @Test
+    void reconcile_twoCloudWorkerSources_eachWorkerBootsWithItsOwnSourceAndZone() {
+        seedConfig(TWO_WORKER_SOURCES_TOML,
+                   entry("eu-1", "core", 3),
+                   entry("eu-1", "worker", 1),
+                   entry("eu-2", "worker", 1));
+
+        ctm.activate();
+
+        var userData = lifecycleManager.userDataBySource();
+
+        assertThat(userData).containsOnlyKeys("eu-1", "eu-2");
+        assertThat(userData.get("eu-1")).contains("AETHER_SOURCE=\"eu-1\"", "AETHER_ZONE=\"nbg1\"")
+                                        .doesNotContain("AETHER_SOURCE=\"eu-2\"", "AETHER_ZONE=\"fsn1\"");
+        assertThat(userData.get("eu-2")).contains("AETHER_SOURCE=\"eu-2\"", "AETHER_ZONE=\"fsn1\"")
+                                        .doesNotContain("AETHER_SOURCE=\"eu-1\"", "AETHER_ZONE=\"nbg1\"");
     }
 
     /// Defect A, core-tier half: the auto-heal replacement path has no topology entry to read, so it
@@ -458,6 +515,14 @@ class ClusterTopologyManagerWorkerReconcileTest {
         /// `aether-source` label, which is the string the reconcile selector must round-trip.
         List<String> provisionedSourceNames() {
             return provisioned.stream().map(spec -> spec.context().sourceName().value()).distinct().toList();
+        }
+
+        /// The cloud-init user-data each provision carried, by the source it was provisioned for.
+        Map<String, String> userDataBySource() {
+            return provisioned.stream()
+                              .collect(java.util.stream.Collectors.toMap(spec -> spec.context().sourceName().value(),
+                                                                         spec -> spec.userData().or(""),
+                                                                         (first, _) -> first));
         }
 
         List<String> provisionedNodeIds() {
