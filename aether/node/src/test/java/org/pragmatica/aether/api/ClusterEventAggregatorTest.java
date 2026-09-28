@@ -55,7 +55,10 @@ class ClusterEventAggregatorTest {
     private static final BooleanSupplier LEADER = () -> true;
     private static final BooleanSupplier NOT_LEADER = () -> false;
 
-    private record Harness(ClusterEventAggregator aggregator, HlcClock hlc, StreamPartitionManager manager) {
+    private record Harness(ClusterEventAggregator aggregator,
+                           HlcClock hlc,
+                           StreamPartitionManager manager,
+                           AtomicReference<FrameworkStreamPublisher<ClusterEvent>> publisher) {
         static Harness create(RetentionPolicy retention, BooleanSupplier ownerCheck) {
             return create(retention, ownerCheck, () -> false);
         }
@@ -97,7 +100,7 @@ class ClusterEventAggregatorTest {
                                                                            () -> 1,
                                                                            replayingCheck,
                                                                            leaderCheck);
-            return new Harness(aggregator, hlc, manager);
+            return new Harness(aggregator, hlc, manager, pubRef);
         }
 
         static Harness create() {
@@ -476,6 +479,44 @@ class ClusterEventAggregatorTest {
         h.aggregator().onStreamMemoryExceeded(createFloorExhaustion("mixed"));
 
         assertThat(h.events()).hasSize(2);
+    }
+
+    // --- #1640 redelivery -----------------------------------------------------------------------
+
+    /// The owner gate is checked when the event is produced, never on redelivery: after a failover the producing
+    /// node is typically no longer the owner, and re-checking would drop the event on its only producer. Here the
+    /// first publish fails (publisher not yet bound), the node then stops being the owner, and the retry still
+    /// lands the event.
+    @Test
+    void emit_firstPublishFails_ownershipMovesAway_retryStillLands() throws InterruptedException {
+        var owner = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var h = Harness.create(Harness.defaultRetention(), owner::get);
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().emit(selfDrainInitiated(h));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: the failed publish is held").isEqualTo(1);
+
+        owner.set(false);
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().redeliveryWaiting()).isZero();
+    }
+
+    /// An event can be in the log twice (an unknown outcome that landed, then its redelivery). Both copies carry
+    /// the same `at`, and a read returns one.
+    @Test
+    void events_sameEventLandedTwice_isReadOnce() {
+        var h = Harness.create();
+        var event = selfDrainInitiated(h);
+
+        h.aggregator().emitLocal(event);
+        h.aggregator().emitLocal(event);
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies are in the log").isEqualTo(1);
     }
 
     // --- production retention -------------------------------------------------------------------

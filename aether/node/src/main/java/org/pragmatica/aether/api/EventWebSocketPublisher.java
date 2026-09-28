@@ -6,11 +6,14 @@ package org.pragmatica.aether.api;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -23,6 +26,8 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings("JBCT-RET-01")
 public class EventWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
+    /// How far back each poll looks, so a late-landing event is still sent (#1640).
+    static final long LOOKBACK_MS = ClusterEventRedelivery.RETRY_HORIZON_MS;
 
     private final EventWebSocketHandler handler;
     private final Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider;
@@ -33,6 +38,12 @@ public class EventWebSocketPublisher {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicReference<Instant> lastBroadcast = new AtomicReference<>(Instant.EPOCH);
+    /// #1640: events already broadcast, by their unique `at`. An event can land AFTER the poll that would have
+    /// covered its `at`: a redelivered event keeps the `at` of its first attempt (up to
+    /// [ClusterEventRedelivery#RETRY_HORIZON_MS] old), and even a normal publish lands after it was stamped. So each
+    /// poll looks back one horizon and sends only what it has not sent. Entries older than the look-back are
+    /// pruned, which bounds the set by the events retained in one horizon.
+    private final Set<HlcTimestamp> broadcast = ConcurrentHashMap.newKeySet();
 
     private EventWebSocketPublisher(EventWebSocketHandler handler,
                                     Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider,
@@ -76,12 +87,14 @@ public class EventWebSocketPublisher {
         log.info("Event WebSocket publisher stopped");
     }
 
-    private void publish() {
+    /// One poll. Package-private so the #1640 look-back test can drive it without the scheduler.
+    void publish() {
         if (handler.connectedClients() == 0) {
             return;
         }
 
-        var since = lastBroadcast.get();
+        var since = lastBroadcast.get()
+                                 .minusMillis(LOOKBACK_MS);
         var now = Instant.now();
         Promise<?> ignored = eventsSinceProvider.apply(since)
                                                 .onSuccess(events -> broadcastIfPresent(events, now))
@@ -89,7 +102,10 @@ public class EventWebSocketPublisher {
                                                                               cause.message()));
     }
 
-    private void broadcastIfPresent(List<ClusterEvent> newEvents, Instant now) {
+    private void broadcastIfPresent(List<ClusterEvent> candidates, Instant now) {
+        var newEvents = notYetBroadcast(candidates);
+
+        pruneBroadcastBefore(now.minusMillis(LOOKBACK_MS));
         if (!newEvents.isEmpty()) {
             var json = jsonSerializer.apply(newEvents);
 
@@ -97,5 +113,17 @@ public class EventWebSocketPublisher {
         }
 
         lastBroadcast.set(now);
+    }
+
+    private List<ClusterEvent> notYetBroadcast(List<ClusterEvent> candidates) {
+        return candidates.stream()
+                         .filter(event -> broadcast.add(event.at()))
+                         .toList();
+    }
+
+    private void pruneBroadcastBefore(Instant horizon) {
+        var horizonMillis = horizon.toEpochMilli();
+
+        broadcast.removeIf(at -> at.physicalMillis() < horizonMillis);
     }
 }

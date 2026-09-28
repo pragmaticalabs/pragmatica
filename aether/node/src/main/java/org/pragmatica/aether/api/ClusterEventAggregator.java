@@ -6,6 +6,7 @@ package org.pragmatica.aether.api;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -46,9 +47,12 @@ import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
@@ -58,10 +62,13 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
@@ -175,6 +182,10 @@ public final class ClusterEventAggregator {
     /// Count of events dropped because ownership was unresolvable — the size of the audit-log hole.
     /// Read by [#ownerlessDrops].
     private final AtomicLong ownerlessDrops = new AtomicLong();
+    /// #1640: events whose publish did not land wait here and are retried.
+    private final ClusterEventRedelivery redelivery;
+    private volatile int lastReadDuplicates;
+    private static final Cause PUBLISHER_NOT_BOUND = Causes.cause("cluster-events publisher not yet bound");
 
     private ClusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                    Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
@@ -194,6 +205,9 @@ public final class ClusterEventAggregator {
         this.replayingCheck = replayingCheck;
         this.leaderCheck = leaderCheck;
         this.ownershipResolvable = ownershipResolvable;
+        this.redelivery = ClusterEventRedelivery.clusterEventRedelivery(this::publishOnce,
+                                                                        () -> hlcClock.now()
+                                                                                      .physicalMillis());
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -315,7 +329,7 @@ public final class ClusterEventAggregator {
         return consume(consumer -> consumer.metadata()
                                            .map(ClusterEventAggregator::retainedTailOffset)
                                            .flatMap(fromOffset -> consumer.fetch(fromOffset, FETCH_BATCH))
-                                           .map(ClusterEventAggregator::extractPayloads));
+                                           .map(this::extractPayloads));
     }
 
     /// Oldest still-retained offset for partition 0. Empty/absent partition → 0 (fetch from start).
@@ -343,10 +357,20 @@ public final class ClusterEventAggregator {
                      .toList();
     }
 
-    private static List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
-        return raw.stream()
-                  .map(StreamEvent::payload)
-                  .toList();
+    /// #1640: an event can be in the log twice. A publish whose outcome was unknown may have landed, and its
+    /// redelivery sends the same event again. Every event carries a unique `at` (the producing node's
+    /// `HlcTimestamp`, strictly monotonic per node), so duplicates are removed here, keeping the first
+    /// occurrence. Every reader goes through this method.
+    private List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
+        var seen = new HashSet<HlcTimestamp>();
+        var unique = raw.stream()
+                        .map(StreamEvent::payload)
+                        .filter(event -> seen.add(event.at()))
+                        .toList();
+
+        lastReadDuplicates = raw.size() - unique.size();
+
+        return unique;
     }
 
     private Promise<List<ClusterEvent>> consume(Function<FrameworkStreamConsumer<ClusterEvent>, Promise<List<ClusterEvent>>> fn) {
@@ -460,29 +484,107 @@ public final class ClusterEventAggregator {
     /// so it can never propagate to the caller. {@link #onConfirmedDeparture} runs on the MembershipFsm
     /// DEAD-edge chokepoint (`enteredDead`) BEFORE the FSM emits its REMOVED membership delta; a publish
     /// that threw there (e.g. the leader's cluster-events partition not yet materialized mid-churn) would
-    /// abort the death edge and starve membership recovery. The async publish Promise is fire-and-forget
-    /// (observability); a synchronous failure is logged and dropped, never re-thrown.
+    /// abort the death edge and starve membership recovery.
     ///
-    /// #926: the ASYNCHRONOUS failure is logged too. `Result.lift` catches only a synchronous throw —
-    /// `publish` returns a `Promise<Unit>`, and a failure arriving on it (e.g. `PARTITION_NOT_LOCAL`
-    /// when the ring is not materialized) was previously discarded with no log and no counter. This
-    /// path is now load-bearing for reporting cluster failure, so a drop here would rebuild the same
-    /// fail-open shape one layer down: a component that reports nothing when it cannot publish is
-    /// indistinguishable from one reporting that all is well. Still fire-and-forget — logged, not
-    /// retried, and never propagated to the DEAD-edge caller.
+    /// #926 made the asynchronous failure visible. #1640 stops dropping it: a publish that does not land
+    /// (most importantly `PublishOutcomeUnknown` while the partition's owner is dead) is handed to
+    /// [ClusterEventRedelivery], which retries the same event until it lands or its horizon passes, and counts
+    /// what it gives up on. Still never propagated to the caller.
     @Contract
     private void publishSafely(ClusterEvent event) {
-        Option.option(publisherSupplier.get())
-              .onPresent(publisher -> Result.lift(Causes::fromThrowable,
-                                                  () -> publisher.publish(event))
-                                            .onSuccess(promise -> promise.onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} failed, dropped: {}",
-                                                                                                      event,
-                                                                                                      cause.message())))
-                                            .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw, dropped: {}",
-                                                                         event,
-                                                                         cause.message())))
-              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
-                                      event));
+        redelivery.deliver(event);
+    }
+
+    /// One publish attempt with its outcome: fails when the publisher is not yet bound, when the publish
+    /// throws, or when its promise fails. Each failure is logged once here; whether it is retried is
+    /// [ClusterEventRedelivery]'s decision.
+    private Promise<Unit> publishOnce(ClusterEvent event) {
+        return Option.option(publisherSupplier.get())
+                     .map(publisher -> publishedBy(publisher, event))
+                     .or(() -> unboundPublisher(event));
+    }
+
+    private static Promise<Unit> publishedBy(FrameworkStreamPublisher<ClusterEvent> publisher, ClusterEvent event) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> publisher.publish(event))
+                     .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw: {}",
+                                                  event.type(),
+                                                  cause.message()))
+                     .async()
+                     .flatMap(promise -> promise.onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} at {} failed: {}",
+                                                                              event.type(),
+                                                                              event.at(),
+                                                                              cause.message())));
+    }
+
+    private static Promise<Unit> unboundPublisher(ClusterEvent event) {
+        LOG.info("ClusterEventAggregator publisher not yet bound — event {} held for redelivery (bootstrap window)",
+                 event.type());
+
+        return PUBLISHER_NOT_BOUND.promise();
+    }
+
+    /// #1640: re-sends the cluster events whose publish has not landed yet and are due. `AetherNode` calls it
+    /// once a second.
+    public Unit redeliverDue() {
+        redelivery.redeliver(false);
+
+        return Unit.unit();
+    }
+
+    /// #1640: a new owner of the cluster-events partition means publishes can land again, so every waiting
+    /// event is re-sent at once instead of on its backoff.
+    @Contract
+    public void onStreamPartitionOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
+        if (isClusterEventsPartition(put.cause()
+                                        .key())) {
+            redelivery.redeliver(true);
+        }
+    }
+
+    private static boolean isClusterEventsPartition(StreamPartitionOwnershipKey key) {
+        return key.partition() == 0 && SystemStreams.CLUSTER_EVENTS.asString()
+                                                                   .equals(key.stream());
+    }
+
+    /// Observability for #1640: events waiting for redelivery on this node.
+    public int redeliveryWaiting() {
+        return redelivery.waiting();
+    }
+
+    /// Observability for #1640: events this node gave up on, by reason (overflow, expired, permanent).
+    public Map<String, Long> redeliveryDropped() {
+        return Map.of("overflow",
+                      redelivery.dropped(ClusterEventRedelivery.DropReason.OVERFLOW),
+                      "expired",
+                      redelivery.dropped(ClusterEventRedelivery.DropReason.EXPIRED),
+                      "permanent",
+                      redelivery.dropped(ClusterEventRedelivery.DropReason.PERMANENT));
+    }
+
+    /// Observability for #1640: publishes that landed, retries attempted, and publishes whose outcome was unknown.
+    public Map<String, Long> redeliveryCounters() {
+        return Map.of("delivered",
+                      redelivery.delivered(),
+                      "retried",
+                      redelivery.retried(),
+                      "outcomeUnknown",
+                      redelivery.outcomeUnknown());
+    }
+
+    /// Observability for #1640: failed publish attempts on this node by cause type.
+    public Map<String, Long> redeliveryFailuresByCause() {
+        return redelivery.failuresByCause();
+    }
+
+    /// Observability for #1640: duplicate events (same `at`) that the most recent read removed.
+    public int lastReadDuplicates() {
+        return lastReadDuplicates;
+    }
+
+    /// Whether this node currently owns cluster-events partition 0 (observability; the owner gate reads the same).
+    public boolean isClusterEventsOwner() {
+        return ownerCheck.getAsBoolean();
     }
 
     /// Budget-exhaustion sink entry point (spec §4.5c / reconciliation #13). Bound into the
