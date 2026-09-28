@@ -619,8 +619,14 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         context.dispatch(new AppHttpEvents.CertRotationRequested(newBundle));
 
+        // #1612: a failed stop is logged and the restart goes ahead (forward recovery). Aborting would leave no
+        // app listener at all, while a restart succeeds whenever the channel did close.
         return context.stopServersAsync(previous.server(),
                                         previous.h3())
+                      .onFailure(cause -> log.warn("App HTTP listeners did not stop cleanly before certificate "
+                                                   + "rotation; restarting anyway: {}",
+                                                   cause.message()))
+                      .recover(_ -> unit())
                       .flatMap(_ -> restartWithNewBundle(newBundle))
                       .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
                                                                                                 pair.h3(),
