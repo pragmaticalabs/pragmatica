@@ -104,6 +104,23 @@ class LeaderTermTest {
         assertThat(term.current()).isEqualTo(5L);
     }
 
+    /// `committedTerm` max-merges exactly as `onLeaderGained` does. A committed record naming this node with
+    /// a sequence BELOW the held term (a replayed or out-of-order `LeaderKey` read, as above) must not report
+    /// the lower sequence as the term about to be adopted: `onLeaderGained` would keep the held term, so the
+    /// pure read has to agree with the edge it anticipates.
+    @Test
+    void committedTerm_keepsTheHigherHeldTerm_whenTheCommittedSequenceIsLower() {
+        var committed = new AtomicReference<>(some(LeaderValue.leaderValue(NODE_A, 5L)));
+        var term = LeaderTerm.leaderTerm(NODE_A, committed::get);
+
+        term.onLeaderGained();
+        committed.set(some(LeaderValue.leaderValue(NODE_A, 3L)));
+
+        assertThat(term.committedTerm()).isEqualTo(5L);
+        assertThat(term.committedTerm()).as("the pure read agrees with the edge it anticipates")
+                                        .isEqualTo(term.onLeaderGained());
+    }
+
     /// #1559 — the re-election pre-latch input, read where `LeaderReconciler.activate()` reads it: after
     /// the node's own `LeaderKey` commit, BEFORE its leader-gain edge. A failover to a node that has never
     /// led reads a term above 1 (pre-latch); the first leader of a fresh cluster reads 1 (no pre-latch).
