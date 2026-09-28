@@ -618,14 +618,16 @@ class AppHttpServerAdapter implements AppHttpServer {
         var currentRoutes = context.currentRoutes();
 
         context.dispatch(new AppHttpEvents.CertRotationRequested(newBundle));
-
-        return context.stopServersAsync(previous.server(),
-                                        previous.h3())
-                      .flatMap(_ -> restartWithNewBundle(newBundle))
-                      .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
-                                                                                                pair.h3(),
-                                                                                                currentRoutes)))
-                      .mapToUnit();
+        // #1612: a failed stop is logged and the restart goes ahead (ListenerStops.stoppedForRestart).
+        return ListenerStops.stoppedForRestart(context.stopServersAsync(previous.server(),
+                                                                        previous.h3()),
+                                               log,
+                                               "App HTTP listeners")
+                            .flatMap(_ -> restartWithNewBundle(newBundle))
+                            .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
+                                                                                                      pair.h3(),
+                                                                                                      currentRoutes)))
+                            .mapToUnit();
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
