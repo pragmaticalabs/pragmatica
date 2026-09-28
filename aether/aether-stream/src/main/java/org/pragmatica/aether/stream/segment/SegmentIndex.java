@@ -83,6 +83,26 @@ public final class SegmentIndex {
         sealedThrough.compute(key, (_, current) -> contiguousEnd(map, option(current).or(NOTHING_SEALED)));
     }
 
+    /// Record a segment's max event timestamp learned after the fact (#1604): a ref rebuilt from its name
+    /// after a restart carries no timestamp, and retention reads the block once to find it. Only a ref still
+    /// present with an unknown timestamp is updated; a known one is never overwritten.
+    @Contract
+    public void recordMaxTimestamp(String streamName, int partition, long startOffset, long maxTimestamp) {
+        option(partitions.get(PartitionKey.partitionKey(streamName, partition)))
+            .onPresent(map -> map.computeIfPresent(startOffset, (_, ref) -> withKnownTimestamp(ref, maxTimestamp)));
+    }
+
+    private static SegmentRef withKnownTimestamp(SegmentRef ref, long maxTimestamp) {
+        return ref.maxTimestamp() > 0
+               ? ref
+               : SegmentRef.segmentRef(ref.startOffset(),
+                                       ref.endOffset(),
+                                       maxTimestamp,
+                                       ref.compressionOrdinal(),
+                                       ref.encrypted(),
+                                       ref.originalSize());
+    }
+
     @Contract
     public void removeSegment(String streamName, int partition, long startOffset) {
         var key = PartitionKey.partitionKey(streamName, partition);

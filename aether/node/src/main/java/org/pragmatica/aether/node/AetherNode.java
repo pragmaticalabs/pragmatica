@@ -4616,7 +4616,8 @@ public interface AetherNode extends ManageableNode {
                                                                           DEFAULT_STREAM_RETENTION_MS,
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
-                                                                                                                      partition));
+                                                                                                                      partition),
+                                                                          streamSegmentReader);
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.

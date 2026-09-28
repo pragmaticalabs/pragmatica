@@ -7,9 +7,14 @@ package org.pragmatica.aether.stream.segment;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.storage.StorageInstance;
@@ -17,7 +22,10 @@ import org.pragmatica.storage.StorageInstance;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Unit.unit;
 
 
 public final class RetentionEnforcer implements AutoCloseable {
@@ -60,37 +68,45 @@ public final class RetentionEnforcer implements AutoCloseable {
     private final SegmentIndex index;
     private final RetentionPolicy retentionPolicy;
     private final SegmentRetentionFloor retentionFloor;
+    /// Reads the age of a segment rebuilt after a restart from its own block (#1604); none keeps such segments'
+    /// age unknown.
+    private final Option<SegmentReader> ageReader;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile ScheduledFuture<?> scheduledFuture;
 
     private RetentionEnforcer(StorageInstance storage,
                               SegmentIndex index,
                               RetentionPolicy retentionPolicy,
-                              SegmentRetentionFloor retentionFloor) {
+                              SegmentRetentionFloor retentionFloor,
+                              Option<SegmentReader> ageReader) {
         this.storage = storage;
         this.index = index;
         this.retentionPolicy = retentionPolicy;
         this.retentionFloor = retentionFloor;
+        this.ageReader = ageReader;
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
                                                       SegmentIndex index,
                                                       RetentionPolicy retentionPolicy) {
-        return new RetentionEnforcer(storage, index, retentionPolicy, SegmentRetentionFloor.NONE);
+        return new RetentionEnforcer(storage, index, retentionPolicy, SegmentRetentionFloor.NONE,
+                                     none());
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
                                                       SegmentIndex index,
                                                       RetentionPolicy retentionPolicy,
                                                       SegmentRetentionFloor retentionFloor) {
-        return new RetentionEnforcer(storage, index, retentionPolicy, retentionFloor);
+        return new RetentionEnforcer(storage, index, retentionPolicy, retentionFloor,
+                                     none());
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage, SegmentIndex index, long retentionMs) {
         return new RetentionEnforcer(storage,
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
-                                     SegmentRetentionFloor.NONE);
+                                     SegmentRetentionFloor.NONE,
+                                     none());
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
@@ -100,7 +116,22 @@ public final class RetentionEnforcer implements AutoCloseable {
         return new RetentionEnforcer(storage,
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
-                                     retentionFloor);
+                                     retentionFloor,
+                                     none());
+    }
+
+    /// As [#retentionEnforcer(StorageInstance, SegmentIndex, long, SegmentRetentionFloor)], reading the age of a
+    /// segment whose timestamp is unknown -- every segment rebuilt after a restart -- from its block (#1604).
+    public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
+                                                      SegmentIndex index,
+                                                      long retentionMs,
+                                                      SegmentRetentionFloor retentionFloor,
+                                                      SegmentReader ageReader) {
+        return new RetentionEnforcer(storage,
+                                     index,
+                                     RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
+                                     retentionFloor,
+                                     some(ageReader));
     }
 
     @Contract
@@ -129,21 +160,81 @@ public final class RetentionEnforcer implements AutoCloseable {
 
     @Contract
     void enforce() {
-        if (closed.get()) {
-            return;
-        }
+        enforceNow();
+    }
 
-        var now = System.currentTimeMillis();
-        var partitionKeys = index.listPartitionKeys();
-        var totalRemoved = partitionKeys.stream()
-                                        .mapToInt(key -> enforcePartition(key.streamName(),
-                                                                          key.partition(),
-                                                                          now))
-                                        .sum();
+    /// One retention pass: first learn the age of every segment whose age is unknown (#1604), then reclaim
+    /// what the policy expires. Resolves with the number of segments whose refs were dropped.
+    Promise<Integer> enforceNow() {
+        return closed.get()
+               ? Promise.success(0)
+               : learnUnknownAges().map(_ -> reclaimExpired(System.currentTimeMillis()));
+    }
+
+    private int reclaimExpired(long now) {
+        var totalRemoved = index.listPartitionKeys()
+                                .stream()
+                                .mapToInt(key -> enforcePartition(key.streamName(),
+                                                                  key.partition(),
+                                                                  now))
+                                .sum();
 
         if (totalRemoved > 0) {
             log.info("Retention enforcement removed {} expired segment(s)", totalRemoved);
         }
+
+        return totalRemoved;
+    }
+
+    /// A segment rebuilt from its ref name after a restart has no timestamp, and under the age policy it
+    /// would never expire (#1604). Its block's own events carry the true event time, so it is read once and
+    /// the result kept in the index; a block that cannot be read keeps its age unknown -- withheld, the
+    /// direction that cannot delete data -- and is tried again next pass.
+    private Promise<Unit> learnUnknownAges() {
+        return ageReader.fold(Promise::unitPromise,
+                              reader -> Promise.allOf(unknownAgeReads(reader))
+                                               .mapToUnit());
+    }
+
+    private List<Promise<Unit>> unknownAgeReads(SegmentReader reader) {
+        return index.listPartitionKeys()
+                    .stream()
+                    .flatMap(key -> unknownAgeReads(reader, key))
+                    .toList();
+    }
+
+    private Stream<Promise<Unit>> unknownAgeReads(SegmentReader reader, SegmentIndex.PartitionKey key) {
+        return index.listSegments(key.streamName(), key.partition())
+                    .stream()
+                    .filter(ref -> ref.maxTimestamp() <= 0)
+                    .map(ref -> learnAge(reader, key, ref));
+    }
+
+    private Promise<Unit> learnAge(SegmentReader reader, SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref) {
+        return reader.maxEventTimestamp(key.streamName(), key.partition(), ref)
+                     .map(latest -> recordAge(key, ref, latest))
+                     .recover(cause -> ageUnreadable(key, ref, cause));
+    }
+
+    private Unit recordAge(SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref, Option<Long> latest) {
+        latest.onPresent(timestamp -> index.recordMaxTimestamp(key.streamName(),
+                                                                key.partition(),
+                                                                ref.startOffset(),
+                                                                timestamp));
+
+        return unit();
+    }
+
+    /// FER: the segment stays unknown-aged, which withholds it from age-based reclamation; nothing is lost.
+    private static Unit ageUnreadable(SegmentIndex.PartitionKey key, SegmentIndex.SegmentRef ref, Cause cause) {
+        log.debug("Age of segment {}/{}:[{}-{}] could not be read from its block; it stays withheld: {}",
+                  key.streamName(),
+                  key.partition(),
+                  ref.startOffset(),
+                  ref.endOffset(),
+                  cause.message());
+
+        return unit();
     }
 
     private int enforcePartition(String streamName, int partition, long now) {
@@ -191,9 +282,9 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// count terms are ORed and therefore work again; under `ALL` every limit must be exceeded, so an
     /// unknown age still withholds the segment — conservative in the direction that cannot delete data.
     ///
-    /// This does NOT restore age-based retention for pre-restart segments; their age is genuinely not
-    /// recorded anywhere. Fixing that means persisting `maxTimestamp` (a ref-name/metadata format change),
-    /// which is a stored-format decision rather than a local fix.
+    /// Since #1604 an enforcer built with an age reader learns such a segment's age from its block before
+    /// this runs ([#learnUnknownAges]), so pre-restart segments age out; the unknown case remains for a block
+    /// that cannot be read, and for an enforcer without a reader.
     private boolean isSegmentExpired(SegmentIndex.SegmentRef ref, long now, long segmentCount, long totalBytes) {
         return retentionPolicy.shouldEvict(segmentCount, totalBytes, knownAgeMs(ref, now));
     }
@@ -227,7 +318,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     private static void logDeleteFailure(String streamName,
                                          int partition,
                                          SegmentIndex.SegmentRef ref,
-                                         org.pragmatica.lang.Cause cause) {
+                                         Cause cause) {
         log.warn("Failed to drop the ref of expired segment {}/{}:[{}-{}]: {}",
                  streamName,
                  partition,
