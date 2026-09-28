@@ -1,5 +1,7 @@
 package org.pragmatica.storage;
 
+import java.util.stream.Collectors;
+
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Result;
@@ -71,6 +73,31 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
 
         stats.updateAndGet(s -> s.withCollected(collected, now));
         log.debug("GC cycle completed: {} block(s) collected", collected);
+
+        return collected;
+    }
+
+    @Override
+    public int collectOrphansDurableIn(MetadataSnapshot durable) {
+        if (!active) {
+            return 0;
+        }
+
+        var durableOrphans = durable.lifecycles()
+                                    .stream()
+                                    .filter(BlockLifecycle::isOrphaned)
+                                    .map(BlockLifecycle::blockId)
+                                    .collect(Collectors.toSet());
+        var collected = metadataStore.listAllLifecycles()
+                                     .stream()
+                                     .filter(BlockLifecycle::isOrphaned)
+                                     .filter(lc -> durableOrphans.contains(lc.blockId()))
+                                     .limit(config.batchSize())
+                                     .map(this::deleteBlock)
+                                     .reduce(0, Integer::sum);
+
+        stats.updateAndGet(s -> s.withCollected(collected, System.currentTimeMillis()));
+        log.debug("Pressure GC collected {} block(s) orphaned in snapshot epoch {}", collected, durable.epoch());
 
         return collected;
     }

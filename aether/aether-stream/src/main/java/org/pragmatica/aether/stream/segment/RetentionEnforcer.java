@@ -73,6 +73,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// age unknown.
     private final Option<SegmentReader> ageReader;
     private final SegmentTierPressure pressure;
+    private final PressureRelief relief;
     /// Set while the durable tier is at or above [SegmentTierPressure#WARN_AT], so one episode warns once.
     private final AtomicBoolean underPressure = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -83,13 +84,15 @@ public final class RetentionEnforcer implements AutoCloseable {
                               RetentionPolicy retentionPolicy,
                               SegmentRetentionFloor retentionFloor,
                               Option<SegmentReader> ageReader,
-                              SegmentTierPressure pressure) {
+                              SegmentTierPressure pressure,
+                              PressureRelief relief) {
         this.storage = storage;
         this.index = index;
         this.retentionPolicy = retentionPolicy;
         this.retentionFloor = retentionFloor;
         this.ageReader = ageReader;
         this.pressure = pressure;
+        this.relief = relief;
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
@@ -97,7 +100,8 @@ public final class RetentionEnforcer implements AutoCloseable {
                                                       RetentionPolicy retentionPolicy) {
         return new RetentionEnforcer(storage, index, retentionPolicy, SegmentRetentionFloor.NONE,
                                      none(),
-                                     SegmentTierPressure.NONE);
+                                     SegmentTierPressure.NONE,
+                                     PressureRelief.NONE);
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
@@ -106,7 +110,8 @@ public final class RetentionEnforcer implements AutoCloseable {
                                                       SegmentRetentionFloor retentionFloor) {
         return new RetentionEnforcer(storage, index, retentionPolicy, retentionFloor,
                                      none(),
-                                     SegmentTierPressure.NONE);
+                                     SegmentTierPressure.NONE,
+                                     PressureRelief.NONE);
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage, SegmentIndex index, long retentionMs) {
@@ -115,7 +120,8 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      SegmentRetentionFloor.NONE,
                                      none(),
-                                     SegmentTierPressure.NONE);
+                                     SegmentTierPressure.NONE,
+                                     PressureRelief.NONE);
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
@@ -127,7 +133,8 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      retentionFloor,
                                      none(),
-                                     SegmentTierPressure.NONE);
+                                     SegmentTierPressure.NONE,
+                                     PressureRelief.NONE);
     }
 
     /// As [#retentionEnforcer(StorageInstance, SegmentIndex, long, SegmentRetentionFloor)], reading the age of a
@@ -142,22 +149,25 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      retentionFloor,
                                      some(ageReader),
-                                     SegmentTierPressure.NONE);
+                                     SegmentTierPressure.NONE,
+                                     PressureRelief.NONE);
     }
 
-    /// As above, also watching the durable segment tier's pressure (#1604).
+    /// As above, also watching the durable segment tier's pressure, and relieving it through `relief` (#1604).
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
                                                       SegmentIndex index,
                                                       long retentionMs,
                                                       SegmentRetentionFloor retentionFloor,
                                                       SegmentReader ageReader,
-                                                      SegmentTierPressure pressure) {
+                                                      SegmentTierPressure pressure,
+                                                      PressureRelief relief) {
         return new RetentionEnforcer(storage,
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      retentionFloor,
                                      some(ageReader),
-                                     pressure);
+                                     pressure,
+                                     relief);
     }
 
     @Contract
@@ -195,7 +205,24 @@ public final class RetentionEnforcer implements AutoCloseable {
         return closed.get()
                ? Promise.success(0)
                : learnUnknownAges().map(_ -> reclaimExpired(System.currentTimeMillis()))
-                                   .onSuccess(_ -> reportPressure());
+                                   .map(this::relieveUnderPressure);
+    }
+
+    /// Under pressure the refs just dropped must free their blocks in this pass, not after the collector's
+    /// grace period (#1604): [PressureRelief] makes the drops durable and collects exactly what they
+    /// orphaned. Off pressure the normal GC cadence reclaims them.
+    private int relieveUnderPressure(int removed) {
+        if (pressure.utilization() >= SegmentTierPressure.WARN_AT) {
+            var collected = relief.relieve();
+
+            log.info("Disk pressure: retention dropped {} segment ref(s) and collected {} block(s) in the same pass",
+                     removed,
+                     collected);
+        }
+
+        reportPressure();
+
+        return removed;
     }
 
     /// Once per pressure episode (#1604): the tier is at or above [SegmentTierPressure#WARN_AT], so seals

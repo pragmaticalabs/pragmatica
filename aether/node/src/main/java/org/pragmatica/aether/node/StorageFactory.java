@@ -261,8 +261,16 @@ public final class StorageFactory {
     }
 
     /// #250: same fan-out as [#compositeDemotionManager], for garbage collection.
+    /// Every setup's collector is TICKED here, but only the shared-view ones are leader-pinned: `streams` is an
+    /// instance per node over that node's own disk, activated at build ([#assembleStreamSetup]) and left alone
+    /// by leader activation, or every non-leader would stop reclaiming its disk (#1604).
     public static StorageGarbageCollector compositeGarbageCollector(Map<String, StorageSetup> setups) {
         var collectors = setups.values().stream().map(StorageSetup::garbageCollector).toList();
+        var leaderPinned = setups.entrySet()
+                                 .stream()
+                                 .filter(entry -> !STREAMS_NAME.equals(entry.getKey()))
+                                 .map(entry -> entry.getValue().garbageCollector())
+                                 .toList();
 
         return new StorageGarbageCollector() {
             @Override
@@ -282,18 +290,18 @@ public final class StorageFactory {
 
             @Override
             public Result<Unit> activate() {
-                return Result.allOf(collectors.stream().map(StorageGarbageCollector::activate).toList()).map(_ -> unit());
+                return Result.allOf(leaderPinned.stream().map(StorageGarbageCollector::activate).toList()).map(_ -> unit());
             }
 
             @Override
             public Result<Unit> deactivate() {
-                return Result.allOf(collectors.stream().map(StorageGarbageCollector::deactivate).toList()).map(_ -> unit());
+                return Result.allOf(leaderPinned.stream().map(StorageGarbageCollector::deactivate).toList()).map(_ -> unit());
             }
 
             @Override
             public boolean isActive() {
-                return collectors.stream()
-                                 .allMatch(StorageGarbageCollector::isActive);
+                return leaderPinned.stream()
+                                   .allMatch(StorageGarbageCollector::isActive);
             }
         };
     }
@@ -720,6 +728,10 @@ public final class StorageFactory {
         var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
+
+        // #1604: this node's streams instance is its own -- its collector runs here, never leader-pinned.
+        garbageCollector.activate()
+                        .onFailure(cause -> log.warn("Streams garbage collector could not be activated: {}", cause.message()));
 
         return restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate).map(_ -> {
             log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
