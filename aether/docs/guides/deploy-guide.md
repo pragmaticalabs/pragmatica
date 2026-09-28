@@ -69,8 +69,20 @@ If health thresholds are breached during any stage, the canary automatically rol
 
 ## Automatic Rollback of a Broken Version
 
-Outside a managed deployment (canary, blue-green, rolling), the leader watches for a version that is
-broken on **every** instance and rolls it back to the previous version.
+**Automatic rollback is ON by default.** Outside a managed deployment (canary, blue-green, rolling), the
+leader watches for a version that is broken on **every** instance and rolls it back to the previous
+version. Every rollback emits a CRITICAL `AUTO_ROLLBACK` cluster event naming the artifact, the version
+rolled back from and to, and the evidence (each hosting node's defect count within the window).
+
+To turn it off, commit this in the cluster TOML (no restart needed; it applies to the next decision):
+
+```toml
+[rollback]
+enabled = false
+```
+
+The policy (`enabled`, `trigger_on_all_instances_failed`, `cooldown`, `max_rollbacks`, `bake_window`) is
+cluster-wide; see the `[rollback]` section of the bootstrap config reference.
 
 **What counts as broken.** Only failures the slice bridge itself produces: the method threw instead of
 returning, the request could not be decoded or the response encoded, or the method does not exist in
@@ -85,10 +97,10 @@ the per-node execution counters each node ships on its cluster-sync pong; only t
 [mechanism: `AllInstancesFailedDetector` over per-window deltas of the pong counters]
 
 **When it rolls back.** Only within the bake window after the version became the target (default 15
-minutes). Outside it the same pattern is treated as an incident, not a bad deploy: the `SliceFailure`
+minutes, `[rollback] bake_window`). Outside it the same pattern is treated as an incident, not a bad deploy: the `SliceFailure`
 cluster event and the slice-failure alert are raised, but nothing is rolled back. It also never rolls
 back while a managed deployment owns the artifact, never to a version that already failed once, and it
-honours the cooldown (5 minutes) and the rollback budget (2). The rollback record — count, last rollback
+honours the cooldown (default 5 minutes) and the rollback budget (default 2), both set in `[rollback]`. The rollback record — count, last rollback
 and failed versions — is committed together with the new target, so these limits hold across a leader
 change.
 [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`]

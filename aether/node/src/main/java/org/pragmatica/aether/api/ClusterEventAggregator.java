@@ -16,6 +16,7 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
+import org.pragmatica.aether.api.ClusterEvent.AutoRollback;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeployed;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
@@ -40,6 +41,7 @@ import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.controller.ScalingEvent;
+import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
@@ -813,6 +815,31 @@ public final class ClusterEventAggregator {
                                   Severity.WARNING,
                                   "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
                                   buildFailedMetadata(artifact, nodeId, reason, durationMs)));
+    }
+
+    /// #1573: every committed automatic rollback, CRITICAL, with its evidence.
+    @Contract
+    public void onAutoRollback(RollbackEvent.AutoRollbackExecuted executed) {
+        emit(new AutoRollback(hlcClock.now(),
+                              Severity.CRITICAL,
+                              "Automatic rollback of " + executed.failedArtifact().asString() + " to "
+                              + executed.targetVersion().withQualifier(),
+                              autoRollbackDetails(executed)));
+    }
+
+    private static Map<String, String> autoRollbackDetails(RollbackEvent.AutoRollbackExecuted executed) {
+        var details = new HashMap<String, String>();
+
+        details.put("artifact", executed.failedArtifact().base().asString());
+        details.put("from", executed.failedArtifact().version().withQualifier());
+        details.put("to", executed.targetVersion().withQualifier());
+        details.put("rollbackNumber", String.valueOf(executed.rollbackNumber()));
+        details.put("windowMs", String.valueOf(executed.windowMs()));
+        details.put("requestId", executed.requestId());
+        executed.defectsPerHost()
+                .forEach((node, defects) -> details.put("defects." + node.id(), String.valueOf(defects)));
+
+        return Map.copyOf(details);
     }
 
     @Contract

@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -243,13 +245,31 @@ public interface RollbackManager {
                          Option<Version> lastRolledBackFrom,
                          Option<Version> lastRolledBackTo) {}
 
+    /// A fixed policy and no rollback reporter — for tests and embedding only; a node wires
+    /// [#rollbackManager(NodeId, Supplier, ClusterNode, KVStore, LeaderManager, Consumer)].
     static RollbackManager rollbackManager(NodeId self,
                                            RollbackConfig config,
                                            ClusterNode<KVCommand<AetherKey>> cluster,
                                            KVStore<AetherKey, AetherValue> kvStore,
                                            LeaderManager leaderManager) {
+        return rollbackManager(self, () -> config, cluster, kvStore, leaderManager, RollbackManager::ignoreRollback);
+    }
+
+    @Contract
+    private static void ignoreRollback(RollbackEvent.AutoRollbackExecuted executed) {}
+
+    /// #1573: `policy` is the committed cluster-wide `[rollback]` section, read at every decision so a committed
+    /// change (e.g. `enabled = false`) takes effect without a restart. `reporter` receives every committed
+    /// rollback, with its evidence, for the CRITICAL cluster event.
+    static RollbackManager rollbackManager(NodeId self,
+                                           Supplier<RollbackConfig> policy,
+                                           ClusterNode<KVCommand<AetherKey>> cluster,
+                                           KVStore<AetherKey, AetherValue> kvStore,
+                                           LeaderManager leaderManager,
+                                           Consumer<RollbackEvent.AutoRollbackExecuted> reporter) {
         record rollbackManager(NodeId self,
-                               RollbackConfig config,
+                               Supplier<RollbackConfig> policy,
+                               Consumer<RollbackEvent.AutoRollbackExecuted> reporter,
                                ClusterNode<KVCommand<AetherKey>> cluster,
                                KVStore<AetherKey, AetherValue> kvStore,
                                LeaderManager leaderManager,
@@ -290,6 +310,8 @@ public interface RollbackManager {
 
             @Override
             public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
+                var config = policy.get();
+
                 if (!config.enabled()) {
                     log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
 
@@ -311,7 +333,7 @@ public interface RollbackManager {
                 var artifactBase = event.artifact().base();
 
                 Option.option(rollbackStates.get(artifactBase))
-                      .onPresent(state -> decide(event, state))
+                      .onPresent(state -> decide(event, state, config))
                       .onEmpty(() -> log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
                                               event.requestId(),
                                               event.artifact()));
@@ -320,17 +342,18 @@ public interface RollbackManager {
             /// #1573: a stale event (the failed version is no longer the target) and a managed deployment
             /// owning the artifact both skip before the state's own checks.
             @Contract
-            private void decide(SliceFailureEvent.AllInstancesFailed event, RollbackState state) {
+            private void decide(SliceFailureEvent.AllInstancesFailed event, RollbackState state, RollbackConfig config) {
                 var failedArtifact = event.artifact();
 
                 eligibility(failedArtifact, state).flatMap(_ -> state.canRollback(config,
                                                                                   System.currentTimeMillis()))
                            .onFailure(cause -> logRollbackSkipped(cause,
                                                                   event.requestId(),
-                                                                  failedArtifact))
-                           .onSuccess(decision -> executeRollback(failedArtifact,
+                                                                  failedArtifact,
+                                                                  config))
+                           .onSuccess(decision -> executeRollback(event,
                                                                   decision,
-                                                                  event.requestId()));
+                                                                  config));
             }
 
             private Result<Unit> eligibility(Artifact failedArtifact, RollbackState state) {
@@ -488,7 +511,7 @@ public interface RollbackManager {
             }
 
             @Contract
-            private void logRollbackSkipped(Cause cause, String requestId, Artifact artifact) {
+            private void logRollbackSkipped(Cause cause, String requestId, Artifact artifact, RollbackConfig config) {
                 switch (cause) {
                     case RollbackError.General.NO_PREVIOUS_VERSION -> log.warn("[requestId={}] No previous version available for {}, cannot rollback",
                                                                                requestId,
@@ -515,7 +538,11 @@ public interface RollbackManager {
             }
 
             @Contract
-            private void executeRollback(Artifact failedArtifact, RollbackDecision decision, String requestId) {
+            private void executeRollback(SliceFailureEvent.AllInstancesFailed event,
+                                         RollbackDecision decision,
+                                         RollbackConfig config) {
+                var failedArtifact = event.artifact();
+                var requestId = event.requestId();
                 var rollbackArtifact = Artifact.artifact(failedArtifact.base(), decision.targetVersion());
 
                 log.warn("[requestId={}] INITIATING ROLLBACK: {} -> {} (rollback #{} of max {})",
@@ -524,13 +551,16 @@ public interface RollbackManager {
                          rollbackArtifact,
                          decision.rollbackNumber(),
                          config.maxRollbacks());
-                commitRollback(rollbackArtifact, decision, requestId);
+                commitRollback(event, rollbackArtifact, decision);
             }
 
             /// #1573: the rollback record goes FIRST in the same batch as the SliceTarget put, so the
             /// version-change notification the put raises already sees it (see [#computeVersionChange]).
             @Contract
-            private void commitRollback(Artifact rollbackArtifact, RollbackDecision decision, String requestId) {
+            private void commitRollback(SliceFailureEvent.AllInstancesFailed event,
+                                        Artifact rollbackArtifact,
+                                        RollbackDecision decision) {
+                var requestId = event.requestId();
                 var artifactBase = rollbackArtifact.base();
                 var now = System.currentTimeMillis();
                 var target = kvStore.get(SliceTargetKey.sliceTargetKey(artifactBase))
@@ -551,7 +581,7 @@ public interface RollbackManager {
                                                                                                      target));
 
                 cluster.apply(batch)
-                       .onSuccess(_ -> recordRollbackCompleted(artifactBase, decision, requestId, rollbackArtifact, now))
+                       .onSuccess(_ -> recordRollbackCompleted(event, decision, rollbackArtifact, now))
                        .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
                                                      requestId,
                                                      rollbackArtifact,
@@ -559,20 +589,21 @@ public interface RollbackManager {
             }
 
             @Contract
-            private void recordRollbackCompleted(ArtifactBase artifactBase,
+            private void recordRollbackCompleted(SliceFailureEvent.AllInstancesFailed event,
                                                  RollbackDecision decision,
-                                                 String requestId,
                                                  Artifact rollbackArtifact,
                                                  long timestamp) {
-                rollbackStates.computeIfPresent(artifactBase,
+                rollbackStates.computeIfPresent(rollbackArtifact.base(),
                                                 (_, state) -> state.withRollbackCompleted(decision.failedVersion(),
                                                                                           decision.targetVersion(),
                                                                                           timestamp));
-                log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {}", requestId, rollbackArtifact);
+                log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {}", event.requestId(), rollbackArtifact);
+                reporter.accept(RollbackEvent.AutoRollbackExecuted.autoRollbackExecuted(event, decision));
             }
         }
         var manager = new rollbackManager(self,
-                                          config,
+                                          policy,
+                                          reporter,
                                           cluster,
                                           kvStore,
                                           leaderManager,

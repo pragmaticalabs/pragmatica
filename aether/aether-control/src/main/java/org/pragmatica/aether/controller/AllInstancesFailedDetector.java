@@ -238,19 +238,33 @@ public final class AllInstancesFailedDetector {
                   WINDOW,
                   method);
         MethodName.methodName(method)
-                  .onSuccess(methodName -> publisher.accept(event(artifact, methodName, nodes)))
+                  .onSuccess(methodName -> publisher.accept(event(artifact, methodName, nodes, evidence(artifact, nodes))))
                   .onFailure(cause -> log.error("ALL INSTANCES FAILED for {} not published: method {} unparsable: {}",
                                                 artifact,
                                                 method,
                                                 cause.message()));
     }
 
-    private static AllInstancesFailed event(Artifact artifact, MethodName method, List<NodeId> nodes) {
+    private static AllInstancesFailed event(Artifact artifact,
+                                            MethodName method,
+                                            List<NodeId> nodes,
+                                            Map<NodeId, Long> evidence) {
         return AllInstancesFailed.allInstancesFailed("all-instances-failed:" + artifact.asString(),
                                                      artifact,
                                                      method,
                                                      Option.some(Causes.cause("Every ACTIVE instance recorded only slice defects within " + WINDOW)),
-                                                     nodes);
+                                                     nodes,
+                                                     evidence,
+                                                     WINDOW.millis());
+    }
+
+    /// Each hosting node's defects for `artifact` within the window — the evidence a rollback reports.
+    private Map<NodeId, Long> evidence(Artifact artifact, List<NodeId> nodes) {
+        var result = new HashMap<NodeId, Long>();
+
+        nodes.forEach(node -> result.put(node, sum(artifact, node, true)));
+
+        return Map.copyOf(result);
     }
 
     private String worstMethod(Artifact artifact) {

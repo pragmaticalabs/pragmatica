@@ -749,11 +749,7 @@ public final class ConfigLoader {
                                                         parseTimeSpan(doc,
                                                                       "timeouts.rolling_update",
                                                                       "cleanup_grace_period",
-                                                                      d.cleanupGracePeriod()),
-                                                        parseTimeSpan(doc,
-                                                                      "timeouts.rolling_update",
-                                                                      "rollback_cooldown",
-                                                                      d.rollbackCooldown()));
+                                                                      d.cleanupGracePeriod()));
     }
 
     private static TimeoutsConfig.ClusterTimeouts parseClusterTimeouts(TomlDocument doc,

@@ -13,6 +13,7 @@ import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
@@ -24,18 +25,24 @@ import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.RollbackConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.RollbackPolicyParser;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceDefect;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -87,19 +94,26 @@ class AutoRollbackOnAllInstancesFailedTest {
     @Test
     @Timeout(600)
     void everyInstanceDefective_insideBakeWindow_rollsBackOnce_andRaisesEventAndAlert() {
-        startDeployed(RollbackConfig.rollbackConfig());
+        startDeployed();
+        assertThat(committedClusterToml()).as("arming: the built-in default — a blank (seed) cluster TOML, no [rollback]")
+                                          .isBlank();
         seedRollbackRecord(System.currentTimeMillis());
 
         probeUntil(this::rolledBack);
 
         assertRolledBackOnce();
         assertEventAndAlert();
+        assertAutoRollbackEvent();
     }
 
     @Test
     @Timeout(600)
-    void everyInstanceDefective_rollbackDisabled_raisesEventAndAlert_butNeverRollsBack() {
-        startDeployed(RollbackConfig.rollbackConfig(false));
+    void everyInstanceDefective_rollbackDisabledInCommittedClusterToml_raisesEventAndAlert_butNeverRollsBack() {
+        startDeployed();
+        commitClusterToml("""
+                          [rollback]
+                          enabled = false
+                          """);
         seedRollbackRecord(System.currentTimeMillis());
 
         probeUntil(this::alertRaised);
@@ -112,7 +126,7 @@ class AutoRollbackOnAllInstancesFailedTest {
     @Test
     @Timeout(600)
     void everyInstanceDefective_outsideBakeWindow_raisesEventAndAlert_butNeverRollsBack() {
-        startDeployed(RollbackConfig.rollbackConfig());
+        startDeployed();
         seedRollbackRecord(System.currentTimeMillis() - TimeSpan.timeSpan(16).minutes().millis());
 
         probeUntil(this::alertRaised);
@@ -125,7 +139,7 @@ class AutoRollbackOnAllInstancesFailedTest {
     @Test
     @Timeout(600)
     void everyInstanceReturnsBusinessFailures_neverRaisesOrRollsBack() {
-        startDeployed(RollbackConfig.rollbackConfig());
+        startDeployed();
         seedRollbackRecord(System.currentTimeMillis());
 
         var deadline = System.currentTimeMillis() + QUIET_MS;
@@ -151,7 +165,7 @@ class AutoRollbackOnAllInstancesFailedTest {
     void leaderChangeMidDetection_newLeaderRollsBackExactlyOnce() {
         var startedAt = System.currentTimeMillis();
 
-        startDeployed(RollbackConfig.rollbackConfig());
+        startDeployed();
         sleep(Math.max(0, COLD_BOOT_CLEARANCE_MS - (System.currentTimeMillis() - startedAt)));
         seedRollbackRecord(System.currentTimeMillis());
         probeRounds(2);
@@ -167,10 +181,9 @@ class AutoRollbackOnAllInstancesFailedTest {
         assertRolledBackOnce();
     }
 
-    private void startDeployed(RollbackConfig config) {
+    private void startDeployed() {
         basePort = freeBasePort();
         cluster = EmberCluster.emberCluster(NODES, basePort, basePort + MGMT_OFFSET, basePort + APP_OFFSET, "arb");
-        cluster.withRollbackConfig(config);
         LifecycleAwait.settled("start auto-rollback cluster", cluster, cluster.start());
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
                .until(() -> cluster.currentLeader().isPresent());
@@ -204,6 +217,78 @@ class AutoRollbackOnAllInstancesFailedTest {
                        .isPresent() && node.invocationHandler()
                                            .localSlice(ARTIFACT)
                                            .isPresent();
+    }
+
+    private String committedClusterToml() {
+        return leader().kvStore()
+                       .getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class)
+                       .map(ClusterConfigValue::tomlContent)
+                       .or("");
+    }
+
+    /// Commits a full, apply-valid cluster TOML carrying `rollbackSection` into the RUNNING cluster — a
+    /// policy change without any restart. Armed by parsing the document with the same parser the apply path
+    /// validates with.
+    private void commitClusterToml(String rollbackSection) {
+        var node = leader();
+        var before = node.kvStore().getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class).unwrap();
+        var toml = """
+                   config_version = "1.0.0"
+                   [cluster]
+                   name = "%s"
+                   version = "1.0.0"
+                   [source.default]
+                   type = "forge"
+                   [source.default.core]
+                   count = %d
+
+                   %s
+                   """.formatted(before.clusterName(), NODES, rollbackSection);
+
+        assertThat(ClusterBootstrapConfigParser.parse(toml).isSuccess()).as("arming: the document passes apply validation").isTrue();
+        assertThat(RollbackPolicyParser.fromClusterToml(toml).map(RollbackConfig::enabled).or(true)).isFalse();
+        var value = new ClusterConfigValue(toml,
+                                           before.clusterName(),
+                                           before.version(),
+                                           before.desiredTopology(),
+                                           before.coreMin(),
+                                           before.coreMax(),
+                                           before.deploymentType(),
+                                           before.configVersion() + 1,
+                                           System.currentTimeMillis());
+        var id = UUID.randomUUID().toString();
+        var authority = node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
+        var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                  id,
+                                                                                  authority,
+                                                                                  List.of(),
+                                                                                  List.of(new KVCommand.Mutation<>(ClusterConfigKey.CURRENT,
+                                                                                                                   Option.some(before),
+                                                                                                                   Option.some(value))));
+
+        assertThat(node.<Object>apply(List.of(transaction)).await(REQUEST).unwrap())
+            .anyMatch(outcome -> outcome instanceof KVCommand.TransactionResult accepted && accepted.transactionId().equals(id)
+                                 && accepted.accepted());
+    }
+
+    private void assertAutoRollbackEvent() {
+        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
+               .until(this::autoRollbackEventEmitted);
+    }
+
+    /// The CRITICAL rollback event names the artifact, from→to, and the per-host defect evidence.
+    private boolean autoRollbackEventEmitted() {
+        return leader().eventAggregator()
+                       .events()
+                       .await(REQUEST)
+                       .map(events -> events.stream()
+                                            .anyMatch(event -> event instanceof ClusterEvent.AutoRollback rollback
+                                                               && rollback.severity() == ClusterEvent.Severity.CRITICAL
+                                                               && rollback.details().getOrDefault("artifact", "").equals(ARTIFACT.base().asString())
+                                                               && rollback.details().getOrDefault("from", "").equals(ARTIFACT.version().withQualifier())
+                                                               && rollback.details().getOrDefault("to", "").equals(EARLIER.withQualifier())
+                                                               && rollback.details().keySet().stream().filter(key -> key.startsWith("defects.")).count() == NODES))
+                       .or(false);
     }
 
     /// The rollback record a deploy from [#EARLIER] to the current version would have committed, anchored at

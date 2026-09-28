@@ -53,6 +53,7 @@ import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.controller.AllInstancesFailedDetector;
+import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -253,8 +254,10 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ReadLinearizationMode;
+import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
+import org.pragmatica.aether.config.cluster.RollbackPolicyParser;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.cluster.metrics.ConnectivityState;
@@ -3112,13 +3115,14 @@ public interface AetherNode extends ManageableNode {
                                                                                             .scalingConfig()
                                                                                             .evaluationInterval()
                                                                                             .millis());
-        var rollbackManager = config.rollback().enabled()
-                              ? RollbackManager.rollbackManager(config.self(),
-                                                                config.rollback(),
-                                                                clusterNode,
-                                                                kvStore,
-                                                                clusterNode.leaderManager())
-                              : RollbackManager.disabled();
+        // #1573: rollback policy is cluster-wide — the committed cluster TOML's [rollback] section, read at every
+        // decision, so committing `enabled = false` turns automatic rollback off without a restart.
+        var rollbackManager = RollbackManager.rollbackManager(config.self(),
+                                                              () -> committedRollbackPolicy(clusterConfigReader),
+                                                              clusterNode,
+                                                              kvStore,
+                                                              clusterNode.leaderManager(),
+                                                              delegateRouter::route);
         // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
         // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
         // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
@@ -5834,6 +5838,20 @@ public interface AetherNode extends ManageableNode {
     /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
     /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
     /// holder is populated before any snapshot is taken).
+    /// #1573: the committed cluster-wide automatic-rollback policy. Absent or blank (seed) cluster TOML is the
+    /// built-in default (ON). The section was validated at apply, so a failure here means a document committed
+    /// before validation existed; automatic rollback is then OFF — never take a destructive action on a policy
+    /// that cannot be read — and the failure is logged.
+    private static RollbackConfig committedRollbackPolicy(Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader) {
+        return clusterConfigReader.get()
+                                  .map(AetherValue.ClusterConfigValue::tomlContent)
+                                  .map(RollbackPolicyParser::fromClusterToml)
+                                  .or(() -> Result.success(RollbackConfig.rollbackConfig()))
+                                  .onFailure(cause -> LOG.error("Committed [rollback] policy unreadable, automatic rollback OFF: {}",
+                                                                cause.message()))
+                                  .or(RollbackConfig.rollbackConfig(false));
+    }
+
     /// #1573: the ACTIVE instances of every deployed artifact version on nodes the membership FSM still counts,
     /// as the all-instances-failed detector needs them. An instance left in KV on a node membership has declared
     /// DEAD serves nothing and is not a host; a counted node that stopped reporting still is — and its stale
@@ -7691,6 +7709,8 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
+        entries.add(MessageRouter.Entry.route(RollbackEvent.AutoRollbackExecuted.class,
+                                              eventAggregator::onAutoRollback));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               alertManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));

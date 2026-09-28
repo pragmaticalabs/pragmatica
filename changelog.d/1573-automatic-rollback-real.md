@@ -29,4 +29,17 @@
 - **Dead listener hooks.** Removed: `NodeLifecycle.addStateListener`, `BootstrapModule.onBootstrapCommitted` and `SliceInvoker.setFailureListener`. `ObservabilityRegistry.registerNodeCount` and `registerSliceCount` are now registered, so the `aether_cluster_nodes` and `aether_slices_active` gauges the soak dashboards query exist. `LeaderReconciler.setReconcileListener` stays, narrowed to a package-private test seam.
 - **Does not detect:** partial failure, business-logic regressions, hangs and deadlocks, asynchronous exceptions inside a slice's own Promise chain, or a version with no traffic.
   - A dead hosting node stops counting as a host only once membership declares it DEAD. Until then its stale metrics make the version undecidable. That includes the cold-boot window, where a never-healthy peer reads UNKNOWN.
-- Automatic rollback remains enabled by default, as before; no config binding exists for it yet.
+- **Automatic rollback is ON by default** (owner ruling).
+  - It triggers only on the narrow rule above: every live instance of a version recent enough to be inside its bake window reports bridge-level defects with no success.
+  - To turn it off, commit this in the cluster TOML; it takes effect at the next decision, with no restart:
+    ```toml
+    [rollback]
+    enabled = false
+    ```
+  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`, where a blank seed TOML rolls back and a committed `enabled = false` does not]
+- **Rollback policy is a cluster-wide `[rollback]` section of the committed cluster TOML.**
+  - Keys: `enabled`, `trigger_on_all_instances_failed`, `cooldown`, `max_rollbacks`, `bake_window`.
+  - It is typed and validated at apply. A mistyped value, a negative count, a non-positive bake window or an unknown key refuses the apply.
+  - The per-node rollback setting (`AetherNodeConfig.rollback`) is removed, and so is the node timeout `timeouts.rolling_update.rollback_cooldown`, which was parsed and never read. There is now one knob.
+  [verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/cluster/RollbackPolicyParserTest.java`]
+- **Every committed rollback emits a CRITICAL `AUTO_ROLLBACK` cluster event.** It names the artifact, the from and to versions, and the evidence: each hosting node's defect count and the window. [verified: same forge test and `RollbackManagerAutoRollbackSafetyTest`]

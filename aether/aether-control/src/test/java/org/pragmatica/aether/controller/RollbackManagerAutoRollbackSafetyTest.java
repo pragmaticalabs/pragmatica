@@ -6,6 +6,9 @@
 package org.pragmatica.aether.controller;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,6 +57,7 @@ class RollbackManagerAutoRollbackSafetyTest {
                                                                                TimeSpan.timeSpan(15).minutes())
                                                                .unwrap();
 
+    private final List<RollbackEvent.AutoRollbackExecuted> reported = new CopyOnWriteArrayList<>();
     private CapturingClusterNode clusterNode;
     private KVStore<AetherKey, AetherValue> kvStore;
 
@@ -161,6 +165,52 @@ class RollbackManagerAutoRollbackSafetyTest {
                        .onAllInstancesFailed(failure(V2));
 
         assertThat(clusterNode.appliedCommands).isEmpty();
+    }
+
+    /// #1573: the policy is read at every decision, so a committed `enabled = false` takes effect with no
+    /// restart, and turning it back on works the same way.
+    @Test
+    void policyReadAtDecisionTime_disableThenEnable_withoutRebuildingTheManager() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        var policy = new AtomicReference<>(RollbackConfig.rollbackConfig(false));
+        var manager = RollbackManager.rollbackManager(SELF,
+                                                      policy::get,
+                                                      clusterNode,
+                                                      kvStore,
+                                                      new AlwaysLeaderManager(SELF),
+                                                      reported::add);
+
+        manager.onAllInstancesFailed(failure(V2));
+        assertThat(clusterNode.appliedCommands).as("disabled by the committed policy").isEmpty();
+
+        policy.set(CONFIG);
+        manager.onAllInstancesFailed(failure(V2));
+        assertThat(clusterNode.appliedCommands).as("re-enabled without a restart").hasSize(2);
+    }
+
+    /// Every committed rollback is reported with the artifact, from→to and the per-host evidence.
+    @Test
+    void committedRollback_reportsArtifactVersionsAndEvidence() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        var evidence = Map.of(NodeId.nodeId("node-2").unwrap(), 4L, NodeId.nodeId("node-3").unwrap(), 5L);
+        var trigger = SliceFailureEvent.AllInstancesFailed.allInstancesFailed("req-1",
+                                                                              Artifact.artifact(BASE, V2),
+                                                                              MethodName.methodName("doSomething").unwrap(),
+                                                                              Option.none(),
+                                                                              List.copyOf(evidence.keySet()),
+                                                                              evidence,
+                                                                              30_000L);
+
+        RollbackManager.rollbackManager(SELF, () -> CONFIG, clusterNode, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+                       .onAllInstancesFailed(trigger);
+
+        assertThat(reported).hasSize(1);
+        var executed = reported.getFirst();
+
+        assertThat(executed.failedArtifact()).isEqualTo(Artifact.artifact(BASE, V2));
+        assertThat(executed.targetVersion()).isEqualTo(V1);
+        assertThat(executed.defectsPerHost()).isEqualTo(evidence);
+        assertThat(executed.windowMs()).isEqualTo(30_000L);
     }
 
     private RollbackManager manager() {

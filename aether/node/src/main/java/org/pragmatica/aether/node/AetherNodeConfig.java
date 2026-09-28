@@ -12,7 +12,6 @@ import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
@@ -59,7 +58,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<TlsConfig> tls,
                                TlsConfig quicTls,
                                TtmConfig ttm,
-                               RollbackConfig rollback,
                                AppHttpConfig appHttp,
                                ControllerConfig controllerConfig,
                                Option<ConfigurationProvider> configProvider,
@@ -108,7 +106,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public static SelfStage builder() {
-        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> ttm -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
             // Capacity limits do not define the initial voting electorate.
             var effectiveClusterSize = Math.max(1,
                                                 (int) coreNodes.stream()
@@ -137,7 +135,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         tls,
                                         quicTls,
                                         ttm,
-                                        rollback,
                                         appHttp,
                                         controllerConfig,
                                         configProvider,
@@ -190,7 +187,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     quicTls,
                                     ttm,
-                                    rollback,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -228,7 +224,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     quicTls,
                                     ttm,
-                                    rollback,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -264,7 +259,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     quicTls,
                                     ttm,
-                                    rollback,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -304,7 +298,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     quicTls,
                                     ttm,
-                                    rollback,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -344,7 +337,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     quicTls,
                                     ttm,
-                                    rollback,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -390,7 +382,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     quicTls,
                                     ttm,
-                                    rollback,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -444,7 +435,6 @@ public record AetherNodeConfig(TopologyConfig topology,
              + ", tls=" + tls
              + ", quicTls=" + quicTls
              + ", ttm=" + ttm
-             + ", rollback=" + rollback
              + ", appHttp=" + appHttp
              + ", controllerConfig=" + controllerConfig
              + ", configProvider=" + configProvider
@@ -627,18 +617,10 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public interface WithTtm {
-        WithRollback ttm(TtmConfig config);
+        WithControllerConfig ttm(TtmConfig config);
 
         default AetherNodeConfig build() {
             return ttm(TtmConfig.ttmConfig()).build();
-        }
-    }
-
-    public interface WithRollback {
-        WithControllerConfig rollback(RollbackConfig config);
-
-        default AetherNodeConfig build() {
-            return rollback(RollbackConfig.rollbackConfig()).build();
         }
     }
 
