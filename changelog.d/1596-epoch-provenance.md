@@ -47,6 +47,13 @@
   holds only this node's own segments, and a WAL-backed ring is seeded at the contiguous sealed end with every
   WAL record above it. This path guards a future tier or seed change. A log-less partition records no
   provenance]`
+- **Provenance applies only to WAL-backed (durable) partitions**, per the rc4 ruling. A partition without a log
+  (Forge, the explicit non-durable opt-in) records nothing, and `localProvenance` reports none so a comparison
+  excludes it. It is never flagged: no `HISTORY_MISSING`, `MARKED_DIVERGED` or `HISTORY_INCOMPLETE`. Pinned by
+  `PartitionProvenanceRecordingTest$WalLessPartition`.
+- **Segment block format change.** A block sealed with a log whose history is non-empty carries a provenance
+  header in front of its events, inside the payload. A block without it (sealed earlier, or without a log) reads
+  exactly as before: the header's magic is negative, where a record offset never is.
 - Provenance kinds: `ProvenanceEpoch` is `Owned` (a real epoch, with a reserved incarnation-ULID slot),
   `Unknown(d, floor)` or `Base(d, floor)`. A synthetic kind ranks as its floor for the log's ordering.
 - `[unverified: #1625 — the epoch key reserves a per-incarnation ULID slot that nothing populates until #1529
