@@ -27,7 +27,10 @@
   so a returning ex-owner's never-acked tail looked, by head alone, like history to catch up from — or, when it
   was the highest, like the log to serve, losing records acknowledged after it left. The gate now compares the
   last 1024 offsets it and each peer both hold (offset, timestamp, payload) before trusting or out-ranking
-  that peer. Any disagreement refuses promotion in either direction — nothing can tell which lineage was
+  that peer, and compares the chosen catch-up source pairwise with every other responder — a candidate that
+  lags two lineages agrees with both on its own short log, so only the pairwise check stops it pulling one
+  lineage's tail over records the other acknowledged. Two peers that merely lag differently along one lineage
+  never disagree, since only offsets both hold are compared. Any disagreement refuses promotion in either direction — nothing can tell which lineage was
   acknowledged — and is reported once as a CRITICAL warning naming the partition, the divergent node and both
   heads, and on the partition status read. The partition waits for an operator to pick the source (#1569,
   AD14). The warning is a WARN until the operator-warning channel (#1574) lands.
@@ -52,4 +55,5 @@
   hand-back after a move (the earlier activation is not reused).
 - `DivergentTailPromotionTest` pins both divergent-tail directions on real rings (the survivor never pulls the
   returning node's tail; the returning node is never activated over the lower peer, and the block is reported
-  once and on the status read); `OwnerActivationTest` pins the unreachable-member report and its window.
+  once and on the status read); `LowCandidateTwoLineagesTest` pins the lagging-candidate case (refused, naming
+  both peers), its positive control and differently-lagging peers of one lineage; `OwnerActivationTest` pins the unreachable-member report and its window.
