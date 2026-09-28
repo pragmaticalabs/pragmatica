@@ -80,10 +80,12 @@ public sealed interface RestoreGate {
                                    .findFirst());
     }
 
+    /// Keys are read as `Object`: the log also carries foreign-typed atoms under the `AetherKey` parameter
+    /// (the leader election's `LeaderKey`), and a typed read would throw inside the submit path.
     private static Stream<AetherKey> gatedKeys(KVCommand<AetherKey> command) {
         return switch (command) {
-            case KVCommand.Put<AetherKey, ?> put -> backedUp(put.key());
-            case KVCommand.Remove<AetherKey> remove -> backedUp(remove.key());
+            case KVCommand.Put<AetherKey, ?> put -> backedUp(keyOf(put));
+            case KVCommand.Remove<AetherKey> remove -> backedUp(keyOf(remove));
             case KVCommand.LeaderTransaction<AetherKey, ?> transaction -> transactionKeys(transaction);
             case KVCommand.Get<AetherKey> _, KVCommand.Noop<AetherKey> _ -> Stream.empty();
         };
@@ -95,12 +97,22 @@ public sealed interface RestoreGate {
                ? Stream.empty()
                : transaction.mutations()
                             .stream()
-                            .flatMap(mutation -> backedUp(mutation.key()));
+                            .flatMap(mutation -> backedUp(keyOf(mutation)));
     }
 
-    private static Stream<AetherKey> backedUp(AetherKey key) {
-        return BackupEntryCodec.isBackedUp(key)
-               ? Stream.of(key)
+    @SuppressWarnings("rawtypes")
+    private static Object keyOf(KVCommand command) {
+        return command.key();
+    }
+
+    @SuppressWarnings("rawtypes")
+    private static Object keyOf(KVCommand.Mutation mutation) {
+        return mutation.key();
+    }
+
+    private static Stream<AetherKey> backedUp(Object key) {
+        return key instanceof AetherKey aetherKey && BackupEntryCodec.isBackedUp(aetherKey)
+               ? Stream.of(aetherKey)
                : Stream.empty();
     }
 

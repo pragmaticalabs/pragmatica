@@ -277,11 +277,14 @@ public final class BackupRestoreCoordinator {
                : Route.READ_BACKUP;
     }
 
+    /// Keys read as `Object`: the store also holds foreign-typed atoms (`LeaderKey`) under `AetherKey`.
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private boolean holdsClusterState() {
-        return kvStore.snapshot()
-                      .keySet()
-                      .stream()
-                      .anyMatch(BackupEntryCodec::isBackedUp);
+        Map<Object, Object> snapshot = (Map) kvStore.snapshot();
+
+        return snapshot.keySet()
+                       .stream()
+                       .anyMatch(key -> key instanceof AetherKey aetherKey && BackupEntryCodec.isBackedUp(aetherKey));
     }
 
     private Promise<Unit> restoreHead(Source present) {
@@ -430,16 +433,16 @@ public final class BackupRestoreCoordinator {
                                                      .or(() -> success(0))
                                                      .map(size -> new Sized(entry, size)))
                                   .toList())
-                     .map(BackupRestoreCoordinator::split);
+                     .map(sized -> split(sized, CHUNK_BYTES));
     }
 
-    private static List<List<Map.Entry<AetherKey, AetherValue>>> split(List<Sized> entries) {
+    static List<List<Map.Entry<AetherKey, AetherValue>>> split(List<Sized> entries, long limit) {
         var chunks = new ArrayList<List<Map.Entry<AetherKey, AetherValue>>>();
         var current = new ArrayList<Map.Entry<AetherKey, AetherValue>>();
         var bytes = 0L;
 
         for (var sized : entries) {
-            if (!current.isEmpty() && bytes + sized.size() > CHUNK_BYTES) {
+            if (!current.isEmpty() && bytes + sized.size() > limit) {
                 chunks.add(List.copyOf(current));
                 current.clear();
                 bytes = 0L;
@@ -695,5 +698,5 @@ public final class BackupRestoreCoordinator {
 
     private record Loaded(String commit, BackupDocument document, long highestRecorded) {}
 
-    private record Sized(Map.Entry<AetherKey, AetherValue> entry, int size) {}
+    record Sized(Map.Entry<AetherKey, AetherValue> entry, int size) {}
 }
