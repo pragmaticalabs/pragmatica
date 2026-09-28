@@ -230,7 +230,7 @@ final class ClusterEventRedelivery {
     private void retry(Pending pending) {
         retried.incrementAndGet();
         attempt(pending.event()).onSuccess(_ -> held.decrementAndGet())
-                                .onFailure(cause -> onRetryFailure(pending, cause));
+               .onFailure(cause -> onRetryFailure(pending, cause));
     }
 
     private Unit onRetryFailure(Pending pending, Cause cause) {
@@ -254,7 +254,7 @@ final class ClusterEventRedelivery {
         synchronized (lock) {
             if (waiting.size() >= CAPACITY) {
                 dropHeld(DropReason.OVERFLOW,
-                     waiting.pollFirst().event());
+                         waiting.pollFirst().event());
             }
 
             waiting.addLast(pending);
