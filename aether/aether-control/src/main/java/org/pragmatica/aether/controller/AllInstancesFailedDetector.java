@@ -238,7 +238,10 @@ public final class AllInstancesFailedDetector {
                   WINDOW,
                   method);
         MethodName.methodName(method)
-                  .onSuccess(methodName -> publisher.accept(event(artifact, methodName, nodes, evidence(artifact, nodes))))
+                  .onSuccess(methodName -> publisher.accept(event(artifact,
+                                                                  methodName,
+                                                                  nodes,
+                                                                  evidence(artifact, nodes))))
                   .onFailure(cause -> log.error("ALL INSTANCES FAILED for {} not published: method {} unparsable: {}",
                                                 artifact,
                                                 method,

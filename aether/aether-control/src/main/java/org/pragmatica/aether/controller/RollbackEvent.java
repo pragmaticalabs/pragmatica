@@ -13,6 +13,7 @@ import org.pragmatica.aether.invoke.SliceFailureEvent.AllInstancesFailed;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 
+
 /// #1573: node-local notice of an automatic rollback the leader has COMMITTED, carrying everything an
 /// operator needs to see why: the failed artifact, the version rolled back to, and the evidence — each
 /// hosting node's slice defects within the detection window.

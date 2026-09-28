@@ -822,22 +822,28 @@ public final class ClusterEventAggregator {
     public void onAutoRollback(RollbackEvent.AutoRollbackExecuted executed) {
         emit(new AutoRollback(hlcClock.now(),
                               Severity.CRITICAL,
-                              "Automatic rollback of " + executed.failedArtifact().asString() + " to "
-                              + executed.targetVersion().withQualifier(),
+                              "Automatic rollback of " + executed.failedArtifact().asString()
+                             + " to " + executed.targetVersion().withQualifier(),
                               autoRollbackDetails(executed)));
     }
 
     private static Map<String, String> autoRollbackDetails(RollbackEvent.AutoRollbackExecuted executed) {
         var details = new HashMap<String, String>();
 
-        details.put("artifact", executed.failedArtifact().base().asString());
-        details.put("from", executed.failedArtifact().version().withQualifier());
-        details.put("to", executed.targetVersion().withQualifier());
-        details.put("rollbackNumber", String.valueOf(executed.rollbackNumber()));
-        details.put("windowMs", String.valueOf(executed.windowMs()));
+        details.put("artifact",
+                    executed.failedArtifact().base().asString());
+        details.put("from",
+                    executed.failedArtifact().version().withQualifier());
+        details.put("to",
+                    executed.targetVersion().withQualifier());
+        details.put("rollbackNumber",
+                    String.valueOf(executed.rollbackNumber()));
+        details.put("windowMs",
+                    String.valueOf(executed.windowMs()));
         details.put("requestId", executed.requestId());
         executed.defectsPerHost()
-                .forEach((node, defects) -> details.put("defects." + node.id(), String.valueOf(defects)));
+                .forEach((node, defects) -> details.put("defects." + node.id(),
+                                                        String.valueOf(defects)));
 
         return Map.copyOf(details);
     }

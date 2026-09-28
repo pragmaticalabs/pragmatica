@@ -17,6 +17,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.parse.TimeSpan.timeSpan;
 
+
 /// #1573: the cluster-wide automatic-rollback policy, the `[rollback]` section of the COMMITTED cluster TOML
 /// (`ClusterConfigKey.CURRENT`). Rollback is a leader decision, so its policy is cluster-scoped: a per-node
 /// file would let nodes disagree about what the leader may do.
@@ -58,26 +59,35 @@ public sealed interface RollbackPolicyParser {
         var defaults = RollbackConfig.rollbackConfig();
 
         return doc.hasSection(SECTION)
-               ? refuseUnknownKeys(doc).flatMap(_ -> Result.all(flag(doc, ENABLED, defaults.enabled()),
-                                                                flag(doc, TRIGGER, defaults.triggerOnAllInstancesFailed()),
-                                                                duration(doc, COOLDOWN, defaults.cooldown(), false),
-                                                                count(doc, MAX_ROLLBACKS, defaults.maxRollbacks()),
-                                                                duration(doc, BAKE_WINDOW, defaults.bakeWindow(), true))
+               ? refuseUnknownKeys(doc).flatMap(_ -> Result.all(flag(doc,
+                                                                     ENABLED,
+                                                                     defaults.enabled()),
+                                                                flag(doc,
+                                                                     TRIGGER,
+                                                                     defaults.triggerOnAllInstancesFailed()),
+                                                                duration(doc,
+                                                                         COOLDOWN,
+                                                                         defaults.cooldown(),
+                                                                         false),
+                                                                count(doc,
+                                                                      MAX_ROLLBACKS,
+                                                                      defaults.maxRollbacks()),
+                                                                duration(doc,
+                                                                         BAKE_WINDOW,
+                                                                         defaults.bakeWindow(),
+                                                                         true))
                                                            .flatMap(RollbackConfig::rollbackConfig))
                : success(defaults);
     }
 
     private static Result<Unit> refuseUnknownKeys(TomlDocument doc) {
-        var unknown = doc.keys(SECTION)
-                         .stream()
-                         .filter(key -> !KEYS.contains(key))
-                         .sorted()
-                         .toList();
+        var unknown = doc.keys(SECTION).stream().filter(key -> !KEYS.contains(key)).sorted().toList();
 
         return unknown.isEmpty()
                ? Result.unitResult()
-               : failed("[rollback] unknown key(s) " + String.join(", ", unknown) + "; valid keys: "
-                        + String.join(", ", List.of(ENABLED, TRIGGER, COOLDOWN, MAX_ROLLBACKS, BAKE_WINDOW)));
+               : failed("[rollback] unknown key(s) " + String.join(", ", unknown)
+                       + "; valid keys: " + String.join(", ",
+                                                        List.of(ENABLED, TRIGGER, COOLDOWN, MAX_ROLLBACKS, BAKE_WINDOW)));
     }
 
     private static Result<Boolean> flag(TomlDocument doc, String key, boolean fallback) {
@@ -98,17 +108,19 @@ public sealed interface RollbackPolicyParser {
     private static Result<TimeSpan> duration(TomlDocument doc, String key, TimeSpan fallback, boolean positive) {
         return present(doc, key)
                ? doc.getString(SECTION, key)
-                    .toResult(new ClusterConfigError.ParseFailed("[rollback] " + key + " must be a duration string, e.g. \"5m\""))
+                    .toResult(new ClusterConfigError.ParseFailed("[rollback] " + key
+                                                                + " must be a duration string, e.g. \"5m\""))
                     .flatMap(raw -> parsedDuration(key, raw, positive))
                : success(fallback);
     }
 
     private static Result<TimeSpan> parsedDuration(String key, String raw, boolean positive) {
-        return timeSpan(raw).mapError(cause -> new ClusterConfigError.ParseFailed("[rollback] " + key + ": "
-                                                                                  + cause.message()
-                                                                                  + " (was '" + raw + "')"))
-                            .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
-                            .flatMap(span -> checkSign(key, raw, span, positive));
+        return timeSpan(raw).mapError(cause -> new ClusterConfigError.ParseFailed("[rollback] " + key
+                                                                                 + ": " + cause.message()
+                                                                                 + " (was '" + raw
+                                                                                 + "')"))
+                       .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
+                       .flatMap(span -> checkSign(key, raw, span, positive));
     }
 
     private static Result<TimeSpan> checkSign(String key, String raw, TimeSpan span, boolean positive) {
@@ -118,9 +130,12 @@ public sealed interface RollbackPolicyParser {
 
         return valid
                ? success(span)
-               : failed("[rollback] " + key + " must be " + (positive
-                                                              ? "a positive"
-                                                              : "a non-negative") + " duration (was '" + raw + "')");
+               : failed("[rollback] " + key
+                       + " must be " + (positive
+                                        ? "a positive"
+                                        : "a non-negative")
+                       + " duration (was '" + raw
+                       + "')");
     }
 
     private static boolean present(TomlDocument doc, String key) {

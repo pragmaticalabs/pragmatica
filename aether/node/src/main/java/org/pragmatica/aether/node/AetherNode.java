@@ -7709,8 +7709,7 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
-        entries.add(MessageRouter.Entry.route(RollbackEvent.AutoRollbackExecuted.class,
-                                              eventAggregator::onAutoRollback));
+        entries.add(MessageRouter.Entry.route(RollbackEvent.AutoRollbackExecuted.class, eventAggregator::onAutoRollback));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               alertManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));

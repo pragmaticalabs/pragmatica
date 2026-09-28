@@ -119,13 +119,9 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
-    public record RollingUpdateTimeouts(TimeSpan kvOperation,
-                                        TimeSpan terminalRetention,
-                                        TimeSpan cleanupGracePeriod) {
+    public record RollingUpdateTimeouts(TimeSpan kvOperation, TimeSpan terminalRetention, TimeSpan cleanupGracePeriod) {
         public static RollingUpdateTimeouts rollingUpdateTimeouts() {
-            return new RollingUpdateTimeouts(timeSpan(30).seconds(),
-                                             timeSpan(1).hours(),
-                                             timeSpan(5).minutes());
+            return new RollingUpdateTimeouts(timeSpan(30).seconds(), timeSpan(1).hours(), timeSpan(5).minutes());
         }
     }
 

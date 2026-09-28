@@ -342,7 +342,9 @@ public interface RollbackManager {
             /// #1573: a stale event (the failed version is no longer the target) and a managed deployment
             /// owning the artifact both skip before the state's own checks.
             @Contract
-            private void decide(SliceFailureEvent.AllInstancesFailed event, RollbackState state, RollbackConfig config) {
+            private void decide(SliceFailureEvent.AllInstancesFailed event,
+                                RollbackState state,
+                                RollbackConfig config) {
                 var failedArtifact = event.artifact();
 
                 eligibility(failedArtifact, state).flatMap(_ -> state.canRollback(config,
@@ -351,9 +353,7 @@ public interface RollbackManager {
                                                                   event.requestId(),
                                                                   failedArtifact,
                                                                   config))
-                           .onSuccess(decision -> executeRollback(event,
-                                                                  decision,
-                                                                  config));
+                           .onSuccess(decision -> executeRollback(event, decision, config));
             }
 
             private Result<Unit> eligibility(Artifact failedArtifact, RollbackState state) {
@@ -597,7 +597,9 @@ public interface RollbackManager {
                                                 (_, state) -> state.withRollbackCompleted(decision.failedVersion(),
                                                                                           decision.targetVersion(),
                                                                                           timestamp));
-                log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {}", event.requestId(), rollbackArtifact);
+                log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {}",
+                         event.requestId(),
+                         rollbackArtifact);
                 reporter.accept(RollbackEvent.AutoRollbackExecuted.autoRollbackExecuted(event, decision));
             }
         }
