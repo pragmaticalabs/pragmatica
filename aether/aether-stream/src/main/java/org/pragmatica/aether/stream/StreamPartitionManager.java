@@ -265,6 +265,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final OwnerWriteAdmission ADMIT_ALL = (_, _) -> Option.none();
     /// Default owner promotion gate (#1555): Forge/unit/legacy managers act as owner without promotion.
     private static final OwnerServeGate ADMIT_OWNER = (_, _) -> Result.unitResult();
+    /// Default owner promotion block source (#1555): no promotion gate, so nothing is ever blocked.
+    private static final OwnerBlockSource NO_BLOCK = (_, _) -> Option.none();
     /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
     /// owner-write admission (#1230) — only the epoch fence applies to them.
     private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
@@ -280,6 +282,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// admission) and by owner-role reads ([#readServing], [#mayServeAsOwner]). Default: [#ADMIT_OWNER].
     /// Volatile: set once at wiring.
     private volatile OwnerServeGate ownerServeGate = ADMIT_OWNER;
+
+    /// Why this node's owner promotion of a partition waits for an operator (#1555), read by the partition status
+    /// view. Default: [#NO_BLOCK]. Volatile: set once at wiring.
+    private volatile OwnerBlockSource ownerBlockSource = NO_BLOCK;
 
     /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
@@ -606,6 +612,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         Result<Unit> admit(String stream, int partition);
     }
 
+    /// Owner promotion block (#1555): the reason this node's promotion of `(stream, partition)` cannot complete
+    /// without an operator, if any. `AetherNode` binds [OwnerActivation#blockOf]; the default reports none.
+    @FunctionalInterface
+    public interface OwnerBlockSource {
+        Option<OwnerActivation.ActivationBlock> blockOf(String stream, int partition);
+    }
+
     /// Committed-config source for the owner-side forwarded-publish race recovery (write-forward race fix).
     /// Reports the LOCALLY-VISIBLE committed `StreamConfig` for a stream, read straight from applied KV
     /// state, so the {@link #publishForwarded} path can lazily materialize a partition whose config commit
@@ -710,6 +723,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerServeGate(OwnerServeGate gate) {
         this.ownerServeGate = gate;
+    }
+
+    /// Late-bind the owner promotion block source (#1555). Set once at wiring.
+    @Contract
+    public void ownerBlockSource(OwnerBlockSource source) {
+        this.ownerBlockSource = source;
+    }
+
+    /// Why this node's owner promotion of `(streamName, partition)` waits for an operator (#1555), if it does.
+    public Option<OwnerActivation.ActivationBlock> ownerActivationBlock(String streamName, int partition) {
+        return ownerBlockSource.blockOf(streamName, partition);
     }
 
     /// Whether this node may currently serve `(streamName, partition)` as its owner (#1555): the reported

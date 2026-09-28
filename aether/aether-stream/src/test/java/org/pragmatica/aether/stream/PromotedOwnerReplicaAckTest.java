@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
@@ -125,7 +126,10 @@ class PromotedOwnerReplicaAckTest {
                                                (_, _, _) -> Promise.success(head(replica)),
                                                (_, _) -> head(owner),
                                                (stream, partition, source, tail) -> catchUpFromReplica(tail),
-                                               () -> true);
+                                               () -> true,
+                                               PromotionTestRanges.over(Map.of(X, owner, R, replica)),
+                                               PromotionTestRanges.NO_ALARM,
+                                               PromotionTestRanges.NEVER_ALARM);
     }
 
     private Promise<Long> catchUpFromReplica(long tail) {

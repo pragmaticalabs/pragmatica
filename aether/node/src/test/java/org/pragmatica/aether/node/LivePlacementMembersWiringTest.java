@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.stream.StreamError;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -74,6 +76,25 @@ class LivePlacementMembersWiringTest {
 
         assertThat(code).contains("streamReplicaSetController.committedOwnerSource((stream,partition)->kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,partition),StreamPartitionOwnershipValue.class).map(StreamPartitionOwnershipValue::owner));");
         assertThat(code).contains("streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);");
+    }
+
+    /// #1555 items 7/8: the gate's block reaches the partition status read, the alarm is the operator warning, the
+    /// unreachable window is two SWIM suspect windows, and the overlap read uses the node's rings and peers.
+    @Test
+    void ownerPromotionBlock_reachesStatusReadAlarmAndWindow() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("streamPartitionManager.ownerBlockSource(ownerActivation::blockOf);");
+        assertThat(code).contains("AetherNode::raiseOwnerPromotionBlock,ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()));");
+        assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
+        assertThat(code).contains("(node,stream,partition,from,to)->readOwnerRange(config.self(),streamPartitionManager,streamForwardClient,node,stream,partition,from,to)");
+    }
+
+    /// The overlap read recognises a peer's expired cursor by message (remote causes travel as text): the marker
+    /// must be a fragment of the real [StreamError.CursorExpired] message.
+    @Test
+    void expiredCursorMarker_matchesTheCursorExpiredMessage() {
+        assertThat(new StreamError.CursorExpired(3, 9).message()).contains(AetherNode.EXPIRED_CURSOR_MARKER);
     }
 
     @Test

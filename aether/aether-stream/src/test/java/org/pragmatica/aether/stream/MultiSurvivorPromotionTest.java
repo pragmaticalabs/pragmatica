@@ -83,7 +83,10 @@ class MultiSurvivorPromotionTest {
                                                    (target, _, _) -> Promise.success(head(peers.get(target))),
                                                    (_, _) -> head(f1),
                                                    (stream, partition, source, tail) -> copy(peers.get(source), tail),
-                                                   () -> true);
+                                                   () -> true,
+                                                   PromotionTestRanges.over(Map.of(F1, f1, F2, f2, F3, f3)),
+                                                   PromotionTestRanges.NO_ALARM,
+                                                   PromotionTestRanges.NEVER_ALARM);
 
         f1.placementRoleSupplier((_, _) -> ReplicaSetController.Role.OWNER);
         f1.ownerServeGate(gate::admit);

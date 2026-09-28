@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
@@ -125,7 +126,10 @@ class OwnerPromotionGateShapesTest {
                                                (_, _, _) -> Promise.success(head(holder)),
                                                (_, _) -> head(exOwner),
                                                this::catchUpFromHolder,
-                                               () -> true);
+                                               () -> true,
+                                               PromotionTestRanges.over(Map.of(X, exOwner, Y, holder)),
+                                               PromotionTestRanges.NO_ALARM,
+                                               PromotionTestRanges.NEVER_ALARM);
     }
 
     private Promise<Unit> round(String stream, int partition) {

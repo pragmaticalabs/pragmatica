@@ -887,6 +887,8 @@ public interface AetherNode extends ManageableNode {
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
     /// A4 catch-up: number of events pulled per forward-read page during partition backfill.
     int STREAM_CATCHUP_BATCH_SIZE = 256;
+    /// The stable fragment of [StreamError.CursorExpired]'s message (#1555 overlap read).
+    String EXPIRED_CURSOR_MARKER = "has expired, oldest available is";
     /// A4 periodic backfill re-drive interval. `reconcilePartition` fires `onBecameReplica → backfill`
     /// ONCE per reconcile edge (no built-in retry), so a cold-start replica that observed NO_SOURCE on
     /// its first attempt would never re-attempt and stay SYNCING forever. This periodic re-drive
@@ -1486,6 +1488,114 @@ public interface AetherNode extends ManageableNode {
                                                             int partition) {
         return pagePeerWatermark(forwardClient::readRemoteCatchup, target, streamName, partition, 0L).fold(result -> result.fold(AetherNode::emptyWhenNotHeld,
                                                                                                                                  Promise::success));
+    }
+
+    /// #1555 item 8: how long a promotion may stay blocked on unreachable members before it is reported — two
+    /// SWIM suspect windows, so a member that is merely slow to be declared FAULTY does not raise it.
+    private static TimeSpan ownerPromotionAlarmWindow(TimeSpan suspectTimeout) {
+        return suspectTimeout.plus(suspectTimeout);
+    }
+
+    /// #1555: a partition whose owner promotion waits for an operator (a divergent peer, or members unreachable
+    /// past the alarm window). The gate raises each distinct block once.
+    private static Unit raiseOwnerPromotionBlock(OwnerActivation.ActivationBlock block) {
+        // TODO(#1574): raise as a CRITICAL OperatorWarning once #1574 merges. Until then the operator-visible
+        // surfaces are this WARN and the partition status read (`ownerActivationBlock` on STREAM_REPLICAS).
+        LOG.warn("CRITICAL: {}", block.message());
+
+        return Unit.unit();
+    }
+
+    /// #1555 overlap verification: the APPENDED records `from .. to` held by `node` — this node's ring, or a
+    /// peer's over the catch-up read class the probe and the catch-up use, so what is compared is what would be
+    /// pulled. Offsets a side no longer holds are not compared: the local read starts at the ring's tail, and a
+    /// peer that answers "expired" contributes nothing.
+    private static Promise<List<OffHeapRingBuffer.RawEvent>> readOwnerRange(NodeId self,
+                                                                          StreamPartitionManager manager,
+                                                                          StreamForwardClient forwardClient,
+                                                                          NodeId node,
+                                                                          String streamName,
+                                                                          int partition,
+                                                                          long from,
+                                                                          long to) {
+        return node.equals(self)
+               ? readLocalRange(manager, streamName, partition, from, to)
+               : readPeerRange(forwardClient, node, streamName, partition, from, to);
+    }
+
+    private static Promise<List<OffHeapRingBuffer.RawEvent>> readLocalRange(StreamPartitionManager manager,
+                                                                          String streamName,
+                                                                          int partition,
+                                                                          long from,
+                                                                          long to) {
+        var start = Math.max(from,
+                             manager.partitionInfo(streamName, partition)
+                                    .map(StreamPartitionManager.PartitionInfo::tailOffset)
+                                    .or(from));
+
+        return start > to
+               ? Promise.success(List.of())
+               : manager.readAppended(streamName, partition, start, (int) (to - start + 1))
+                        .async();
+    }
+
+    private static Promise<List<OffHeapRingBuffer.RawEvent>> readPeerRange(StreamForwardClient forwardClient,
+                                                                         NodeId target,
+                                                                         String streamName,
+                                                                         int partition,
+                                                                         long from,
+                                                                         long to) {
+        return pagePeerRange(forwardClient, target, streamName, partition, from, to, List.of()).fold(result -> result.fold(AetherNode::nothingWhenExpired,
+                                                                                                                              Promise::success));
+    }
+
+    /// A peer whose ring and tier no longer hold the start of the range answers `CursorExpired`, which travels
+    /// as its message only; such a peer has nothing comparable at those offsets.
+    private static Promise<List<OffHeapRingBuffer.RawEvent>> nothingWhenExpired(Cause cause) {
+        return cause.message()
+                    .contains(EXPIRED_CURSOR_MARKER)
+               ? Promise.success(List.of())
+               : cause.promise();
+    }
+
+    private static Promise<List<OffHeapRingBuffer.RawEvent>> pagePeerRange(StreamForwardClient forwardClient,
+                                                                         NodeId target,
+                                                                         String streamName,
+                                                                         int partition,
+                                                                         long cursor,
+                                                                         long to,
+                                                                         List<OffHeapRingBuffer.RawEvent> gathered) {
+        return forwardClient.readRemoteCatchup(target,
+                                               streamName,
+                                               partition,
+                                               cursor,
+                                               (int) Math.min(STREAM_CATCHUP_BATCH_SIZE, to - cursor + 1))
+                            .flatMap(result -> continuePeerRange(forwardClient,
+                                                                 target,
+                                                                 streamName,
+                                                                 partition,
+                                                                 to,
+                                                                 gathered,
+                                                                 result));
+    }
+
+    private static Promise<List<OffHeapRingBuffer.RawEvent>> continuePeerRange(StreamForwardClient forwardClient,
+                                                                             NodeId target,
+                                                                             String streamName,
+                                                                             int partition,
+                                                                             long to,
+                                                                             List<OffHeapRingBuffer.RawEvent> gathered,
+                                                                             StreamForwardClient.ReadForwardResult result) {
+        var page = result.events()
+                         .stream()
+                         .filter(event -> event.offset() <= to)
+                         .map(event -> OffHeapRingBuffer.RawEvent.rawEvent(event.offset(), event.data(), event.timestamp()))
+                         .toList();
+        var all = Stream.concat(gathered.stream(), page.stream()).toList();
+
+        return page.isEmpty() || page.getLast().offset() >= to
+               ? Promise.success(all)
+               : pagePeerRange(forwardClient, target, streamName, partition, page.getLast().offset() + 1, to, all);
     }
 
     /// The remote read failure travels as its message only ([StreamForwardError.ReadForwardFailed]), so the
@@ -4933,9 +5043,22 @@ public interface AetherNode extends ManageableNode {
                                                                                                                         partition),
                                                               streamSelfWatermark,
                                                               streamPartitionBackfill::catchUpOwnerFrom,
-                                                              clusterNode::isActive);
+                                                              clusterNode::isActive,
+                                                              (node, stream, partition, from, to) -> readOwnerRange(config.self(),
+                                                                                                                    streamPartitionManager,
+                                                                                                                    streamForwardClient,
+                                                                                                                    node,
+                                                                                                                    stream,
+                                                                                                                    partition,
+                                                                                                                    from,
+                                                                                                                    to),
+                                                              AetherNode::raiseOwnerPromotionBlock,
+                                                              ownerPromotionAlarmWindow(config.timeouts()
+                                                                                              .swim()
+                                                                                              .suspectTimeout()));
 
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
+        streamPartitionManager.ownerBlockSource(ownerActivation::blockOf);
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).

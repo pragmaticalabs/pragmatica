@@ -19,6 +19,7 @@ import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -228,7 +229,9 @@ public final class StreamReadRouter {
                                        .or(false) && partitionManager.mayServeAsOwner(streamName, partition),
                                   partitionManager.nextExpectedOffset(streamName, partition),
                                   partitionManager.earliestRetainedOffset(streamName, partition),
-                                  replicas);
+                                  replicas,
+                                  partitionManager.ownerActivationBlock(streamName, partition)
+                                                  .map(Cause::message));
     }
 
     private static ReplicaView toReplicaView(ReplicaDescriptor descriptor,
@@ -276,13 +279,15 @@ public final class StreamReadRouter {
     /// is itself the resolved HRW owner, in which case `replicas` is the authoritative full set.
     /// `ownerHeadOffset` is the local partition next-expected offset (head + 1) — on the owner this is
     /// the true tail used to spot a CAUGHT_UP replica whose `confirmedOffset` lags it (#333).
+    /// `ownerActivationBlock` is why this node's owner promotion waits for an operator (#1555), if it does.
     public record ReplicaSetView(String streamName,
                                  int partition,
                                  Option<String> ownerNodeId,
                                  boolean servedByOwner,
                                  long ownerHeadOffset,
                                  long earliestRetainedOffset,
-                                 List<ReplicaView> replicas) {}
+                                 List<ReplicaView> replicas,
+                                 Option<String> ownerActivationBlock) {}
 
     /// Per-replica state row: `state` is the `ReplicationState` name (SYNCING / CAUGHT_UP / LAGGING),
     /// `confirmedOffset` the replica's acked watermark, `hrwOwner` whether this replica is the resolved

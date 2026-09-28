@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -23,6 +24,7 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
@@ -51,15 +53,31 @@ class OwnerActivationTest {
     private final AtomicBoolean catchUpSucceeds = new AtomicBoolean(true);
     private final AtomicBoolean consensusActive = new AtomicBoolean(true);
 
-    private final OwnerActivation activation = OwnerActivation.ownerActivation(SELF,
-                                                                               (_, _) -> record.get(),
-                                                                               (_, _) -> placementOwner.get(),
-                                                                               Option.some(this::round),
-                                                                               members::get,
-                                                                               this::probe,
-                                                                               (_, _) -> localWatermark.get(),
-                                                                               this::catchUp,
-                                                                               consensusActive::get);
+    private final List<OwnerActivation.ActivationBlock> alarms = new CopyOnWriteArrayList<>();
+    private final OwnerActivation activation = gate(PromotionTestRanges.NEVER_ALARM);
+
+    /// Every range reads empty, so no overlap is compared: divergence is pinned on real rings in
+    /// [DivergentTailPromotionTest].
+    private OwnerActivation gate(TimeSpan unreachableAlarmAfter) {
+        return OwnerActivation.ownerActivation(SELF,
+                                               (_, _) -> record.get(),
+                                               (_, _) -> placementOwner.get(),
+                                               Option.some(this::round),
+                                               members::get,
+                                               this::probe,
+                                               (_, _) -> localWatermark.get(),
+                                               this::catchUp,
+                                               consensusActive::get,
+                                               (_, _, _, _, _) -> Promise.success(List.of()),
+                                               this::raise,
+                                               unreachableAlarmAfter);
+    }
+
+    private Unit raise(OwnerActivation.ActivationBlock block) {
+        alarms.add(block);
+
+        return Unit.unit();
+    }
 
     private Promise<Unit> round(String stream, int partition) {
         rounds.incrementAndGet();
@@ -173,6 +191,45 @@ class OwnerActivationTest {
 
         assertThat(activate()).as("proceeds once the member is gone from the live set").isTrue();
         assertThat(catchUps).as("and still catches up to the reachable member ahead").containsExactly("peer-b@30");
+    }
+
+    /// #1555 item 8: a member unreachable for longer than the alarm window keeps the partition BLOCKED and is
+    /// reported once — naming the partition, the unreachable member and the responders — and on the status read.
+    @Test
+    void activate_unreachablePastAlarmWindow_staysBlockedAndReportsOnce() {
+        var reporting = gate(TimeSpan.timeSpan(0).millis());
+
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+            LockSupport.parkNanos(1_000_000L);
+            assertThat(reporting.activate(STREAM, PARTITION).await().isSuccess()).as("never bypassed").isFalse();
+        }
+
+        assertThat(alarms).hasSize(1);
+        assertThat(alarms.getFirst()).isEqualTo(new OwnerActivation.ActivationBlock.HoldersUnreachable(STREAM,
+                                                                                                       PARTITION,
+                                                                                                       List.of(PEER_A),
+                                                                                                       List.of(PEER_B),
+                                                                                                       TimeSpan.timeSpan(0).millis()));
+        assertThat(reporting.blockOf(STREAM, PARTITION)).isEqualTo(Option.some(alarms.getFirst()));
+
+        members.set(List.of(SELF, PEER_B));
+
+        assertThat(reporting.activate(STREAM, PARTITION).await().isSuccess()).isTrue();
+        assertThat(reporting.blockOf(STREAM, PARTITION)).as("an activation clears the block").isEqualTo(Option.none());
+    }
+
+    @Test
+    void activate_unreachableWithinAlarmWindow_reportsNothing() {
+        members.set(List.of(SELF, PEER_A));
+        unreachable.add(PEER_A);
+
+        assertThat(activate()).isFalse();
+        assertThat(activate()).isFalse();
+        assertThat(alarms).isEmpty();
+        assertThat(activation.blockOf(STREAM, PARTITION)).isEqualTo(Option.none());
     }
 
     /// Owner-side fence: an activation is bound to the exact committed record. A newer record — even one naming

@@ -5,12 +5,14 @@
 package org.pragmatica.aether.stream;
 
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.replication.PartitionKey;
@@ -24,6 +26,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +60,30 @@ import org.slf4j.LoggerFactory;
 /// reaches DEAD, and promotion then blocks for as long as it stays in the live set — an outage of that partition
 /// with no recovery but removing the member (#1563: a black-holed peer that re-handshakes; the production form
 /// would be a wedged JVM whose network stack still completes handshakes).**
+///
+/// **Overlap verification (#1555 item 7, the KIP-101 interim).** No ring or WAL record carries an owner epoch,
+/// so a returning ex-owner's never-acked tail (the same offsets, written under an older ownership) is
+/// indistinguishable by HEAD from the acked history that replaced it. Before any peer is used as catch-up source,
+/// and for every other responder, the last [#OVERLAP_WINDOW] offsets both hold are compared record by record
+/// (offset, timestamp, payload — the #1505 notion of "the same event"). Any disagreement REFUSES activation,
+/// whichever side is higher: without an epoch nothing here can tell which of the two lineages was acknowledged,
+/// so neither is served and neither is pulled. The refusal is reported once through the [BlockAlarm] and on
+/// [#blockOf] (the partition status read); the partition then waits for an operator to pick the source
+/// (#1569's pick-source surface, AD14). The detect-and-flag follow-up over a durable per-log epoch history is
+/// #1596; the cluster never auto-truncates.
+///
+/// **The window is a named constant, not a derived bound, and the check is incomplete beyond it.** A divergent
+/// tail is at most what an owner appended beyond its last acknowledged offset, and nothing caps that per
+/// partition: the pre-append floor (`ReplicationManager.ensureReplicaFloor`) requires in-sync peers to EXIST,
+/// and `ReplicaRegistry.freshPeersFor` bounds a peer's lag against the freshest PEER, not against the owner's
+/// head — when every peer stops acking together all lags stay 0 and the owner keeps appending. A divergence
+/// that starts more than [#OVERLAP_WINDOW] offsets below the lower of the two heads is therefore not detected.
+///
+/// **An unreachable member that stays unreachable is reported, not bypassed (#1555 item 8).** After
+/// `unreachableAlarmAfter` of continuous probe failure the partition stays blocked and the block is reported
+/// once through the [BlockAlarm] and on [#blockOf], naming the unreachable members and the responders; the
+/// operator path is #1569's surface. An automatic bound is post-GA (#1579): it needs the ack-time replica set
+/// to be durable, which it is not — replica sets are HRW over live members, recomputed as membership changes.
 ///
 /// **Quorum loss clears every activation** ([#onQuorumStateChange]) and a node without an active consensus engine is
 /// never activated, so an ex-owner that heals back re-runs the whole gate before it serves again.
@@ -103,6 +130,58 @@ public final class OwnerActivation {
         }
     }
 
+    /// Read the APPENDED records `from .. to` of `(stream, partition)` held by `node` — self included. A node that
+    /// retains only part of the range returns that part; offsets missing on either side are not compared.
+    @FunctionalInterface
+    public interface RecordRange {
+        Promise<List<OffHeapRingBuffer.RawEvent>> read(NodeId node, String stream, int partition, long from, long to);
+    }
+
+    /// Where a partition whose promotion is blocked is reported: once per distinct [ActivationBlock]. `AetherNode`
+    /// binds the operator-facing warning.
+    @FunctionalInterface
+    public interface BlockAlarm {
+        Unit raise(ActivationBlock block);
+    }
+
+    /// A promotion that cannot complete without an operator: the partition stays un-activated, the gate keeps
+    /// refusing, and the block is readable on [#blockOf] until an activation succeeds or ownership leaves this node.
+    public sealed interface ActivationBlock extends Cause {
+        String streamName();
+
+        int partition();
+
+        /// `peer` holds, at an offset both hold, a record different from the local one: one of the two is a
+        /// divergent tail, and nothing here can tell which.
+        record DivergentPeer(String streamName, int partition, NodeId peer, long localHead, long peerHead) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] refused: %s disagrees with the local log where both hold records "
+                        + "(local head %d, peer head %d); one of them is a divergent tail and the partition waits "
+                        + "for an operator to pick the source").formatted(streamName, partition, peer, localHead, peerHead);
+            }
+        }
+
+        /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
+        /// higher watermark; `responders` answered.
+        record HoldersUnreachable(String streamName,
+                                  int partition,
+                                  List<NodeId> unreachable,
+                                  List<NodeId> responders,
+                                  TimeSpan blockedLongerThan) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] blocked for longer than %s: %s did not answer the watermark probe "
+                        + "and may hold acknowledged records (responders: %s); the partition waits for them or for "
+                        + "an operator").formatted(streamName, partition, blockedLongerThan, unreachable, responders);
+            }
+        }
+    }
+
+    /// How many of the most recent offsets two nodes both hold are compared before one is trusted or promoted
+    /// over the other. A named constant, not a derived bound — see the class comment.
+    public static final int OVERLAP_WINDOW = 1024;
+
     private record PeerWatermark(NodeId node, long watermark) {}
 
     private final NodeId self;
@@ -114,11 +193,20 @@ public final class OwnerActivation {
     private final SelfWatermark selfWatermark;
     private final OwnerCatchUp catchUp;
     private final BooleanSupplier consensusActive;
+    private final RecordRange ranges;
+    private final BlockAlarm alarm;
+    private final TimeSpan unreachableAlarmAfter;
 
     /// The committed record each partition was activated for; [Option#none] marks a first-owner activation.
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
 
     private final Set<PartitionKey> inFlight = ConcurrentHashMap.newKeySet();
+
+    /// The block currently reported for each partition; the alarm fires when it first appears or changes.
+    private final Map<PartitionKey, ActivationBlock> blocks = new ConcurrentHashMap<>();
+
+    /// When the current run of probe failures started (`System.nanoTime`), per partition.
+    private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
 
     private OwnerActivation(NodeId self,
                             OwnershipRecordSource records,
@@ -128,7 +216,10 @@ public final class OwnerActivation {
                             ReplicaWatermarkProbe probe,
                             SelfWatermark selfWatermark,
                             OwnerCatchUp catchUp,
-                            BooleanSupplier consensusActive) {
+                            BooleanSupplier consensusActive,
+                            RecordRange ranges,
+                            BlockAlarm alarm,
+                            TimeSpan unreachableAlarmAfter) {
         this.self = self;
         this.records = records;
         this.placementOwner = placementOwner;
@@ -138,6 +229,9 @@ public final class OwnerActivation {
         this.selfWatermark = selfWatermark;
         this.catchUp = catchUp;
         this.consensusActive = consensusActive;
+        this.ranges = ranges;
+        this.alarm = alarm;
+        this.unreachableAlarmAfter = unreachableAlarmAfter;
     }
 
     public static OwnerActivation ownerActivation(NodeId self,
@@ -148,7 +242,10 @@ public final class OwnerActivation {
                                                   ReplicaWatermarkProbe probe,
                                                   SelfWatermark selfWatermark,
                                                   OwnerCatchUp catchUp,
-                                                  BooleanSupplier consensusActive) {
+                                                  BooleanSupplier consensusActive,
+                                                  RecordRange ranges,
+                                                  BlockAlarm alarm,
+                                                  TimeSpan unreachableAlarmAfter) {
         return new OwnerActivation(self,
                                    records,
                                    placementOwner,
@@ -157,7 +254,10 @@ public final class OwnerActivation {
                                    probe,
                                    selfWatermark,
                                    catchUp,
-                                   consensusActive);
+                                   consensusActive,
+                                   ranges,
+                                   alarm,
+                                   unreachableAlarmAfter);
     }
 
     /// Whether this node may act as owner of `(stream, partition)` right now: its consensus engine is active,
@@ -210,6 +310,11 @@ public final class OwnerActivation {
         }
     }
 
+    /// The block reported for `(stream, partition)`, if its promotion currently waits for an operator.
+    public Option<ActivationBlock> blockOf(String stream, int partition) {
+        return Option.option(blocks.get(PartitionKey.partitionKey(stream, partition)));
+    }
+
     private Promise<Unit> runGate(String stream, int partition, PartitionKey key) {
         return freshView(stream, partition).flatMap(record -> catchUpToLiveHolders(stream, partition).map(_ -> record))
                         .map(record -> recordActivation(stream, partition, key, record));
@@ -220,6 +325,7 @@ public final class OwnerActivation {
                                   PartitionKey key,
                                   Option<StreamPartitionOwnershipValue> record) {
         activated.put(key, record);
+        clearBlock(key);
         log.info("Owner activation of {}[{}] complete at watermark {} for ownership record {}",
                  stream,
                  partition,
@@ -240,7 +346,7 @@ public final class OwnerActivation {
     private Promise<Option<StreamPartitionOwnershipValue>> firstOwnerView(String stream, int partition) {
         return claimsOwnership(stream, partition, Option.none())
                ? Promise.success(Option.none())
-               : ActivationError.NOT_OWNER.promise();
+               : notOwner(stream, partition);
     }
 
     private Promise<Option<StreamPartitionOwnershipValue>> refreshedView(String stream, int partition) {
@@ -254,7 +360,21 @@ public final class OwnerActivation {
 
         return claimsOwnership(stream, partition, current)
                ? Promise.success(current)
-               : ActivationError.NOT_OWNER.promise();
+               : notOwner(stream, partition);
+    }
+
+    /// Ownership left this node: whatever block it reported is no longer its to report.
+    private <T> Promise<T> notOwner(String stream, int partition) {
+        clearBlock(PartitionKey.partitionKey(stream, partition));
+
+        return ActivationError.NOT_OWNER.promise();
+    }
+
+    private Unit clearBlock(PartitionKey key) {
+        blocks.remove(key);
+        unreachableSince.remove(key);
+
+        return Unit.unit();
     }
 
     /// A committed record decides ownership; only without one does placement decide.
@@ -264,8 +384,8 @@ public final class OwnerActivation {
                                          .equals(self));
     }
 
-    /// Step 2: probe every other live placement member; any unreachable member blocks, a higher watermark is
-    /// pulled from its holder first.
+    /// Step 2: probe every other live placement member; any unreachable member blocks, every responder's overlap
+    /// with the local log is verified, and a higher watermark is pulled from its holder.
     private Promise<Unit> catchUpToLiveHolders(String stream, int partition) {
         var peers = liveMembers.get().stream().filter(member -> !member.equals(self)).toList();
 
@@ -276,23 +396,136 @@ public final class OwnerActivation {
         return Promise.allOf(peers.stream()
                                   .map(peer -> probe.probe(peer, stream, partition)
                                                     .map(watermark -> new PeerWatermark(peer, watermark)))
-                                  .toList()).flatMap(results -> catchUpFromHighest(stream, partition, results));
+                                  .toList()).flatMap(results -> reconcileWithPeers(stream, partition, peers, results));
     }
 
-    private Promise<Unit> catchUpFromHighest(String stream, int partition, List<Result<PeerWatermark>> results) {
-        if (results.stream().anyMatch(Result::isFailure)) {
-            return ActivationError.HOLDER_UNREACHABLE.promise();
+    private Promise<Unit> reconcileWithPeers(String stream,
+                                             int partition,
+                                             List<NodeId> peers,
+                                             List<Result<PeerWatermark>> results) {
+        var answered = results.stream().flatMap(result -> result.option().stream()).toList();
+
+        return answered.size() < peers.size()
+               ? holdersUnreachable(stream, partition, peers, answered)
+               : catchUpFromHighest(stream, partition, answered);
+    }
+
+    /// A member did not answer: refuse, and once the failures have run continuously for longer than
+    /// `unreachableAlarmAfter`, report the block.
+    private Promise<Unit> holdersUnreachable(String stream,
+                                             int partition,
+                                             List<NodeId> peers,
+                                             List<PeerWatermark> answered) {
+        var key = PartitionKey.partitionKey(stream, partition);
+        var since = unreachableSince.computeIfAbsent(key, _ -> System.nanoTime());
+
+        if (System.nanoTime() - since > unreachableAlarmAfter.nanos()) {
+            var responders = answered.stream().map(PeerWatermark::node).toList();
+
+            report(key,
+                   new ActivationBlock.HoldersUnreachable(stream,
+                                                          partition,
+                                                          peers.stream().filter(peer -> !responders.contains(peer)).toList(),
+                                                          responders,
+                                                          unreachableAlarmAfter));
         }
 
-        var local = selfWatermark.localWatermark(stream, partition);
+        return ActivationError.HOLDER_UNREACHABLE.promise();
+    }
 
-        return Option.from(results.stream()
-                                  .map(result -> result.or(new PeerWatermark(self, -1L)))
-                                  .filter(peer -> peer.watermark() > local)
-                                  .max(Comparator.comparingLong(PeerWatermark::watermark))).fold(() -> Promise.success(Unit.unit()),
-                                                                                                 highest -> pullSuffix(stream,
-                                                                                                                       partition,
-                                                                                                                       highest));
+    private Promise<Unit> catchUpFromHighest(String stream, int partition, List<PeerWatermark> answered) {
+        clearUnreachable(PartitionKey.partitionKey(stream, partition));
+
+        var local = selfWatermark.localWatermark(stream, partition);
+        var source = Option.from(answered.stream()
+                                         .filter(peer -> peer.watermark() > local)
+                                         .max(Comparator.comparingLong(PeerWatermark::watermark)));
+        var others = answered.stream().filter(peer -> source.filter(peer::equals).isEmpty()).toList();
+
+        return verifyAgreement(stream, partition, local, others).flatMap(_ -> catchUpFrom(stream, partition, local, source));
+    }
+
+    /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
+    private Unit clearUnreachable(PartitionKey key) {
+        unreachableSince.remove(key);
+        Option.option(blocks.get(key))
+              .filter(ActivationBlock.HoldersUnreachable.class::isInstance)
+              .onPresent(block -> blocks.remove(key, block));
+
+        return Unit.unit();
+    }
+
+    /// Every responder that is not the catch-up source must agree with the local log where both hold records:
+    /// a lower (or equal) peer that disagrees means the local tail, or the peer's, belongs to another lineage.
+    private Promise<Unit> verifyAgreement(String stream, int partition, long local, List<PeerWatermark> others) {
+        return Promise.allOf(others.stream()
+                                   .map(peer -> verifyOverlap(stream, partition, local, peer))
+                                   .toList())
+                      .flatMap(results -> Result.allOf(results).async())
+                      .mapToUnit();
+    }
+
+    private Promise<Unit> catchUpFrom(String stream, int partition, long local, Option<PeerWatermark> source) {
+        return source.fold(() -> Promise.success(Unit.unit()),
+                           highest -> verifySource(stream, partition, local, highest));
+    }
+
+    /// The source must agree with the local log where both hold records before its suffix is appended on top.
+    private Promise<Unit> verifySource(String stream, int partition, long local, PeerWatermark highest) {
+        return verifyOverlap(stream, partition, local, highest).flatMap(_ -> pullSuffix(stream, partition, highest));
+    }
+
+    /// Compare the last [#OVERLAP_WINDOW] offsets both heads cover; nothing overlaps when either side is empty.
+    private Promise<Unit> verifyOverlap(String stream, int partition, long local, PeerWatermark peer) {
+        var to = Math.min(local, peer.watermark());
+
+        if (to < 0) {
+            return Promise.success(Unit.unit());
+        }
+
+        var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
+
+        return Promise.all(ranges.read(self, stream, partition, from, to),
+                           ranges.read(peer.node(), stream, partition, from, to))
+                      .flatMap((mine, theirs) -> agreeOrRefuse(stream, partition, local, peer, mine, theirs));
+    }
+
+    private Promise<Unit> agreeOrRefuse(String stream,
+                                        int partition,
+                                        long local,
+                                        PeerWatermark peer,
+                                        List<OffHeapRingBuffer.RawEvent> mine,
+                                        List<OffHeapRingBuffer.RawEvent> theirs) {
+        return agree(mine, theirs)
+               ? Promise.success(Unit.unit())
+               : refuseDivergent(new ActivationBlock.DivergentPeer(stream, partition, peer.node(), local, peer.watermark()));
+    }
+
+    /// Two ranges agree when every offset present in both holds the same record there.
+    private static boolean agree(List<OffHeapRingBuffer.RawEvent> mine, List<OffHeapRingBuffer.RawEvent> theirs) {
+        var theirRecords = new HashSet<>(theirs);
+        var theirOffsets = theirs.stream().map(OffHeapRingBuffer.RawEvent::offset).collect(Collectors.toSet());
+
+        return mine.stream()
+                   .filter(event -> theirOffsets.contains(event.offset()))
+                   .allMatch(theirRecords::contains);
+    }
+
+    /// Logged by the alarm, once; every refused demand re-detects it silently.
+    private Promise<Unit> refuseDivergent(ActivationBlock.DivergentPeer block) {
+        report(PartitionKey.partitionKey(block.streamName(), block.partition()), block);
+
+        return block.promise();
+    }
+
+    /// Record the block and raise the alarm when it first appears or changes, so a partition that stays blocked
+    /// across many demands is reported once.
+    private Unit report(PartitionKey key, ActivationBlock block) {
+        var previous = Option.option(blocks.put(key, block));
+
+        return previous.filter(block::equals)
+                       .fold(() -> alarm.raise(block),
+                             _ -> Unit.unit());
     }
 
     private Promise<Unit> pullSuffix(String stream, int partition, PeerWatermark highest) {

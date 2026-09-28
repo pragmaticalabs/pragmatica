@@ -16,8 +16,27 @@
 - **An unreachable live member blocks promotion** until the membership FSM declares it dead and it leaves the
   live placement set; promotion never proceeds while a reachable member holds a higher watermark. Each probe
   times out on its own, but there is no bound independent of DEAD: a member that keeps handshaking while
-  answering nothing never reaches DEAD, and the partition then stays unpromoted until that member is removed
-  (#1563).
+  answering nothing never reaches DEAD (#1563). Such a stall is no longer silent: after two SWIM suspect
+  windows of continuous probe failure the partition stays blocked and is reported once as a CRITICAL warning
+  naming the partition, the unreachable members and the responders, and on the partition status read
+  (`ownerActivationBlock` on `STREAM_REPLICAS`). It waits for those members or for an operator (#1569's
+  surface). An automatic bound is a post-GA follow-up (#1579), conditional on the ack-time replica set
+  becoming durable: replica sets are HRW over live members and change with membership, so a quorum-overlap
+  rule against the replica set at probe time is not sound.
+- **Divergent tails refuse promotion (interim, KIP-101 shape).** No ring or WAL record carries an owner epoch,
+  so a returning ex-owner's never-acked tail looked, by head alone, like history to catch up from — or, when it
+  was the highest, like the log to serve, losing records acknowledged after it left. The gate now compares the
+  last 1024 offsets it and each peer both hold (offset, timestamp, payload) before trusting or out-ranking
+  that peer. Any disagreement refuses promotion in either direction — nothing can tell which lineage was
+  acknowledged — and is reported once as a CRITICAL warning naming the partition, the divergent node and both
+  heads, and on the partition status read. The partition waits for an operator to pick the source (#1569,
+  AD14). The warning is a WARN until the operator-warning channel (#1574) lands.
+- **Limitation of the divergence check:** the window is a named constant, not an enforced bound. Nothing caps
+  how far an owner may append beyond its last acknowledged offset (the replica floor requires in-sync peers to
+  exist, and peer lag is measured against the freshest peer, not the owner's head), so a divergence starting
+  more than 1024 offsets below the lower of the two heads is not detected, and offsets that either side has
+  already evicted are not compared. The complete detect-and-flag over a durable per-log epoch history is
+  #1596; the cluster never auto-truncates.
 - **Sticky ownership.** Every node now routes, and computes its role and `servedByOwner`, from the COMMITTED
   ownership record (HRW placement only before a record exists), so nodes agree on the owner even while their
   membership views disagree. Only the leader's ownership writer judges liveness, and it moves ownership only
@@ -31,3 +50,6 @@
   real partition rings with no failure detection involved: a reclaim with a short ring (appends only after
   catching up), a zombie with a stale committed view (no append, no `servedByOwner`, no owner read), and a
   hand-back after a move (the earlier activation is not reused).
+- `DivergentTailPromotionTest` pins both divergent-tail directions on real rings (the survivor never pulls the
+  returning node's tail; the returning node is never activated over the lower peer, and the block is reported
+  once and on the status read); `OwnerActivationTest` pins the unreachable-member report and its window.
