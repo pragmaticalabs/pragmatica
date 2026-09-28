@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.stream.SegmentTierPressure;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -71,6 +72,9 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// Reads the age of a segment rebuilt after a restart from its own block (#1604); none keeps such segments'
     /// age unknown.
     private final Option<SegmentReader> ageReader;
+    private final SegmentTierPressure pressure;
+    /// Set while the durable tier is at or above [SegmentTierPressure#WARN_AT], so one episode warns once.
+    private final AtomicBoolean underPressure = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile ScheduledFuture<?> scheduledFuture;
 
@@ -78,19 +82,22 @@ public final class RetentionEnforcer implements AutoCloseable {
                               SegmentIndex index,
                               RetentionPolicy retentionPolicy,
                               SegmentRetentionFloor retentionFloor,
-                              Option<SegmentReader> ageReader) {
+                              Option<SegmentReader> ageReader,
+                              SegmentTierPressure pressure) {
         this.storage = storage;
         this.index = index;
         this.retentionPolicy = retentionPolicy;
         this.retentionFloor = retentionFloor;
         this.ageReader = ageReader;
+        this.pressure = pressure;
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
                                                       SegmentIndex index,
                                                       RetentionPolicy retentionPolicy) {
         return new RetentionEnforcer(storage, index, retentionPolicy, SegmentRetentionFloor.NONE,
-                                     none());
+                                     none(),
+                                     SegmentTierPressure.NONE);
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
@@ -98,7 +105,8 @@ public final class RetentionEnforcer implements AutoCloseable {
                                                       RetentionPolicy retentionPolicy,
                                                       SegmentRetentionFloor retentionFloor) {
         return new RetentionEnforcer(storage, index, retentionPolicy, retentionFloor,
-                                     none());
+                                     none(),
+                                     SegmentTierPressure.NONE);
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage, SegmentIndex index, long retentionMs) {
@@ -106,7 +114,8 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      SegmentRetentionFloor.NONE,
-                                     none());
+                                     none(),
+                                     SegmentTierPressure.NONE);
     }
 
     public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
@@ -117,7 +126,8 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      retentionFloor,
-                                     none());
+                                     none(),
+                                     SegmentTierPressure.NONE);
     }
 
     /// As [#retentionEnforcer(StorageInstance, SegmentIndex, long, SegmentRetentionFloor)], reading the age of a
@@ -131,7 +141,23 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      index,
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
                                      retentionFloor,
-                                     some(ageReader));
+                                     some(ageReader),
+                                     SegmentTierPressure.NONE);
+    }
+
+    /// As above, also watching the durable segment tier's pressure (#1604).
+    public static RetentionEnforcer retentionEnforcer(StorageInstance storage,
+                                                      SegmentIndex index,
+                                                      long retentionMs,
+                                                      SegmentRetentionFloor retentionFloor,
+                                                      SegmentReader ageReader,
+                                                      SegmentTierPressure pressure) {
+        return new RetentionEnforcer(storage,
+                                     index,
+                                     RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs),
+                                     retentionFloor,
+                                     some(ageReader),
+                                     pressure);
     }
 
     @Contract
@@ -168,7 +194,31 @@ public final class RetentionEnforcer implements AutoCloseable {
     Promise<Integer> enforceNow() {
         return closed.get()
                ? Promise.success(0)
-               : learnUnknownAges().map(_ -> reclaimExpired(System.currentTimeMillis()));
+               : learnUnknownAges().map(_ -> reclaimExpired(System.currentTimeMillis()))
+                                   .onSuccess(_ -> reportPressure());
+    }
+
+    /// Once per pressure episode (#1604): the tier is at or above [SegmentTierPressure#WARN_AT], so seals
+    /// will soon fail and owner publishes will be refused at [SegmentTierPressure#REFUSE_AT].
+    /// TODO(#1574): raise it as a CRITICAL OperatorWarning cluster event as well.
+    @Contract
+    private void reportPressure() {
+        var utilization = pressure.utilization();
+
+        if (utilization < SegmentTierPressure.WARN_AT) {
+            underPressure.set(false);
+
+            return;
+        }
+
+        if (underPressure.compareAndSet(false, true)) {
+            log.warn("Durable stream segment tier is {}% full on this node (warning at {}%): stream seals fail when it "
+                    + "is full and owner publishes are refused (SEGMENT_TIER_FULL) from {}%. Raise [streaming] "
+                    + "segment_disk_max_bytes or add disk, or shorten retention",
+                     Math.round(utilization * 100),
+                     Math.round(SegmentTierPressure.WARN_AT * 100),
+                     Math.round(SegmentTierPressure.REFUSE_AT * 100));
+        }
     }
 
     private int reclaimExpired(long now) {
