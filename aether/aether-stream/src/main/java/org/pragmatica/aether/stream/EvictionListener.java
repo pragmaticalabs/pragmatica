@@ -6,7 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.util.List;
 
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -42,7 +42,7 @@ public interface EvictionListener {
     /// `(streamName, partition)` has `wal`, the durable holder of every range the listener takes from it but
     /// has not yet sealed (#1234). Called by the ring when its partition is constructed — before its WAL tail is
     /// replayed — so it never depends on the stream being registered anywhere yet.
-    default Unit walAttached(String streamName, int partition, PartitionWal wal) {
+    default Unit walAttached(String streamName, int partition, AppendLog wal) {
         return Unit.unit();
     }
 

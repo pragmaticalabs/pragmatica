@@ -186,7 +186,7 @@ class SegmentFallbackTest {
         @Test
         void fetch_offsetWhoseSealIsPending_failsInFlightAndTransient() {
             var pendingSeals = new CopyOnWriteArrayList<Promise<Unit>>();
-            var inFlightManager = streamPartitionManager(Long.MAX_VALUE, segmentSealer(_ -> pendingSeal(pendingSeals)));
+            var inFlightManager = streamPartitionManager(Long.MAX_VALUE, segmentSealer((_, _) -> pendingSeal(pendingSeals)));
             var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
 
             inFlightManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));

@@ -11,7 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamPartitionManager;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -126,7 +126,7 @@ class CatchUpWalDurabilityTest {
         return walStats().fsyncCount();
     }
 
-    private PartitionWal.WalStats walStats() {
+    private AppendLog.WalStats walStats() {
         return replica.walSnapshot()
                       .streams()
                       .stream()

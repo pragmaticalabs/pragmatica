@@ -19,7 +19,7 @@ import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -285,7 +285,7 @@ class GovernorFailoverHandlerTest {
                           .flatMap(view -> view.partitions().stream())
                           .filter(view -> view.partition() == PARTITION)
                           .flatMap(view -> view.wal().stream())
-                          .mapToLong(PartitionWal.WalStats::fsyncCount)
+                          .mapToLong(AppendLog.WalStats::fsyncCount)
                           .sum();
         }
     }
