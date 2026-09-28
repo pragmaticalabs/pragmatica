@@ -12,8 +12,8 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
-import org.pragmatica.aether.stream.wal.PartitionWal;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.WalRecord;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -210,7 +210,7 @@ class StreamPartitionManagerOrderedAppendTest {
                       .flatMap(view -> view.partitions().stream())
                       .filter(view -> view.partition() == PARTITION)
                       .flatMap(view -> view.wal().stream())
-                      .mapToLong(PartitionWal.WalStats::fsyncCount)
+                      .mapToLong(AppendLog.WalStats::fsyncCount)
                       .sum();
     }
 
@@ -234,7 +234,7 @@ class StreamPartitionManagerOrderedAppendTest {
     }
 
     private static List<WalRecord> replayAll(Path file) {
-        var wal = PartitionWal.open(file).unwrap();
+        var wal = AppendLog.open(file).unwrap();
         var records = new ArrayList<WalRecord>();
 
         wal.replay(-1L, records::add).onFailure(cause -> fail(cause.message()));

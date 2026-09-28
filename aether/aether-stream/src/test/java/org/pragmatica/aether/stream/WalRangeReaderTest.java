@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.segment.SegmentError;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 
 import java.nio.file.Path;
 import java.util.stream.LongStream;
@@ -31,11 +31,11 @@ class WalRangeReaderTest {
     @TempDir
     Path walDir;
 
-    private PartitionWal wal;
+    private AppendLog wal;
 
     @BeforeEach
     void setUp() {
-        wal = PartitionWal.open(walDir.resolve("0.wal")).onFailure(cause -> fail(cause.message())).unwrap();
+        wal = AppendLog.open(walDir.resolve("0.wal")).onFailure(cause -> fail(cause.message())).unwrap();
         // Offsets 0-4 and 6-9: offset 5 is missing from the WAL.
         LongStream.rangeClosed(0, 9).filter(offset -> offset != 5).forEach(this::append);
     }

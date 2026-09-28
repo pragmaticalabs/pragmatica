@@ -67,7 +67,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 ///
 /// #431 — WHAT THIS PROVES, AND WHY IT IS THE FULL IN-JVM SCOPE. This is a graceful full-cluster
 /// restart, and that is sufficient: stream durability is purely FSYNC-BEFORE-ACK. An owner append
-/// resolves its publish ack only after `PartitionWal.append`'s `force()` (verified in source), so an
+/// resolves its publish ack only after `AppendLog.append`'s `force()` (verified in source), so an
 /// acked event is on disk — surviving a `kill -9` — before the caller is told "published". Node
 /// shutdown adds NO durability: `AetherNode.stop()` runs `streamPartitionManager.close()`, which only
 /// fsyncs bytes ALREADY appended and closes the FD; it never drains un-appended ring events into the

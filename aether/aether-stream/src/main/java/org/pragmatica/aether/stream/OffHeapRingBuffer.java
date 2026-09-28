@@ -22,7 +22,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -1234,7 +1234,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// Tell this ring's eviction listener which WAL holds the partition's records (#1234), before anything
     /// is replayed into the ring, so every hand-over — recovery-time ones included — knows the WAL is there.
-    public Unit attachWal(PartitionWal wal) {
+    public Unit attachWal(AppendLog wal) {
         return listener.walAttached(streamName, partition, wal);
     }
 

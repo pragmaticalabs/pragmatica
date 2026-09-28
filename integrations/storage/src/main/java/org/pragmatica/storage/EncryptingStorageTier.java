@@ -324,4 +324,9 @@ public final class EncryptingStorageTier implements StorageTier {
     public boolean isShared() {
         return delegate.isShared();
     }
+
+    @Override
+    public boolean isDurable() {
+        return delegate.isDurable();
+    }
 }
