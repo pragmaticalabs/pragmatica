@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.parse.Number;
 
+
 /// Whether this cluster's state may become the backup head, given the head already there (#1532).
 ///
 /// **The remote's lineage changes only by an operator declaration.**
@@ -25,7 +26,6 @@ public enum BackupDecision {
     WRITE,
     STALE,
     GATED;
-
     /// An operator's genesis declaration, as committed in the backup repository.
     public record Declaration(String lineageId, long incarnation) {
         public static Declaration declaration(String lineageId, long incarnation) {
@@ -34,8 +34,7 @@ public enum BackupDecision {
 
         /// `<lineage> <incarnation>`; absent when the text is not exactly that.
         public static Option<Declaration> parse(String text) {
-            var parts = text.strip()
-                            .split(" ");
+            var parts = text.strip().split(" ");
 
             return parts.length == 2
                    ? Number.parseLong(parts[1])
@@ -52,24 +51,20 @@ public enum BackupDecision {
             return lineageId.equals(ours.lineageId()) && incarnation == ours.incarnation();
         }
     }
-
     public static BackupDecision decide(BackupHeader ours, Option<BackupHeader> head, Option<Declaration> declaration) {
         return head.map(existing -> decideAgainst(ours, existing, declaration))
                    .or(WRITE);
     }
-
     private static BackupDecision decideAgainst(BackupHeader ours, BackupHeader head, Option<Declaration> declaration) {
         return ours.isSameLineage(head)
                ? aheadOrStale(ours, head)
                : declaredOrGated(ours, declaration);
     }
-
     private static BackupDecision aheadOrStale(BackupHeader ours, BackupHeader head) {
         return head.isAhead(ours)
                ? STALE
                : WRITE;
     }
-
     private static BackupDecision declaredOrGated(BackupHeader ours, Option<Declaration> declaration) {
         return declaration.filter(declared -> declared.authorizes(ours))
                           .isPresent()

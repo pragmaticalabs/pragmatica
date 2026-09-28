@@ -199,7 +199,8 @@ public final class KvBackupService {
     <T> Promise<T> onWorker(Supplier<Result<T>> task) {
         var promise = Promise.<T> promise();
 
-        scheduler.schedule(() -> promise.resolve(task.get()), 0);
+        scheduler.schedule(() -> promise.resolve(task.get()),
+                           0);
 
         return promise;
     }
@@ -212,8 +213,7 @@ public final class KvBackupService {
                          .flatMap(this::alignWithRemote)
                          .flatMap(_ -> repository.commitFile(GitBackupRepository.DECLARATION,
                                                              declaration.render(),
-                                                             "declare genesis " + declaration.render()
-                                                                                             .strip()))
+                                                             "declare genesis " + declaration.render().strip()))
                          .flatMap(_ -> pushDeclaration())
                          .onSuccess(_ -> afterDeclaration());
     }
@@ -409,18 +409,23 @@ public final class KvBackupService {
 
     private Result<Head> readRemoteHead() {
         return repository.fetchRemoteHead()
-                         .fold(_ -> readLocalHead(HeadKind.UNREACHABLE), this::withRemoteDeclaration);
+                         .fold(_ -> readLocalHead(HeadKind.UNREACHABLE),
+                               this::withRemoteDeclaration);
     }
 
     private Result<Head> withRemoteDeclaration(Option<String> document) {
         return repository.remoteFile(GitBackupRepository.DECLARATION)
-                         .map(declaration -> Head.head(HeadKind.REMOTE, document, parseDeclaration(declaration)));
+                         .map(declaration -> Head.head(HeadKind.REMOTE,
+                                                       document,
+                                                       parseDeclaration(declaration)));
     }
 
     private Result<Head> readLocalHead(HeadKind kind) {
         return Result.all(repository.localHead(),
                           repository.localFile(GitBackupRepository.DECLARATION))
-                     .map((document, declaration) -> Head.head(kind, document, parseDeclaration(declaration)));
+                     .map((document, declaration) -> Head.head(kind,
+                                                               document,
+                                                               parseDeclaration(declaration)));
     }
 
     private static Option<BackupDecision.Declaration> parseDeclaration(Option<String> text) {
@@ -566,7 +571,9 @@ public final class KvBackupService {
         return outcome.head()
                       .map(head -> "the backup head belongs to lineage " + head.lineageId()
                                   + " at incarnation " + head.incarnation()
-                                  + ", this cluster is lineage " + outcome.ours().map(BackupHeader::lineageId).or("?")
+                                  + ", this cluster is lineage " + outcome.ours()
+                                                                          .map(BackupHeader::lineageId)
+                                                                          .or("?")
                                   + "; restore that backup, or run `" + DECLARE_GENESIS_COMMAND
                                   + "` to make this cluster's state the backup head")
                       .or("the backup head belongs to another lineage; run `" + DECLARE_GENESIS_COMMAND + "`");

@@ -22,7 +22,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 
 
-
 /// `aether backup declare-genesis` (#1532): the operator's statement that this cluster's state — not the
 /// backup already there — is the one to keep.
 ///
