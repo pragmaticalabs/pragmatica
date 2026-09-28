@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -190,6 +191,58 @@ class AppendLogEpochHistoryTest {
         AppendLog.EpochKey.epochKey("").onSuccess(_ -> fail("a blank token must be refused"));
         AppendLog.EpochKey.epochKey("a b").onSuccess(_ -> fail("a spaced token must be refused"));
         AppendLog.EpochKey.epochKey("7.3.-").onFailure(c -> fail(c.message()));
+    }
+
+    /// #1596: an attributed write records the epoch start before the frame, once per epoch; later records of the
+    /// same epoch leave the sidecar alone.
+    @Test
+    void attributedWrite_recordsTheEpochStartOnce_beforeTheFirstFrameOfTheEpoch() throws Exception {
+        var wal = AppendLog.open(file()).unwrap();
+
+        wal.write(0, "a".getBytes(StandardCharsets.UTF_8), 1L, key(1), NUMERIC).onFailure(c -> fail(c.message()));
+        var afterFirst = Files.readAllBytes(sidecar());
+
+        wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L, key(1), NUMERIC).onFailure(c -> fail(c.message()));
+        assertThat(Files.readAllBytes(sidecar())).as("a same-epoch record does not rewrite the history").isEqualTo(afterFirst);
+
+        wal.write(2, "c".getBytes(StandardCharsets.UTF_8), 1L, key(3), NUMERIC).onFailure(c -> fail(c.message()));
+        assertThat(wal.epochHistory()).containsExactly(start(1, 0), start(3, 2));
+        wal.close();
+
+        assertThat(AppendLog.readEpochHistory(file()).unwrap()).containsExactly(start(1, 0), start(3, 2));
+    }
+
+    /// A key that does not follow the last epoch is refused WITHOUT writing the frame and without fail-stopping:
+    /// the next attributed write of the current epoch still lands.
+    @Test
+    void attributedWrite_olderEpoch_isRefusedUnwritten_andTheLogStaysWritable() {
+        var wal = AppendLog.open(file()).unwrap();
+
+        wal.write(0, "a".getBytes(StandardCharsets.UTF_8), 1L, key(5), NUMERIC).onFailure(c -> fail(c.message()));
+        assertRefused(wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L, key(4), NUMERIC).mapToUnit(), "an older epoch");
+        wal.write(1, "c".getBytes(StandardCharsets.UTF_8), 1L, key(5), NUMERIC).onFailure(c -> fail(c.message()));
+
+        var replayed = new ArrayList<String>();
+
+        wal.replay(-1, r -> replayed.add(new String(r.payload(), StandardCharsets.UTF_8))).onFailure(c -> fail(c.message()));
+        assertThat(replayed).containsExactly("a", "c");
+        wal.close();
+    }
+
+    /// A history entry that cannot be made durable fail-stops the log before the frame is written: no record is
+    /// ever on disk without the entry that attributes it.
+    @Test
+    void attributedWrite_historyWriteFails_failStopsTheLogWithoutWritingTheFrame() {
+        Fn2<Result<Unit>, Path, byte[]> failing = (_, _) -> Causes.cause("injected sidecar failure").result();
+        var wal = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), failing).unwrap();
+
+        wal.write(0, "a".getBytes(StandardCharsets.UTF_8), 1L, key(1), NUMERIC)
+           .onSuccess(_ -> fail("the history write was injected to fail"));
+        wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L)
+           .onSuccess(_ -> fail("the log must be fail-stopped"))
+           .onFailure(cause -> assertThat(cause).isInstanceOf(AppendLog.WalError.FailStopped.class));
+        wal.close();
+        assertThat(AppendLog.inspect(file()).unwrap().headOffset()).as("no frame was written").isEqualTo(-1L);
     }
 
     private static AppendLog.EpochKey key(long epoch) {

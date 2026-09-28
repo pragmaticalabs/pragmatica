@@ -92,6 +92,18 @@ final class EpochHistory {
         }
     }
 
+    /// [#recordStart] unless `key` is already the last recorded epoch, whatever that entry's start: the first
+    /// record of an epoch starts it, every later one of the same epoch is attributed by it.
+    Result<Unit> recordIfNew(AppendLog.EpochKey key, long startOffset, AppendLog.EpochOrder order) {
+        synchronized (lock) {
+            return !entries.isEmpty() && entries.getLast()
+                                                .key()
+                                                .equals(key)
+                   ? Result.unitResult()
+                   : recordStart(key, startOffset, order);
+        }
+    }
+
     /// Drop every entry starting above `offset` -- the log was truncated back to `offset`, so no epoch began
     /// past it. Nothing to drop is a no-op, with no write.
     Result<Unit> truncateAbove(long offset) {

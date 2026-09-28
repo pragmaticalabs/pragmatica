@@ -269,6 +269,19 @@ public final class AppendLog implements AutoCloseable {
                : syncFailure.fold(() -> writeRecord(offset, payload, timestampMillis), Cause::result);
     }
 
+    /// [#write], first recording -- durably, inside the same write section -- that owner epoch `key` begins
+    /// at `offset` when `key` is not the last recorded epoch (#1596). The history entry is durable before the
+    /// frame is written, so no record is ever on disk without the entry that attributes it. Refused unwritten
+    /// with [WalError.EpochRegression] when `key` does not follow the last epoch under `order`, exactly as an
+    /// [WalError.OffsetRegression] is. A history that cannot be made durable FAIL-STOPS the log, as a failed
+    /// frame write does: the caller has already been assigned `offset`, so a later frame that did land would
+    /// leave a hole at it.
+    public Result<Long> write(long offset, byte[] payload, long timestampMillis, EpochKey key, EpochOrder order) {
+        return closed
+               ? WalError.General.WAL_CLOSED.result()
+               : syncFailure.fold(() -> writeAttributed(offset, payload, timestampMillis, key, order), Cause::result);
+    }
+
     /// GROUP-COMMIT the write with sequence `writeSeq` (from [#write]): resolves once a `force(false)`
     /// covering it has completed, sharing that fsync with every write queued before it. Runs on the
     /// async executor, so a caller can release its own ordered section before the fsync.
@@ -447,6 +460,24 @@ public final class AppendLog implements AutoCloseable {
             return offset > lastOffset
                    ? writeNext(offset, payload, timestampMillis)
                    : new WalError.OffsetRegression(offset, lastOffset).result();
+        }
+    }
+
+    private Result<Long> writeAttributed(long offset, byte[] payload, long timestampMillis, EpochKey key, EpochOrder order) {
+        synchronized (writeLock) {
+            return offset > lastOffset
+                   ? epochs.recordIfNew(key, offset, order)
+                           .onFailure(this::failStopOnEpochWriteFailure)
+                           .flatMap(_ -> writeNext(offset, payload, timestampMillis))
+                   : new WalError.OffsetRegression(offset, lastOffset).result();
+        }
+    }
+
+    /// Runs under `writeLock`. A refused key wrote nothing and leaves the log writable; only an entry that could
+    /// not be made durable fail-stops it.
+    private void failStopOnEpochWriteFailure(Cause cause) {
+        if (cause instanceof WalError.EpochWriteFailed) {
+            failStopOnWriteFailure(cause);
         }
     }
 
