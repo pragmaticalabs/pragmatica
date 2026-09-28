@@ -866,8 +866,20 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         return findMatchingRemoteRoute(routeTable.remoteRoutes(),
                                        method,
-                                       normalizedPath).map(route -> SecurityPolicy.fromString(route.security()))
+                                       normalizedPath).map(this::remoteRoutePolicy)
                                       .filter(AppHttpServerAdapter::isExplicitPolicy);
+    }
+
+    /// #1659: a route this node does not host is judged by THIS node's committed security overrides wherever one
+    /// matches it -- applied to the route's declared policy by the same rule the hosting node uses -- so an
+    /// override is enforced, and a relaxed one relaxes, at every ingress without depending on a peer's republish.
+    /// With no matching override the replicated policy applies, which the registry reports as the strongest any
+    /// serving node published: while they disagree the route is as strict as its strictest node.
+    private SecurityPolicy remoteRoutePolicy(HttpRouteRegistry.RouteInfo route) {
+        return httpRoutePublisher.flatMap(publisher -> publisher.committedOverride(route.httpMethod(),
+                                                                                   route.pathPrefix(),
+                                                                                   SecurityPolicy.fromString(route.declaredSecurity())))
+                                 .or(() -> SecurityPolicy.fromString(route.security()));
     }
 
     private static boolean isExplicitPolicy(SecurityPolicy policy) {

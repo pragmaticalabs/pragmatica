@@ -22,6 +22,7 @@ import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
@@ -71,6 +72,7 @@ import static org.pragmatica.lang.Unit.unit;
 class AppHttpServerRouteSecurityPolicyTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("test-node-route-sec").unwrap();
     private static final NodeId REMOTE_NODE = NodeId.nodeId("remote-node-route-sec").unwrap();
+    private static final NodeId OTHER_REMOTE_NODE = NodeId.nodeId("other-remote-node-route-sec").unwrap();
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
     private static final Artifact REMOTE_ARTIFACT = Artifact.artifact("com.example:parent:1.0.0").unwrap();
     private static final String VALID_API_KEY = "route-sec-test-key-98765";
@@ -91,10 +93,17 @@ class AppHttpServerRouteSecurityPolicyTest {
     }
 
     private void startServer(String pathPrefix, SecurityPolicy routePolicy, HttpRouteRegistry registry) {
+        startServer(pathPrefix, routePolicy, registry, SecurityOverrides.EMPTY);
+    }
+
+    private void startServer(String pathPrefix,
+                             SecurityPolicy routePolicy,
+                             HttpRouteRegistry registry,
+                             SecurityOverrides committed) {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
         var config = AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY));
-        var publisher = StubRoutePublisher.hosting("GET", pathPrefix, routePolicy);
+        var publisher = StubRoutePublisher.hosting("GET", pathPrefix, routePolicy, committed);
 
         server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
@@ -188,6 +197,63 @@ class AppHttpServerRouteSecurityPolicyTest {
         assertThat(withKey.body()).contains("served-locally");
     }
 
+    /// #1659: this node does NOT host `/echo/`; another node does, and its replicated entry is STALE (published
+    /// before the override, UNSPECIFIED). This node's COMMITTED override locks `/echo/` to `role:admin`. The ingress
+    /// must enforce it -- before #1659 it authorized against the stale entry, inherited the global API-key policy,
+    /// accepted any valid key, and forwarded: fail open.
+    @Test
+    void remoteRoute_isRefused_byTheIngressCommittedOverride_whenThePeerEntryIsStale() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remoteRoute("GET", "/echo/", "UNSPECIFIED"));
+
+        assertThat(registry.allRoutes()).as("control: the remote route is registered with the stale policy")
+                                        .singleElement()
+                                        .satisfies(route -> assertThat(route.security()).isEqualTo("UNSPECIFIED"));
+
+        startServer("/local/", SecurityPolicy.unspecified(), registry, adminOverrideOn("GET /echo/*"));
+
+        var response = getWithApiKey("/echo/probe", VALID_API_KEY);
+
+        assertThat(response.statusCode()).as("a valid key without the admin role: %s", response.body()).isEqualTo(403);
+        assertThat(response.body()).contains("role 'admin' required");
+    }
+
+    /// #1659, no committed override at this ingress: the replicated policy applies -- the STRONGEST a serving node
+    /// published. One peer still advertises `role:admin` (its relaxing republish has not landed), another already
+    /// UNSPECIFIED: the route stays admin until every node has republished (fail closed).
+    @Test
+    void remoteRoute_withoutACommittedOverride_isAsStrictAsItsStrictestNode() throws Exception {
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remoteRoute("GET", "/echo/", "UNSPECIFIED"));
+        registry.onNodeRoutesPut(remoteRouteFrom(OTHER_REMOTE_NODE, "GET", "/echo/", "ROLE:admin"));
+
+        startServer("/local/", SecurityPolicy.unspecified(), registry);
+
+        var response = getWithApiKey("/echo/probe", VALID_API_KEY);
+
+        assertThat(response.statusCode()).as("strictest node governs: %s", response.body()).isEqualTo(403);
+    }
+
+    private static SecurityOverrides adminOverrideOn(String pattern) {
+        return SecurityOverrides.securityOverrides(List.of(SecurityOverrides.Entry.entry(pattern, "role:admin")),
+                                                   SecurityOverridePolicy.STRENGTHEN_ONLY);
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> remoteRoute(String method, String prefix, String security) {
+        return remoteRouteFrom(REMOTE_NODE, method, prefix, security);
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> remoteRouteFrom(NodeId node,
+                                                                          String method,
+                                                                          String prefix,
+                                                                          String security) {
+        var key = NodeRoutesKey.nodeRoutesKey(node, REMOTE_ARTIFACT);
+        var route = RouteEntry.activeRoute(method, prefix, "echo", security, "UNSPECIFIED");
+        var value = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.ZERO);
+
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> remotePublicRoute(String method, String prefix) {
         var key = NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, REMOTE_ARTIFACT);
         var route = RouteEntry.activeRoute(method, prefix, "list", "PUBLIC");
@@ -218,10 +284,23 @@ class AppHttpServerRouteSecurityPolicyTest {
     /// Minimal HttpRoutePublisher stub hosting exactly one local route carrying a caller-supplied
     /// SecurityPolicy — mirrors AppHttpServerLocalDispatchTest's StubRoutePublisher, parameterized
     /// by policy instead of hard-coding SecurityPolicy.publicRoute().
-    private record StubRoutePublisher(String httpMethod, String pathPrefix, SecurityPolicy security, SliceRouter router)
+    private record StubRoutePublisher(String httpMethod,
+                                      String pathPrefix,
+                                      SecurityPolicy security,
+                                      SliceRouter router,
+                                      SecurityOverrides committed)
         implements HttpRoutePublisher {
-        static StubRoutePublisher hosting(String httpMethod, String pathPrefix, SecurityPolicy security) {
-            return new StubRoutePublisher(httpMethod, pathPrefix, security, new StubSliceRouter());
+        static StubRoutePublisher hosting(String httpMethod,
+                                          String pathPrefix,
+                                          SecurityPolicy security,
+                                          SecurityOverrides committed) {
+            return new StubRoutePublisher(httpMethod, pathPrefix, security, new StubSliceRouter(), committed);
+        }
+
+        /// The real rule over this stub's committed overrides, as the production publisher answers.
+        @Override
+        public Option<SecurityPolicy> committedOverride(String method, String prefix, SecurityPolicy declared) {
+            return SecurityOverrideApplier.overriddenPolicy(method, prefix, declared, committed);
         }
 
         private boolean matches(String method, String path) {

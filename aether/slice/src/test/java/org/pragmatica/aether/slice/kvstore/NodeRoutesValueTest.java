@@ -93,7 +93,7 @@ class NodeRoutesValueTest {
     class Equality {
         @Test
         void sameRoutesAndEpoch_areEqual() {
-            var route = new RouteEntry("GET", "/x/", "m", "ACTIVE", 100, 1710000000000L, "PUBLIC");
+            var route = new RouteEntry("GET", "/x/", "m", "ACTIVE", 100, 1710000000000L, "PUBLIC", "PUBLIC");
             var a = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.epoch(5L, 0L));
             var b = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.epoch(5L, 0L));
 
@@ -103,7 +103,7 @@ class NodeRoutesValueTest {
 
         @Test
         void differentEpoch_notEqual() {
-            var route = new RouteEntry("GET", "/x/", "m", "ACTIVE", 100, 1710000000000L, "PUBLIC");
+            var route = new RouteEntry("GET", "/x/", "m", "ACTIVE", 100, 1710000000000L, "PUBLIC", "PUBLIC");
             var routes = List.of(route);
             var a = NodeRoutesValue.nodeRoutesValue(routes, Epoch.epoch(5L, 0L));
             var b = NodeRoutesValue.nodeRoutesValue(routes, Epoch.epoch(6L, 0L));

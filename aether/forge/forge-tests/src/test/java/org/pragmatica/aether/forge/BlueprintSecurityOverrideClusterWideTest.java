@@ -472,6 +472,61 @@ class BlueprintSecurityOverrideClusterWideTest {
         awaitEveryNodeAnswers(GOVERNED_PATH, REFUSED, "every node including the replacement enforces after the rejoin");
     }
 
+    /// #1659 — an override added AFTER the route first registered must be enforced on a node that does NOT host
+    /// the route. Such a node authorizes from the cluster route registry, which used to keep the policy registered
+    /// FIRST (here: the undeclared, pre-override one) for as long as any node served the route; the override's
+    /// republish never reached it, the node inherited the global API-key policy, accepted the probe's key and
+    /// forwarded -- 200 where the hosting node answered 403. No flap is needed: one instance on three nodes
+    /// leaves two non-hosting nodes.
+    ///
+    /// ## Controls
+    ///   - ONE HOST — the echo slice runs on exactly one node, so the other two can only answer by forwarding.
+    ///   - SERVED FIRST — every node, hosting or not, serves the route before the override, so a later 403 on a
+    ///     non-hosting node is the override and not a missing route.
+    ///   - BODY — the refusal must be the override's own role check.
+    @Test
+    @Order(4)
+    void overrideAddedAfterTheRouteRegistered_isEnforcedOnNodesThatDoNotHostTheRoute() {
+        resetToCleanSlate();
+        var leaderMgmtPort = leaderManagementPort();
+
+        applyBlueprint(leaderMgmtPort, singleInstanceBlueprintWithoutOverride());
+        awaitSliceDeployed();
+        awaitAllAppHttpPortsReady();
+        await().alias("the echo slice settles on exactly one node")
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> echoInstanceNodeIds().size() == 1);
+        var host = echoInstanceNodeIds().getFirst();
+        // CONTROL: every node, including the two that only forward, serves the route before any override.
+        awaitEveryNodeAnswers(GOVERNED_PATH, SERVED, "every node serves /echo/* before the override, the non-hosting ones by forwarding");
+        // ---- The claim: the override added now reaches the nodes that do not host the route.
+        applyBlueprint(leaderMgmtPort, overrideCarrierBlueprint());
+        var refusals = awaitEveryNodeAnswers(GOVERNED_PATH,
+                                             REFUSED,
+                                             "every node, including those not hosting the route, enforces an override added after it registered");
+        var nonHosting = refusals.stream()
+                                 .filter(probe -> !probe.nodeId()
+                                                        .equals(host))
+                                 .toList();
+
+        assertThat(nonHosting).describedAs("CONTROL: two nodes do not host the route (host %s): %s", host, refusals)
+                  .hasSize(NODES - 1);
+        nonHosting.forEach(probe -> assertThat(probe.body()).describedAs("a non-hosting node's refusal must be the OVERRIDE's own role check — %s",
+                                                                          probe)
+                                             .contains(INSUFFICIENT_ROLE_DETAIL));
+    }
+
+    private static String singleInstanceBlueprintWithoutOverride() {
+        return """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = 1
+            """.formatted(BLUEPRINT_ID, TEST_ARTIFACT);
+    }
+
     private int leaderManagementPort() {
         var leaderMgmtPort = cluster.getLeaderManagementPort().or(-1);
 
