@@ -1579,12 +1579,19 @@ public interface AetherNode extends ManageableNode {
                                                                             long from,
                                                                             long to) {
         return node.equals(self)
-               ? OwnerPeerReads.appendedRange(localCatchupPage(manager, tieredReader), node, streamName, partition, from, to, STREAM_CATCHUP_BATCH_SIZE)
+               ? OwnerPeerReads.appendedRange(localCatchupPage(manager, tieredReader),
+                                              node,
+                                              streamName,
+                                              partition,
+                                              from,
+                                              to,
+                                              STREAM_CATCHUP_BATCH_SIZE)
                : readPeerRange(forwardClient, node, streamName, partition, from, to);
     }
 
     /// This node's own copy, read as a peer's catch-up forward would be answered.
-    private static OwnerPeerReads.PageRead localCatchupPage(StreamPartitionManager manager, TieredStreamReader tieredReader) {
+    private static OwnerPeerReads.PageRead localCatchupPage(StreamPartitionManager manager,
+                                                            TieredStreamReader tieredReader) {
         return (_, streamName, partition, fromOffset, maxEvents) -> CatchupRead.readAppended(manager,
                                                                                              Option.some(tieredReader),
                                                                                              streamName,

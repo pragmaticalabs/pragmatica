@@ -16,6 +16,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+
 /// The replication-class read of this node's copy of a partition, up to the APPENDED head: the ring, and for a
 /// prefix the ring has evicted, the tier. One implementation serves both the peer that asks for it (a replica's
 /// catch-up forward, [StreamForwardHandler]) and this node reading its own copy for the owner promotion gate's
@@ -30,19 +31,19 @@ public sealed interface CatchupRead {
     /// replica holds every offset it acks and nothing this owner has not appended. A prefix retention has
     /// reclaimed is still `CursorExpired` (from the tier, [TieredStreamReader#read]) and still stalls: #1407.
     static Promise<List<OffHeapRingBuffer.RawEvent>> readAppended(StreamPartitionManager manager,
-                                                                     Option<TieredStreamReader> tieredReader,
-                                                                     String streamName,
-                                                                     int partition,
-                                                                     long fromOffset,
-                                                                     int maxEvents) {
+                                                                  Option<TieredStreamReader> tieredReader,
+                                                                  String streamName,
+                                                                  int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents) {
         var request = new Span(manager, tieredReader, streamName, partition, fromOffset, maxEvents);
 
         return manager.readAppended(request.streamName(),
-                                             request.partition(),
-                                             request.fromOffset(),
-                                             request.maxEvents())
-                               .fold(cause -> recoverEvicted(request, cause),
-                                     Promise::success);
+                                    request.partition(),
+                                    request.fromOffset(),
+                                    request.maxEvents())
+                      .fold(cause -> recoverEvicted(request, cause),
+                            Promise::success);
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> recoverEvicted(Span request, Cause cause) {
@@ -61,7 +62,9 @@ public sealed interface CatchupRead {
             return new SegmentError.SealInFlight(request.streamName(), request.partition(), request.fromOffset()).promise();
         }
 
-        return request.tier().fold(expired::promise, reader -> readTierThenRing(request, reader, expired));
+        return request.tier()
+                      .fold(expired::promise,
+                            reader -> readTierThenRing(request, reader, expired));
     }
 
     /// The tier is asked for no more than `[fromOffset, appended head]`. The bound is load-bearing, not a belt: the
@@ -71,8 +74,8 @@ public sealed interface CatchupRead {
     /// released under the read) and it is returned as-is — an empty success would let the backfill take the
     /// no-source path off a partition that has history.
     private static Promise<List<OffHeapRingBuffer.RawEvent>> readTierThenRing(Span request,
-                                                                       TieredStreamReader reader,
-                                                                       Cause expired) {
+                                                                              TieredStreamReader reader,
+                                                                              Cause expired) {
         var head = appendedHead(request);
 
         if (request.fromOffset() > head) {
@@ -88,18 +91,19 @@ public sealed interface CatchupRead {
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> serveSealedPrefix(Span request,
-                                                                        List<OffHeapRingBuffer.RawEvent> sealed,
-                                                                        Cause expired) {
+                                                                               List<OffHeapRingBuffer.RawEvent> sealed,
+                                                                               Cause expired) {
         return sealed.isEmpty()
                ? expired.promise()
                : appendRingTail(request, sealed);
     }
 
     private static long appendedHead(Span request) {
-        return request.manager().partitionBuffer(request.streamName(),
-                                                request.partition())
-                               .map(OffHeapRingBuffer::headOffset)
-                               .or(-1L);
+        return request.manager()
+                      .partitionBuffer(request.streamName(),
+                                       request.partition())
+                      .map(OffHeapRingBuffer::headOffset)
+                      .or(-1L);
     }
 
     /// The ring's share of the page starts right after the sealed prefix, and it is NOT best-effort: the pull
@@ -110,7 +114,7 @@ public sealed interface CatchupRead {
     /// head), as [SegmentError.SealInFlight] when the sealer still holds that offset, else as the ring's own
     /// cause; the backfill redrives, and a later redrive reads a longer sealed prefix.
     private static Promise<List<OffHeapRingBuffer.RawEvent>> appendRingTail(Span request,
-                                                                     List<OffHeapRingBuffer.RawEvent> sealed) {
+                                                                            List<OffHeapRingBuffer.RawEvent> sealed) {
         var remaining = request.maxEvents() - sealed.size();
 
         if (remaining <= 0) {
@@ -119,28 +123,32 @@ public sealed interface CatchupRead {
 
         var next = sealed.getLast().offset() + 1;
 
-        return request.manager().readAppended(request.streamName(),
-                                             request.partition(),
-                                             next,
-                                             remaining)
-                               .map(ring -> List.copyOf(Stream.concat(sealed.stream(),
-                                                                      ring.stream()).toList()))
-                               .fold(cause -> ringTailRefused(request, next, cause),
-                                     Promise::success);
+        return request.manager()
+                      .readAppended(request.streamName(),
+                                    request.partition(),
+                                    next,
+                                    remaining)
+                      .map(ring -> List.copyOf(Stream.concat(sealed.stream(),
+                                                             ring.stream()).toList()))
+                      .fold(cause -> ringTailRefused(request, next, cause),
+                            Promise::success);
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> ringTailRefused(Span request, long next, Cause cause) {
-        return request.manager().sealInFlight(request.streamName(), request.partition(), next)
+        return request.manager()
+                      .sealInFlight(request.streamName(),
+                                    request.partition(),
+                                    next)
                ? new SegmentError.SealInFlight(request.streamName(), request.partition(), next).promise()
                : cause.promise();
     }
 
     record Span(StreamPartitionManager manager,
-                        Option<TieredStreamReader> tier,
-                        String streamName,
-                        int partition,
-                        long fromOffset,
-                        int maxEvents) {}
+                Option<TieredStreamReader> tier,
+                String streamName,
+                int partition,
+                long fromOffset,
+                int maxEvents) {}
 
     record unused() implements CatchupRead {}
 }
