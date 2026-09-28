@@ -4,16 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -25,6 +22,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Result.success;
+
 
 /// The git side of the KV backup (#1532): one file, one branch, fast-forward pushes only.
 ///
@@ -44,8 +42,14 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
 
-    public static GitBackupRepository gitBackupRepository(Path dir, Option<String> remote, String branch, TimeSpan timeout) {
-        return new GitBackupRepository(dir, remote.filter(url -> !url.isBlank()), branch, timeout);
+    public static GitBackupRepository gitBackupRepository(Path dir,
+                                                          Option<String> remote,
+                                                          String branch,
+                                                          TimeSpan timeout) {
+        return new GitBackupRepository(dir,
+                                       remote.filter(url -> !url.isBlank()),
+                                       branch,
+                                       timeout);
     }
 
     /// Every way a git operation can fail.
@@ -74,7 +78,7 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
     /// before every operation.
     public Result<Unit> prepare() {
         return createDirectory().flatMap(_ -> initialise())
-                                .flatMap(_ -> configureRemote());
+                              .flatMap(_ -> configureRemote());
     }
 
     /// The document committed at the local `HEAD`, when there is one.
@@ -103,14 +107,18 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
     /// Move the local branch to the fetched remote head, dropping local commits the remote superseded
     /// or that are about to be replaced by one commit of the full current state.
     public Result<Unit> resetToRemoteHead() {
-        return git("checkout", "-B", branch, REMOTE_REF + branch).flatMap(_ -> git("reset", "--hard", REMOTE_REF + branch))
-                                                               .mapToUnit();
+        return git("checkout", "-B", branch, REMOTE_REF + branch).flatMap(_ -> git("reset",
+                                                                                   "--hard",
+                                                                                   REMOTE_REF + branch))
+                  .mapToUnit();
     }
 
     /// Write `document` as [#FILE] and commit it on the local branch.
     public Result<Unit> commit(String document, String message) {
         return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
-                           () -> Files.writeString(dir.resolve(FILE), document, StandardCharsets.UTF_8))
+                           () -> Files.writeString(dir.resolve(FILE),
+                                                   document,
+                                                   StandardCharsets.UTF_8))
                      .flatMap(_ -> git("add", FILE))
                      .flatMap(_ -> git("commit", "--quiet", "-m", message))
                      .mapToUnit();
@@ -123,7 +131,6 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
     }
 
     // --- internals ---
-
     private Result<Unit> createDirectory() {
         return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
                            () -> Files.createDirectories(dir))
@@ -133,9 +140,11 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
     private Result<Unit> initialise() {
         return Files.isDirectory(dir.resolve(".git"))
                ? Result.unitResult()
-               : git("init", "--quiet", "--initial-branch=" + branch).flatMap(_ -> git("config", "user.email", "backup@aether.local"))
-                                                                     .flatMap(_ -> git("config", "user.name", "aether-backup"))
-                                                                     .mapToUnit();
+               : git("init", "--quiet", "--initial-branch=" + branch).flatMap(_ -> git("config",
+                                                                                       "user.email",
+                                                                                       "backup@aether.local"))
+                    .flatMap(_ -> git("config", "user.name", "aether-backup"))
+                    .mapToUnit();
     }
 
     private Result<Unit> configureRemote() {
@@ -145,9 +154,12 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
 
     private Result<Unit> pointOriginAt(String url) {
         return exitStatus("remote", "get-url", REMOTE_NAME).flatMap(status -> status == 0
-                                                                              ? git("remote", "set-url", REMOTE_NAME, url)
+                                                                              ? git("remote",
+                                                                                    "set-url",
+                                                                                    REMOTE_NAME,
+                                                                                    url)
                                                                               : git("remote", "add", REMOTE_NAME, url))
-                                                             .mapToUnit();
+                         .mapToUnit();
     }
 
     private Result<Boolean> hasCommits() {
@@ -160,7 +172,8 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
 
     private Result<String> fetchAndShow() {
         return git("fetch", "--quiet", REMOTE_NAME, "+refs/heads/" + branch + ":" + REMOTE_REF + branch).flatMap(_ -> git("show",
-                                                                                                                             REMOTE_REF + branch + ":" + FILE));
+                                                                                                                          REMOTE_REF + branch
+                                                                                                                         + ":" + FILE));
     }
 
     private Result<Unit> classifyPush(GitResult result) {
@@ -170,7 +183,9 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
 
         return isRejection(result.output())
                ? BackupRepositoryError.PushRejected.FACTORY.apply(result.output().strip()).result()
-               : BackupRepositoryError.GitFailed.FACTORY.apply("push", result.exitCode(), result.output().strip())
+               : BackupRepositoryError.GitFailed.FACTORY.apply("push",
+                                                               result.exitCode(),
+                                                               result.output().strip())
                                                         .result();
     }
 
@@ -185,9 +200,9 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
         return run(command).flatMap(result -> result.exitCode() == 0
                                               ? success(result.output())
                                               : BackupRepositoryError.GitFailed.FACTORY.apply(String.join(" ", command),
-                                                                                                result.exitCode(),
-                                                                                                result.output().strip())
-                                                                                         .result());
+                                                                                              result.exitCode(),
+                                                                                              result.output().strip())
+                                                                                       .result());
     }
 
     /// Run git and report its exit status, for commands whose non-zero exit is an answer, not a failure.
@@ -196,48 +211,57 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
     }
 
     private Result<GitResult> run(List<String> args) {
-        return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
-                           () -> execute(args));
+        return Result.lift(GitBackupRepository::unavailable,
+                           () -> processBuilder(args).start())
+                     .flatMap(this::collect);
     }
 
-    private GitResult execute(List<String> args) throws IOException, InterruptedException {
+    private ProcessBuilder processBuilder(List<String> args) {
         var command = new ArrayList<String>();
 
         command.add("git");
         command.add("-C");
         command.add(dir.toString());
         command.addAll(args);
-
         var builder = new ProcessBuilder(command).redirectErrorStream(true);
 
-        builder.environment()
-               .put("GIT_TERMINAL_PROMPT", "0");
+        builder.environment().put("GIT_TERMINAL_PROMPT", "0");
 
-        var process = builder.start();
-        // Drain output on its own thread: a blocking read here would outlive the timeout of a git that hangs.
-        var output = new FutureTask<>(() -> new String(process.getInputStream()
-                                                              .readAllBytes(),
-                                                       StandardCharsets.UTF_8));
-
-        Thread.ofVirtual()
-              .name("backup-git-output")
-              .start(output);
-
-        if (!process.waitFor(timeout.millis(), TimeUnit.MILLISECONDS)) {
-            process.destroyForcibly();
-
-            return new GitResult(-1, "timed out after " + timeout);
-        }
-
-        return new GitResult(process.exitValue(), readOutput(output));
+        return builder;
     }
 
-    private String readOutput(FutureTask<String> output) throws InterruptedException {
-        try {
-            return output.get(timeout.millis(), TimeUnit.MILLISECONDS);
-        } catch (ExecutionException | TimeoutException e) {
-            return "";
-        }
+    /// Output is drained on its own thread: a blocking read here would outlive the timeout of a git that
+    /// hangs, which is exactly the case the timeout exists for.
+    private Result<GitResult> collect(Process process) {
+        var output = new FutureTask<>(() -> new String(process.getInputStream().readAllBytes(),
+                                                       StandardCharsets.UTF_8));
+
+        Thread.ofVirtual().name("backup-git-output").start(output);
+
+        return Result.lift(GitBackupRepository::unavailable,
+                           () -> process.waitFor(timeout.millis(),
+                                                 TimeUnit.MILLISECONDS))
+                     .map(finished -> finished
+                                      ? completed(process, output)
+                                      : timedOut(process));
+    }
+
+    private GitResult completed(Process process, FutureTask<String> output) {
+        return new GitResult(process.exitValue(), outputOf(output));
+    }
+
+    private GitResult timedOut(Process process) {
+        process.destroyForcibly();
+
+        return new GitResult(-1, "timed out after " + timeout);
+    }
+
+    private String outputOf(FutureTask<String> output) {
+        return Result.lift(() -> output.get(timeout.millis(), TimeUnit.MILLISECONDS)).or("");
+    }
+
+    private static BackupRepositoryError unavailable(Throwable cause) {
+        return BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause));
     }
 
     private record GitResult(int exitCode, String output) {}

@@ -18,6 +18,7 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
+
 /// #1532 — `POST /backup/declare-genesis` (ADMIN, leader): make this cluster's state the KV backup head
 /// in place of a backup of another lineage. See [BackupGenesis] for what it refuses and why.
 public final class BackupRoutes implements RouteSource {
@@ -33,8 +34,7 @@ public final class BackupRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<GenesisDeclared> route(ManagementRoute.BACKUP_DECLARE_GENESIS)
-                                         .toJson(_ -> declareGenesis()));
+        return Stream.of(ManagementRoutes.<GenesisDeclared> route(ManagementRoute.BACKUP_DECLARE_GENESIS).toJson(_ -> declareGenesis()));
     }
 
     Promise<GenesisDeclared> declareGenesis() {
@@ -47,18 +47,14 @@ public final class BackupRoutes implements RouteSource {
 
     enum BackupRouteError implements Cause, HttpStatusAware {
         BACKUP_NOT_ENABLED("The KV backup is not enabled on this node ([backup] enabled = true with a path)");
-
         private final String message;
-
         BackupRouteError(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
         }
-
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.CONFLICT;

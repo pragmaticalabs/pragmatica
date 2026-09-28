@@ -7,6 +7,7 @@ package org.pragmatica.aether.node.backup;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.lang.Option;
 
+
 /// Whether this cluster's state may become the backup head, given the head already there (#1532).
 ///
 /// - **No head** — a brand-new backup: write it, which establishes this cluster's lineage.
@@ -22,24 +23,20 @@ public enum BackupDecision {
     WRITE,
     STALE,
     GATED;
-
     public static BackupDecision decide(BackupHeader ours, Option<BackupHeader> head) {
         return head.map(existing -> decideAgainst(ours, existing))
                    .or(WRITE);
     }
-
     private static BackupDecision decideAgainst(BackupHeader ours, BackupHeader head) {
         return ours.isSameLineage(head)
                ? aheadOrStale(ours, head)
                : supersedesOrGated(ours, head);
     }
-
     private static BackupDecision aheadOrStale(BackupHeader ours, BackupHeader head) {
         return head.isAhead(ours)
                ? STALE
                : WRITE;
     }
-
     private static BackupDecision supersedesOrGated(BackupHeader ours, BackupHeader head) {
         return ours.incarnation() > head.incarnation()
                ? WRITE

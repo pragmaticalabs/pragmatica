@@ -9,6 +9,7 @@ import org.pragmatica.lang.Contract;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// An operator-facing backup condition (#1532), emitted on TRANSITIONS only — entering a failing or
 /// gated state, and recovering from one — never once per retry.
 ///

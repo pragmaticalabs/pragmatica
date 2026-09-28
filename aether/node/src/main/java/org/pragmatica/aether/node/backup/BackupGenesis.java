@@ -25,6 +25,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// `aether backup declare-genesis` (#1532): the operator's statement that this cluster's state — not the
 /// backup already there — is the one to keep.
 ///
@@ -42,9 +43,13 @@ public record BackupGenesis(KvBackupService service) {
 
     /// The result of a declaration: this cluster's lineage at its new incarnation, and the head it
     /// supersedes.
-    public record GenesisDeclared(String lineageId, long incarnation, String supersededLineageId,
+    public record GenesisDeclared(String lineageId,
+                                  long incarnation,
+                                  String supersededLineageId,
                                   long supersededIncarnation) {
-        public static GenesisDeclared genesisDeclared(String lineageId, long incarnation, String supersededLineageId,
+        public static GenesisDeclared genesisDeclared(String lineageId,
+                                                      long incarnation,
+                                                      String supersededLineageId,
                                                       long supersededIncarnation) {
             return new GenesisDeclared(lineageId, incarnation, supersededLineageId, supersededIncarnation);
         }
@@ -61,20 +66,16 @@ public record BackupGenesis(KvBackupService service) {
                                  HttpStatus.CONFLICT),
             NOT_COMMITTED("The new incarnation did not commit (a concurrent write won); re-read the backup status and retry",
                           HttpStatus.CONFLICT);
-
             private final String message;
             private final HttpStatus status;
-
             General(String message, HttpStatus status) {
                 this.message = message;
                 this.status = status;
             }
-
             @Override
             public String message() {
                 return message;
             }
-
             @Override
             public HttpStatus httpStatus() {
                 return status;
@@ -126,8 +127,7 @@ public record BackupGenesis(KvBackupService service) {
 
     private Promise<GenesisDeclared> readHeadThenSupersede(ClusterIncarnationValue current,
                                                            Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return Promise.promise(this::readHead)
-                      .flatMap(head -> supersede(current, head, applier));
+        return Promise.promise(this::readHead).flatMap(head -> supersede(current, head, applier));
     }
 
     /// The head the backup would be judged against — git I/O, so run off the caller's thread.
@@ -160,26 +160,26 @@ public record BackupGenesis(KvBackupService service) {
     private Promise<GenesisDeclared> supersedeExisting(ClusterIncarnationValue current,
                                                        BackupHeader head,
                                                        Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        if (head.lineageId()
-                .equals(current.lineageId())) {
+        if (head.lineageId().equals(current.lineageId())) {
             return refuseSameLineage(current, head);
         }
 
-        return applier.apply(ClusterIncarnation.supersedeCommands(current, head.incarnation()))
+        return applier.apply(ClusterIncarnation.supersedeCommands(current,
+                                                                  head.incarnation()))
                       .flatMap(_ -> confirm(current, head));
     }
 
     private Promise<GenesisDeclared> refuseSameLineage(ClusterIncarnationValue current, BackupHeader head) {
         var ours = BackupHeader.backupHeader(current.lineageId(),
                                              current.incarnation(),
-                                             service.kvStore()
-                                                    .committedRevision());
+                                             service.kvStore().committedRevision());
 
         return head.isAhead(ours)
-               ? DeclareGenesisError.RemoteIsNewer.FACTORY.apply(head.lineageId(), head.incarnation(), head.revision())
+               ? DeclareGenesisError.RemoteIsNewer.FACTORY.apply(head.lineageId(),
+                                                                 head.incarnation(),
+                                                                 head.revision())
                                                           .promise()
-               : DeclareGenesisError.SameLineage.FACTORY.apply(head.lineageId())
-                                                        .promise();
+               : DeclareGenesisError.SameLineage.FACTORY.apply(head.lineageId()).promise();
     }
 
     /// The fence drops a losing write silently, so the declaration re-reads what committed.

@@ -11,6 +11,7 @@ import org.pragmatica.lang.Contract;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
+
 /// #1532 — the change-triggered KV backup.
 @Command(name = "backup", description = "KV backup management", subcommands = {BackupDeclareGenesisCommand.class})
 @Contract

@@ -764,8 +764,7 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static GitBackupRepository kvBackupRepository(BackupConfig backup) {
-        return GitBackupRepository.gitBackupRepository(Path.of(backup.path())
-                                                           .resolve("kv-backup"),
+        return GitBackupRepository.gitBackupRepository(Path.of(backup.path()).resolve("kv-backup"),
                                                        Option.option(backup.remote()),
                                                        "kv-backup",
                                                        GitBackupRepository.DEFAULT_TIMEOUT);

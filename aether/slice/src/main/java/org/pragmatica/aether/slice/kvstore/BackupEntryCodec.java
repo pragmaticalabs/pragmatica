@@ -570,13 +570,13 @@ public record BackupEntryCodec(SliceCodec codec) {
     }
 
     private static Result<Long> parseLong(String raw, int lineNumber, String field) {
-        return Number.parseLong(raw)
-                     .mapError(_ -> BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber, field + raw));
+        return Number.parseLong(raw).mapError(_ -> BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber,
+                                                                                                  field + raw));
     }
 
     private static Result<String> parseLineage(String raw, int lineNumber) {
         return unescape(raw).filter(Verify.Is::notBlank)
-                            .toResult(BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber, LINEAGE + raw));
+                       .toResult(BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber, LINEAGE + raw));
     }
 
     private static Result<Integer> parseEntryCount(String raw, int lineNumber) {
