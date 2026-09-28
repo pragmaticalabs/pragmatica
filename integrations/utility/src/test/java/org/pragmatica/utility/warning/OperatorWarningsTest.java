@@ -152,8 +152,11 @@ class OperatorWarningsTest {
 
         var elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
 
+        // Half the publisher's 2 s delay: a synchronous publish takes >= 2000 ms, so this still separates
+        // hand-off from blocking by construction, without a tight bound that a loaded CI runner trips
+        // (86 ms was observed on CI with the hand-off working).
         assertThat(elapsedMs).as("raise() returned after %d ms with a 2 s publisher", elapsedMs)
-                             .isLessThan(50L);
+                             .isLessThan(1000L);
         await(() -> published.getCount() == 0L, 5);
     }
 
