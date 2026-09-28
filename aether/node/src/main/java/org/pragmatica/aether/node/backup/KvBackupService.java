@@ -207,8 +207,7 @@ public final class KvBackupService {
     @Contract
     public void onValuePut(ValuePut<?, ?> put) {
         if (isBackedUp(put.cause().key()) && !put.oldValue().equals(Option.some(put.cause().value()))) {
-            markChanged(put.cause()
-                           .key());
+            markChanged(put.cause().key());
         }
     }
 
@@ -321,7 +320,8 @@ public final class KvBackupService {
 
         return header.incarnation() == ClusterIncarnation.NONE
                ? success(Outcome.AWAITING_GENESIS)
-               : codec.encode(captured.revision(), captured.entries())
+               : codec.encode(captured.revision(),
+                              captured.entries())
                       .flatMap(document -> writeIfChanged(header, document, pushAttempts));
     }
 

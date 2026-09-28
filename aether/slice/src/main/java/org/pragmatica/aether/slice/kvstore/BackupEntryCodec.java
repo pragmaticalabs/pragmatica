@@ -237,12 +237,12 @@ public record BackupEntryCodec(SliceCodec codec) {
         return incarnationOf(entries).map(value -> BackupHeader.backupHeader(value.lineageId(),
                                                                              value.incarnation(),
                                                                              revision))
-                                     .or(() -> BackupHeader.backupHeader(NO_LINEAGE, NO_INCARNATION, revision));
+                            .or(() -> BackupHeader.backupHeader(NO_LINEAGE, NO_INCARNATION, revision));
     }
 
     private static Option<ClusterIncarnationValue> incarnationOf(Map<AetherKey, AetherValue> entries) {
         return option(entries.get(ClusterIncarnationKey.clusterIncarnationKey())).filter(ClusterIncarnationValue.class::isInstance)
-                                                                                 .map(ClusterIncarnationValue.class::cast);
+                     .map(ClusterIncarnationValue.class::cast);
     }
 
     /// Parse a document produced by [#encode], and only such a document. Header faults and a checksum
@@ -543,11 +543,8 @@ public record BackupEntryCodec(SliceCodec codec) {
 
     /// The decoded state must render back to exactly the document it came from.
     private Result<BackupDocument> ensureCanonical(String document, BackupDocument decoded) {
-        return encode(decoded.header()
-                             .revision(),
-                      decoded.entries()).flatMap(rendered -> matchRendering(document,
-                                                                                              rendered,
-                                                                                              decoded));
+        return encode(decoded.header().revision(),
+                      decoded.entries()).flatMap(rendered -> matchRendering(document, rendered, decoded));
     }
 
     private static Result<BackupDocument> matchRendering(String document, String rendered, BackupDocument decoded) {
@@ -620,7 +617,8 @@ public record BackupEntryCodec(SliceCodec codec) {
         return ensureEntryCount(parsed.declaredEntries(),
                                 entryLines.size()).flatMap(_ -> decodeEntryLines(entryLines))
                                .flatMap(BackupEntryCodec::toEntryMap)
-                               .flatMap(entries -> ensureHeaderMatchesEntry(parsed.header(), entries))
+                               .flatMap(entries -> ensureHeaderMatchesEntry(parsed.header(),
+                                                                            entries))
                                .map(entries -> BackupDocument.backupDocument(parsed.header(),
                                                                              entries));
     }
@@ -634,8 +632,8 @@ public record BackupEntryCodec(SliceCodec codec) {
         return expected.equals(header)
                ? success(entries)
                : BackupError.HeaderEntryMismatch.FACTORY.apply(header.lineageId() + "@" + header.incarnation(),
-                                                                expected.lineageId() + "@" + expected.incarnation())
-                                                         .result();
+                                                               expected.lineageId() + "@" + expected.incarnation())
+                                                        .result();
     }
 
     private static Result<Unit> ensureEntryCount(int declared, int found) {
