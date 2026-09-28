@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 
@@ -23,6 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Per-node observer of cluster quorum visibility (membership v2 spec §4, §8.1 third bullet,
@@ -90,6 +92,9 @@ import static org.pragmatica.lang.Option.some;
 @SuppressWarnings("JBCT-RET-08")
 public final class QuorumLossDetector {
     private static final Logger log = LoggerFactory.getLogger(QuorumLossDetector.class);
+    /// Re-evaluation cadence while the co-confirmation gate suppresses a due drain (#1560). The `T`
+    /// debounce has already elapsed by then; this only bounds how stale the suppression verdict may get.
+    private static final TimeSpan SUPPRESSED_RECHECK_INTERVAL = timeSpan(1).seconds();
 
     private final MembershipConfig config;
     private final IntSupplier coreCountSupplier;
@@ -114,7 +119,17 @@ public final class QuorumLossDetector {
     /// sufficiency, so one genuinely-dead stuck member contributes 0 rather than vetoing the whole
     /// suppression. Default yields [`QuorumCoConfirmation#absent`] — never suppresses (legacy
     /// behaviour) until the wiring layer injects the FSM-backed signal post-construction.
+    ///
+    /// **A suppression is re-evaluated, never final (#1560).** Its inputs are transient — stuck members
+    /// age out of SUSPECT, SWIM moves SUSPECTED peers to FAULTY — and neither producer schedules a second
+    /// check for the same edge. A bare return therefore stranded the fence on whatever the gate read at
+    /// the single firing instant: an isolated core suppressed once at `T` and then waited for an
+    /// unrelated PASSIVE edge. The suppressed check re-arms at [#SUPPRESSED_RECHECK_INTERVAL] instead and
+    /// fires only when the detector is still below threshold AND the gate no longer suppresses;
+    /// recovery cancels it through the same scheduling slot.
     private volatile Supplier<QuorumCoConfirmation> coConfirmationSupplier = QuorumCoConfirmation::absent;
+    /// True while the gate is suppressing; limits the suppression WARN to the first check of an episode.
+    private volatile boolean suppressing;
     /// A6 cold-boot self-fence gate (2026-06-28). While the cluster is still in its cold-boot
     /// convergence window (the shared `swimIsBootingSupplier`: COLD_BOOT phase OR within the bounded
     /// post-boot window) SWIM has not yet confirmed peers HEALTHY, so the detector's effective quorum
@@ -186,6 +201,7 @@ public final class QuorumLossDetector {
     public synchronized void onQuorumPresence(boolean present) {
         if (present) {
             quorumPresenceLost = false;
+            suppressing = false;
             cancelPresenceFuture();
 
             return;
@@ -325,16 +341,21 @@ public final class QuorumLossDetector {
 
     private void exitBelowWindow() {
         belowThresholdSinceNanos.set(Long.MIN_VALUE);
+        suppressing = false;
         cancelPendingFuture();
     }
 
     private void scheduleFiringCheck(long windowStartNanos) {
+        scheduleFiringCheck(windowStartNanos, config.splitTimeout());
+    }
+
+    private void scheduleFiringCheck(long windowStartNanos, TimeSpan delay) {
         if (stopped) {
             return;
         }
 
         cancelPendingFuture();
-        var future = scheduler.schedule(() -> onFiringCheck(windowStartNanos), config.splitTimeout());
+        var future = scheduler.schedule(() -> onFiringCheck(windowStartNanos), delay);
 
         pendingFuture.set(future);
     }
@@ -348,12 +369,16 @@ public final class QuorumLossDetector {
     }
 
     private void schedulePresenceCheck(long armedAtNanos) {
+        schedulePresenceCheck(armedAtNanos, config.splitTimeout());
+    }
+
+    private void schedulePresenceCheck(long armedAtNanos, TimeSpan delay) {
         if (stopped) {
             return;
         }
 
         cancelPresenceFuture();
-        var future = scheduler.schedule(() -> onPresenceCheck(armedAtNanos), config.splitTimeout());
+        var future = scheduler.schedule(() -> onPresenceCheck(armedAtNanos), delay);
 
         presenceFuture.set(future);
     }
@@ -379,6 +404,8 @@ public final class QuorumLossDetector {
         var threshold = requiredThresholdFor(coreCountSupplier.getAsInt());
 
         if (suppressedByCoConfirmation(currentMemberCount(), threshold)) {
+            schedulePresenceCheck(armedAtNanos, SUPPRESSED_RECHECK_INTERVAL);
+
             return;
         }
 
@@ -400,6 +427,8 @@ public final class QuorumLossDetector {
         }
 
         if (suppressedByCoConfirmation(quorumCount, threshold)) {
+            scheduleFiringCheck(windowStartNanos, SUPPRESSED_RECHECK_INTERVAL);
+
             return;
         }
 
@@ -426,14 +455,28 @@ public final class QuorumLossDetector {
     /// members alone restored effective quorum. Returns `false` (drain proceeds) whenever the
     /// supplier is unwired/absent or the effective count is still below threshold. On suppression
     /// logs WARN with the full per-member breakdown (effective vs threshold, which stuck members
-    /// co-confirmed alive, which not) — audit-log-grade operator evidence.
+    /// co-confirmed alive, which not) — audit-log-grade operator evidence — once per suppression
+    /// episode; the #1560 re-checks that keep it suppressed log at DEBUG.
     private boolean suppressedByCoConfirmation(int strictCount, int threshold) {
         var coConfirmation = coConfirmationSupplier.get();
 
         if (!coConfirmation.suppresses(threshold)) {
+            suppressing = false;
+
             return false;
         }
 
+        if (suppressing) {
+            log.debug("QUORUM_LOSS drain still SUPPRESSED by membership co-confirmation: effectiveQuorumCount={} >= "
+                     + "threshold={} — re-checking in {}",
+                      coConfirmation.effectiveQuorumCount(),
+                      threshold,
+                      SUPPRESSED_RECHECK_INTERVAL);
+
+            return true;
+        }
+
+        suppressing = true;
         log.warn("QUORUM_LOSS drain SUPPRESSED by membership co-confirmation: detectorStrictCount={} < threshold={} "
                 + "BUT effectiveQuorumCount={} (snapshot strict {} + {} SWIM-alive stuck) >= threshold — treating "
                 + "as stuck-promotion artifact, NOT quorum loss. countedMembers={} swimAliveStuck={} swimDeadStuck={}",
