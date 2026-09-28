@@ -19,6 +19,7 @@ import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.DemotionConfig.demotionConfig;
 import static org.pragmatica.storage.DemotionManager.demotionManager;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #886: a block that is WRITTEN AND NEVER READ must be visible to demotion.
 ///
@@ -142,10 +143,14 @@ class StorageInstanceWriteOnlyDemotionTest {
                               .containsExactly(TierLevel.MEMORY));
     }
 
-    /// The claim IS the record, so a reference added while the first write is still in flight (a
-    /// second put of the same content deduplicates onto the claim) survives finalization. The
-    /// previous re-create replaced the record and dropped that count back to 1, under-counting a
-    /// live reference. The durable tier's put is held open until the duplicate has been counted.
+    /// The claim IS the record, so a reference added by a second put of the same content survives
+    /// finalization -- the previous re-create replaced the record and dropped that count back to 1,
+    /// under-counting a live reference (#886).
+    ///
+    /// #1567 changed WHEN the duplicate is counted, and this fixture was what specified the defect: it
+    /// asserted the duplicate returned, counted, while the durable write was still open -- a put handing
+    /// out an id whose bytes had not landed and might never land. The duplicate now waits for the
+    /// in-flight write and deduplicates onto the finished block; the refCount-2 outcome is unchanged.
     @Test
     void writeThrough_duplicatePutWhileWriteInFlight_refCountSurvivesFinalization() {
         var gate = Promise.<Unit>promise();
@@ -163,14 +168,16 @@ class StorageInstanceWriteOnlyDemotionTest {
 
         assertThat(awaitEntered(putEntered)).isTrue();
 
-        var duplicate = gated.put(content).await().unwrap();
+        var pendingDuplicate = gated.put(content);
 
-        // Control: the duplicate landed on the claim while the durable write was still open.
-        assertThat(gatedStore.getLifecycle(duplicate).unwrap().refCount()).isEqualTo(2);
+        assertThat(pendingDuplicate.await(timeSpan(200).millis()).isFailure())
+            .as("the duplicate does not resolve while the durable write is still open")
+            .isTrue();
 
         gate.succeed(unit());
 
         var id = first.await().unwrap();
+        var duplicate = pendingDuplicate.await().unwrap();
         var lifecycle = gatedStore.getLifecycle(id).unwrap();
 
         assertThat(id).isEqualTo(duplicate);

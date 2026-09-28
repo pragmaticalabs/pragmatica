@@ -1626,8 +1626,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         /// Resolve the stream a `[streams.X]` consumer subscribes to.
         ///
-        /// Binds [StreamConfig] — the SAME type the stream resource itself is provisioned with — and takes
-        /// its `name`, so a consumer always resolves to exactly the stream its publisher writes to.
+        /// Binds [StreamConfig] through the generic record binder and takes ONLY its `name`, which that binder
+        /// derives from the section suffix (`[streams.orders]` → `orders`) — the same alias the stream
+        /// resource factories' own section binder (#1549, `StreamConfigParser.parseStreamConfig`) assigns, so a
+        /// consumer resolves to exactly the stream its publisher writes to. No other field of this binding is
+        /// read: since #1549 the record binder is NOT what provisions the stream, and its other fields would
+        /// carry `StreamConfig.DEFAULT` values for the documented dashed keys.
         ///
         /// This previously bound a dedicated `StreamNameConfig(String streamName)`, which required a
         /// `stream-name` key that no `resources.toml` carries (the stream's name comes from the config
@@ -1635,8 +1639,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// declarative registration was silently dropped by the `.option()` below — a consumer that
         /// declared correctly still received nothing, with no diagnostic anywhere. Part of #488.
         ///
-        /// #1040: the bound name is then qualified to the engine key, because "the SAME type the stream
-        /// resource itself is provisioned with" is only half the guarantee — the resource factories now
+        /// #1040: the bound name is then qualified to the engine key, because the shared alias is only half
+        /// the guarantee — the resource factories
         /// rewrite that name to the blueprint's declared address, and a subscriber left on the bare
         /// alias would register against a ring no publisher writes to. Both sides derive through
         /// [BlueprintStreamAddresses#engineKeyFor] against the same bindings map, so the property this

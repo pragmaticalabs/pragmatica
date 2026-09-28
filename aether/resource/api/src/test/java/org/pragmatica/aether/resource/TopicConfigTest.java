@@ -206,6 +206,39 @@ class TopicConfigTest {
     }
 
     @Test
+    void tomlBinding_rejectsDurableRetentionOfZero() {
+        assertRetentionRefused("0s");
+    }
+
+    @Test
+    void tomlBinding_rejectsDurableRetentionUnderOneMillisecond() {
+        assertRetentionRefused("500us");
+    }
+
+    @Test
+    void tomlBinding_acceptsDurableRetentionOfOneMillisecond() {
+        var config = bind("""
+                          [orders]
+                          topic_name = "order-events"
+                          durability = "durable"
+                          retention = "1ms"
+                          """);
+
+        assertThat(config.durableSpec().unwrap().unwrap().retention().toMillis()).isEqualTo(1L);
+    }
+
+    private static void assertRetentionRefused(String retention) {
+        serviceFrom("""
+                    [orders]
+                    topic_name = "order-events"
+                    durability = "durable"
+                    retention = "%s"
+                    """.formatted(retention)).config("orders", TopicConfig.class)
+                                          .onSuccess(_ -> fail("retention " + retention + " must be refused at declaration"))
+                                          .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.RetentionBelowOneMillisecond.class));
+    }
+
+    @Test
     void tomlBinding_rejectsStreamKeysOnEphemeralTopic() {
         serviceFrom("""
                     [orders]

@@ -19,8 +19,9 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Option;
+import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -48,7 +49,7 @@ import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 
 /// #1345: a restart after the WAL was compacted but before the metadata snapshot that holds the new segment
 /// refs. Refs reach disk only through the storage metadata snapshot, while `truncateWalsToSealed` ran off
-/// the IN-MEMORY index and `PartitionWal` compacted once the file passed 8 MiB. The restarted index is
+/// the IN-MEMORY index and `AppendLog` compacted once the file passed 8 MiB. The restarted index is
 /// modelled as EMPTY (the snapshot predates every seal), so the rebuilt watermark is `-1`. Before the fix
 /// recovery appended the compaction survivors (196..199) at FRESH offsets 0..3 — measured
 /// `head=3 tail=0 count=4`, offset 0 carrying event 196's payload — with no error and no log line.
@@ -65,7 +66,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int RING_EVENTS = 4;
-    /// 200 × 70 KiB ≈ 13.7 MiB > PartitionWal.COMPACTION_THRESHOLD_BYTES (8 MiB): a truncate past the sealed
+    /// 200 × 70 KiB ≈ 13.7 MiB > AppendLog.COMPACTION_THRESHOLD_BYTES (8 MiB): a truncate past the sealed
     /// watermark physically rewrites the file, which is the only way the survivors' offsets can be lost.
     private static final int EVENTS = 200;
     private static final int PAYLOAD = 70 * 1024;
@@ -76,6 +77,11 @@ class StreamPartitionManagerRestartAfterCompactionTest {
 
     @TempDir
     Path walDir;
+
+    /// #1567: the tier each seal makes its block durable on -- without a seal through the storage engine the
+    /// WAL is never truncated, whatever the tick's bound says.
+    @TempDir
+    Path storageDir;
 
     /// (a) Refs never snapshotted (the durable view stays EMPTY while the live index seals to 195), the
     /// truncation tick runs, restart against the empty index: the recovered partition must carry the original
@@ -151,7 +157,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     /// hole at 3 is refused by the per-record check before any eviction and cannot see the ordering.
     @Test
     void restart_walWithMidLogHole_refusesLoudly_andSealsNothing() {
-        var wal = PartitionWal.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
+        var wal = AppendLog.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
                               .onFailure(cause -> fail(cause.message()))
                               .unwrap();
 
@@ -162,7 +168,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
 
         var sealed = new CopyOnWriteArrayList<SealedSegment>();
         var recovered = streamPartitionManager(Long.MAX_VALUE,
-                                               segmentSealer(segment -> recordSeal(sealed, segment)),
+                                               segmentSealer((segment, _) -> recordSeal(sealed, segment)),
                                                Option.some(walDir),
                                                new SegmentIndex()::lastSealedOffset);
         var create = createStream(recovered);
@@ -249,7 +255,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         var index = new SegmentIndex();
         var stuck = new AtomicBoolean(true);
         var manager = streamPartitionManager(Long.MAX_VALUE,
-                                             segmentSealer(segment -> indexed(index, segment)),
+                                             segmentSealer((segment, _) -> indexed(index, segment)),
                                              Option.some(walDir),
                                              index::lastSealedOffset,
                                              () -> stuck.get() ? LastSealedOffsetSource.none() : index::lastSealedOffset);
@@ -369,8 +375,9 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     /// Publish [#EVENTS], let the sealer drain to the in-memory `index`, truncate the WALs off that index and
     /// close (the crash). Returns the in-memory sealed watermark at the moment of the truncate.
     private long publishSealAndTruncate(SegmentIndex index, DurableSealedOffsetSource durable) {
+        var storage = DurableTestStorage.durableStorage("restart-after-compaction", storageDir);
         var manager = streamPartitionManager(Long.MAX_VALUE,
-                                             segmentSealer(segment -> indexed(index, segment)),
+                                             segmentSealer((segment, log) -> sealedAndIndexed(storage, index, segment, log)),
                                              Option.some(walDir),
                                              index::lastSealedOffset,
                                              durable);
@@ -402,7 +409,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                       .partitions()
                       .getFirst()
                       .wal()
-                      .map(PartitionWal.WalStats::sizeBytes)
+                      .map(AppendLog.WalStats::sizeBytes)
                       .or(-1L);
     }
 
@@ -446,6 +453,15 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         return Promise.unitPromise();
     }
 
+    /// The segment is sealed through `storage` against the partition's log BEFORE the index learns of it -- the
+    /// order the production sink keeps, and what lets the tick truncate the WAL (#1567).
+    private static Promise<Unit> sealedAndIndexed(StorageInstance storage,
+                                                  SegmentIndex index,
+                                                  SealedSegment segment,
+                                                  Option<AppendLog> log) {
+        return DurableTestStorage.sealThrough(storage, segment, log).flatMap(_ -> indexed(index, segment));
+    }
+
     private static Promise<Unit> indexed(SegmentIndex index, SealedSegment segment) {
         index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
 
@@ -482,9 +498,9 @@ class StreamPartitionManagerRestartAfterCompactionTest {
                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
     }
 
-    /// Lowest stored offset in the partition WAL file, read back through a fresh [PartitionWal] (`-1` when empty).
+    /// Lowest stored offset in the partition WAL file, read back through a fresh [AppendLog] (`-1` when empty).
     private long firstStoredOffset() {
-        var wal = PartitionWal.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
+        var wal = AppendLog.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal"))
                               .onFailure(cause -> fail(cause.message()))
                               .unwrap();
         var first = new AtomicLong(-1L);

@@ -12,7 +12,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager.PartitionWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.WalSnapshot;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalStats;
+import org.pragmatica.storage.AppendLog.WalStats;
 import org.pragmatica.lang.Option;
 
 import java.nio.file.Path;
