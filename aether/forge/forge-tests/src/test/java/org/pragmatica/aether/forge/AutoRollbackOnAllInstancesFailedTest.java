@@ -69,6 +69,8 @@ class AutoRollbackOnAllInstancesFailedTest {
     private static final TimeSpan REQUEST = TimeSpan.timeSpan(10).seconds();
     private static final int MAX_PROBE_ROUNDS = 120;
     private static final long QUIET_MS = 20_000L;
+    /// Past AetherNode.COLD_BOOT_CONVERGENCE_WINDOW_MS (75 s), measured from cluster start.
+    private static final long COLD_BOOT_CLEARANCE_MS = 80_000L;
     private static final Artifact ARTIFACT = Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
     private static final Version EARLIER = Version.version("0.9.0").unwrap();
 
@@ -140,10 +142,17 @@ class AutoRollbackOnAllInstancesFailedTest {
         assertNotRolledBack();
     }
 
+    /// The kill happens after the 75 s cold-boot convergence window: inside it SWIM deliberately reports a
+    /// never-healthy peer UNKNOWN rather than FAULTY, so membership keeps counting the dead leader, and a counted
+    /// host whose metrics went stale makes the version undecidable — the detector holds off by design. The
+    /// property here is the leader change, not that window.
     @Test
     @Timeout(600)
     void leaderChangeMidDetection_newLeaderRollsBackExactlyOnce() {
+        var startedAt = System.currentTimeMillis();
+
         startDeployed(RollbackConfig.rollbackConfig());
+        sleep(Math.max(0, COLD_BOOT_CLEARANCE_MS - (System.currentTimeMillis() - startedAt)));
         seedRollbackRecord(System.currentTimeMillis());
         probeRounds(2);
         var oldLeader = cluster.currentLeader().unwrap();
