@@ -162,23 +162,24 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
             return Promise.success(0L);
         }
 
-        var first = events.getFirst()
-                          .offset();
-        var last = events.getLast()
-                         .offset();
+        var first = events.getFirst().offset();
+        var last = events.getLast().offset();
 
-        return sliceCovering(streamName, partition, segments, segmentReader, last)
-                   .flatMap(slice -> install(streamName, partition, first, last, slice).async())
-                   .flatMap(_ -> applyEvents(streamName, partition, events).async());
+        return sliceCovering(streamName, partition, segments, segmentReader, last).flatMap(slice -> install(streamName,
+                                                                                                            partition,
+                                                                                                            first,
+                                                                                                            last,
+                                                                                                            slice).async())
+                            .flatMap(_ -> applyEvents(streamName, partition, events).async());
     }
 
     /// The slice of the segment holding `offset`, decoded; none when no segment holds it, when the segment carries
     /// none, or when its entries do not decode (fail closed: unattributed).
     private static Promise<Option<List<ProvenanceEntry>>> sliceCovering(String streamName,
-                                                                         int partition,
-                                                                         List<SegmentRef> segments,
-                                                                         SegmentReader segmentReader,
-                                                                         long offset) {
+                                                                        int partition,
+                                                                        List<SegmentRef> segments,
+                                                                        SegmentReader segmentReader,
+                                                                        long offset) {
         return Option.from(segments.stream()
                                    .filter(ref -> ref.startOffset() <= offset && offset <= ref.endOffset())
                                    .findFirst())
@@ -188,10 +189,7 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
     }
 
     private static Option<List<ProvenanceEntry>> decoded(Option<List<EpochStart>> slice) {
-        return slice.flatMap(starts -> Result.allOf(starts.stream()
-                                                          .map(ProvenanceEntry::provenanceEntry)
-                                                          .toList())
-                                             .option());
+        return slice.flatMap(starts -> Result.allOf(starts.stream().map(ProvenanceEntry::provenanceEntry).toList()).option());
     }
 
     private Result<Unit> install(String streamName,

@@ -40,9 +40,7 @@ public record LogProvenance(long base, long low, long head, List<ProvenanceEntry
     public Option<Epoch> lastEpoch() {
         return history.isEmpty()
                ? none()
-               : some(history.getLast()
-                             .epoch()
-                             .rank());
+               : some(history.getLast().epoch().rank());
     }
 
     /// The base of a copy with this history (spec §7.5.2): the start of a first `BASE(d)` entry, else 0.

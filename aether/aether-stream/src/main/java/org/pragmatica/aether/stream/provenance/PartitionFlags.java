@@ -46,10 +46,8 @@ import static org.pragmatica.lang.Option.some;
 public interface PartitionFlags {
     /// Raise `reason` on `(stream, partition)`; resolves with the record as committed after it.
     Promise<PartitionFlag> raise(String stream, int partition, PartitionRecoveryReason reason);
-
     /// The partition's committed record, as applied on this node; none when it was never flagged.
     Option<PartitionFlag> status(String stream, int partition);
-
     /// A reason about THIS node's copy (`storageId` = this node's id until storage ULID identity exists).
     PartitionRecoveryReason local(PartitionRecoveryReasonKind kind, String evidence);
 
@@ -69,13 +67,10 @@ public interface PartitionFlags {
     enum FlagError implements Cause {
         NO_LEADER("No committed core leader to witness the partition flag"),
         CONTENDED("The partition flag kept changing under the raise; the reason was not recorded");
-
         private final String message;
-
         FlagError(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
@@ -91,7 +86,9 @@ final class KvPartitionFlags implements PartitionFlags {
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final SliceCodec canonical;
 
-    KvPartitionFlags(ClusterNode<KVCommand<AetherKey>> node, KVStore<AetherKey, AetherValue> kvStore, SliceCodec canonical) {
+    KvPartitionFlags(ClusterNode<KVCommand<AetherKey>> node,
+                     KVStore<AetherKey, AetherValue> kvStore,
+                     SliceCodec canonical) {
         this.node = node;
         this.kvStore = kvStore;
         this.canonical = canonical;
@@ -109,11 +106,15 @@ final class KvPartitionFlags implements PartitionFlags {
 
     @Override
     public PartitionRecoveryReason local(PartitionRecoveryReasonKind kind, String evidence) {
-        return PartitionRecoveryReason.partitionRecoveryReason(kind, some(node.self().id()), evidence);
+        return PartitionRecoveryReason.partitionRecoveryReason(kind,
+                                                               some(node.self().id()),
+                                                               evidence);
     }
 
     /// The raise against the record as applied here. Equal to it after the raise: nothing to write.
-    private Promise<PartitionFlag> attempt(StreamPartitionRecoveryKey key, PartitionRecoveryReason reason, int remaining) {
+    private Promise<PartitionFlag> attempt(StreamPartitionRecoveryKey key,
+                                           PartitionRecoveryReason reason,
+                                           int remaining) {
         var committed = committed(key);
         var raised = StreamPartitionRecoveryValue.raised(committed, reason);
 
@@ -138,8 +139,7 @@ final class KvPartitionFlags implements PartitionFlags {
                                     Option<StreamPartitionRecoveryValue> committed,
                                     StreamPartitionRecoveryValue raised,
                                     LeaderValue leader) {
-        var transactionId = UUID.randomUUID()
-                                .toString();
+        var transactionId = UUID.randomUUID().toString();
         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                       committed.map(AetherValue.class::cast),
                                                                       some(raised));
@@ -179,11 +179,13 @@ final class KvPartitionFlags implements PartitionFlags {
 
     /// CRITICAL (spec §7.5.3 outcome): logged once per record change, on the node that committed it. Event-backed
     /// once the OperatorWarning cluster event (#1574) lands.
-    private PartitionFlag flagged(StreamPartitionRecoveryKey key, StreamPartitionRecoveryValue raised, PartitionRecoveryReason reason) {
+    private PartitionFlag flagged(StreamPartitionRecoveryKey key,
+                                  StreamPartitionRecoveryValue raised,
+                                  PartitionRecoveryReason reason) {
         var flag = flag(raised);
 
         log.error("STREAM_PARTITION_FLAGGED {}[{}]: {} ({}). The partition has no owner and serves no reads until an operator "
-                  + "resolves it (pick-source or accept-loss); record digest {}, reasons {}",
+                 + "resolves it (pick-source or accept-loss); record digest {}, reasons {}",
                   key.stream(),
                   key.partition(),
                   reason.kind(),
@@ -206,9 +208,9 @@ final class KvPartitionFlags implements PartitionFlags {
     /// branch is unreachable. Were it reached, [#DIGEST_UNAVAILABLE] matches no record's real digest, so a
     /// resolution CAS on it fails -- closed, never open.
     private static String digest(byte[] encoded) {
-        return Result.lift(Causes::fromThrowable, () -> MessageDigest.getInstance("SHA-256"))
-                     .map(sha -> HexFormat.of()
-                                          .formatHex(sha.digest(encoded)))
+        return Result.lift(Causes::fromThrowable,
+                           () -> MessageDigest.getInstance("SHA-256"))
+                     .map(sha -> HexFormat.of().formatHex(sha.digest(encoded)))
                      .or(DIGEST_UNAVAILABLE);
     }
 }

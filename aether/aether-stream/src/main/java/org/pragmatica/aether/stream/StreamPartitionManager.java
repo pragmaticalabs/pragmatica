@@ -1721,15 +1721,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                  byte[] payload,
                                                  long timestamp,
                                                  Epoch ownerEpoch) {
-        return writeWalFrame(walFor(streamName, partition), offset, payload, timestamp, ownerEpoch).onSuccess(_ -> replicationManager.replicateEvent(streamName,
-                                                                                                                                                     partition,
-                                                                                                                                                     offset,
-                                                                                                                                                     payload,
-                                                                                                                                                     timestamp,
-                                                                                                                                                     ownerEpoch))
-                                                                                                    .onSuccess(_ -> flagMissingHistory(streamName,
-                                                                                                                                       partition,
-                                                                                                                                       offset));
+        return writeWalFrame(walFor(streamName, partition),
+                             offset,
+                             payload,
+                             timestamp,
+                             ownerEpoch).onSuccess(_ -> replicationManager.replicateEvent(streamName,
+                                                                                          partition,
+                                                                                          offset,
+                                                                                          payload,
+                                                                                          timestamp,
+                                                                                          ownerEpoch))
+                            .onSuccess(_ -> flagMissingHistory(streamName, partition, offset));
     }
 
     private static Result<LoggedAppend> writeWalFrame(Option<AppendLog> wal,
@@ -1781,10 +1783,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void flagMissingHistory(String streamName, int partition, long offset) {
         walFor(streamName, partition).filter(wal -> !historyMayRecordAt(wal, offset))
-                                     .onPresent(_ -> raiseOnce(streamName,
-                                                               partition,
-                                                               PartitionRecoveryReasonKind.HISTORY_MISSING,
-                                                               "this copy holds records written before owner-epoch provenance existed"));
+              .onPresent(_ -> raiseOnce(streamName,
+                                        partition,
+                                        PartitionRecoveryReasonKind.HISTORY_MISSING,
+                                        "this copy holds records written before owner-epoch provenance existed"));
     }
 
     /// Raise a reason about this node's copy on the durable flag, at most once per process per reason. Without a
@@ -1804,13 +1806,23 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Recovery: FER -- a raise that did not commit (no leader, contention) is forgotten, so the next occurrence of
     /// the condition raises again; the local fence (quarantine, refused appends) holds meanwhile.
     @Contract
-    private void raise(PartitionFlags flags, String streamName, int partition, PartitionRecoveryReasonKind kind, String evidence) {
-        flags.raise(streamName, partition, flags.local(kind, evidence))
+    private void raise(PartitionFlags flags,
+                       String streamName,
+                       int partition,
+                       PartitionRecoveryReasonKind kind,
+                       String evidence) {
+        flags.raise(streamName,
+                    partition,
+                    flags.local(kind, evidence))
              .onFailure(cause -> forgetRaise(streamName, partition, kind, evidence, cause));
     }
 
     @Contract
-    private void forgetRaise(String streamName, int partition, PartitionRecoveryReasonKind kind, String evidence, Cause cause) {
+    private void forgetRaise(String streamName,
+                             int partition,
+                             PartitionRecoveryReasonKind kind,
+                             String evidence,
+                             Cause cause) {
         raisedLocally.remove(streamName + "#" + partition + "#" + kind + "#" + evidence);
         log.warn("Partition {}[{}]: raising {} on the durable flag failed, retried at its next occurrence: {}",
                  streamName,
@@ -1925,16 +1937,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                     Epoch ownerEpoch) {
         var firstOffset = lastOffset - payloads.size() + 1;
 
-        return writeWalFrames(walFor(streamName, partition), firstOffset, payloads, timestamp, ownerEpoch).onSuccess(_ -> replicationManager.replicateEvents(streamName,
-                                                                                                                                                             partition,
-                                                                                                                                                             firstOffset,
-                                                                                                                                                             payloads,
-                                                                                                                                                             Collections.nCopies(payloads.size(),
-                                                                                                                                                                                 timestamp),
-                                                                                                                                                             ownerEpoch))
-                                                                                                           .onSuccess(_ -> flagMissingHistory(streamName,
-                                                                                                                                              partition,
-                                                                                                                                              firstOffset));
+        return writeWalFrames(walFor(streamName, partition),
+                              firstOffset,
+                              payloads,
+                              timestamp,
+                              ownerEpoch).onSuccess(_ -> replicationManager.replicateEvents(streamName,
+                                                                                            partition,
+                                                                                            firstOffset,
+                                                                                            payloads,
+                                                                                            Collections.nCopies(payloads.size(),
+                                                                                                                timestamp),
+                                                                                            ownerEpoch))
+                             .onSuccess(_ -> flagMissingHistory(streamName, partition, firstOffset));
     }
 
     private static Result<LoggedAppend> writeWalFrames(Option<AppendLog> wal,
@@ -2467,7 +2481,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                            .stream()
                                                                            .reduce((earlier, later) -> later)))
                      .flatMap(last -> ProvenanceEntry.provenanceEntry(last).option())
-                     .map(entry -> entry.epoch().rank());
+                     .map(entry -> entry.epoch()
+                                        .rank());
     }
 
     /// The owner-epoch history of this node's copy of `(streamName, partition)`, oldest first (#1596): empty when
@@ -2610,7 +2625,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                         partition,
                                                         PartitionRecoveryReasonKind.HISTORY_INCOMPLETE,
                                                         "records from offset " + start
-                                                        + " were taken from a sealed segment that carries no owner-epoch provenance"));
+                                                       + " were taken from a sealed segment that carries no owner-epoch provenance"));
     }
 
     /// The owner-epoch fence (#345 item 1d-ii, spec §5b/§6): reject the append when `ownerEpoch` is

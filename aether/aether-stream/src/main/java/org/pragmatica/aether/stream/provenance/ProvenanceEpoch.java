@@ -35,10 +35,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// form is what crosses the wire.
 public sealed interface ProvenanceEpoch {
     String SEPARATOR = ".";
-
     /// The epoch the log orders this one by.
     Epoch rank();
-
     /// This epoch's log key token.
     String token();
 
@@ -97,26 +95,21 @@ public sealed interface ProvenanceEpoch {
 
     /// A fresh unknown range above `floor`, the last real epoch of the history it extends.
     static ProvenanceEpoch unknown(Epoch floor) {
-        return new Unknown(ULID.ulid()
-                               .encoded(),
+        return new Unknown(ULID.ulid().encoded(),
                            floor);
     }
 
     /// Whether an entry of `later` may follow one of `earlier` in one history.
     static boolean follows(ProvenanceEpoch later, ProvenanceEpoch earlier) {
         return switch (later) {
-            case Owned owned when earlier instanceof Owned previous -> owned.epoch()
-                                                                            .isStrictlyAfter(previous.epoch());
-            case Owned owned -> owned.epoch()
-                                     .isAtLeast(earlier.rank());
-            case Unknown _, Base _ -> !later.equals(earlier) && later.rank()
-                                                                     .isAtLeast(earlier.rank());
+            case Owned owned when earlier instanceof Owned previous -> owned.epoch().isStrictlyAfter(previous.epoch());
+            case Owned owned -> owned.epoch().isAtLeast(earlier.rank());
+            case Unknown _, Base _ -> !later.equals(earlier) && later.rank().isAtLeast(earlier.rank());
         };
     }
 
     static Result<ProvenanceEpoch> fromKey(EpochKey key) {
-        var parts = key.token()
-                       .split("\\.", -1);
+        var parts = key.token().split("\\.", -1);
 
         return switch (parts[0]) {
             case "o" -> ownedFrom(key, parts);
@@ -149,13 +142,11 @@ public sealed interface ProvenanceEpoch {
     }
 
     private static Result<Epoch> epochFrom(String term, String counter) {
-        return Result.all(number(term), number(counter))
-                     .map(Epoch::epoch);
+        return Result.all(number(term), number(counter)).map(Epoch::epoch);
     }
 
     private static Result<Long> number(String field) {
-        return Number.parseLong(field)
-                     .mapError(_ -> cause("Not a number in a provenance epoch key: '" + field + "'"));
+        return Number.parseLong(field).mapError(_ -> cause("Not a number in a provenance epoch key: '" + field + "'"));
     }
 
     private static <T> Result<T> notAKey(EpochKey key) {

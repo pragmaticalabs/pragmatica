@@ -1087,8 +1087,7 @@ public sealed interface AetherValue {
     /// changes it, as the operator must see new evidence. [LeaderAuthorized]: only a leader-witnessed transaction
     /// with the exact previous value may write it, so two concurrent raises cannot lose each other's reason.
     /// Candidates, source and resolution (AD7/AD14) extend this record; clearing it is AD14's.
-    record StreamPartitionRecoveryValue(PartitionRecoveryState state,
-                                        Set<PartitionRecoveryReason> reasons) implements AetherValue, LeaderAuthorized {
+    record StreamPartitionRecoveryValue(PartitionRecoveryState state, Set<PartitionRecoveryReason> reasons) implements AetherValue, LeaderAuthorized {
         public StreamPartitionRecoveryValue {
             reasons = Set.copyOf(reasons);
         }
@@ -1102,7 +1101,8 @@ public sealed interface AetherValue {
         public static StreamPartitionRecoveryValue raised(Option<StreamPartitionRecoveryValue> committed,
                                                           PartitionRecoveryReason reason) {
             return committed.map(value -> value.with(reason))
-                            .or(() -> new StreamPartitionRecoveryValue(PartitionRecoveryState.FLAGGED, Set.of(reason)));
+                            .or(() -> new StreamPartitionRecoveryValue(PartitionRecoveryState.FLAGGED,
+                                                                       Set.of(reason)));
         }
 
         private StreamPartitionRecoveryValue with(PartitionRecoveryReason reason) {

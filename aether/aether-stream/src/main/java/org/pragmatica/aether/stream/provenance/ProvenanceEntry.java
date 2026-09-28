@@ -53,7 +53,10 @@ public record ProvenanceEntry(ProvenanceKind kind, Epoch rank, Option<String> id
                                                                         unknown.floor(),
                                                                         some(unknown.d()),
                                                                         startOffset);
-            case ProvenanceEpoch.Base base -> new ProvenanceEntry(ProvenanceKind.BASE, base.floor(), some(base.d()), startOffset);
+            case ProvenanceEpoch.Base base -> new ProvenanceEntry(ProvenanceKind.BASE,
+                                                                  base.floor(),
+                                                                  some(base.d()),
+                                                                  startOffset);
         };
     }
 
@@ -68,8 +71,7 @@ public record ProvenanceEntry(ProvenanceKind kind, Epoch rank, Option<String> id
 
     /// The entry as the log recorded it; a key this codec did not write is a failure, never a guess.
     public static Result<ProvenanceEntry> provenanceEntry(EpochStart start) {
-        return ProvenanceEpoch.fromKey(start.key())
-                              .map(epoch -> provenanceEntry(epoch, start.startOffset()));
+        return ProvenanceEpoch.fromKey(start.key()).map(epoch -> provenanceEntry(epoch, start.startOffset()));
     }
 
     /// The epoch this entry names. A synthetic kind without its `d` (only a peer that is not this codec could send
@@ -88,7 +90,8 @@ public record ProvenanceEntry(ProvenanceKind kind, Epoch rank, Option<String> id
     }
 
     private static boolean follows(EpochKey later, EpochKey earlier) {
-        return Result.all(ProvenanceEpoch.fromKey(later), ProvenanceEpoch.fromKey(earlier))
+        return Result.all(ProvenanceEpoch.fromKey(later),
+                          ProvenanceEpoch.fromKey(earlier))
                      .map(ProvenanceEpoch::follows)
                      .or(false);
     }

@@ -201,7 +201,9 @@ public final class SegmentReader {
 
     /// The owner-epoch slice the segment `ref` carries (#1596, [SegmentProvenance]): none for a segment sealed
     /// without one. A header that does not parse fails the read.
-    public Promise<Option<List<EpochStart>>> readProvenance(String streamName, int partition, SegmentIndex.SegmentRef ref) {
+    public Promise<Option<List<EpochStart>>> readProvenance(String streamName,
+                                                            int partition,
+                                                            SegmentIndex.SegmentRef ref) {
         return readBlock(buildRefName(streamName, partition, ref), ref).map(SegmentProvenance.Split::slice);
     }
 

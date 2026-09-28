@@ -93,7 +93,8 @@ public final class StorageSegmentSink implements SegmentSink {
     private static byte[] withProvenance(SealedSegment segment, Option<AppendLog> log) {
         var events = segment.serializedEvents();
 
-        return log.map(wal -> sliceThrough(wal, segment.endOffset()))
+        return log.map(wal -> sliceThrough(wal,
+                                           segment.endOffset()))
                   .filter(slice -> !slice.isEmpty())
                   .map(slice -> SegmentProvenance.withSlice(slice, events))
                   .or(events);

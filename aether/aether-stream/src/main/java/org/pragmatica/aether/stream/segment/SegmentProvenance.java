@@ -42,25 +42,17 @@ public sealed interface SegmentProvenance {
 
     /// `events` behind a header holding `slice`.
     static byte[] withSlice(List<EpochStart> slice, byte[] events) {
-        var tokens = slice.stream()
-                          .map(start -> start.key()
-                                             .token()
-                                             .getBytes(StandardCharsets.UTF_8))
-                          .toList();
+        var tokens = slice.stream().map(start -> start.key()
+                                                      .token()
+                                                      .getBytes(StandardCharsets.UTF_8)).toList();
         var headerSize = Long.BYTES + Integer.BYTES + tokens.stream()
                                                             .mapToInt(token -> Short.BYTES + token.length + Long.BYTES)
                                                             .sum();
-        var buffer = ByteBuffer.allocate(headerSize + events.length)
-                               .order(ByteOrder.BIG_ENDIAN);
+        var buffer = ByteBuffer.allocate(headerSize + events.length).order(ByteOrder.BIG_ENDIAN);
 
-        buffer.putLong(MAGIC)
-              .putInt(slice.size());
-
+        buffer.putLong(MAGIC).putInt(slice.size());
         for (var i = 0; i < slice.size(); i++) {
-            buffer.putShort((short) tokens.get(i).length)
-                  .put(tokens.get(i))
-                  .putLong(slice.get(i)
-                                .startOffset());
+            buffer.putShort((short) tokens.get(i).length).put(tokens.get(i)).putLong(slice.get(i).startOffset());
         }
 
         return buffer.put(events)
@@ -78,13 +70,14 @@ public sealed interface SegmentProvenance {
     }
 
     private static Result<Split> parse(byte[] block) {
-        var buffer = ByteBuffer.wrap(block)
-                               .order(ByteOrder.BIG_ENDIAN)
-                               .position(Long.BYTES);
+        var buffer = ByteBuffer.wrap(block).order(ByteOrder.BIG_ENDIAN).position(Long.BYTES);
 
-        return Result.lift(_ -> cause("Segment provenance header is corrupt"), () -> readEntries(buffer))
+        return Result.lift(_ -> cause("Segment provenance header is corrupt"),
+                           () -> readEntries(buffer))
                      .flatMap(entries -> Result.allOf(entries))
-                     .map(entries -> new Split(some(entries), remainder(block, buffer.position())));
+                     .map(entries -> new Split(some(entries),
+                                               remainder(block,
+                                                         buffer.position())));
     }
 
     private static List<Result<EpochStart>> readEntries(ByteBuffer buffer) {
@@ -97,8 +90,8 @@ public sealed interface SegmentProvenance {
             buffer.get(token);
             var start = buffer.getLong();
 
-            entries.add(EpochKey.epochKey(new String(token, StandardCharsets.UTF_8))
-                                .map(key -> new EpochStart(key, start)));
+            entries.add(EpochKey.epochKey(new String(token, StandardCharsets.UTF_8)).map(key -> new EpochStart(key,
+                                                                                                               start)));
         }
 
         return entries;
