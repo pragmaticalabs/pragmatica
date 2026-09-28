@@ -53,8 +53,7 @@ public sealed interface OwnerPeerReads {
                                                                                              streamName,
                                                                                              partition,
                                                                                              fromOffset,
-                                                                                             maxEvents)
-                                                                               .map(OwnerPeerReads::asPage);
+                                                                                             maxEvents).map(OwnerPeerReads::asPage);
     }
 
     private static StreamForwardClient.ReadForwardResult asPage(List<OffHeapRingBuffer.RawEvent> events) {
