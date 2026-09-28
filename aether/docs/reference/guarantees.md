@@ -103,13 +103,25 @@ There are **50** `AetherKey` record types (not ~40 as originally estimated), eac
   - it restores `ClusterIncarnationKey` as it was and never advances it, so an incarnation increase on
     cold restart is NOT guaranteed until #1533;
   - it ignores `[backup] enabled` (only a non-blank path selects it; Ember passes `enabled = false`
-    with a path), and `[backup] interval` has no reader.
+    with a path), and `[backup] interval` has no reader;
+  - (d) a cold restart restored from an OLDER snapshot comes back with the same lineage and incarnation
+    and a lower revision than the change-triggered backup head. While the head is ahead nothing is backed
+    up and the head is never written over; the only signal is one `BACKUP_HEAD_AHEAD` warning per episode
+    once the stall outlasts 30 s. Once this cluster's revision overtakes the head's, its state is written
+    OVER the newer head — replaced, not merely delayed — and git history keeps the replaced commit
+    `[verified: KvBackupServiceTest.Lineage#afterAnOldPathRestart_theStallIsWarned_andTheOvertakingStateReplacesTheHead]`
+    (unit level, real git; no multi-node run).
 - **The change-triggered backup (#1532)** is a separate, leader-only git repository at
   `<path>/kv-backup`, written only when `[backup] enabled = true`; it backs up cluster-state keys only
   and nothing reads it back until #1533 `[design intent — unverified]`. **The remote's lineage changes
   only by an operator declaration** (`aether backup declare-genesis`, which commits a declaration for
   exactly this cluster's lineage and incarnation): a head of any other lineage is gated, whatever the
-  incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. The release does not cut with
+  incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. A head of this cluster's own lineage that is ahead of its state is never written over while it is
+  ahead; routine lag after a leader change resolves by itself, and a stall longer than 30 s (monotonic
+  clock) raises one `BACKUP_HEAD_AHEAD` warning per episode `[verified: KvBackupServiceTest.Lineage]`.
+  `declare-genesis` never moves this cluster's incarnation backwards (it commits `max(own, head) + 1`,
+  witnessed on the incarnation it read, so a concurrent write makes it refuse instead of being
+  overwritten) and is safe to re-run after any push failure `[verified: KvBackupServiceTest.Genesis]`. The release does not cut with
   both paths live: #1533 deletes the old one.
 
 **Declared vs. derivable — the type system is the authoritative split (#1530).** Every `AetherKey` is either `AetherKey.ClusterStateKey` (cluster state, carried in a KV backup for a whole-cluster cold restart) or `AetherKey.RuntimeKey` (rebuilt by the running cluster, never backed up); `AetherKey` permits nothing else, so a new key cannot skip the choice `[mechanism: sealed interface AetherKey permits ClusterStateKey, RuntimeKey]`. `ConfigKey` backs up only its cluster-wide rows (`ConfigKey.isBackedUp()` is false for node-scoped overrides). The backup format is `BackupEntryCodec` (#1531). The earlier hand-maintained `EphemeralKeys` set and the TOML `KVStoreSerializer` it served are deleted — neither had a production caller. The split is pinned by `BackupKeyClassificationTest` (no backed-up key or value may reach a `NodeId` outside a commented allowlist), which is a unit-level pin, not a live-path verification: no restore path consumes a backup yet `[design intent — unverified]`.

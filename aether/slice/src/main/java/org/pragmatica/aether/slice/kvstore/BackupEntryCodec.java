@@ -743,8 +743,12 @@ public record BackupEntryCodec(SliceCodec codec) {
     }
 
     // --- keys ---
+    /// The key is read as `Object`: a node's KV store also holds foreign-typed atoms under its
+    /// `AetherKey` parameter (`LeaderKey`), and a typed read would throw on them. They are not backed up.
     private static boolean isBackedUpEntry(Map.Entry<AetherKey, AetherValue> entry) {
-        return isBackedUp(entry.getKey());
+        Object key = entry.getKey();
+
+        return key instanceof ClusterStateKey clusterState && clusterState.isBackedUp();
     }
 
     private static String keyString(Map.Entry<AetherKey, AetherValue> entry) {

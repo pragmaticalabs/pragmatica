@@ -18,6 +18,9 @@ public record BackupWarning(Code code, String detail) {
     public enum Code {
         /// A foreign or older lineage holds the backup head; this cluster will not overwrite it.
         BACKUP_GATED,
+        /// The head of this cluster's own lineage has stayed ahead of its state past the bound: nothing is
+        /// being backed up, and once this cluster's revision passes the head's its state replaces it.
+        BACKUP_HEAD_AHEAD,
         /// The backup head exists but cannot be read as a backup document.
         BACKUP_REMOTE_UNREADABLE,
         /// Commits are queued locally but have not reached the remote for longer than the lag bound.

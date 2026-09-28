@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
@@ -33,8 +34,17 @@ import static org.pragmatica.lang.Result.success;
 /// by re-reading the remote head.
 ///
 /// Every command runs `git -C <dir>` with prompts disabled and a timeout, so an unreachable or
-/// credential-less remote fails instead of hanging the backup worker.
-public record GitBackupRepository(Path dir, Option<String> remote, String branch, TimeSpan timeout) {
+/// credential-less remote fails instead of hanging the backup worker. Two prompt sources exist and both are
+/// closed: git's own (`GIT_TERMINAL_PROMPT=0`) and ssh's, which reads the controlling tty and ignores that
+/// variable (`-o BatchMode=yes`, appended to any `GIT_SSH_COMMAND` the process already carries).
+///
+/// `environment` is added to each git process's environment — empty in production; tests use it to put a
+/// fake `ssh` on the `PATH`.
+public record GitBackupRepository(Path dir,
+                                  Option<String> remote,
+                                  String branch,
+                                  TimeSpan timeout,
+                                  Map<String, String> environment) {
     public static final String FILE = "kv-backup.txt";
     /// The operator's genesis declaration: `<lineage> <incarnation>`. Committed beside [#FILE] by
     /// `aether backup declare-genesis`; the only thing that lets a different lineage replace the head.
@@ -49,10 +59,19 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
                                                           Option<String> remote,
                                                           String branch,
                                                           TimeSpan timeout) {
+        return gitBackupRepository(dir, remote, branch, timeout, Map.of());
+    }
+
+    static GitBackupRepository gitBackupRepository(Path dir,
+                                                   Option<String> remote,
+                                                   String branch,
+                                                   TimeSpan timeout,
+                                                   Map<String, String> environment) {
         return new GitBackupRepository(dir,
                                        remote.filter(url -> !url.isBlank()),
                                        branch,
-                                       timeout);
+                                       timeout,
+                                       Map.copyOf(environment));
     }
 
     /// Every way a git operation can fail.
@@ -248,8 +267,12 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
         command.add(dir.toString());
         command.addAll(args);
         var builder = new ProcessBuilder(command).redirectErrorStream(true);
+        var processEnvironment = builder.environment();
 
-        builder.environment().put("GIT_TERMINAL_PROMPT", "0");
+        processEnvironment.putAll(environment);
+        processEnvironment.put("GIT_TERMINAL_PROMPT", "0");
+        processEnvironment.put("GIT_SSH_COMMAND",
+                               batchModeSsh(Option.option(processEnvironment.get("GIT_SSH_COMMAND"))));
 
         return builder;
     }
@@ -282,6 +305,13 @@ public record GitBackupRepository(Path dir, Option<String> remote, String branch
 
     private String outputOf(FutureTask<String> output) {
         return Result.lift(() -> output.get(timeout.millis(), TimeUnit.MILLISECONDS)).or("");
+    }
+
+    /// The ssh git runs, never allowed to prompt: the operator's own `GIT_SSH_COMMAND` (a key, a port) is
+    /// kept, with `-o BatchMode=yes` appended; otherwise plain `ssh` in batch mode.
+    static String batchModeSsh(Option<String> configured) {
+        return configured.filter(command -> !command.isBlank())
+                         .or("ssh") + " -o BatchMode=yes";
     }
 
     private static BackupRepositoryError unavailable(Throwable cause) {
