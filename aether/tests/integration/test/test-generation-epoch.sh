@@ -7,6 +7,8 @@
 #         counter only, a literal I:T:C passes through;
 #   E5-E7 fail loudly: a 400, or a spec the harness cannot turn into I:T:C, aborts the CALLING
 #         SCRIPT whatever `|| true` it has, including from inside a subshell;
+#   E9    the abort's reason stays visible when the caller silences the barrier (`>/dev/null 2>&1 || true`,
+#         the cluster.sh shape): an abort with no message is the same silence the abort exists to end;
 #   E8    control: an ordinary 408 timeout still returns 1 to the caller (so `|| log_warn` keeps
 #         working for an environmental failure) — the abort is not a blanket exit.
 # curl and the aether CLI are stubbed as shell functions; no cluster is involved.
@@ -100,6 +102,13 @@ rc=$(run_probe e7 "$BODY_OK" 200 no 'await_generation_quiesced "http://h:1" "7:1
 if [ "$rc" -ne 0 ] && ! grep -q AFTER "${WORK}/e7.out" && [ ! -s "${WORK}/e7.posts" ] && grep -q "invalid epoch spec '7:142'" "${WORK}/e7.err"; then
     ok "E7 a legacy T:C spec aborts before any POST"
 else fail "E7 rc=${rc} out=$(tr '\n' '|' < "${WORK}/e7.out") posts=$(tr '\n' '|' < "${WORK}/e7.posts")"; fi
+
+# E9 — the cluster.sh:221 shape: the caller discards the barrier's stdout AND stderr. The suite must
+# still abort, and the operator must still see why.
+rc=$(run_probe e9 "$BODY_OK" 400 no 'await_generation_quiesced "http://h:1" "current" 5 >/dev/null 2>&1 || true; echo AFTER')
+if [ "$rc" -ne 0 ] && ! grep -q AFTER "${WORK}/e9.out" && grep -q 'HARNESS BUG' "${WORK}/e9.err"; then
+    ok "E9 a silenced caller still aborts AND the HARNESS BUG reason reaches the operator (rc=${rc})"
+else fail "E9 rc=${rc} out=$(tr '\n' '|' < "${WORK}/e9.out") err=$(tr '\n' '|' < "${WORK}/e9.err")"; fi
 
 # E8 — control: a 408 timeout is environmental; it returns 1 and the caller continues.
 rc=$(run_probe e8 "$BODY_OK" 408 no 'await_generation_quiesced "http://h:1" "current+1" 5; echo rc=$?; echo AFTER')

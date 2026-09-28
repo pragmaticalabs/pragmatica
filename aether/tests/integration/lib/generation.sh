@@ -20,6 +20,12 @@
 LIB_DIR_GENERATION="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${LIB_DIR_GENERATION}/common.sh"
 
+# fd 7 = the script's stderr as it was when this library loaded. _generation_harness_bug writes there, so
+# its message reaches the operator even when the caller redirects the barrier's own output
+# (`await_generation_quiesced ... >/dev/null 2>&1 || true`, cluster.sh). fds 8 and 9 are the stub
+# harnesses' tick FIFOs; nothing else in this harness uses 7.
+exec 7>&2
+
 # ---------------------------------------------------------------------------
 # generation_current [endpoint]
 #
@@ -198,13 +204,15 @@ _is_epoch_string() {
     [[ "$1" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]
 }
 
-# _generation_harness_bug <message>: aborts the calling SCRIPT, not just this function.
+# _generation_harness_bug <message>: aborts the calling SCRIPT, not just this function, and says why on fd 7
+# (the load-time stderr), which a caller's `>/dev/null 2>&1` cannot silence.
 # A malformed barrier request is a harness bug; returning non-zero would be swallowed by the
 # `|| true` / `|| log_warn` most callers wrap the barrier in. `exit` ends the current shell;
 # inside a subshell ( ... ) or $( ... ) that is only the subshell, so the script's own pid
 # ($$ is not updated in subshells) is sent TERM first.
 _generation_harness_bug() {
-    echo "[FAIL]  HARNESS BUG (generation barrier): $1 -- aborting the suite: a barrier that no-ops invalidates every later result" >&2
+    local message="[FAIL]  HARNESS BUG (generation barrier): $1 -- aborting the suite: a barrier that no-ops invalidates every later result"
+    { echo "$message" >&7; } 2>/dev/null || echo "$message" >&2
     if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
         kill -TERM "$$" 2>/dev/null
     fi
