@@ -119,6 +119,18 @@ class ClusterCursorStoreTest {
                     .isEqualTo(Option.some(cluster));
         }
 
+        /// #1529 acceptance 3: the node-local cursor survives a cold restart on disk; the committed
+        /// checkpoints come back from a backup that may predate it. A rewind minted in the new run must
+        /// still win over that surviving cursor, however high its rewind epoch from the previous run.
+        @Test
+        void resumeCursor_prefersTheNewRunsRewind_overASurvivingLocalCursorFromBeforeAColdRestart() {
+            var survivingLocal = Cursor.cursor(900L, RewindEpoch.rewindEpoch(3L, 4L));
+            var newRunRewind = Cursor.cursor(0L, RewindEpoch.rewindEpoch(1L, 1L));
+
+            assertThat(ClusterCursorStore.resumeCursor(Option.some(survivingLocal), Option.some(newRunRewind)))
+                    .isEqualTo(Option.some(newRunRewind));
+        }
+
         /// And in the other direction: a local cursor committed under the NEWER epoch (this node applied
         /// the rewind and progressed, the cluster checkpoint lags) is kept over a lower cluster cursor at
         /// that same epoch, and over a higher cluster cursor at an older one.

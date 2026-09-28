@@ -270,4 +270,28 @@ class KVStoreAetherEpochFenceTest {
                 .isEqualTo(5);
         }
     }
+
+    /// #1529 acceptance 2: a cold restart restores the backup through consensus, and the new run mints
+    /// its epochs from a restarted Rabia term. Every epoch-bearing write of the new run must be accepted
+    /// over the restored, numerically higher epochs, or no owner of the new run can ever take over.
+    @Nested
+    class AcrossAColdRestart {
+        @Test
+        void newRunOwnership_isAccepted_overTheRestoredHigherEpoch() {
+            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(7, 5), 3L));
+            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(1, 0), 1L));
+
+            assertThat(stored(OWN_KEY)).as("the new run's owner replaces the restored owner")
+                                       .isEqualTo(ownership(OWNER_B, Epoch.epoch(1, 0), 1L));
+        }
+
+        @Test
+        void newRunStreamOwnership_isAccepted_overTheRestoredHigherEpoch() {
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(7, 5), 3L));
+            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(1, 0), 1L));
+
+            assertThat(stored(STREAM_KEY)).as("the new run's stream owner replaces the restored owner")
+                                          .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(1, 0), 1L));
+        }
+    }
 }
