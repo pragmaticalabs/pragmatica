@@ -617,9 +617,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     @Override
     @Contract
     public void onClusterSyncPing(ClusterSyncPing ping) {
-        log.debug("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{})",
+        log.debug("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{}:{})",
                   ping.sender(),
                   ping.rabiaTerm(),
+                  ping.epochIncarnation(),
                   ping.epochTerm(),
                   ping.epochCounter());
         recordCoreReachability(ping);
@@ -713,8 +714,9 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     @Override
     @Contract
     public void onClusterSyncPong(ClusterSyncPong pong) {
-        log.debug("ClusterSync: received PONG from {} (epoch={}:{})",
+        log.debug("ClusterSync: received PONG from {} (epoch={}:{}:{})",
                   pong.sender(),
+                  pong.observedEpochIncarnation(),
                   pong.observedEpochTerm(),
                   pong.observedEpochCounter());
         acceptObservation(pong.sender(), pong.observation());
