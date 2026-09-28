@@ -105,7 +105,13 @@ public final class KvBackupService {
                          long pushLagWarnMillis,
                          long headAheadWarnMillis) {
         public static final long DEFAULT_HEAD_AHEAD_WARN_MILLIS = 30_000;
-        public static final Timing DEFAULT = new Timing(500, 5_000, 1_000, 60_000, 60_000, DEFAULT_HEAD_AHEAD_WARN_MILLIS);
+
+        public static final Timing DEFAULT = new Timing(500,
+                                                        5_000,
+                                                        1_000,
+                                                        60_000,
+                                                        60_000,
+                                                        DEFAULT_HEAD_AHEAD_WARN_MILLIS);
 
         public static Timing timing(long quietMillis,
                                     long maxDelayMillis,
@@ -254,8 +260,7 @@ public final class KvBackupService {
                                              ? Result.unitResult()
                                              : repository.commitFile(GitBackupRepository.DECLARATION,
                                                                      declaration.render(),
-                                                                     "declare genesis " + declaration.render()
-                                                                                                    .strip()));
+                                                                     "declare genesis " + declaration.render().strip()));
     }
 
     /// The declaration committed in the local repository, if any. Worker thread only.
@@ -635,7 +640,6 @@ public final class KvBackupService {
     @Contract
     private void onHeadAhead(Outcome outcome) {
         var now = clock.getAsLong();
-
         // Re-read the head on the next pass: an unchanged body must not short-circuit past it.
         lastWrittenBody = Option.none();
         headAheadSince.compareAndSet(-1, now);
@@ -648,20 +652,21 @@ public final class KvBackupService {
 
     private static String headAheadDetail(Outcome outcome, long seconds) {
         return "the backup head (incarnation " + outcome.head()
-                                                       .map(BackupHeader::incarnation)
-                                                       .or(0L)
-               + ", revision " + outcome.head()
-                                        .map(BackupHeader::revision)
-                                        .or(0L)
-               + ") has been ahead of this cluster's state (incarnation " + outcome.ours()
-                                                                                    .map(BackupHeader::incarnation)
-                                                                                    .or(0L)
-               + ", revision " + outcome.ours()
-                                        .map(BackupHeader::revision)
-                                        .or(0L)
-               + ") for " + seconds + "s, so nothing is being backed up; this cluster may have been restored from an"
-               + " older snapshot (the old persistence path) while a newer backup head exists — see #1533. Once this"
-               + " cluster's revision passes the head's, its state REPLACES that head (git history keeps it)";
+                                                        .map(BackupHeader::incarnation)
+                                                        .or(0L)
+             + ", revision " + outcome.head()
+                                      .map(BackupHeader::revision)
+                                      .or(0L)
+             + ") has been ahead of this cluster's state (incarnation " + outcome.ours()
+                                                                                 .map(BackupHeader::incarnation)
+                                                                                 .or(0L)
+             + ", revision " + outcome.ours()
+                                      .map(BackupHeader::revision)
+                                      .or(0L)
+             + ") for " + seconds
+             + "s, so nothing is being backed up; this cluster may have been restored from an"
+             + " older snapshot (the old persistence path) while a newer backup head exists — see #1533. Once this"
+             + " cluster's revision passes the head's, its state REPLACES that head (git history keeps it)";
     }
 
     @Contract

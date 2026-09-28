@@ -172,7 +172,7 @@ public record BackupGenesis(KvBackupService service) {
                                                        Option<BackupDecision.Declaration> pending,
                                                        Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         var alreadyDeclared = pending.filter(declaration -> declaration.equals(BackupDecision.Declaration.declaration(current.lineageId(),
-                                                                                                                  current.incarnation())))
+                                                                                                                      current.incarnation())))
                                      .filter(_ -> current.incarnation() > head.incarnation())
                                      .isPresent();
 
