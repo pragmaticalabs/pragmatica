@@ -169,17 +169,18 @@ public final class OwnerActivation {
 
         /// Two peers — the catch-up source and another responder — hold different records at an offset both hold:
         /// the suffix that would be pulled may belong to another lineage than records the other peer acknowledged.
+        /// The source component is `origin`: a component named `source` would clash with [Cause#source()].
         record DivergentPeers(String streamName,
                               int partition,
-                              NodeId source,
-                              long sourceHead,
+                              NodeId origin,
+                              long originHead,
                               NodeId peer,
                               long peerHead) implements ActivationBlock {
             @Override
             public String message() {
                 return ("Owner promotion of %s[%d] refused: catch-up source %s (head %d) and %s (head %d) disagree where "
                        + "both hold records; one of them is a divergent tail and the partition waits for an operator "
-                       + "to pick the source").formatted(streamName, partition, source, sourceHead, peer, peerHead);
+                       + "to pick the source").formatted(streamName, partition, origin, originHead, peer, peerHead);
             }
         }
 
