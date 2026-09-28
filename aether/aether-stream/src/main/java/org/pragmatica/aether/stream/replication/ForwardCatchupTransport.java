@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.aether.stream.forward.RawEventDto;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardClient.ReadForwardResult;
 import org.pragmatica.consensus.NodeId;
@@ -87,7 +88,7 @@ public final class ForwardCatchupTransport implements CatchupTransport {
             return page(target, request, nextCursor, accumulated);
         }
 
-        return Promise.success(toResponse(target, request, accumulated));
+        return Promise.success(toResponse(target, request, accumulated, result.history()));
     }
 
     private enum CatchupError implements Cause {
@@ -102,9 +103,12 @@ public final class ForwardCatchupTransport implements CatchupTransport {
         }
     }
 
+    /// `history` is the LAST page's (#1596): the source read it after that page's events, so it covers every event
+    /// accumulated here.
     private static CatchupResponse toResponse(NodeId target,
                                               ReplicationMessage.CatchupRequest request,
-                                              List<RawEventDto> events) {
+                                              List<RawEventDto> events,
+                                              List<ProvenanceEntry> history) {
         var payloads = new ArrayList<byte[]>(events.size());
         var timestamps = new ArrayList<Long>(events.size());
 
@@ -122,6 +126,7 @@ public final class ForwardCatchupTransport implements CatchupTransport {
                                request.fromOffset(),
                                toOffset,
                                payloads,
-                               timestamps);
+                               timestamps,
+                               history);
     }
 }

@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.pragmatica.aether.stream.VisibleBounds;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -176,6 +177,11 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// the serving node holds no ring and on a failure. They let a node that holds no ring learn the bounds
     /// a projection rebuild must capture through the same forward a consumer read takes (CTO ruling 4 (a),
     /// know `99b1a8d58`): a layout widening of this pinned record, no new message type and no KV record.
+    ///
+    /// `history` (#1596) is the serving node's owner-epoch history, read AFTER the events, on a replica catch-up
+    /// read only (empty on every other answer): the source's slice a catch-up apply checks and installs before
+    /// applying the events, so every caught-up record is attributed to the epoch that first wrote it. Same
+    /// precedent: a widening of this pinned record rather than a second round trip.
     record ReadForwardResponse(NodeId sender,
                                String correlationId,
                                boolean success,
@@ -183,9 +189,11 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                boolean truncated,
                                String errorMessage,
                                long earliestRetained,
-                               long visibleHead) implements StreamForwardMessage {
+                               long visibleHead,
+                               List<ProvenanceEntry> history) implements StreamForwardMessage {
         public ReadForwardResponse {
             events = List.copyOf(events);
+            history = List.copyOf(history);
         }
 
         public static ReadForwardResponse successResponse(NodeId sender,
@@ -205,7 +213,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            false,
                                            "",
                                            bounds.earliestRetained(),
-                                           bounds.visibleHead());
+                                           bounds.visibleHead(),
+                                           List.of());
         }
 
         public static ReadForwardResponse truncatedResponse(NodeId sender,
@@ -225,7 +234,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            true,
                                            "",
                                            bounds.earliestRetained(),
-                                           bounds.visibleHead());
+                                           bounds.visibleHead(),
+                                           List.of());
         }
 
         public static ReadForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
@@ -236,7 +246,21 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            false,
                                            errorMessage,
                                            VisibleBounds.NONE,
-                                           VisibleBounds.NONE);
+                                           VisibleBounds.NONE,
+                                           List.of());
+        }
+
+        /// This answer carrying the serving node's owner-epoch history (#1596): a replica catch-up read's.
+        public ReadForwardResponse withHistory(List<ProvenanceEntry> sourceHistory) {
+            return new ReadForwardResponse(sender,
+                                           correlationId,
+                                           success,
+                                           events,
+                                           truncated,
+                                           errorMessage,
+                                           earliestRetained,
+                                           visibleHead,
+                                           sourceHistory);
         }
 
         /// The serving node's bounds, or none when it held no ring (or the read failed).

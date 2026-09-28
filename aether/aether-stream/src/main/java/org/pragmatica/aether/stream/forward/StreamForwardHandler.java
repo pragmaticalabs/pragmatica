@@ -425,6 +425,20 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                  errorMessage);
     }
 
+    /// #1596: a replica catch-up answer carries this node's owner-epoch history, read AFTER the events so it covers
+    /// every one of them; the replica installs it before applying them. A history this node cannot decode fails
+    /// the read rather than shipping records without their provenance. Every other answer carries none.
+    private ReadForwardResponse withCatchupHistory(ReadForward request, ReadForwardResponse answer) {
+        return isReplicaCatchup(request)
+               ? partitionManager.epochHistory(request.streamName(),
+                                               request.partition())
+                                 .fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
+                                                                                    request.correlationId(),
+                                                                                    cause.message()),
+                                       answer::withHistory)
+               : answer;
+    }
+
     /// #1333: every successful answer carries this node's visible bounds of the partition, read AFTER
     /// the events so the head is never behind the last event served.
     @Contract
@@ -433,15 +447,16 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         var bounds = partitionManager.visibleBounds(request.streamName(),
                                                     request.partition())
                                      .or(VisibleBounds::absent);
-        var response = capped.truncated()
-                       ? ReadForwardResponse.truncatedResponse(selfNodeId,
-                                                               request.correlationId(),
-                                                               capped.events(),
-                                                               bounds)
-                       : ReadForwardResponse.successResponse(selfNodeId,
+        var answer = capped.truncated()
+                     ? ReadForwardResponse.truncatedResponse(selfNodeId,
                                                              request.correlationId(),
                                                              capped.events(),
-                                                             bounds);
+                                                             bounds)
+                     : ReadForwardResponse.successResponse(selfNodeId,
+                                                           request.correlationId(),
+                                                           capped.events(),
+                                                           bounds);
+        var response = withCatchupHistory(request, answer);
 
         if (capped.truncated()) {
             metrics.recordTruncated();

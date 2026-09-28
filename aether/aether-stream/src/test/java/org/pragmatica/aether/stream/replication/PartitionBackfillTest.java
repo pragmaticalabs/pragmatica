@@ -43,7 +43,7 @@ class PartitionBackfillTest {
         registry = replicaRegistry();
         manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
         manager.createStream(StreamConfig.streamConfig("orders"));
-        recovery = manager::appendRecovered;
+        recovery = manager.alignedRecovery();
     }
 
     @Nested

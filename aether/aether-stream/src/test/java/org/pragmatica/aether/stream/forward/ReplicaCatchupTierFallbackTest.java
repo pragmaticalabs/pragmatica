@@ -322,7 +322,7 @@ class ReplicaCatchupTierFallbackTest {
     /// the owner reaches the owner's replication manager — so the owner-side assertions come from the ack path.
     private PartitionBackfill productionShapedBackfill() {
         return partitionBackfill(registry,
-                                 replica::appendRecovered,
+                                 replica.alignedRecovery(),
                                  forwardCatchupTransport(client, 100),
                                  this::deliverAckToOwner,
                                  (_, _, _) -> Promise.success(ownerRing().headOffset()),

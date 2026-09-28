@@ -4676,13 +4676,11 @@ public interface AetherNode extends ManageableNode {
         // instead of being rejected at the Epoch.ZERO floor (0:0 < 1:N). Cold-start/unowned arcs read
         // Epoch.ZERO == the fence's ZERO default (equal → passes), so fresh-stream recovery is not regressed.
         // The fence itself is untouched — this is a truthful stamp, not a wholesale exemption.
-        AlignedRecovery streamAlignedRecovery = (s, p, offset, payload, ts) -> streamPartitionManager.appendRecovered(s,
-                                                                                                                      p,
-                                                                                                                      offset,
-                                                                                                                      payload,
-                                                                                                                      ts,
-                                                                                                                      streamOwnerEpochSource.currentOwnerEpoch(s,
-                                                                                                                                                               p));
+        // #1596: that stamp FENCES the append and never attributes it — a caught-up record may predate the
+        // current epoch. Its provenance is the source's owner-epoch slice, which the same seam checks (N13)
+        // and records before the page is applied (StreamPartitionManager.alignedRecovery, the fence epoch read
+        // from this same streamOwnerEpochSource).
+        AlignedRecovery streamAlignedRecovery = streamPartitionManager.alignedRecovery();
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
                                                                                     streamAlignedRecovery,
                                                                                     streamPartitionManager::syncReplicated);

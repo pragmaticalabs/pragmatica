@@ -875,12 +875,26 @@ public final class PartitionBackfill {
             return MALFORMED_RESPONSE.result();
         }
 
+        return partitionRecovery.installProvenance(streamName,
+                                                   partition,
+                                                   response.fromOffset(),
+                                                   response.toOffset(),
+                                                   response.history())
+                                .flatMap(_ -> applyPayloads(streamName, partition, response.fromOffset(), payloads, timestamps));
+    }
+
+    /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded ([#applyEvents]).
+    private Result<Long> applyPayloads(String streamName,
+                                       int partition,
+                                       long fromOffset,
+                                       List<byte[]> payloads,
+                                       List<Long> timestamps) {
         var applied = 0L;
 
         for (var i = 0; i < payloads.size(); i++) {
             var result = partitionRecovery.appendRecovered(streamName,
                                                            partition,
-                                                           response.fromOffset() + i,
+                                                           fromOffset + i,
                                                            payloads.get(i),
                                                            timestamps.get(i));
 
@@ -916,6 +930,7 @@ public final class PartitionBackfill {
         return switch (cause) {
             case StreamError.ReplicaEntryConflict conflict -> Option.some(conflict.offset());
             case StreamError.ReplicaQuarantined quarantined -> Option.some(quarantined.divergedAt());
+            case StreamError.ProvenanceMismatch mismatch -> Option.some(mismatch.offset());
             default -> Option.none();
         };
     }

@@ -94,6 +94,41 @@ class ReplicationBatcherTest {
         }
     }
 
+    /// #1577: a batch never spans two owner epochs, so its stamp is the epoch of every event in it (a replica
+    /// records it as the provenance of the batch's first offset, #1596).
+    @Nested
+    class EpochBoundary {
+
+        @Test
+        void add_eventOfANewEpoch_flushesTheOpenBatchFirst_andEachBatchCarriesItsOwnEpoch() {
+            var e1 = Epoch.epoch(1, 0);
+            var e2 = Epoch.epoch(2, 0);
+            batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 100, TimeSpan.timeSpan(10).seconds());
+
+            batcher.add(STREAM, PARTITION, 10L, "a".getBytes(), TIMESTAMP, e1);
+            batcher.add(STREAM, PARTITION, 11L, "b".getBytes(), TIMESTAMP, e1);
+            assertThat(sentMessages).isEmpty();
+
+            batcher.add(STREAM, PARTITION, 12L, "c".getBytes(), TIMESTAMP, e2);
+
+            assertThat(sentMessages).as("the e1 batch leaves before the e2 event is batched").hasSize(1);
+            var first = (ReplicationMessage.ReplicateEvents) sentMessages.getFirst().message();
+            assertThat(first.fromOffset()).isEqualTo(10L);
+            assertThat(first.payloads()).hasSize(2);
+            assertThat(first.ownerEpoch()).isEqualTo(e1);
+
+            batcher.flushAll();
+
+            assertThat(sentMessages).hasSize(2);
+            var second = (ReplicationMessage.ReplicateEvents) sentMessages.get(1).message();
+            assertThat(second.fromOffset()).isEqualTo(12L);
+            assertThat(second.payloads()).hasSize(1);
+            assertThat(second.ownerEpoch()).isEqualTo(e2);
+
+            batcher.close();
+        }
+    }
+
     @Nested
     class ManualFlush {
 

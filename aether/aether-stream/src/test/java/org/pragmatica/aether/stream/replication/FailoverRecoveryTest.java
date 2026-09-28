@@ -48,7 +48,7 @@ class FailoverRecoveryTest {
         recoveredEvents = new ArrayList<>();
         eventCounter.set(0);
 
-        recovery = failoverRecovery(registry, this::handleRecoveredEvent, this::handleCatchupRequest, NO_DURABILITY_BARRIER);
+        recovery = failoverRecovery(registry, AlignedRecovery.appendOnly(this::handleRecoveredEvent), this::handleCatchupRequest, NO_DURABILITY_BARRIER);
     }
 
     private Promise<ReplicationMessage.CatchupResponse> handleCatchupRequest(NodeId target,
