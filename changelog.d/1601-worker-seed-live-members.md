@@ -7,5 +7,7 @@
   unwired, the seed falls back to the existing liveness-filtered cold path, unchanged.
   [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/ClusterTopologyManagerWorkerReconcileTest.java`
   — unit-level: a dead voter the observer still has an address for is absent from the provisioned `PEERS`]
-- Worker bootstrap with one dead seed among live cores: DEAD_SEED_RESULT
+- Worker bootstrap already tolerates one dead core among its seeds: a worker whose `PEERS` name three live
+  cores plus one address with nothing listening joins, becomes ready and is counted MEMBER by the leader
+  (one 3-core Ember run). So the fix removes a stale peer from the seed, not a bootstrap hang.
   [verified: `aether/ember/src/test/java/org/pragmatica/aether/ember/EmberWorkerDeadSeedTest.java`]
