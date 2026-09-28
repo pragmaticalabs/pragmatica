@@ -323,18 +323,18 @@ public interface RollbackManager {
             private void decide(SliceFailureEvent.AllInstancesFailed event, RollbackState state) {
                 var failedArtifact = event.artifact();
 
-                eligibility(failedArtifact, state).flatMap(_ -> state.canRollback(config, System.currentTimeMillis()))
-                                                  .onFailure(cause -> logRollbackSkipped(cause,
-                                                                                         event.requestId(),
-                                                                                         failedArtifact))
-                                                  .onSuccess(decision -> executeRollback(failedArtifact,
-                                                                                         decision,
-                                                                                         event.requestId()));
+                eligibility(failedArtifact, state).flatMap(_ -> state.canRollback(config,
+                                                                                  System.currentTimeMillis()))
+                           .onFailure(cause -> logRollbackSkipped(cause,
+                                                                  event.requestId(),
+                                                                  failedArtifact))
+                           .onSuccess(decision -> executeRollback(failedArtifact,
+                                                                  decision,
+                                                                  event.requestId()));
             }
 
             private Result<Unit> eligibility(Artifact failedArtifact, RollbackState state) {
-                if (!state.currentVersion()
-                          .equals(failedArtifact.version())) {
+                if (!state.currentVersion().equals(failedArtifact.version())) {
                     return RollbackError.General.STALE_EVENT.result();
                 }
 
@@ -357,10 +357,9 @@ public interface RollbackManager {
             }
 
             private static boolean activeDeploymentCovers(DeploymentValue value, ArtifactBase artifactBase) {
-                return !isTerminal(value.state()) && Arrays.stream(value.artifacts()
-                                                                                                 .split(","))
-                                                                                    .map(String::trim)
-                                                                                    .anyMatch(artifactBase.asString()::equals);
+                return ! isTerminal(value.state()) && Arrays.stream(value.artifacts().split(","))
+                                                            .map(String::trim)
+                                                            .anyMatch(artifactBase.asString()::equals);
             }
 
             private static boolean isTerminal(String state) {
@@ -402,7 +401,8 @@ public interface RollbackManager {
                 rollbackStates.compute(artifactBase, (_, existing) -> computePreviousVersionUpdate(existing, value));
             }
 
-            private static RollbackState computePreviousVersionUpdate(RollbackState existing, PreviousVersionValue value) {
+            private static RollbackState computePreviousVersionUpdate(RollbackState existing,
+                                                                      PreviousVersionValue value) {
                 return Option.option(existing)
                              .map(state -> state.withKVStoreUpdate(value))
                              .or(() -> RollbackState.fromKVStore(value));
@@ -425,7 +425,9 @@ public interface RollbackManager {
                                        (ab, existing) -> computeVersionTracking(ab, existing, currentVersion));
             }
 
-            private RollbackState computeVersionTracking(ArtifactBase ab, RollbackState existing, Version currentVersion) {
+            private RollbackState computeVersionTracking(ArtifactBase ab,
+                                                         RollbackState existing,
+                                                         Version currentVersion) {
                 return Option.option(existing)
                              .map(state -> computeVersionChange(state, ab, currentVersion))
                              .or(() -> initialDeploymentState(ab, currentVersion));
@@ -441,23 +443,26 @@ public interface RollbackManager {
             /// same batch as (and ahead of) the SliceTarget put, so by the time this runs for a rollback the
             /// value already names the new target and nothing is rewritten — the rollback history is never
             /// clobbered by the version change it caused.
-            private RollbackState computeVersionChange(RollbackState state, ArtifactBase artifactBase, Version newVersion) {
-                if (state.currentVersion()
-                         .equals(newVersion)) {
+            private RollbackState computeVersionChange(RollbackState state,
+                                                       ArtifactBase artifactBase,
+                                                       Version newVersion) {
+                if (state.currentVersion().equals(newVersion)) {
                     return state;
                 }
 
-                log.info("Version change detected for {}: {} -> {}", artifactBase, state.currentVersion(), newVersion);
-
+                log.info("Version change detected for {}: {} -> {}",
+                         artifactBase,
+                         state.currentVersion(),
+                         newVersion);
                 var committed = previousVersionValue(artifactBase);
 
                 if (committed.filter(value -> value.currentVersion()
-                                                   .equals(newVersion))
-                             .isPresent()) {
+                                                   .equals(newVersion)).isPresent()) {
                     return state.withKVStoreUpdate(committed.unwrap());
                 }
 
-                var next = committed.map(value -> value.withVersionChange(newVersion, System.currentTimeMillis()))
+                var next = committed.map(value -> value.withVersionChange(newVersion,
+                                                                          System.currentTimeMillis()))
                                     .or(() -> PreviousVersionValue.previousVersionValue(artifactBase,
                                                                                         state.currentVersion(),
                                                                                         newVersion));
@@ -495,16 +500,17 @@ public interface RollbackManager {
                                                                                    requestId,
                                                                                    config.maxRollbacks(),
                                                                                    artifact);
-                    case RollbackError.General.OUTSIDE_BAKE_WINDOW -> log.warn("[requestId={}] All instances of {} failing outside its {} bake window: "
-                                                                               + "alerting only, NOT rolling back (incident, not a bad deploy)",
+                    case RollbackError.General.OUTSIDE_BAKE_WINDOW -> log.warn("[requestId={}] All instances of {} failing outside its {} bake window: " + "alerting only, NOT rolling back (incident, not a bad deploy)",
                                                                                requestId,
                                                                                artifact,
                                                                                config.bakeWindow());
-                    case RollbackError.General.TARGET_PREVIOUSLY_FAILED -> log.error("[requestId={}] CRITICAL: rollback target for {} already failed once; "
-                                                                                     + "not rolling back. Manual intervention required.",
+                    case RollbackError.General.TARGET_PREVIOUSLY_FAILED -> log.error("[requestId={}] CRITICAL: rollback target for {} already failed once; " + "not rolling back. Manual intervention required.",
                                                                                      requestId,
                                                                                      artifact);
-                    default -> log.warn("[requestId={}] Rollback skipped for {}: {}", requestId, artifact, cause.message());
+                    default -> log.warn("[requestId={}] Rollback skipped for {}: {}",
+                                        requestId,
+                                        artifact,
+                                        cause.message());
                 }
             }
 
@@ -531,17 +537,18 @@ public interface RollbackManager {
                                     .filter(SliceTargetValue.class::isInstance)
                                     .map(SliceTargetValue.class::cast)
                                     .map(current -> current.withVersion(decision.targetVersion()))
-                                    .or(SliceTargetValue.sliceTargetValue(decision.targetVersion(), 1));
+                                    .or(SliceTargetValue.sliceTargetValue(decision.targetVersion(),
+                                                                          1));
                 var record = previousVersionValue(artifactBase).or(() -> PreviousVersionValue.previousVersionValue(artifactBase,
                                                                                                                    decision.targetVersion(),
                                                                                                                    decision.failedVersion()))
-                                                               .withRollback(decision.failedVersion(),
-                                                                             decision.targetVersion(),
-                                                                             now);
+                                                 .withRollback(decision.failedVersion(),
+                                                               decision.targetVersion(),
+                                                               now);
                 List<KVCommand<AetherKey>> batch = List.of(new KVCommand.Put<AetherKey, AetherValue>(PreviousVersionKey.previousVersionKey(artifactBase),
-                                                                               record),
+                                                                                                     record),
                                                            new KVCommand.Put<AetherKey, AetherValue>(SliceTargetKey.sliceTargetKey(artifactBase),
-                                                                               target));
+                                                                                                     target));
 
                 cluster.apply(batch)
                        .onSuccess(_ -> recordRollbackCompleted(artifactBase, decision, requestId, rollbackArtifact, now))
@@ -564,7 +571,6 @@ public interface RollbackManager {
                 log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {}", requestId, rollbackArtifact);
             }
         }
-
         var manager = new rollbackManager(self,
                                           config,
                                           cluster,

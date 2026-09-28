@@ -29,14 +29,11 @@ import org.pragmatica.serialization.SliceCodec;
 /// #1573: it is also the one place every execution on this node passes, so it records each execution's
 /// outcome for the leader's all-instances-failed detector — success, or a [SliceDefect] the bridge
 /// produced. A failure the method returned itself, DRAINING, and a reply timeout are not recorded.
-record AdmittedSliceBridge(SliceBridge delegate,
-                           Supplier<InvocationAdmission> admission,
-                           ExecutionRecorder recorder) implements SliceBridge {
+record AdmittedSliceBridge(SliceBridge delegate, Supplier<InvocationAdmission> admission, ExecutionRecorder recorder) implements SliceBridge {
     /// #1573: receives one outcome per finished execution.
     @FunctionalInterface
     interface ExecutionRecorder {
         ExecutionRecorder NONE = (_, _) -> Unit.unit();
-
         Unit record(String method, ExecutionOutcome outcome);
     }
 
@@ -47,13 +44,15 @@ record AdmittedSliceBridge(SliceBridge delegate,
     @Override
     public Promise<byte[]> invoke(String methodName, byte[] input) {
         return admission.get()
-                        .execute(() -> recorded(methodName, delegate.invoke(methodName, input)));
+                        .execute(() -> recorded(methodName,
+                                                delegate.invoke(methodName, input)));
     }
 
     @Override
     public Promise<byte[]> invokeWithContext(String methodName, byte[] input, MessageContext context) {
         return admission.get()
-                        .execute(() -> recorded(methodName, delegate.invokeWithContext(methodName, input, context)));
+                        .execute(() -> recorded(methodName,
+                                                delegate.invokeWithContext(methodName, input, context)));
     }
 
     /// Ordered (`withResult`): whatever the caller chains on this promise runs after the outcome is recorded.

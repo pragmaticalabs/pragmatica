@@ -1017,8 +1017,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// detector takes per-window deltas of them per producer.
     private static void addExecutionCounts(Map<String, Double> metrics,
                                            InvocationMetricsCollector.ExecutionCounts counts) {
-        metrics.put(ExecutionOutcomeKeys.successKey(counts.artifact(), counts.method()), (double) counts.successes());
-        metrics.put(ExecutionOutcomeKeys.defectKey(counts.artifact(), counts.method()), (double) counts.defects());
+        metrics.put(ExecutionOutcomeKeys.successKey(counts.artifact(), counts.method()),
+                    (double) counts.successes());
+        metrics.put(ExecutionOutcomeKeys.defectKey(counts.artifact(), counts.method()),
+                    (double) counts.defects());
     }
 
     private void addInvocationSnapshot(Map<String, Double> metrics,

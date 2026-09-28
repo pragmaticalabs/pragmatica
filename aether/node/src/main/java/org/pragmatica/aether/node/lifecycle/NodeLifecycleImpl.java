@@ -65,7 +65,6 @@ final class NodeLifecycleImpl implements NodeLifecycle {
         transition(NodeState.DRAINING, NodeState.STOPPED);
     }
 
-
     private boolean transition(NodeState from, NodeState to) {
         synchronized (transitionLock) {
             if (!state.compareAndSet(from, to)) {

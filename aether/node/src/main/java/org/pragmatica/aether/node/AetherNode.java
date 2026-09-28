@@ -5840,8 +5840,9 @@ public interface AetherNode extends ManageableNode {
         var result = new HashMap<Artifact, Set<NodeId>>();
 
         deploymentMap.allDeployments()
-                     .forEach(info -> Artifact.artifact(info.artifact())
-                                              .onSuccess(artifact -> result.put(artifact, activeNodes(info, membershipFsm))));
+                     .forEach(info -> Artifact.artifact(info.artifact()).onSuccess(artifact -> result.put(artifact,
+                                                                                                          activeNodes(info,
+                                                                                                                      membershipFsm))));
 
         return Map.copyOf(result);
     }

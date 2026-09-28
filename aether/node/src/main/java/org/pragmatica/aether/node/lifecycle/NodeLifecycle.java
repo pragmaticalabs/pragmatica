@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.lifecycle;
 
-
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -20,7 +19,6 @@ public interface NodeLifecycle {
     void signalReady();
 
     Promise<Unit> drain();
-
 
     static NodeLifecycle nodeLifecycle() {
         return NodeLifecycleImpl.nodeLifecycleImpl();

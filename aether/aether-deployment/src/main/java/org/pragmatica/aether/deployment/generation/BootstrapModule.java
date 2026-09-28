@@ -200,7 +200,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         log.info("Leader-change bootstrap committed: {} commands", commandCount);
     }
 
-
     @Contract
     private void attemptBootstrap(Set<NodeId> coreMembers) {
         if (bootstrapComplete.get()) {

@@ -8,6 +8,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// A failure the slice BRIDGE produced around a method, as opposed to a [Cause] the slice method itself
 /// returned (#1573). Only these count toward the leader's "every instance of this version is broken"
 /// verdict: a business failure the slice returns deliberately never does, whatever its rate.
@@ -20,13 +21,13 @@ public sealed interface SliceDefect extends Cause {
     /// The method threw synchronously instead of returning a Promise.
     record MethodThrew(Cause origin, String message) implements SliceDefect, Cause.Wrapped {
         public static final Fn1<MethodThrew, Cause> FACTORY = Causes.forOneValue("Slice method threw: %s",
-                                                                                  MethodThrew::new);
+                                                                                 MethodThrew::new);
     }
 
     /// The request could not be decoded, or the response encoded, by this version's codec.
     record CodecFailed(Cause origin, String message) implements SliceDefect, Cause.Wrapped {
         public static final Fn1<CodecFailed, Cause> FACTORY = Causes.forOneValue("Slice codec failed: %s",
-                                                                                  CodecFailed::new);
+                                                                                 CodecFailed::new);
     }
 
     /// The invoked method is not part of this slice version.

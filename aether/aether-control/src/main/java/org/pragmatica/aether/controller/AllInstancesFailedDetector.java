@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// #1573: the leader-side "every instance of this version is broken" detector.
 ///
 /// **Input.** Every node ships its cumulative per-(artifact, method) slice execution outcomes on the
@@ -56,7 +57,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// on the leader only; every other node, and a node that loses leadership, holds no state.
 public final class AllInstancesFailedDetector {
     private static final Logger log = LoggerFactory.getLogger(AllInstancesFailedDetector.class);
-
     /// Sliding window over which defects and successes are summed per hosting node.
     public static final TimeSpan WINDOW = timeSpan(30).seconds();
     /// Minimum defects per hosting node within [#WINDOW].
@@ -109,11 +109,9 @@ public final class AllInstancesFailedDetector {
 
         var now = clockMs.getAsLong();
 
-        observations.get()
-                    .forEach((node, observation) -> accept(node, observation, now));
+        observations.get().forEach((node, observation) -> accept(node, observation, now));
         prune(now);
-        activeInstances.get()
-                       .forEach((artifact, hosts) -> evaluate(artifact, hosts, now));
+        activeInstances.get().forEach((artifact, hosts) -> evaluate(artifact, hosts, now));
     }
 
     @Contract
@@ -128,8 +126,7 @@ public final class AllInstancesFailedDetector {
     private void accept(NodeId node, MetricObservation observation, long now) {
         var previous = Option.option(baselines.get(node));
 
-        if (previous.filter(baseline -> baseline.incarnation() == observation.incarnation()
-                                        && baseline.sequence() >= observation.sequence())
+        if (previous.filter(baseline -> baseline.incarnation() == observation.incarnation() && baseline.sequence() >= observation.sequence())
                     .isPresent()) {
             return;
         }
@@ -145,8 +142,7 @@ public final class AllInstancesFailedDetector {
         var values = new HashMap<String, Double>();
 
         observation.values()
-                   .forEach((key, value) -> ExecutionOutcomeKeys.parse(key)
-                                                                .onPresent(_ -> values.put(key, value)));
+                   .forEach((key, value) -> ExecutionOutcomeKeys.parse(key).onPresent(_ -> values.put(key, value)));
 
         return Map.copyOf(values);
     }
@@ -154,13 +150,12 @@ public final class AllInstancesFailedDetector {
     @Contract
     private void recordDeltas(NodeId node, Baseline baseline, MetricObservation observation, long now) {
         observation.values()
-                   .forEach((key, value) -> ExecutionOutcomeKeys.parse(key)
-                                                                .onPresent(parsed -> recordDelta(node,
-                                                                                                 parsed,
-                                                                                                 value - baseline.values()
-                                                                                                                 .getOrDefault(key,
-                                                                                                                               0.0),
-                                                                                                 now)));
+                   .forEach((key, value) -> ExecutionOutcomeKeys.parse(key).onPresent(parsed -> recordDelta(node,
+                                                                                                            parsed,
+                                                                                                            value - baseline.values()
+                                                                                                                            .getOrDefault(key,
+                                                                                                                                          0.0),
+                                                                                                            now)));
     }
 
     /// A negative delta is a counter reset (restart within an incarnation we could not see): it is a fresh
@@ -182,8 +177,7 @@ public final class AllInstancesFailedDetector {
     private void prune(long now) {
         var horizon = now - WINDOW.millis();
 
-        while (!samples.isEmpty() && samples.peekFirst()
-                                            .atMs() < horizon) {
+        while (!samples.isEmpty() && samples.peekFirst().atMs() < horizon) {
             samples.removeFirst();
         }
     }
@@ -198,8 +192,8 @@ public final class AllInstancesFailedDetector {
     }
 
     private boolean isFailing(Artifact artifact, Set<NodeId> hosts, long now) {
-        return !hosts.isEmpty() && hosts.stream()
-                                        .allMatch(host -> hostFailing(artifact, host, now));
+        return ! hosts.isEmpty() && hosts.stream()
+                                         .allMatch(host -> hostFailing(artifact, host, now));
     }
 
     private boolean hostFailing(Artifact artifact, NodeId host, long now) {
@@ -207,7 +201,9 @@ public final class AllInstancesFailedDetector {
                           .filter(advancedAt -> now - advancedAt <= FRESHNESS.millis())
                           .isPresent();
 
-        return fresh && sum(artifact, host, true) >= DEFECT_THRESHOLD && sum(artifact, host, false) == 0;
+        return fresh
+               && sum(artifact, host, true) >= DEFECT_THRESHOLD
+               && sum(artifact, host, false) == 0;
     }
 
     private long sum(Artifact artifact, NodeId host, boolean defects) {
@@ -232,9 +228,7 @@ public final class AllInstancesFailedDetector {
         }
 
         var method = worstMethod(artifact);
-        var nodes = hosts.stream()
-                         .sorted(Comparator.comparing(NodeId::id))
-                         .toList();
+        var nodes = hosts.stream().sorted(Comparator.comparing(NodeId::id)).toList();
 
         log.error("ALL INSTANCES FAILED: every ACTIVE instance of {} ({}) recorded >= {} slice defects and no success "
                  + "within {}; worst method {}",
@@ -255,8 +249,7 @@ public final class AllInstancesFailedDetector {
         return AllInstancesFailed.allInstancesFailed("all-instances-failed:" + artifact.asString(),
                                                      artifact,
                                                      method,
-                                                     Option.some(Causes.cause("Every ACTIVE instance recorded only slice defects within "
-                                                                              + WINDOW)),
+                                                     Option.some(Causes.cause("Every ACTIVE instance recorded only slice defects within " + WINDOW)),
                                                      nodes);
     }
 
@@ -266,7 +259,9 @@ public final class AllInstancesFailedDetector {
         samples.stream()
                .filter(sample -> sample.artifact()
                                        .equals(artifact))
-               .forEach(sample -> defectsByMethod.merge(sample.method(), sample.defects(), Long::sum));
+               .forEach(sample -> defectsByMethod.merge(sample.method(),
+                                                        sample.defects(),
+                                                        Long::sum));
 
         return defectsByMethod.entrySet()
                               .stream()

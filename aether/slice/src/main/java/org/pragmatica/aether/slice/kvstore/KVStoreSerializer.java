@@ -481,11 +481,10 @@ public final class KVStoreSerializer {
         return v.artifactBase()
                 .asString() + PIPE + v.previousVersion()
                                       .withQualifier() + PIPE + v.currentVersion()
-                                                                 .withQualifier() + PIPE + v.updatedAt() + PIPE + v.rollbackCount()
-               + PIPE + v.lastRollbackAt() + PIPE + v.failedVersions()
-                                                      .stream()
-                                                      .map(Version::withQualifier)
-                                                      .collect(Collectors.joining(","));
+                                                                 .withQualifier() + PIPE + v.updatedAt() + PIPE + v.rollbackCount() + PIPE + v.lastRollbackAt() + PIPE + v.failedVersions()
+                                                                                                                                                                          .stream()
+                                                                                                                                                                          .map(Version::withQualifier)
+                                                                                                                                                                          .collect(Collectors.joining(","));
     }
 
     private static String serializeHttpNodeRoute(HttpNodeRouteValue v) {
@@ -908,8 +907,7 @@ public final class KVStoreSerializer {
     private static Result<List<Version>> parseFailedVersions(String raw) {
         return raw.isEmpty()
                ? Result.success(List.of())
-               : Result.allOf(Arrays.stream(raw.split(","))
-                                    .map(Version::version));
+               : Result.allOf(Arrays.stream(raw.split(",")).map(Version::version));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseHttpNodeRouteEntry(String identity, String raw) {

@@ -7,6 +7,7 @@ package org.pragmatica.aether.metrics;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Option;
 
+
 /// #1573: the pong metric keys carrying a node's cumulative slice execution outcomes —
 /// `exec|<artifact>|<method>|ok` and `exec|<artifact>|<method>|defect`. One definition shared by the
 /// producer ([ClusterSyncCollector]) and the leader-side all-instances-failed detector that parses them.
@@ -32,8 +33,7 @@ public sealed interface ExecutionOutcomeKeys {
             return Option.none();
         }
 
-        var parts = key.substring(PREFIX.length())
-                       .split("\\|");
+        var parts = key.substring(PREFIX.length()).split("\\|");
 
         return parts.length == 3
                ? Artifact.artifact(parts[0])

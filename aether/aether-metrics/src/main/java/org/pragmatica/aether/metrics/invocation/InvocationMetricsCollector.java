@@ -36,7 +36,6 @@ public final class InvocationMetricsCollector {
     /// leader's all-instances-failed detector can take per-window deltas. Never reset: a restart starts a
     /// new producer incarnation, which the detector treats as a fresh baseline.
     private final Map<Artifact, Map<String, ExecutionCounters>> executions = new ConcurrentHashMap<>();
-
     private final AtomicLong totalSerializationNs = new AtomicLong();
     private final AtomicLong serializationCount = new AtomicLong();
 
@@ -79,8 +78,10 @@ public final class InvocationMetricsCollector {
     /// #1573: one slice execution on this node finished with `outcome`. Failures the slice method
     /// returned itself and execution timeouts are not recorded at all — neither counts either way.
     public Result<Unit> recordExecution(Artifact artifact, String method, ExecutionOutcome outcome) {
-        executions.computeIfAbsent(artifact, _ -> new ConcurrentHashMap<>())
-                  .computeIfAbsent(method, _ -> new ExecutionCounters())
+        executions.computeIfAbsent(artifact,
+                                   _ -> new ConcurrentHashMap<>())
+                  .computeIfAbsent(method,
+                                   _ -> new ExecutionCounters())
                   .record(outcome);
 
         return unitResult();
