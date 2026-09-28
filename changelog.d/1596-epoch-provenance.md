@@ -26,6 +26,29 @@
 - `ProvenanceComparison` is the divergence rule of §7.5.2 as one pure function, shared by cold-restart detection
   (AD7) and the promotion gate. `LogProvenance.SOURCE_ORDER` ranks by last epoch, then by head. Pinned by
   `ProvenanceComparisonTest`, over the rev1569 T7 sequences F1, N3, S-1, R5-1, (l) and (p).
+- **The durable partition flag**, `StreamPartitionRecoveryKey`/`StreamPartitionRecoveryValue`: cluster state
+  holding the state plus a set of reasons. It is backed up (bound in `BackupEntryCodec`), so a flagged partition
+  stays flagged across a whole-cluster cold restart. Wire tags 1713-1717, with `ProvenanceEntry` at 1711 and its
+  kind at 1712. `PartitionFlags.raise(stream, partition, reason)` is idempotent
+  `[mechanism: a leader-witnessed transaction carrying the exact previous record writes old ∪ {reason} only when
+  that differs]`: an unchanged record writes nothing and keeps its SHA-256 `recordDigest`. A concurrent raise
+  makes the CAS refuse, and the raise re-reads and retries. `status(...)` reads the record. Pinned against a real
+  KV applier by `PartitionFlagsTest`. The raises this node makes (an N13 mismatch raises `MARKED_DIVERGED`, a log
+  with records but no history raises `HISTORY_MISSING`) are made once per process, and the local quarantine stays
+  as the immediate fence. Clearing the flag is operator resolution (AD14), which does not exist yet: until it
+  does, a flagged partition cannot be cleared.
+- **Sealed segments carry their owner-epoch slice**: a header in front of the events inside the block. It is
+  written at seal time from the sealing log's history over `[base, end]`. Segment replay
+  (`GovernorFailoverHandler`) installs the slice, N13 first, before appending records past the local head. A
+  segment without a slice falls back to `UNKNOWN(d)` with a fresh ULID per replay run, and raises
+  `HISTORY_INCOMPLETE` `[mechanism: UNKNOWN(d) equals no other copy's range, so a comparison over it fails
+  closed]`. Pinned by `SegmentReplayProvenanceTest`, including the F1 shape through the tier.
+  `[design intent — unverified: from code, with a WAL, replay does not reach past the local head. The index
+  holds only this node's own segments, and a WAL-backed ring is seeded at the contiguous sealed end with every
+  WAL record above it. This path guards a future tier or seed change. A log-less partition records no
+  provenance]`
+- Provenance kinds: `ProvenanceEpoch` is `Owned` (a real epoch, with a reserved incarnation-ULID slot),
+  `Unknown(d, floor)` or `Base(d, floor)`. A synthetic kind ranks as its floor for the log's ordering.
 - `[unverified: #1625 — the epoch key reserves a per-incarnation ULID slot that nothing populates until #1529
   part 2. Until then, two lineages that reuse an incarnation can mint equal epochs, and their histories compare
   as consistent]`
