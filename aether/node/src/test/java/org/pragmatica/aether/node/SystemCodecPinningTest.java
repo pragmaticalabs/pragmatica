@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -12,6 +13,7 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SystemTags;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
@@ -41,6 +43,11 @@ class SystemCodecPinningTest {
         "org.pragmatica.lang."
     );
 
+    /// Retired pins that sit under a hot prefix. Their types were deleted, so no message carries them; the
+    /// pins stay only so the tag is never reused (SystemTags rules). A retired type is not hot.
+    private static final Set<String> RETIRED_IN_HOT_PACKAGES = Set.of("org.pragmatica.consensus.rabia.VotingJournalCheckpoint",
+                                                                      "org.pragmatica.consensus.rabia.VotingJournalRecord");
+
     /// The coverage assertion. [SliceCodec#systemCodec] refuses any type whose tag came back from the
     /// hash, so a framework codec added without a pin fails HERE, naming itself — which is why the
     /// system set never has to be rediscovered by hand.
@@ -58,6 +65,7 @@ class SystemCodecPinningTest {
                                  .stream()
                                  .filter(entry -> !entry.getKey().endsWith(".SyncRejected") && !entry.getKey().endsWith(".HelloRefused")
                                                   && !entry.getKey().endsWith(".IdentityRefused"))
+                                 .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))
                                  .filter(entry -> HOT_PREFIXES.stream().anyMatch(prefix -> entry.getKey().startsWith(prefix)))
                                  .toList();
 
@@ -67,6 +75,45 @@ class SystemCodecPinningTest {
         hot.forEach(entry -> assertTrue(entry.getValue() <= 127,
                                         "%s is pinned to %d and now costs two wire bytes".formatted(entry.getKey(),
                                                                                                     entry.getValue())));
+    }
+
+    /// The exemption above must not be able to hide a LIVE hot type: every entry has to be pinned, and has to
+    /// name a class that no longer exists. A pin name spells nested types with dots, so each binary-name
+    /// spelling (`a.b.Outer$Inner`, …) is tried before the name counts as dead.
+    @Test
+    void retiredHotExemptions_arePinnedAndNoLongerExist() {
+        assertTrue(RETIRED_IN_HOT_PACKAGES.stream().allMatch(SystemTags.TAGS::containsKey),
+                   "every retired exemption must still be pinned, or it exempts nothing: " + RETIRED_IN_HOT_PACKAGES);
+        RETIRED_IN_HOT_PACKAGES.forEach(name -> assertFalse(resolves(name),
+                                                            "%s resolves to a live class — it is not retired, and exempting it would hide a hot type".formatted(name)));
+    }
+
+    private static boolean resolves(String pinName) {
+        var candidate = pinName;
+
+        while (true) {
+            if (loads(candidate)) {
+                return true;
+            }
+
+            var lastDot = candidate.lastIndexOf('.');
+
+            if (lastDot < 0) {
+                return false;
+            }
+
+            candidate = candidate.substring(0, lastDot) + "$" + candidate.substring(lastDot + 1);
+        }
+    }
+
+    private static boolean loads(String binaryName) {
+        try {
+            Class.forName(binaryName, false, SystemCodecPinningTest.class.getClassLoader());
+
+            return true;
+        } catch (ClassNotFoundException | LinkageError e) {
+            return false;
+        }
     }
 
     /// The system parent must leave the whole user range free: a slice's hashed tag lands there, and an
