@@ -139,7 +139,7 @@ All keys implement the `AetherKey` sealed interface. Each key type represents a 
 | `ScheduledTaskKey` | `scheduled-task/{section}/{artifact}/{method}` | Scheduled task definitions |
 | `ScheduledTaskStateKey` | `scheduled-task-state/{section}/{artifact}/{method}` | Task execution state |
 | `NodeLifecycleKey` | `node-lifecycle/{nodeId}` | Node lifecycle state (ON_DUTY, DRAINING, etc.) |
-| `ConfigKey` | `config/{key}` or `config/node/{nodeId}/{key}` | Dynamic cluster configuration (scoped) |
+| `ConfigKey` | `config/{key}` or `config-node/{nodeId}/{key}` (disjoint prefixes, #1541) | Dynamic cluster configuration (scoped) |
 | `WorkerSliceDirectiveKey` | `worker-directive/{artifact}` | CDM directives for worker pools |
 | `ActivationDirectiveKey` | `activation/{nodeId}` | Joining node role assignment (CORE/WORKER) |
 | `GossipKeyRotationKey` | `gossip-key-rotation` | Gossip encryption key rotation state |

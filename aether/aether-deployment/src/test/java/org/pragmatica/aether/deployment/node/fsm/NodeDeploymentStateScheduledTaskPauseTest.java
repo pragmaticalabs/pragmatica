@@ -8,17 +8,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.ExecutionMode;
-import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -51,25 +47,20 @@ import io.netty.buffer.ByteBuf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Covers the scheduled-task PAUSE-preservation fix.
+/// Covers the last-replica rule for scheduled-task unpublish.
 ///
-/// Operator pause lives only in the cluster-scoped [ScheduledTaskValue#paused] KV atom
-/// (`scheduled-task/{section}/{artifact}/{method}` — no `NodeId`, see
-/// [`org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey`]). Two FSM paths in
-/// [`NodeDeploymentState.Active`] used to destroy it: slice (re)activation republished the key with
-/// a hardcoded `paused=false`, and any single replica's deactivate unconditionally Removed the
-/// cluster-wide key even while other replicas still hosted the task. The decision seams
-/// [`NodeDeploymentState.Active#existingPausedFlag`] and
-/// [`NodeDeploymentState.Active#artifactHostedElsewhere`] are exercised on the live `Active` state
-/// (reached via [`FsmTestHarness`] on a `QuorumEstablished` dispatch) over a seeded KV store, the
-/// same inspection style as the sibling seed-epoch-ack suite.
+/// `ScheduledTaskKey` is cluster-scoped (`scheduled-task/{section}/{artifact}/{method}`, no `NodeId`),
+/// so a single replica's deactivate must not Remove it while other replicas still host the task.
+/// [`NodeDeploymentState.Active#artifactHostedElsewhere`] is exercised on the live `Active` state
+/// (reached via [`FsmTestHarness`] on a `QuorumEstablished` dispatch) over a seeded KV store.
+///
+/// The operator pause is no longer a field of the republished value (it moved to its own
+/// cluster-state key, `ScheduledTaskPauseKey`, #1541), so the republish-preserves-pause cases this
+/// suite used to carry have nothing left to pin: republishing never writes the pause key.
 class NodeDeploymentStateScheduledTaskPauseTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final NodeId OTHER = NodeId.nodeId("other").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
-    private static final String SECTION = "click-events";
-    private static final MethodName METHOD = MethodName.methodName("onTick").unwrap();
-    private static final String INTERVAL = "PT30S";
 
     private KVStore<AetherKey, AetherValue> kvStore;
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> harness;
@@ -85,34 +76,6 @@ class NodeDeploymentStateScheduledTaskPauseTest {
                 fsm -> buildContext(fsm, ctxHolder, router, kvStore, cluster, sliceStore);
         harness = FsmTestHarness.harness("ndm-scheduled-task-pause-test-" + SELF.id(), factory);
         harness.dispatch(new QuorumEstablished());
-    }
-
-    @Nested
-    class PublishPausePreservation {
-        @Test
-        void existingPausedFlag_republishOverPausedValue_carriesPausedTrue() {
-            seedScheduledTask(true);
-
-            assertThat(activeState().existingPausedFlag(taskKey()))
-                    .as("republish over an operator-paused task must carry paused=true")
-                    .isTrue();
-        }
-
-        @Test
-        void existingPausedFlag_republishOverRunningValue_carriesPausedFalse() {
-            seedScheduledTask(false);
-
-            assertThat(activeState().existingPausedFlag(taskKey()))
-                    .as("republish over a running task must keep paused=false")
-                    .isFalse();
-        }
-
-        @Test
-        void existingPausedFlag_freshPublishWithNoExistingValue_defaultsFalse() {
-            assertThat(activeState().existingPausedFlag(taskKey()))
-                    .as("a brand-new registration with no prior KV value defaults to paused=false")
-                    .isFalse();
-        }
     }
 
     @Nested
@@ -145,35 +108,10 @@ class NodeDeploymentStateScheduledTaskPauseTest {
         }
     }
 
-    @Nested
-    class PauseApiWrite {
-        @Test
-        void withPaused_preservesScheduleFieldsAndSetsPausedTrue() {
-            var running = ScheduledTaskValue.intervalTask(SELF, INTERVAL, ExecutionMode.SINGLE);
-
-            var paused = running.withPaused(true);
-
-            assertThat(paused.paused()).isTrue();
-            assertThat(paused.registeredBy()).isEqualTo(SELF);
-            assertThat(paused.interval()).isEqualTo(INTERVAL);
-            assertThat(paused.executionMode()).isEqualTo(ExecutionMode.SINGLE);
-        }
-    }
-
     private NodeDeploymentState.Active activeState() {
         assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
 
         return (NodeDeploymentState.Active) harness.state();
-    }
-
-    private static ScheduledTaskKey taskKey() {
-        return ScheduledTaskKey.scheduledTaskKey(SECTION, ARTIFACT, METHOD);
-    }
-
-    private void seedScheduledTask(boolean paused) {
-        var value = ScheduledTaskValue.intervalTask(SELF, INTERVAL, ExecutionMode.SINGLE).withPaused(paused);
-
-        applyToKvStore(new KVCommand.Put<>(taskKey(), value));
     }
 
     private void seedNodeArtifact(NodeId node, SliceState state) {
