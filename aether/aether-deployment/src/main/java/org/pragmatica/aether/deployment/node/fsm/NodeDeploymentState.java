@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.stream.Stream;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -53,6 +54,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
@@ -1312,21 +1314,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                          config.interval(),
                                                                                                                                          cause.message()));
 
-            return validated.map(value -> new KVCommand.Put<>(key, value.withPaused(existingPausedFlag(key))));
-        }
-
-        /// Operator pause (set via the management API into [ScheduledTaskValue#paused]) lives only on
-        /// this cluster-scoped KV entry. Slice (re)activation republishes the SAME key — on rebalance,
-        /// leader-failover republish, or node-wipe convergence — so the freshly built value MUST carry
-        /// over the existing `paused` flag, or an unrelated deploy would silently resume a paused task.
-        /// Absent prior value → `false` (the historical default for a brand-new registration).
-        boolean existingPausedFlag(ScheduledTaskKey key) {
-            return ctx.kvStore()
-                      .get(key)
-                      .filter(ScheduledTaskValue.class::isInstance)
-                      .map(ScheduledTaskValue.class::cast)
-                      .map(ScheduledTaskValue::paused)
-                      .or(false);
+            return validated.map(value -> new KVCommand.Put<>(key, value));
         }
 
         private Promise<SliceNodeKey> unpublishScheduledTasks(SliceNodeKey sliceKey) {
@@ -1348,7 +1336,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             // NodeId — see AetherKey.ScheduledTaskKey): all replicas hosting the task share one entry.
             // A single replica's deactivate (CDM rebalance, drain) must NOT Remove it while another
             // replica still hosts the task — that would destroy the live registration AND the operator
-            // pause. Remove only when this node is the LAST hosting replica.
+            // pause. Remove only when this node is the LAST hosting replica. The operator pause is its
+            // own key (ScheduledTaskPauseKey, which republishing never touches); it goes with the task
+            // when the task itself goes, so a later redeploy starts unpaused as before.
             if (artifactHostedElsewhere(artifact)) {
                 log.debug("Skipping scheduled-task unpublish for {} — still hosted on other nodes", artifact);
 
@@ -1356,7 +1346,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             var commands = entries.stream()
-                                  .<KVCommand<AetherKey>> map(entry -> buildScheduledTaskRemoveCommand(artifact, entry))
+                                  .flatMap(entry -> buildScheduledTaskRemoveCommands(artifact, entry))
                                   .toList();
 
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
@@ -1375,11 +1365,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return ! collectTargetNodesForArtifact(SliceNodeKey.sliceNodeKey(artifact, ctx.self())).isEmpty();
         }
 
-        private KVCommand<AetherKey> buildScheduledTaskRemoveCommand(Artifact artifact,
-                                                                     ScheduledTaskManifestEntry entry) {
+        private Stream<KVCommand<AetherKey>> buildScheduledTaskRemoveCommands(Artifact artifact,
+                                                                              ScheduledTaskManifestEntry entry) {
             var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
 
-            return new KVCommand.Remove<>(key);
+            return Stream.<KVCommand<AetherKey>> of(new KVCommand.Remove<>(key),
+                                                    new KVCommand.Remove<>(ScheduledTaskPauseKey.scheduledTaskPauseKey(key)));
         }
 
         private record ConfigUpdateManifestEntry(String configSection, String factoryClassName) {}

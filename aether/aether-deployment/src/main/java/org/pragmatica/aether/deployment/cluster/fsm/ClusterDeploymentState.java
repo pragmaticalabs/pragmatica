@@ -68,7 +68,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
@@ -83,7 +82,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -1637,7 +1635,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                             slice.scaleDownThreshold())));
             }
 
-            collectStreamMetadataCommands(expanded.id(), consensusCommands);
             submitBatch(consensusCommands);
             trackInFlightBlueprint(expanded, previousExpanded);
         }
@@ -1697,25 +1694,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                          .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
                                                                  blueprintId))
                                          .or(true);
-        }
-
-        @Contract
-        private void collectStreamMetadataCommands(BlueprintId blueprintId, List<KVCommand<AetherKey>> commands) {
-            log.trace("Stream metadata collection hook for blueprint '{}'", blueprintId.asString());
-        }
-
-        @SuppressWarnings("unused")
-        private KVCommand<AetherKey> buildStreamMetadataCommand(String streamName, BlueprintId blueprintId) {
-            var key = StreamMetadataKey.streamMetadataKey(streamName);
-            var value = StreamMetadataValue.streamMetadataValue(streamName,
-                                                                4,
-                                                                "count",
-                                                                "100000",
-                                                                "65536",
-                                                                "block",
-                                                                blueprintId.asString());
-
-            return new KVCommand.Put<>(key, value);
         }
 
         private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {
