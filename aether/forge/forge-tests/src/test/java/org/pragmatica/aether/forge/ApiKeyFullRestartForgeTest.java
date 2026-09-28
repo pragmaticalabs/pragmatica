@@ -23,6 +23,10 @@ import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.io.TimeSpan;
@@ -41,21 +45,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 
-/// #1020, moved onto the KV backup restore by #1533 — a cluster-minted API key survives a full (all-nodes)
-/// restart when `[backup]` is enabled, on EVERY node.
+/// #1020, moved onto the KV backup restore by #1533 — a whole-cluster restart is a REGULAR START of a
+/// FRESH set of core nodes (new NodeIds, the same cluster configuration), followed by the KV restore
+/// (owner ruling, 2026-09-28). Restarting the same NodeIds with empty state is not a restart mode (#1543).
 ///
-/// The guarantee under test, stated precisely: consensus runs in memory, so a restarted cluster starts
-/// empty; a key minted through `POST /api/v1/cluster/keys` and present in the backup head (the
-/// change-triggered, leader-only backup pushed to `[backup] remote`, #1532) before every node stops is
-/// accepted after the restart, because the new leader restores the head before any cluster-state write is
-/// admitted (`BackupRestoreCoordinator`, `RestoreGate`) and every node then holds it through consensus.
-///
-/// The control is the same restart with `[backup] restore = "fresh"`: the backup is ignored, and the same
-/// key must be REFUSED on every node — so the acceptance above is the restore's doing, not a leftover.
+/// The shape under test:
+/// 1. cluster A (`akr-1..3`) holds cluster state — a minted API key, a deployed slice, the system streams —
+///    and its change-triggered backup (#1532) reaches the shared `[backup] remote`;
+/// 2. every node of A stops;
+/// 3. cluster B (`akrb-1..3`, fresh identities) starts with `restore = auto`: genesis forms exactly as a
+///    regular start does, the leader restores the backup head before any cluster-state write is admitted
+///    (`BackupRestoreCoordinator`, `RestoreGate`), and the incarnation moves past A's (#1621);
+/// 4. the restored state is live on B: the key is accepted on every node, the slice is ACTIVE on B's
+///    nodes, and nothing names a node of A — placements and stream partition owners are runtime keys, never
+///    backed up, so B assigns its own (`BackupKeyClassificationTest` pins that no backed-up key or value
+///    reaches a NodeId);
+/// 5. the control: cluster C (`akrc-1..3`) with `restore = "fresh"` ignores the backup, and the key is
+///    REFUSED on every node — so the acceptance in 4 is the restore's doing.
 ///
 /// Management security is `API_KEY` with one config-declared ADMIN key, because under Ember's default
 /// `SecurityMode.NONE` the management API skips authentication entirely and "accepted" would be
-/// unobservable. The config key mints; the minted key is what every acceptance assertion presents.
+/// unobservable. The config key mints and deploys; the minted key is what every acceptance presents.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ApiKeyFullRestartForgeTest {
@@ -63,10 +73,9 @@ class ApiKeyFullRestartForgeTest {
     private static final int BASE_MGMT_PORT = 32000;
     private static final int BASE_APP_HTTP_PORT = 32100;
     private static final int NODES = 3;
-    private static final String NODE_PREFIX = "akr";
-    private static final String NODE_1 = NODE_PREFIX + "-1";
-    private static final String NODE_2 = NODE_PREFIX + "-2";
-    private static final String NODE_3 = NODE_PREFIX + "-3";
+    private static final String PREFIX_A = "akr";
+    private static final String PREFIX_B = "akrb";
+    private static final String PREFIX_C = "akrc";
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final TimeSpan HTTP_BOUND = TimeSpan.timeSpan(15).seconds();
@@ -75,6 +84,8 @@ class ApiKeyFullRestartForgeTest {
     private static final String MINTED_KEY = "forge-1020-first-minted-key";
     private static final String MINTED_KEY_ID = "first";
     private static final String KEYS_PATH = "/api/v1/cluster/keys";
+    private static final String BLUEPRINT_ID = "forge.test:full-restart:1.0.0";
+    private static final String SLICE = TestArtifacts.ECHO_SLICE;
     private static final String BACKUP_BRANCH = "kv-backup";
     private static final String BACKUP_FILE = "kv-backup.txt";
     private static final Pattern NODE_COUNT_FIELD = Pattern.compile("\"nodeCount\"\\s*:\\s*(\\d+)");
@@ -89,14 +100,7 @@ class ApiKeyFullRestartForgeTest {
         backupDir = tempDir.resolve("nodes");
         remote = tempDir.resolve("remote.git");
         git(tempDir, "init", "--quiet", "--bare", remote.toString());
-        cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
-        // MUST precede start(): every node reads the mode, the key map and the backup config at construction.
-        cluster.withAppHttpSecurity(SecurityMode.API_KEY,
-                                    Map.of(CONFIG_API_KEY,
-                                           ApiKeyEntry.apiKeyEntry("forge-1020-config", Set.of("service"), "ADMIN")));
-        cluster.withKvBackup(backupDir, remote.toString(), RestoreMode.AUTO);
-        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        awaitMembers(NODES);
+        cluster = startCluster(PREFIX_A, RestoreMode.AUTO);
     }
 
     @AfterAll
@@ -107,22 +111,126 @@ class ApiKeyFullRestartForgeTest {
     }
 
     @Test
-    void fullRestart_restoresTheBackup_everyNodeAcceptsTheMintedKey_andAFreshRestartDoesNot() {
+    void freshCoresRestoreTheBackup_andAFreshStartIgnoresIt() {
         mint(MINTED_KEY_ID, MINTED_KEY);
-        assertAccepted(MINTED_KEY, NODE_1, NODE_2, NODE_3);
+        assertAccepted(MINTED_KEY, nodeIds(PREFIX_A));
+        deployEchoSlice();
+        await().alias("the slice is ACTIVE on cluster A")
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(this::sliceActive);
         awaitBackupHeadContains("api-key/" + MINTED_KEY_ID);
-        LifecycleAwait.settled("cluster stop", cluster, cluster.stop());
-        LifecycleAwait.settled("cluster restart restoring the backup", cluster, cluster.start());
-        awaitMembers(NODES);
-        assertAccepted(MINTED_KEY, NODE_1, NODE_2, NODE_3);
-        assertThat(listKeys(NODE_2)).as("node 2 lists the restored cluster-held key")
+        awaitBackupHeadContains("app-blueprint/" + BLUEPRINT_ID);
+        var incarnationA = incarnationOf(cluster);
+
+        LifecycleAwait.settled("stop of every node of cluster A", cluster, cluster.stop());
+
+        cluster = startCluster(PREFIX_B, RestoreMode.AUTO);
+        assertAccepted(MINTED_KEY, nodeIds(PREFIX_B));
+        assertThat(listKeys(PREFIX_B + "-2")).as("cluster B lists the restored cluster-held key")
                   .contains("\"keyId\":\"" + MINTED_KEY_ID + "\"", "\"source\":\"cluster\"");
-        // The control: the same restart ignoring the backup. The key must be gone everywhere.
-        LifecycleAwait.settled("cluster stop before the fresh control", cluster, cluster.stop());
-        cluster.withKvBackup(backupDir, remote.toString(), RestoreMode.FRESH);
-        LifecycleAwait.settled("cluster restart with restore = fresh", cluster, cluster.start());
+        assertThat(incarnationOf(cluster)).as("the restore moves the incarnation past cluster A's")
+                                          .isGreaterThan(incarnationA);
+        await().alias("the restored slice is ACTIVE on cluster B's own nodes")
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> sliceActive() && sliceInstancesOnlyOn(PREFIX_B));
+        await().alias("every stream partition owner is a node of cluster B")
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> streamOwnersOnlyOn(PREFIX_B));
+
+        LifecycleAwait.settled("stop of every node of cluster B", cluster, cluster.stop());
+
+        cluster = startCluster(PREFIX_C, RestoreMode.FRESH);
+        assertRefused(MINTED_KEY, nodeIds(PREFIX_C));
+    }
+
+    // --- clusters -----------------------------------------------------------
+    private EmberCluster startCluster(String prefix, RestoreMode restore) {
+        var next = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, prefix);
+
+        // MUST precede start(): every node reads the mode, the key map and the backup config at construction.
+        next.withAppHttpSecurity(SecurityMode.API_KEY,
+                                 Map.of(CONFIG_API_KEY,
+                                        ApiKeyEntry.apiKeyEntry("forge-1020-config", Set.of("service"), "ADMIN")));
+        next.withKvBackup(backupDir, remote.toString(), restore);
+        cluster = next;
+        LifecycleAwait.settled("start of cluster " + prefix, next, next.start());
         awaitMembers(NODES);
-        assertRefused(MINTED_KEY, NODE_1, NODE_2, NODE_3);
+
+        return next;
+    }
+
+    private static String[] nodeIds(String prefix) {
+        return java.util.stream.IntStream.rangeClosed(1, NODES)
+                                         .mapToObj(index -> prefix + "-" + index)
+                                         .toArray(String[]::new);
+    }
+
+    private static long incarnationOf(EmberCluster cluster) {
+        return cluster.allNodes()
+                      .getFirst()
+                      .kvStore()
+                      .getTyped(ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.class)
+                      .map(ClusterIncarnationValue::incarnation)
+                      .or(0L);
+    }
+
+    // --- slice and stream ownership -----------------------------------------
+    private void deployEchoSlice() {
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = 1
+            """.formatted(BLUEPRINT_ID, SLICE);
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderMgmtPort() + "/api/v1/blueprints"))
+                                 .header("Content-Type", "application/toml")
+                                 .header(API_KEY_HEADER, CONFIG_API_KEY)
+                                 .POST(HttpRequest.BodyPublishers.ofString(blueprint))
+                                 .timeout(Duration.ofSeconds(15))
+                                 .build();
+        var response = send(request, "deploy " + BLUEPRINT_ID);
+
+        assertThat(response.body()).as("blueprint deploy: %s", response.body())
+                                   .doesNotContain("\"error\"");
+    }
+
+    private boolean sliceActive() {
+        return cluster.slicesStatus()
+                      .stream()
+                      .anyMatch(status -> status.artifact()
+                                                .equals(SLICE) && status.state()
+                                                                        .equals("ACTIVE"));
+    }
+
+    private boolean sliceInstancesOnlyOn(String prefix) {
+        return cluster.slicesStatus()
+                      .stream()
+                      .filter(status -> status.artifact()
+                                              .equals(SLICE))
+                      .flatMap(status -> status.instances()
+                                               .stream())
+                      .allMatch(instance -> instance.nodeId()
+                                                    .startsWith(prefix + "-"));
+    }
+
+    private boolean streamOwnersOnlyOn(String prefix) {
+        var owners = new ArrayList<String>();
+
+        cluster.allNodes()
+               .getFirst()
+               .kvStore()
+               .forEach(StreamPartitionOwnershipKey.class,
+                        StreamPartitionOwnershipValue.class,
+                        (key, value) -> owners.add(value.owner()
+                                                        .id()));
+
+        return !owners.isEmpty() && owners.stream()
+                                          .allMatch(owner -> owner.startsWith(prefix + "-"));
     }
 
     // --- mint / accept ------------------------------------------------------
