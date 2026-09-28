@@ -47,8 +47,11 @@
   exist, and peer lag is measured against the freshest peer, not the owner's head). A divergent tail runs up to
   the diverging copy's head, so the top window of offsets both copies hold lies inside it and a divergence is
   detected however deep it starts — what the window bounds is the cost of the check, not its reach. Offsets
-  that either side has already evicted are not compared, and a lower peer whose whole window the candidate has
-  evicted is compared over nothing and accepted. The complete detect-and-flag over a durable per-log epoch history is
+  that either side's retention has reclaimed are not compared. Both sides read their copy the same way — ring,
+  then tier, resuming at the oldest offset still held — so the candidate's own window is not cut short at its
+  ring tail (a ring-only read once let a divergent candidate whose ring had been evicted below a lower peer's
+  head compare nothing and serve over that peer's acknowledged records). A lower peer whose whole window the
+  candidate's retention has reclaimed is compared over nothing and accepted. The complete detect-and-flag over a durable per-log epoch history is
   #1596; the cluster never auto-truncates.
 - **Sticky ownership.** Every node now routes, and computes its role and `servedByOwner`, from the COMMITTED
   ownership record (HRW placement only before a record exists), so nodes agree on the owner even while their
@@ -76,5 +79,7 @@
   both peers), its positive control and differently-lagging peers of one lineage; `OwnerActivationTest` pins the unreachable-member report and its window.
 - `OwnerPeerReadsTest` pins the peer reads (resume at the oldest offset for the probe and the window,
   failures other than expiry propagate); `PromotionGateShapesVerifierTest` (the verifier's shapes, adopted)
-  pins three-lineage, ahead/behind and evicted-source shapes; `StreamAccessOwnerGateTest` pins the gated
+  pins three-lineage, ahead/behind and evicted-source shapes; `LenientPeerShapesVerifierTest` (adopted) pins a
+  divergent candidate whose ring is evicted below a lower acked peer, and `ReplicaCatchupTierFallbackTest` the
+  candidate's own tier-backed window read; `StreamAccessOwnerGateTest` pins the gated
   stream-access read, and `StreamReadRouterReplicaSnapshotTest` the gated `servedByOwner`.

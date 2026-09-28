@@ -190,6 +190,8 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.StreamAddressResolver;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.aether.stream.StreamingCoordinator;
+import org.pragmatica.aether.stream.forward.CatchupRead;
+import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardHandler;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage;
@@ -1560,12 +1562,16 @@ public interface AetherNode extends ManageableNode {
         return Unit.unit();
     }
 
-    /// #1555 overlap verification: the APPENDED records `from .. to` held by `node` — this node's ring, or a
-    /// peer's over the catch-up read class the probe and the catch-up use, so what is compared is what would be
-    /// pulled. Offsets a side no longer holds are not compared: the local read starts at the ring's tail, and a
-    /// peer's read resumes at its oldest available offset ([OwnerPeerReads#appendedRange]).
+    /// #1555 overlap verification: the APPENDED records `from .. to` held by `node`, through the replication read
+    /// class on BOTH sides — this node's ring and tier ([CatchupRead#readAppended]), or a peer's over the
+    /// catch-up forward, which serves the same read — each resuming at that copy's oldest available offset
+    /// ([OwnerPeerReads#appendedRange]). The candidate's own window is read through its tier exactly as a peer's
+    /// is (v1555 R3): a ring-only local read compared nothing once the candidate's ring was evicted below a lower
+    /// peer's head, and a divergent candidate was accepted over that peer's acknowledged records. Zero records
+    /// compared now means retention reclaimed the window.
     private static Promise<List<OffHeapRingBuffer.RawEvent>> readOwnerRange(NodeId self,
                                                                             StreamPartitionManager manager,
+                                                                            TieredStreamReader tieredReader,
                                                                             StreamForwardClient forwardClient,
                                                                             NodeId node,
                                                                             String streamName,
@@ -1573,27 +1579,26 @@ public interface AetherNode extends ManageableNode {
                                                                             long from,
                                                                             long to) {
         return node.equals(self)
-               ? readLocalRange(manager, streamName, partition, from, to)
+               ? OwnerPeerReads.appendedRange(localCatchupPage(manager, tieredReader), node, streamName, partition, from, to, STREAM_CATCHUP_BATCH_SIZE)
                : readPeerRange(forwardClient, node, streamName, partition, from, to);
     }
 
-    private static Promise<List<OffHeapRingBuffer.RawEvent>> readLocalRange(StreamPartitionManager manager,
-                                                                            String streamName,
-                                                                            int partition,
-                                                                            long from,
-                                                                            long to) {
-        var start = Math.max(from,
-                             manager.partitionInfo(streamName, partition)
-                                    .map(StreamPartitionManager.PartitionInfo::tailOffset)
-                                    .or(from));
+    /// This node's own copy, read as a peer's catch-up forward would be answered.
+    private static OwnerPeerReads.PageRead localCatchupPage(StreamPartitionManager manager, TieredStreamReader tieredReader) {
+        return (_, streamName, partition, fromOffset, maxEvents) -> CatchupRead.readAppended(manager,
+                                                                                             Option.some(tieredReader),
+                                                                                             streamName,
+                                                                                             partition,
+                                                                                             fromOffset,
+                                                                                             maxEvents)
+                                                                               .map(AetherNode::asCatchupPage);
+    }
 
-        return start > to
-               ? Promise.success(List.of())
-               : manager.readAppended(streamName,
-                                      partition,
-                                      start,
-                                      (int)(to - start + 1))
-                        .async();
+    private static StreamForwardClient.ReadForwardResult asCatchupPage(List<OffHeapRingBuffer.RawEvent> events) {
+        return StreamForwardClient.ReadForwardResult.readForwardResult(events.stream()
+                                                                             .map(RawEventDto::fromRawEvent)
+                                                                             .toList(),
+                                                                       false);
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> readPeerRange(StreamForwardClient forwardClient,
@@ -5059,6 +5064,7 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode::isActive,
                                                               (node, stream, partition, from, to) -> readOwnerRange(config.self(),
                                                                                                                     streamPartitionManager,
+                                                                                                                    streamTieredReader,
                                                                                                                     streamForwardClient,
                                                                                                                     node,
                                                                                                                     stream,

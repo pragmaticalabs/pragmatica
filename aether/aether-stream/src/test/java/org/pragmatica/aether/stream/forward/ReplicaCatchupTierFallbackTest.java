@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
@@ -26,6 +27,7 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSink;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -303,6 +305,35 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Cursor at offset 0 has expired, oldest available is 1");
+    }
+
+    /// #1555 (v1555 R3): the owner promotion gate reads the CANDIDATE'S own window exactly as a peer's catch-up
+    /// forward is answered — ring and tier, resuming at the oldest held offset — so offset 0, evicted from the
+    /// ring but sealed to the tier, is compared. A ring-only read of the same window starts at the ring tail (1)
+    /// and silently drops it.
+    @Test
+    void ownerGateLocalWindow_readsTheEvictedPrefixThroughTheTier() {
+        publish(3);
+        awaitSealedThrough(0);
+
+        var throughTier = OwnerPeerReads.appendedRange(localPage(Option.some(tieredStreamReader(index, storage))), OWNER, STREAM, PARTITION, 0, 2, 100)
+                                        .await()
+                                        .unwrap();
+        var ringOnly = OwnerPeerReads.appendedRange(localPage(Option.none()), OWNER, STREAM, PARTITION, 0, 2, 100)
+                                     .await()
+                                     .unwrap();
+
+        assertThat(throughTier).extracting(OffHeapRingBuffer.RawEvent::offset).containsExactly(0L, 1L, 2L);
+        assertThat(ringOnly).as("control: the ring alone no longer holds offset 0")
+                            .extracting(OffHeapRingBuffer.RawEvent::offset).containsExactly(1L, 2L);
+    }
+
+    private OwnerPeerReads.PageRead localPage(Option<TieredStreamReader> tier) {
+        return (_, stream, partition, from, max) -> CatchupRead.readAppended(owner, tier, stream, partition, from, max)
+                                                               .map(events -> StreamForwardClient.ReadForwardResult.readForwardResult(events.stream()
+                                                                                                                                              .map(RawEventDto::fromRawEvent)
+                                                                                                                                              .toList(),
+                                                                                                                                        false));
     }
 
     /// Without a tier wired (base handler) the read stays ring-only and the ring's refusal stands, as before.
