@@ -55,6 +55,14 @@ public sealed interface ClusterIncarnation {
         return List.of(new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()), put(restored.next()));
     }
 
+    /// What `aether backup declare-genesis` commits (#1532): keep this cluster's own lineage and move
+    /// it past the incarnation holding the backup head, so this cluster's state may supersede that head.
+    /// Removed first for the same reason as [#restoreCommands]: the jump is not a successor step.
+    static List<KVCommand<AetherKey>> supersedeCommands(ClusterIncarnationValue current, long headIncarnation) {
+        return List.of(new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()),
+                       put(ClusterIncarnationValue.clusterIncarnationValue(current.lineageId(), headIncarnation + 1)));
+    }
+
     private static KVCommand<AetherKey> put(ClusterIncarnationValue value) {
         return new KVCommand.Put<>(ClusterIncarnationKey.clusterIncarnationKey(), value);
     }

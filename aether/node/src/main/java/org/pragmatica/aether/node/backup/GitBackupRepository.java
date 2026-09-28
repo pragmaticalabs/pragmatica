@@ -38,6 +38,9 @@ import static org.pragmatica.lang.Result.success;
 /// credential-less remote fails instead of hanging the backup worker.
 public record GitBackupRepository(Path dir, Option<String> remote, String branch, TimeSpan timeout) {
     public static final String FILE = "kv-backup.txt";
+    /// Bound on any single git command — long enough for a push over a slow link, short enough that a
+    /// hung remote cannot stall the backup worker indefinitely.
+    public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(60).seconds();
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
 

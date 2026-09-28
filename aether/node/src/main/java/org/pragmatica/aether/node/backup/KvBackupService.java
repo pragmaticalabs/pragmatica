@@ -5,6 +5,8 @@
 package org.pragmatica.aether.node.backup;
 
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -69,6 +71,7 @@ public final class KvBackupService {
     private final LongSupplier clock;
     private final BackupWarning.Sink warnings;
     private final Timing timing;
+    private final Runnable onStop;
 
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean dirty = new AtomicBoolean(false);
@@ -116,7 +119,8 @@ public final class KvBackupService {
                             Scheduler scheduler,
                             LongSupplier clock,
                             BackupWarning.Sink warnings,
-                            Timing timing) {
+                            Timing timing,
+                            Runnable onStop) {
         this.kvStore = kvStore;
         this.codec = codec;
         this.repository = repository;
@@ -124,6 +128,7 @@ public final class KvBackupService {
         this.clock = clock;
         this.warnings = warnings;
         this.timing = timing;
+        this.onStop = onStop;
         this.retryDelay = new AtomicLong(timing.initialRetryMillis());
     }
 
@@ -134,7 +139,34 @@ public final class KvBackupService {
                                                   LongSupplier clock,
                                                   BackupWarning.Sink warnings,
                                                   Timing timing) {
-        return new KvBackupService(kvStore, codec, repository, scheduler, clock, warnings, timing);
+        return new KvBackupService(kvStore, codec, repository, scheduler, clock, warnings, timing, () -> {});
+    }
+
+    /// The production service: its own single-threaded worker (so a slow or hung git never delays another
+    /// component), wall-clock time, logged warnings, default timing. [#stop] shuts the worker down.
+    public static KvBackupService kvBackupService(KVStore<AetherKey, AetherValue> kvStore,
+                                                  BackupEntryCodec codec,
+                                                  GitBackupRepository repository) {
+        var worker = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform()
+                                                                      .name("kv-backup")
+                                                                      .daemon(true)
+                                                                      .factory());
+
+        return new KvBackupService(kvStore,
+                                   codec,
+                                   repository,
+                                   (task, delay) -> worker.schedule(task, delay, TimeUnit.MILLISECONDS),
+                                   System::currentTimeMillis,
+                                   BackupWarning.Sink.logging(),
+                                   Timing.DEFAULT,
+                                   worker::shutdownNow);
+    }
+
+    /// Stop flushing and release the worker. A node that stopped must not keep writing backups.
+    @Contract
+    public void stop() {
+        leader.set(false);
+        onStop.run();
     }
 
     public Status status() {
@@ -143,6 +175,18 @@ public final class KvBackupService {
 
     public GitBackupRepository repository() {
         return repository;
+    }
+
+    boolean isLeader() {
+        return leader.get();
+    }
+
+    KVStore<AetherKey, AetherValue> kvStore() {
+        return kvStore;
+    }
+
+    BackupEntryCodec codec() {
+        return codec;
     }
 
     // --- triggers (applier / router threads) ---
@@ -403,8 +447,9 @@ public final class KvBackupService {
             case AWAITING_GENESIS -> scheduleRetry();
             case GATED -> enter(Status.GATED, gatedDetail(outcome));
             case HEAD_UNREADABLE -> enter(Status.HEAD_UNREADABLE,
-                                          "the backup head cannot be read as a backup document; inspect the backup"
-                                          + " repository, or run `" + DECLARE_GENESIS_COMMAND + "` to supersede it");
+                                          "the backup head cannot be read as a backup document (written by a newer"
+                                          + " version, or corrupted); inspect the backup repository and repair or move"
+                                          + " the head — this cluster will not overwrite what it cannot read");
             case PUSH_FAILED -> onPushFailed();
         }
     }

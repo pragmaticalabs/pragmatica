@@ -32,12 +32,16 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -322,6 +326,82 @@ class KvBackupServiceTest {
     }
 
     @Nested
+    class Genesis {
+        /// A fresh cluster gated by another lineage's head declares genesis: its incarnation moves past
+        /// the head's, and the next flush supersedes the head as a fast-forward.
+        @Test
+        void declareGenesis_overAForeignHead_liftsTheGate_andTheNextFlushSupersedesIt() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            var service = leaderService(Option.some(remote));
+
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.GATED);
+
+            var declared = BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands))
+                                        .await()
+                                        .unwrap();
+
+            assertThat(declared.lineageId()).isEqualTo(LINEAGE);
+            assertThat(declared.incarnation()).isEqualTo(4);
+            assertThat(declared.supersededLineageId()).isEqualTo("another-cluster");
+
+            scheduler.runUntilIdle();
+
+            assertThat(remoteDocument(remote).header()).satisfies(header -> {
+                assertThat(header.lineageId()).isEqualTo(LINEAGE);
+                assertThat(header.incarnation()).isEqualTo(4);
+            });
+            assertThat(commitCount(remote)).as("the foreign head stays in history").isEqualTo(2);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// A head of this cluster's own lineage that is AHEAD of it must be restored, not superseded.
+        @Test
+        void declareGenesis_overANewerHeadOfTheSameLineage_isRefused() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 1_000_000));
+            var service = leaderService(Option.some(remote));
+
+            var refused = BackupGenesis.backupGenesis(service)
+                                       .declare(commands -> applyAndNotify(service, commands))
+                                       .await();
+
+            assertThat(failureOf(refused)).isInstanceOf(BackupGenesis.DeclareGenesisError.RemoteIsNewer.class);
+        }
+
+        @Test
+        void declareGenesis_overAnEmptyBackup_isRefused() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = service(Option.some(remote));
+
+            incarnation(1);
+            service.onLeaderChange(leaderChange(true));
+
+            var refused = BackupGenesis.backupGenesis(service)
+                                       .declare(commands -> applyAndNotify(service, commands))
+                                       .await();
+
+            assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOTHING_TO_SUPERSEDE);
+        }
+
+        @Test
+        void declareGenesis_onAFollower_isRefused() {
+            var service = service(Option.some(bareRemote(temp.resolve("remote.git"))));
+
+            incarnation(1);
+
+            var refused = BackupGenesis.backupGenesis(service)
+                                       .declare(commands -> applyAndNotify(service, commands))
+                                       .await();
+
+            assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOT_LEADER);
+        }
+    }
+
+    @Nested
     class NoRemote {
         /// Without a remote each leader keeps the backup in its own repository; every commit carries
         /// (lineage, incarnation, revision), which is what a restore needs to pick among nodes (#1533).
@@ -387,6 +467,33 @@ class KvBackupServiceTest {
 
         kvStore.processCommitted(kvStore.createBatch(List.of(remove)), ++slot);
         service.onValueRemove(new ValueRemove<>(remove, old));
+    }
+
+    private static Cause failureOf(Result<?> result) {
+        return result.fold(cause -> cause, _ -> Assertions.fail("expected a failure"));
+    }
+
+    /// The consensus applier as a node would run it: apply the batch, then deliver the notifications.
+    private Promise<List<Object>> applyAndNotify(KvBackupService service, List<KVCommand<AetherKey>> commands) {
+        var olds = commands.stream()
+                           .map(command -> kvStore.get(command.key()))
+                           .toList();
+
+        kvStore.processCommitted(kvStore.createBatch(commands), ++slot);
+        for (int i = 0; i < commands.size(); i++) {
+            notify(service, commands.get(i), olds.get(i));
+        }
+
+        return Promise.success(List.of());
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void notify(KvBackupService service, KVCommand<AetherKey> command, Option<AetherValue> old) {
+        switch (command) {
+            case KVCommand.Put put -> service.onValuePut(new ValuePut<>(put, old));
+            case KVCommand.Remove remove -> service.onValueRemove(new ValueRemove<>(remove, old));
+            default -> {}
+        }
     }
 
     private void applyOnly(AetherKey key, AetherValue value) {

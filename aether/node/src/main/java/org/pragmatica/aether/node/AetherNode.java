@@ -60,6 +60,9 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
+import org.pragmatica.aether.node.backup.BackupGenesis;
+import org.pragmatica.aether.node.backup.GitBackupRepository;
+import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
@@ -226,6 +229,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
@@ -743,6 +747,35 @@ public interface AetherNode extends ManageableNode {
                                     .isBlank())
                      .map(AetherNode::createGitBackedPersistence)
                      .or(RabiaPersistence::inMemory);
+    }
+
+    /// #1532 — the change-triggered KV backup, present only when `[backup] enabled = true` with a path. Its
+    /// repository is `<path>/kv-backup`, apart from anything else written under `[backup] path`.
+    private static Option<KvBackupService> createKvBackupService(AetherNodeConfig config,
+                                                                 KVStore<AetherKey, AetherValue> kvStore,
+                                                                 SliceCodec nodeCodec) {
+        return config.backupConfig()
+                     .filter(BackupConfig::enabled)
+                     .filter(backup -> !backup.path()
+                                              .isBlank())
+                     .map(backup -> KvBackupService.kvBackupService(kvStore,
+                                                                    BackupEntryCodec.backupEntryCodec(nodeCodec),
+                                                                    kvBackupRepository(backup)));
+    }
+
+    private static GitBackupRepository kvBackupRepository(BackupConfig backup) {
+        return GitBackupRepository.gitBackupRepository(Path.of(backup.path())
+                                                           .resolve("kv-backup"),
+                                                       Option.option(backup.remote()),
+                                                       "kv-backup",
+                                                       GitBackupRepository.DEFAULT_TIMEOUT);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void routeKvBackup(List<MessageRouter.Entry<?>> allEntries, KvBackupService service) {
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, service::onValuePut));
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, service::onValueRemove));
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, service::onLeaderChange));
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> createGitBackedPersistence(BackupConfig backup) {
@@ -1836,7 +1869,8 @@ public interface AetherNode extends ManageableNode {
                           StreamConsumerRuntime streamConsumerRuntime,
                           long startTimeMs,
                           AtomicLong swimBootAt,
-                          PeriodicTasks periodicTasks) implements AetherNode {
+                          PeriodicTasks periodicTasks,
+                          Option<KvBackupService> kvBackupService) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -1971,6 +2005,7 @@ public interface AetherNode extends ManageableNode {
                 // still-unarmed thunks and refuses a late arm() (#644): a cluster-formation promise
                 // resolving after this line must not schedule work for a torn-down node.
                 periodicTasks.cancel();
+                kvBackupService.onPresent(KvBackupService::stop);
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
                 controlLoop.stop();
@@ -2294,6 +2329,11 @@ public interface AetherNode extends ManageableNode {
                 return new ProvisioningDiagnostics(decision,
                                                    clusterTopologyManagerInstance.circuitBreakerState(),
                                                    clusterTopologyManagerInstance.lastProvisionFailure());
+            }
+
+            @Override
+            public Option<BackupGenesis> backupGenesis() {
+                return kvBackupService.map(BackupGenesis::backupGenesis);
             }
 
             @Override
@@ -5173,6 +5213,10 @@ public interface AetherNode extends ManageableNode {
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  clusterIncarnationRegistrar::onLeaderChange));
+        // #1532: change-triggered, leader-only KV backup — only when [backup] is enabled with a path.
+        var kvBackupService = createKvBackupService(config, kvStore, nodeCodec);
+
+        kvBackupService.onPresent(service -> routeKvBackup(allEntries, service));
         // Publish-side mirror: same forward client + HRW owner resolver the read router uses, so a
         // management publish landing on a metadata-only node write-forwards to the owner (#265) instead
         // of failing PARTITION_NOT_LOCAL on a local append.
@@ -5419,7 +5463,8 @@ public interface AetherNode extends ManageableNode {
                                   streamConsumerRuntime,
                                   startTimeMs,
                                   swimBootAtMs,
-                                  periodicTasks);
+                                  periodicTasks,
+                                  kvBackupService);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -5636,7 +5681,8 @@ public interface AetherNode extends ManageableNode {
                                                                         streamConsumerRuntime,
                                                                         startTimeMs,
                                                                         swimBootAtMs,
-                                                                        periodicTasks);
+                                                                        periodicTasks,
+                                                                        kvBackupService);
                                               }
 
                                                   return node;

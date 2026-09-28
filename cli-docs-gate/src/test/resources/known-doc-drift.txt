@@ -212,7 +212,6 @@ aether/docs/specs/interactive-scaffolding-spec.md	option: --with-web on jbct ini
 aether/docs/specs/landscape-spec.md	command: aether landscape
 
 # --- aether/docs/specs/management-api-versioning-spec.md ---
-aether/docs/specs/management-api-versioning-spec.md	command: aether backup
 aether/docs/specs/management-api-versioning-spec.md	command: aether backups
 
 # --- aether/docs/specs/runtime-observability-aspects-spec.md ---

@@ -195,6 +195,12 @@ public interface ManageableNode {
         return Option.none();
     }
 
+    /// #1532 — the change-triggered KV backup's genesis declaration, when `[backup]` is enabled on this
+    /// node. Default `Option.none()` keeps `ManageableNode` test proxies compiling.
+    default Option<org.pragmatica.aether.node.backup.BackupGenesis> backupGenesis() {
+        return Option.none();
+    }
+
     /// #590 — this node's LOCAL core-absence view: has it ever heard the core, how long since the last
     /// accepted `ClusterSyncPing`, and how long until it dissolves itself. The community-tier twin of
     /// [#quorumLossSnapshot], and PER-NODE for the same reason — plus a sharper one. A node nearing its

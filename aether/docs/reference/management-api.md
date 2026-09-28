@@ -3682,6 +3682,36 @@ land.
 }
 ```
 
+### POST /api/v1/backup/declare-genesis
+
+Make this cluster's state the KV backup head in place of a backup of ANOTHER lineage (#1532). The
+leader raises its committed cluster incarnation past the head's (`ClusterIncarnationKey`, lineage
+unchanged); the next change-triggered backup flush then supersedes the head as a fast-forward push, and
+the old lineage stays in git history. The write is version-fenced and confirmed by re-read.
+
+**Refusals:**
+
+| Status | When |
+|---|---|
+| 409 `SameLineage` | The head already belongs to this cluster's lineage — nothing to supersede |
+| 409 `RemoteIsNewer` | The head is this cluster's lineage and AHEAD of it — restore it instead |
+| 409 `NOTHING_TO_SUPERSEDE` | The backup is empty — the first flush establishes this cluster's lineage |
+| 409 `NOT_COMMITTED` | A concurrent write won; re-read and retry |
+| 409 `BACKUP_NOT_ENABLED` | `[backup]` is not enabled with a path on this node |
+| 503 `NOT_LEADER` / `NO_INCARNATION` / `HeadUnreadable` | Retry against the leader, after genesis, or once the head is reachable and readable |
+
+**RBAC:** ADMIN (exact route) · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "lineageId": "01K4ZT9Q6W3X8Y2B7C5D1E0F9G",
+  "incarnation": 4,
+  "supersededLineageId": "01K4ZS0000000000000000OLD0",
+  "supersededIncarnation": 3
+}
+```
+
 ### GET /api/v1/cluster/keys/audit
 
 List API key audit trail (create, rotate, revoke, expire events).
