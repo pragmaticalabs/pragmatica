@@ -168,7 +168,6 @@ public final class ClusterEventAggregator {
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
     private static final long EVENT_THROTTLE_MS = 60_000L;
-
     /// After an operator-warning publish FAILS, its key is held for this long before the next attempt (#1617 R4, v1562).
     /// Releasing the window outright left attempts unbounded while publishing kept failing: 1,000 raises made 1,000
     /// publish attempts and 1,000 WARN lines. A short window bounds a failing key to one attempt per this long, and
