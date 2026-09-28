@@ -507,9 +507,9 @@ public final class OwnerActivation {
                                        PeerWatermark highest,
                                        List<PeerWatermark> others) {
         return verifyOverlap(stream, partition, local, highest).flatMap(_ -> verifySourceAgainstPeers(stream,
-                                                                                                        partition,
-                                                                                                        highest,
-                                                                                                        others))
+                                                                                                      partition,
+                                                                                                      highest,
+                                                                                                      others))
                             .flatMap(_ -> pullSuffix(stream, partition, highest));
     }
 
@@ -536,8 +536,16 @@ public final class OwnerActivation {
 
         var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
 
-        return Promise.all(ranges.read(source.node(), stream, partition, from, to),
-                           ranges.read(peer.node(), stream, partition, from, to))
+        return Promise.all(ranges.read(source.node(),
+                                       stream,
+                                       partition,
+                                       from,
+                                       to),
+                           ranges.read(peer.node(),
+                                       stream,
+                                       partition,
+                                       from,
+                                       to))
                       .flatMap((sourceRange, peerRange) -> pairAgreesOrRefuse(stream,
                                                                               partition,
                                                                               source,
