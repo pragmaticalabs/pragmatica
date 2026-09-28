@@ -8,6 +8,9 @@
   down both groups and wait for them to terminate. It resolves with the intermediate operation's outcome, or
   with the shutdown failure if the groups do not terminate. The groups are shut down with no quiet period
   (the intermediate operation is the drain, as #929 did for SWIM), and each wait is bounded to 6 s from the
-  caller's side, because a wedged loop cannot enforce Netty's own timeout.
+  caller's side, because a wedged loop cannot enforce Netty's own timeout. **`stop()` can now fail**, with the group
+  shutdown's cause, where it always used to succeed; a caller in a shutdown sequence must not abort on it. No aether
+  production path calls it today (every `ClusterNetwork.server()` returns empty), so this reaches only external users
+  of the library.
   [verified: `integrations/net/tcp/src/test/java/org/pragmatica/net/tcp/ServerStopTest.java` — a held worker task
   keeps `stop()` unresolved until the loops terminate, and the same TCP+UDP port rebinds right after `stop()`]

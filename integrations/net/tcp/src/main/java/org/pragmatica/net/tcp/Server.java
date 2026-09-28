@@ -67,6 +67,10 @@ public interface Server {
     ///
     /// @param intermediateOperation Operation to run between server channel shutdown and event loop groups shutdown.
     ///                              Enables graceful shutdown: stop accepting new connections, finish existing work, then shutdown.
+    ///
+    /// @return resolves once both event loop groups have terminated, with the intermediate operation's outcome. It may
+    ///         FAIL with the group shutdown's cause (a failed or timed-out termination); a caller in a shutdown sequence
+    ///         must not abort on it (#1610).
     Promise<Unit> stop(Supplier<Promise<Unit>> intermediateOperation);
 
     /// Create a server with the given configuration (TCP only).
