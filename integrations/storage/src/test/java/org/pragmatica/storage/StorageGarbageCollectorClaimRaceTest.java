@@ -227,7 +227,7 @@ class StorageGarbageCollectorClaimRaceTest {
         assertThat(collected.get()).isZero();
         assertThat(metadataStore.restoreCount()).as("control: the restore ran exactly once").isEqualTo(1);
         assertThat(presentOnReturn.get()).as("the record must be back the instant collectGarbage() returns -- the restore is part of the collection's resolution, not a side effect after it")
-                                         .isTrue();
+                  .isTrue();
         assertThat(metadataStore.getLifecycle(id).map(BlockLifecycle::isOrphaned).or(false)).as("the restored record is the orphan the next cycle will scan")
                   .isTrue();
     }
