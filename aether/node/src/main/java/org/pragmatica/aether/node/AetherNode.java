@@ -5882,17 +5882,12 @@ public interface AetherNode extends ManageableNode {
                   .collect(Collectors.toUnmodifiableSet());
     }
 
-    /// #557's boot-quorum projection as a NAMED seam (extracted under #644's assembly pass, per the
-    /// composition note on that ticket). The quorum numerator MUST read the OBSERVED-reachability
-    /// projection: swapping `coreObservedMembers` for `coreCountedMembers` here silently restores
-    /// #557 — boot quorum declared from configuration with zero packets moved. The wiring used to be
-    /// an inline lambda no test could reach, so `PresenceGenerationSnapshotSourceQuorumCompositionTest`
-    /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
-    /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
-    /// holder is populated before any snapshot is taken).
     /// The committed generation epoch at local counter 0 (#1529): the cluster incarnation (dominant) and the
-    /// leader term — the base every ownership writer mints its owner epochs from.
-    private static Supplier<Epoch> generationEpoch(KVStore<AetherKey, AetherValue> kvStore,
+    /// leader term — the base every ownership writer mints its owner epochs from. A named seam so
+    /// `ClusterIncarnationTest.GenerationEpochSeam` pins it (forcing the incarnation to 0 here left every
+    /// module green). An epoch minted before the registrar commits the genesis incarnation carries 0, which
+    /// ranks below every later mint.
+    static Supplier<Epoch> generationEpoch(KVStore<AetherKey, AetherValue> kvStore,
                                                    Supplier<Long> rabiaTermSupplier) {
         return () -> Epoch.epoch(ClusterIncarnation.current(kvStore), rabiaTermSupplier.get(), 0L);
     }
@@ -5993,6 +5988,14 @@ public interface AetherNode extends ManageableNode {
                                            .collect(Collectors.toUnmodifiableSet());
     }
 
+    /// #557's boot-quorum projection as a NAMED seam (extracted under #644's assembly pass, per the
+    /// composition note on that ticket). The quorum numerator MUST read the OBSERVED-reachability
+    /// projection: swapping `coreObservedMembers` for `coreCountedMembers` here silently restores
+    /// #557 — boot quorum declared from configuration with zero packets moved. The wiring used to be
+    /// an inline lambda no test could reach, so `PresenceGenerationSnapshotSourceQuorumCompositionTest`
+    /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
+    /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
+    /// holder is populated before any snapshot is taken).
     static Supplier<Set<NodeId>> presenceMemberSupplier(Supplier<MembershipFsm> membershipFsm, NodeId self) {
         return () -> Option.option(membershipFsm.get())
                            .map(fsm -> fsm.coreObservedMembers(self))

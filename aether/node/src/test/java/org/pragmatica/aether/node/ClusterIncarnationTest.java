@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -62,6 +63,29 @@ class ClusterIncarnationTest {
             apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 4, "id-lineage-a-4")));
 
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(4);
+        }
+    }
+
+    /// `AetherNode.generationEpoch` is the base every ownership writer (streams, consumer assignments,
+    /// entities, the DHT core arc) mints from; v1635's M10 forced its incarnation to 0 and every module
+    /// stayed green.
+    @Nested
+    class GenerationEpochSeam {
+        @Test
+        void generationEpoch_carriesTheCommittedIncarnation_andTheLeaderTerm_atCounterZero() {
+            apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-a", 3, "id-lineage-a-3")));
+
+            assertThat(AetherNode.generationEpoch(kvStore, () -> 7L).get()).isEqualTo(Epoch.epoch(3L, 7L, 0L));
+        }
+
+        @Test
+        void generationEpoch_readsTheIncarnationAtCallTime_notAtWiring() {
+            var epoch = AetherNode.generationEpoch(kvStore, () -> 7L);
+
+            assertThat(epoch.get().incarnation()).as("before genesis").isZero();
+            ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-new", () -> "id-new")
+                              .onPresent(ClusterIncarnationTest.this::apply);
+            assertThat(epoch.get().incarnation()).as("after genesis").isEqualTo(ClusterIncarnationValue.GENESIS);
         }
     }
 

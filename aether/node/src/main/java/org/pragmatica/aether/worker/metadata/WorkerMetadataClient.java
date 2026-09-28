@@ -32,7 +32,8 @@ import org.pragmatica.serialization.SliceCodec;
 
 /// One in-flight manifest and chunk; verified scopes become visible together through normal KV replay.
 public final class WorkerMetadataClient {
-    /// Point-in-time resource occupancy, sampled under the same monitor as mutation.
+    /// Point-in-time resource occupancy, sampled under the same monitor as mutation, plus the cluster
+    /// incarnation (#1529) of the installed projection — `0` until one is installed.
     public synchronized Map<String, Long> resourceMetrics() {
         return Map.of("clientVerifiedBytes",
                       verified.values().stream().mapToLong(bytes -> bytes.length).sum(),
@@ -41,7 +42,9 @@ public final class WorkerMetadataClient {
                       "clientBufferBytes",
                       (long) buffer.length,
                       "clientScopeLimit",
-                      (long) limits.scopeBytes());
+                      (long) limits.scopeBytes(),
+                      "clientInstalledIncarnation",
+                      installedIncarnation);
     }
 
     private final NodeId self;
