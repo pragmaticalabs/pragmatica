@@ -4533,9 +4533,12 @@ public interface AetherNode extends ManageableNode {
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                  .onPut(AetherKey.SpokesmanKey.class,
                                                         _ -> bootstrapModule.retryIfNeeded())
-                                                 // #1533: the restore decision opens the restore gate; re-drive the config seed it refused.
+                                                 // #1533: the ONE restore-commit hook — see onRestoreDecision.
                                                  .onPut(AetherKey.BackupRestoreKey.class,
-                                                        _ -> bootstrapModule.retryIfNeeded())
+                                                        (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,
+                                                                                                                                                      bootstrapModule,
+                                                                                                                                                      deploymentManager,
+                                                                                                                                                      abTestManager))
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
                                                                                                                                                                              clusterTopologyManager,
@@ -6625,6 +6628,27 @@ public interface AetherNode extends ManageableNode {
     /// restart-with-empty-KV paths before presence-derived membership has converged.
     private static BootstrapModule.ClusterConfigBaseline clusterConfigBaseline(TopologyConfig topology) {
         return new BootstrapModule.ClusterConfigBaseline(topology.clusterSize(), topology.coreMin(), topology.coreMax());
+    }
+
+    /// #1533 — the ONE restore-commit hook. On a fresh cluster a component that loads cluster state once —
+    /// at leader gain or on its task-group activation — does so BEFORE the restore lands, and sees an empty
+    /// KV. A terminal restore decision re-drives each such component that has no put listener of its own
+    /// for the keys it loaded: the bootstrap config seed (refused by the restore gate), the rollout manager
+    /// (`DeploymentKey`) and the A/B test manager (`AbTestKey`). Components that listen for puts of their
+    /// restored keys are covered by those listeners, because the restore's writes publish ordinary puts.
+    @Contract
+    static void onRestoreDecision(KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put,
+                                          BootstrapModule bootstrapModule,
+                                          DeploymentManager deploymentManager,
+                                          AbTestManager abTestManager) {
+        if (put.cause()
+               .value()
+               .outcome()
+               .isTerminal()) {
+            bootstrapModule.retryIfNeeded();
+            deploymentManager.reloadRestoredState();
+            abTestManager.reloadRestoredState();
+        }
     }
 
     private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,

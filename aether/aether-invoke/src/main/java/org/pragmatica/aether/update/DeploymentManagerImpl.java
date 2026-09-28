@@ -67,6 +67,15 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     @Override
+    public Unit reloadRestoredState() {
+        if (active) {
+            restoreState();
+        }
+
+        return Unit.unit();
+    }
+
+    @Override
     public Promise<Unit> deactivate() {
         log.info("Deployment manager passive (STRATEGIES task group unassigned)");
         active = false;
