@@ -59,10 +59,12 @@ is installed at assembly.
   forever: once every member of the final view stays reachable for two consecutive rounds, genesis
   completes (pinned by the stable-network and flap-then-stabilise simulations). A core that was seen and
   then vanishes for good stays in the views it reached and holds genesis; the status names it. A view
-  larger than the configured count holds genesis the same way. Recovery action for both: set
-  `cluster.genesis_voters`, lower the configured core count, stop the extra candidates, or replace a stuck
-  node with a node under a FRESH identity. Relaunching a node under its old NodeId clears nothing: under
-  #1545 that identity is retired for good.
+  larger than the configured count holds genesis the same way. A view never shrinks while its process
+  lives, so stopping the extra candidates, stopping a retired core, or adding a fresh-identity replacement
+  while the pending cores keep running clears neither. Recovery action for both: restart EVERY pending core
+  together as fresh processes (with the replacement, if a core is lost for good), or set
+  `cluster.genesis_voters` to the intended roster and restart every pending core. `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/GenesisRecoveryActionsTest.java]` A view that
+  cannot shrink in a live process is a liveness trap, tracked as a follow-up.
 - **Joining a formed electorate.** A core whose electorate has formed answers an announcement with its
   configuration; a pending node installs it (as an observer when not a member). A core that appears
   after epoch 0 therefore joins only through a Rabia §4 add command.

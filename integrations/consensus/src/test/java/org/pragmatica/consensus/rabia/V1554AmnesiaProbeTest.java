@@ -32,16 +32,21 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// v1554 adversarial probe. Voters {v0,v1,v2}; §4 swap to {v0,v1,v3} while v2 lags at epoch 0.
 /// In slot S (epoch 1) v1 and v3 decide X; v3 decides, v1 crashes (in-memory: amnesia), v3 is slow.
-/// v1 restarts genesis-pending; the lagging v2 answers its announcement with the epoch-0 roster.
-/// Attack: v1' then adopts v0's epoch-1 state from ONE live responder and decides Y in slot S with v0.
-/// Control: v0 answers the announcement (epoch 1) instead: same-epoch arm needs a majority, v1' waits.
+/// v1 restarts genesis-pending under the SAME NodeId. This harness has no transport, so nothing refuses it.
 ///
-/// #1526 — why the attack is DISABLED here: this harness has no transport, so nothing refuses a process
-/// restarted under v1's NodeId. The attack demonstrates the
-/// [limit: amnesiac-same-id-excluded-by-boot-token]: single-responder newer-epoch adoption is safe only
-/// because such a restart is refused at transport (#1528/#1545), which `EmberAmnesiacRestartTest` pins
-/// on real QUIC/SWIM. Enabled, the attack diverges (v3 decides X, v0 with v1' decides Y in the same slot).
-/// It is kept as the executable statement of why the transport gate is load-bearing.
+/// Lagging arm: the lagging v2's epoch-0 `formed` answer reaches v1' first. v1' also receives v0's LIVE sync
+/// response carrying epoch 1 before its genesis round; it records that as the newest formed configuration
+/// (the sync-response hunk of the join rule, "J2") and joins epoch 1, where the same-epoch arm needs a
+/// majority it cannot get while v3 is slow — so it STALLS instead of deciding. Once the partition heals every
+/// replica agrees on slot S. With J2 removed, v1' installs v2's epoch 0, then adopts v0's epoch-1 state from
+/// one live responder and decides Y in slot S with v0: divergence, which `verifyPrefixes` reports.
+/// Control arm: v0 answers the announcement (epoch 1) directly: the same-epoch arm waits for a majority.
+///
+/// [limit: amnesiac-same-id-excluded-by-boot-token] The stall is a property of THIS schedule, not a guard: a
+/// LIVE response that arrives after v1''s genesis round is not recorded, and single-responder newer-epoch
+/// adoption can still break agreement at the engine layer (v1554's J2/J1 arms). What excludes the case is
+/// the transport refusing a same-NodeId restart by its boot token (#1528/#1545), pinned on real QUIC/SWIM by
+/// `EmberAmnesiacRestartTest`.
 class V1554AmnesiaProbeTest {
     private static final int A = 0, B = 1, C = 2, D = 3;
     private final List<Cluster> clusters = new ArrayList<>();
@@ -49,9 +54,7 @@ class V1554AmnesiaProbeTest {
     @AfterEach void stopAll() { clusters.forEach(Cluster::stop); }
 
     @Test
-    @org.junit.jupiter.api.Disabled("Demonstrates [limit: amnesiac-same-id-excluded-by-boot-token]: without the transport's "
-                                    + "boot-token gate a same-id amnesiac restart diverges. Pinned on real transport by EmberAmnesiacRestartTest.")
-    void attack_formedReplyFromLaggingMember_thenSingleResponderNewerEpochSync() {
+    void laggingFormedReply_withLiveSyncFromACurrentMember_stallsInsteadOfDiverging() {
         for (int seed = 0; seed < 5; seed++) {
             run(seed, true);
         }
@@ -105,21 +108,14 @@ class V1554AmnesiaProbeTest {
         cluster.pumpUntil(() -> !cluster.engines.get(B).isGenesisPending());
         System.out.printf("seed %d lagging=%s: v1' installed %s%n", seed, lagging, cluster.engines.get(B).voterConfiguration());
 
-        if (lagging) {
-            // Divergence is detected by verifyPrefixes on every pump step (and asserted here).
-            cluster.pumpUntil(() -> cluster.machines.get(A).getProcessedCommands().size() >= dLog.size());
-            System.out.printf("seed %d: v3 log %s | v0 log %s | v1' log %s | v1' active %s epoch %s%n", seed, dLog,
-                              cluster.machines.get(A).getProcessedCommands(), cluster.machines.get(B).getProcessedCommands(),
-                              cluster.engines.get(B).isActive(), cluster.engines.get(B).voterConfiguration());
-        } else {
-            cluster.drain();
-            System.out.printf("seed %d control: v1' active %s, v0 log %s, v3 log %s%n", seed, cluster.engines.get(B).isActive(),
-                              cluster.machines.get(A).getProcessedCommands(), dLog);
-            assertThat(cluster.engines.get(B).isActive()).as("same-epoch arm must wait for a majority").isFalse();
-            cluster.held = _ -> false;
-            cluster.blocked = _ -> false;
-            cluster.pumpUntil(() -> cluster.machines.get(A).getProcessedCommands().size() >= dLog.size());
-        }
+        // Both arms: v1' must wait for a majority (divergence would be reported by verifyPrefixes on every step).
+        cluster.drain();
+        System.out.printf("seed %d lagging=%s: v1' active %s, v0 log %s, v3 log %s%n", seed, lagging, cluster.engines.get(B).isActive(),
+                          cluster.machines.get(A).getProcessedCommands(), dLog);
+        assertThat(cluster.engines.get(B).isActive()).as("same-epoch arm must wait for a majority").isFalse();
+        cluster.held = _ -> false;
+        cluster.blocked = _ -> false;
+        cluster.pumpUntil(() -> cluster.machines.get(A).getProcessedCommands().size() >= dLog.size());
         assertThat(cluster.machines.get(A).getProcessedCommands()).as("seed %s: slot S agreement", seed)
                                                                .containsExactlyElementsOf(dLog);
         cluster.stop();

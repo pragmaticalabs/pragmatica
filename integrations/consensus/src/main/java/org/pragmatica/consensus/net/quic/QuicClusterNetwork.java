@@ -989,6 +989,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
+    public Set<NodeId> connectingPeers() {
+        return peers.values()
+                    .stream()
+                    .filter(p -> p.phase() == PeerState.Phase.CONNECTING)
+                    .map(PeerState::peerId)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    @Override
     public Set<NodeId> activePeers() {
         // Mirror `activeConnectedCount` semantics: include EVICTED (transient stale-link
         // awaiting reconcile) so external counts do not flicker on momentary evictions.

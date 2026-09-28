@@ -43,10 +43,12 @@ import org.pragmatica.lang.Unit;
 /// cores, so flapping visibility cannot keep views churning forever: once every member of the final
 /// view stays reachable for two consecutive rounds, genesis completes. A member that vanishes for good
 /// holds genesis (it is in the view and never reports); so does a view larger than the configured count.
-/// Both are reported through [#status] and cleared only by the operator: set `cluster.genesis_voters`,
-/// lower the configured core count, stop the extra candidates, or replace a stuck node with a node under
-/// a FRESH identity. Relaunching a node under its old NodeId does not clear anything: under #1545 that
-/// identity is retired for good.
+/// Both are reported through [#status]. A view never shrinks while its process lives, so an action that
+/// leaves the pending processes running cannot clear it — stopping the extra candidates, stopping a retired
+/// core, or adding a fresh-identity replacement all leave the survivors waiting. What clears it is
+/// restarting EVERY pending core together as fresh processes, optionally with `cluster.genesis_voters` set
+/// to the intended roster (`GenesisRecoveryActionsTest`). A view that cannot shrink in a live process is a
+/// liveness trap, tracked as a follow-up.
 final class GenesisViewAgreement {
     enum Stage {
         WAITING,

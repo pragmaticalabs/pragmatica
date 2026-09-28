@@ -102,6 +102,11 @@ public class RabiaEngine<C extends Command> {
     /// One stuck-in-`Syncing` WARN per this many unsatisfied sync rounds (#660) — roughly every 30s at
     /// the default 5s `syncRetryInterval`.
     private static final int WARN_EVERY_N_SYNC_ROUNDS = 6;
+    /// Greater is preferred: higher epoch; at an equal epoch, the lexicographically LOWER member-id list
+    /// (members are kept sorted, joined with a separator below every id character).
+    private static final Comparator<VoterConfiguration> FORMED_PREFERENCE = Comparator.comparingLong(VoterConfiguration::epoch)
+                                                                                       .thenComparing(RabiaEngine::memberIds,
+                                                                                                      Comparator.reverseOrder());
 
     private volatile boolean passiveClient;
     private boolean participationStarted;
@@ -361,8 +366,9 @@ public class RabiaEngine<C extends Command> {
 
         if (status.stage() == GenesisViewAgreement.Stage.EXCEEDS_COUNT) {
             log.warn("Node {} will NOT start genesis: {} core candidates are visible, more than the configured core count: {}. "
-                    + "Operator action: set cluster.genesis_voters to the intended roster, or stop the extra candidates. "
-                    + "Relaunching a node under its old NodeId retires that identity; replace it with a fresh-identity node instead.",
+                    + "A running pending core never forgets a candidate it saw, so stopping candidates alone does not clear this. "
+                    + "Operator action: stop the extra candidates, then restart EVERY pending core together as fresh processes; "
+                    + "or set cluster.genesis_voters to the intended roster and restart every pending core.",
                      self,
                      status.view().size(),
                      status.view());
@@ -372,10 +378,10 @@ public class RabiaEngine<C extends Command> {
 
         if (status.stage() == GenesisViewAgreement.Stage.WAITING) {
             log.warn("Node {} genesis pending: view {} ({} cores); configured cores not yet visible: {}; members not yet "
-                    + "reporting this view stably: {}. Genesis needs every configured core. Operator action: start or "
-                    + "reconnect the missing cores; replace a lost core with a fresh-identity node (relaunching under its "
-                    + "old NodeId retires it); lower the cluster core count to the cores that exist; or set "
-                    + "cluster.genesis_voters to the intended roster.",
+                    + "reporting this view stably: {}. Genesis needs every configured core. Operator action: start the "
+                    + "missing configured cores. If a core this node has seen is lost for good, nothing done while the "
+                    + "pending cores keep running clears this: restart EVERY pending core together as fresh processes "
+                    + "with its replacement, or set cluster.genesis_voters to the intended roster and restart every pending core.",
                      self,
                      status.view(),
                      status.view().size(),
@@ -390,10 +396,15 @@ public class RabiaEngine<C extends Command> {
                                      .collect(Collectors.toUnmodifiableSet());
     }
 
+    /// Invariant (#1554): a node that has observed a formed electorate never forms a new one. Once
+    /// [#newestFormed] holds a configuration, completing the view agreement joins it instead of installing
+    /// a fresh epoch 0 — otherwise the peers this node agreed with and the formed electorate it has seen
+    /// would be two electorates.
     private void completeGenesisIfAgreed(GenesisViewAgreement agreement) {
-        agreement.agreed()
-                 .onPresent(view -> installAgreedGenesis(new VoterConfiguration(0,
-                                                                                new ClusterConfig(List.copyOf(view)))));
+        newestFormed.onPresent(this::joinFormedElectorate)
+                    .onEmpty(() -> agreement.agreed()
+                                            .onPresent(view -> installAgreedGenesis(new VoterConfiguration(0,
+                                                                                                           new ClusterConfig(List.copyOf(view))))));
     }
 
     private void installAgreedGenesis(VoterConfiguration configuration) {
@@ -445,10 +456,30 @@ public class RabiaEngine<C extends Command> {
     /// until its next genesis round, then installs the NEWEST. It never installs an epoch older than one
     /// a live responder has shown it, so a lagging member's older answer cannot win over a current one
     /// that arrived in the same round.
+    ///
+    /// "Newest" is the total order [#FORMED_PREFERENCE]: higher epoch, then, at an equal epoch, the
+    /// lexicographically lowest member list. Two different rosters at one epoch exist only as two epoch-0
+    /// electorates (the documented residual); the tiebreak makes every observer pick the same one whatever
+    /// the arrival order. Under a total order the only tie is an identical configuration, so keeping the
+    /// seen one on a tie and replacing it are the same.
     private void noteFormedElectorate(VoterConfiguration formed) {
-        if (genesisPending && newestFormed.filter(seen -> seen.epoch() >= formed.epoch()).isEmpty()) {
-            newestFormed = Option.some(formed);
+        if (genesisPending) {
+            newestFormed = Option.some(newestFormed.map(seen -> preferredFormed(seen, formed))
+                                                   .or(formed));
         }
+    }
+
+    private static VoterConfiguration preferredFormed(VoterConfiguration seen, VoterConfiguration formed) {
+        return FORMED_PREFERENCE.compare(formed, seen) > 0
+               ? formed
+               : seen;
+    }
+
+    private static String memberIds(VoterConfiguration configuration) {
+        return configuration.members()
+                            .stream()
+                            .map(NodeId::id)
+                            .collect(Collectors.joining("\u0000"));
     }
 
     private void joinFormedElectorate(VoterConfiguration formed) {

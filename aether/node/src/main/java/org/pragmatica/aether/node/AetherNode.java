@@ -5873,10 +5873,19 @@ public interface AetherNode extends ManageableNode {
     private static boolean isolatedPendingCore(RabiaNode<KVCommand<AetherKey>> node,
                                                Set<NodeId> configuredPeers,
                                                long dialingSinceNanos) {
-        return System.nanoTime() - dialingSinceNanos >= PENDING_CORE_ISOLATION_GRACE.nanos() && node.network()
-                                                                                                    .connectedPeers()
-                                                                                                    .stream()
-                                                                                                    .noneMatch(configuredPeers::contains);
+        return System.nanoTime() - dialingSinceNanos >= PENDING_CORE_ISOLATION_GRACE.nanos() && noConfiguredPeerReached(node.network(),
+                                                                                                                         configuredPeers);
+    }
+
+    /// A configured peer that is CONNECTED, or has a dial in flight, means this core is not isolated: a
+    /// handshaking dial will connect it, and re-dialing every seed meanwhile opens a second connection to
+    /// each (#1554).
+    private static boolean noConfiguredPeerReached(ClusterNetwork network, Set<NodeId> configuredPeers) {
+        return Stream.concat(network.connectedPeers()
+                                    .stream(),
+                             network.connectingPeers()
+                                    .stream())
+                     .noneMatch(configuredPeers::contains);
     }
 
     private static Set<NodeId> configuredVoters(AetherNodeConfig config) {
