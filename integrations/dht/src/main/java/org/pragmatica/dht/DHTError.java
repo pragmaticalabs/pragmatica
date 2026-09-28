@@ -47,7 +47,8 @@ public sealed interface DHTError extends Cause {
     record StaleEpochWrite(long epochIncarnation, long epochTerm, long epochCounter) implements DHTError {
         @Override
         public String message() {
-            return "Stale-epoch DHT write rejected: presented owner epoch " + epochIncarnation + ":" + epochTerm
+            return "Stale-epoch DHT write rejected: presented owner epoch " + epochIncarnation
+                 + ":" + epochTerm
                  + ":" + epochCounter
                  + " is older than the partition high-water";
         }

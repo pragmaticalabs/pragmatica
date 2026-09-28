@@ -78,7 +78,12 @@ public interface StorageEngine {
     ///
     /// @return `true` if written, `false` if superseded within the epoch, or a failed promise if
     ///         rejected by the epoch fence.
-    default Promise<Boolean> putVersioned(byte[] key, byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {
+    default Promise<Boolean> putVersioned(byte[] key,
+                                          byte[] value,
+                                          long version,
+                                          long epochIncarnation,
+                                          long epochTerm,
+                                          long epochCounter) {
         return put(key, value).map(_ -> true);
     }
 

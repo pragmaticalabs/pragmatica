@@ -368,7 +368,9 @@ public final class DistributedDHTClient implements DHTClient {
     private Promise<Option<byte[]>> probeAndRepair(byte[] key, List<NodeId> fallbackTargets) {
         return Promise.allOf(probeAll(key, fallbackTargets))
                       .map(DistributedDHTClient::firstPresent)
-                      .flatMap(found -> resolveFallbackOutcome(key, found, fallbackTargets.size()));
+                      .flatMap(found -> resolveFallbackOutcome(key,
+                                                               found,
+                                                               fallbackTargets.size()));
     }
 
     private List<Promise<Option<byte[]>>> probeAll(byte[] key, List<NodeId> fallbackTargets) {
@@ -391,7 +393,8 @@ public final class DistributedDHTClient implements DHTClient {
             sendRemoteGet(target, key, collector);
         }
 
-        return probe.timeout(config.operationTimeout()).recover(DistributedDHTClient::degradeToNone);
+        return probe.timeout(config.operationTimeout())
+                    .recover(DistributedDHTClient::degradeToNone);
     }
 
     /// First stranded copy in probe order, or empty when every bounded probe missed. Each probe
@@ -405,8 +408,7 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private Promise<Option<byte[]>> resolveFallbackOutcome(byte[] key, Option<byte[]> found, int probed) {
-        return found.fold(() -> reportUnresolved(key, probed),
-                          value -> repairAndReport(key, value, probed));
+        return found.fold(() -> reportUnresolved(key, probed), value -> repairAndReport(key, value, probed));
     }
 
     /// Stranded copy found beyond the R-set: fire the observer, then read-repair it back onto the
@@ -422,7 +424,8 @@ public final class DistributedDHTClient implements DHTClient {
     /// reaches quorum, so a repair failure degrades to a plain successful read rather than failing
     /// the get.
     private Promise<Option<byte[]>> readRepair(byte[] key, byte[] value) {
-        return put(key, value).map(_ -> Option.some(value)).recover(_ -> Option.some(value));
+        return put(key, value).map(_ -> Option.some(value))
+                  .recover(_ -> Option.some(value));
     }
 
     /// All-miss after the bounded probe: report loudly (P3/P4 — never silent) and resolve empty.
@@ -575,7 +578,8 @@ public final class DistributedDHTClient implements DHTClient {
             case WriteOutcome.BackpressureRefused refused -> DHTError.peerUnreachable(refused.peerId(), "backpressure");
             case WriteOutcome.ConnectionDead dead -> DHTError.peerUnreachable(dead.peerId(), "connection dead");
             case WriteOutcome.NoPeerState nope -> DHTError.peerUnreachable(nope.peerId(), "no peer state");
-            case WriteOutcome.EncodeFailed failed -> DHTError.peerUnreachable(failed.peerId(), "encode failed: " + failed.messageType());
+            case WriteOutcome.EncodeFailed failed -> DHTError.peerUnreachable(failed.peerId(),
+                                                                              "encode failed: " + failed.messageType());
         };
     }
 }

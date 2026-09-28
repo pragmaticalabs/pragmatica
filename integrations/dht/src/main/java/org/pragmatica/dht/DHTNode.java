@@ -313,7 +313,12 @@ public final class DHTNode {
     /// preserving each entry's owner epoch (#345 piece 1c) so the fencing token survives transfer.
     @Contract
     public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
-        entries.forEach(kv -> storage.putVersioned(kv.key(), kv.value(), kv.version(), kv.epochIncarnation(), kv.epochTerm(), kv.epochCounter()));
+        entries.forEach(kv -> storage.putVersioned(kv.key(),
+                                                   kv.value(),
+                                                   kv.version(),
+                                                   kv.epochIncarnation(),
+                                                   kv.epochTerm(),
+                                                   kv.epochCounter()));
     }
 
     /// Compute a CRC32 digest over sorted key-value entries.

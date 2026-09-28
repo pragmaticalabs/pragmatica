@@ -5887,8 +5887,7 @@ public interface AetherNode extends ManageableNode {
     /// `ClusterIncarnationTest.GenerationEpochSeam` pins it (forcing the incarnation to 0 here left every
     /// module green). An epoch minted before the registrar commits the genesis incarnation carries 0, which
     /// ranks below every later mint.
-    static Supplier<Epoch> generationEpoch(KVStore<AetherKey, AetherValue> kvStore,
-                                                   Supplier<Long> rabiaTermSupplier) {
+    static Supplier<Epoch> generationEpoch(KVStore<AetherKey, AetherValue> kvStore, Supplier<Long> rabiaTermSupplier) {
         return () -> Epoch.epoch(ClusterIncarnation.current(kvStore), rabiaTermSupplier.get(), 0L);
     }
 
@@ -6454,7 +6453,6 @@ public interface AetherNode extends ManageableNode {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {
             return;
         }
-
         // #1529 (v1635 N3), known tear, metrics only: the transport hands over `term`/`counter` from the epoch it
         // captured, while `incarnation` is read here from `epochSupplier` at report time. An observation straddling
         // an incarnation change can therefore mix two epochs. Nothing fences on these observations (they feed

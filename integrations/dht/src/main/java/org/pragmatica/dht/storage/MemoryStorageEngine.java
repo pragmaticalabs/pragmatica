@@ -34,7 +34,11 @@ import org.pragmatica.lang.Unit;
 /// Thread-safe and suitable for development and testing.
 /// Data is not persisted across restarts.
 public final class MemoryStorageEngine implements StorageEngine {
-    private record VersionedEntry(byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {}
+    private record VersionedEntry(byte[] value,
+                                  long version,
+                                  long epochIncarnation,
+                                  long epochTerm,
+                                  long epochCounter) {}
 
     private final ConcurrentHashMap<ByteArrayKey, VersionedEntry> data = new ConcurrentHashMap<>();
     private final OwnerEpochGate epochGate;
@@ -69,7 +73,12 @@ public final class MemoryStorageEngine implements StorageEngine {
     }
 
     @Override
-    public Promise<Boolean> putVersioned(byte[] key, byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {
+    public Promise<Boolean> putVersioned(byte[] key,
+                                         byte[] value,
+                                         long version,
+                                         long epochIncarnation,
+                                         long epochTerm,
+                                         long epochCounter) {
         if (epochGate.isStale(key, epochIncarnation, epochTerm, epochCounter)) {
             return DHTError.staleEpochWrite(epochIncarnation, epochTerm, epochCounter).promise();
         }
