@@ -56,7 +56,7 @@ class WalTruncationDurableBoundBootTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int RING_EVENTS = 20;
-    /// 200 × 70 KiB ≈ 13.7 MiB > PartitionWal.COMPACTION_THRESHOLD_BYTES (8 MiB): the sealed prefix, once
+    /// 200 × 70 KiB ≈ 13.7 MiB > AppendLog.COMPACTION_THRESHOLD_BYTES (8 MiB): the sealed prefix, once
     /// truncatable, is physically rewritten and the file shrinks by the sealed bytes.
     private static final int EVENTS = 200;
     private static final int PAYLOAD = 70 * 1024;

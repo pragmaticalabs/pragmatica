@@ -43,8 +43,8 @@ public interface DurableSealedOffsetSource {
 
     /// The watermarks of the latest metadata snapshot ON DISK, rebuilt the way boot rebuilds them. No snapshot
     /// yet, or an unreadable one, means nothing is durable and nothing is truncated — the direction that keeps
-    /// the WAL. `[unverified: power loss]` — the snapshot file is written without fsync, so "on disk" here
-    /// means process-crash-durable.
+    /// the WAL. "On disk" survives a power loss: the snapshot is forced before its rename and its directory
+    /// after it (#1353, #1567).
     ///
     /// #1013 made "unreadable" a failure distinct from "none yet" at the manager; here both still mean "keep
     /// the WAL". This is a truncation tick, not the boot path -- the boot that could have refused already ran.

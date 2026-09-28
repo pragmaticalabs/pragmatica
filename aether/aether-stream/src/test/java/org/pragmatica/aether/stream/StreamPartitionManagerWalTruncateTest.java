@@ -14,7 +14,7 @@ import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.SegmentSink;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -45,13 +45,13 @@ import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStre
 /// Proves streaming-persistence W5 (periodic WAL truncation to the durable sealed offset): the manager's
 /// `truncateWalsToSealed()` discards each partition's WAL records `offset <= lastSealedOffset` (already
 /// durable in cold segments) while keeping the un-sealed tail (`offset > lastSealedOffset`), reclaiming
-/// disk. A fresh [PartitionWal] opened on the same file replays only the survivors. A `-1` bound (nothing
+/// disk. A fresh [AppendLog] opened on the same file replays only the survivors. A `-1` bound (nothing
 /// sealed) is a no-op, and the no-WAL path is untouched.
 class StreamPartitionManagerWalTruncateTest {
 
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
-    /// 256 KiB payloads × 40 events ≈ 10 MiB > PartitionWal.COMPACTION_THRESHOLD_BYTES (8 MiB), so the
+    /// 256 KiB payloads × 40 events ≈ 10 MiB > AppendLog.COMPACTION_THRESHOLD_BYTES (8 MiB), so the
     /// truncate physically compacts the file (not just the in-memory watermark) — the only way a FRESH
     /// WAL replay observes the reclamation.
     private static final int PAYLOAD_BYTES = 256 * 1024;
@@ -71,13 +71,21 @@ class StreamPartitionManagerWalTruncateTest {
     @TempDir
     Path walDir;
 
+    /// #1567: the tier a seal makes its block durable on.
+    @TempDir
+    Path storageDir;
+
+    /// The range is sealed through a real storage instance first (#1567): the tick's bound alone never
+    /// truncates a log -- see [#truncateWalsToSealed_truncatesNothing_whenBoundPassesAnUnsealedRange].
     @Test
-    void truncateWalsToSealed_dropsRecordsAtOrBelowBound_keepsTailAndReclaimsDisk() throws IOException {
+    void truncateWalsToSealed_dropsRecordsAtOrBelowBound_keepsTailAndReclaimsDisk() throws Exception {
         var sealedBound = new AtomicLong(-1L);
         var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), (_, _) -> sealedBound.get());
+        var storage = DurableTestStorage.durableStorage("wal-truncate", storageDir);
 
         createStream(manager);
         IntStream.range(0, EVENTS).forEach(i -> publish(manager, i, bigPayload(i)));
+        DurableTestStorage.sealRange(storage, GatedWalFsync.walOf(manager, STREAM, PARTITION), 0, SEALED_BOUND);
 
         var walFile = partitionWalFile();
         var sizeBefore = Files.size(walFile);
@@ -96,6 +104,48 @@ class StreamPartitionManagerWalTruncateTest {
                              .first()
                              .isEqualTo((long) (SEALED_BOUND + 1));
         assertThat(survivors).last().isEqualTo((long) (EVENTS - 1));
+    }
+
+    /// #1567: the tick's bound (the refs a restart would rebuild) says everything is sealed, but no seal of
+    /// this log went through the storage engine -- no block holding those records was ever made durable. The
+    /// log refuses to discard any of them, whatever the bound says.
+    @Test
+    void truncateWalsToSealed_truncatesNothing_whenBoundPassesAnUnsealedRange() {
+        var sealedBound = new AtomicLong(-1L);
+        var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), (_, _) -> sealedBound.get());
+
+        createStream(manager);
+        IntStream.range(0, EVENTS).forEach(i -> publish(manager, i, bigPayload(i)));
+
+        sealedBound.set(EVENTS - 1);
+        manager.truncateWalsToSealed();
+        manager.close();
+
+        assertThat(replayedOffsets(partitionWalFile())).containsExactlyElementsOf(offsets(EVENTS));
+    }
+
+    /// #1567: the seal was attempted but its block could not be made durable -- the instance has no durable
+    /// tier, as when the `streams` disk tier is unavailable -- so the seal failed, and the tick truncates
+    /// nothing although its bound passes the range.
+    @Test
+    void truncateWalsToSealed_truncatesNothing_whenTheSealCouldNotBeMadeDurable() throws Exception {
+        var sealedBound = new AtomicLong(-1L);
+        var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), (_, _) -> sealedBound.get());
+        var memoryOnly = StorageInstance.storageInstance("memory-only", List.of(MemoryTier.memoryTier(ONE_GB)));
+
+        createStream(manager);
+        IntStream.range(0, EVENTS).forEach(i -> publish(manager, i, bigPayload(i)));
+
+        var wal = GatedWalFsync.walOf(manager, STREAM, PARTITION);
+
+        memoryOnly.seal(wal, 0, SEALED_BOUND, "streams/orders/0/0-19", new byte[]{1})
+                  .await()
+                  .onSuccess(_ -> fail("a seal with no durable tier must fail"));
+        sealedBound.set(EVENTS - 1);
+        manager.truncateWalsToSealed();
+        manager.close();
+
+        assertThat(replayedOffsets(partitionWalFile())).containsExactlyElementsOf(offsets(EVENTS));
     }
 
     @Test
@@ -153,11 +203,11 @@ class StreamPartitionManagerWalTruncateTest {
     /// readable from storage and the WAL truncates.
     @Test
     void truncateWalsToSealed_neverPassesFailingSeal_thenTruncatesOnceRetriedSealLands() {
-        var storage = StorageInstance.storageInstance("wal-truncate", List.of(MemoryTier.memoryTier(ONE_GB)));
+        var storage = DurableTestStorage.durableStorage("wal-truncate", storageDir);
         var index = new SegmentIndex();
         var storageSink = storageSegmentSink(storage, index);
         var storageDown = new AtomicBoolean(true);
-        var sealer = segmentSealer(segment -> sealUnlessDown(storageDown, storageSink, segment));
+        var sealer = segmentSealer((segment, log) -> sealUnlessDown(storageDown, storageSink, segment, log));
         var manager = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
 
         createSmallRingStream(manager);
@@ -185,11 +235,11 @@ class StreamPartitionManagerWalTruncateTest {
     /// seals — the spilled ones rebuilt from the WAL — with content byte-identical to what was published.
     @Test
     void storageOutagePastPendingCap_appendsNeverRefused_heapBounded_allSealByteIdenticalAfterRecovery() {
-        var storage = StorageInstance.storageInstance("wal-spill", List.of(MemoryTier.memoryTier(ONE_GB)));
+        var storage = DurableTestStorage.durableStorage("wal-spill", storageDir);
         var index = new SegmentIndex();
         var storageSink = storageSegmentSink(storage, index);
         var storageDown = new AtomicBoolean(true);
-        var sealer = segmentSealer(segment -> sealUnlessDown(storageDown, storageSink, segment), SPILL_CAP_BYTES);
+        var sealer = segmentSealer((segment, log) -> sealUnlessDown(storageDown, storageSink, segment, log), SPILL_CAP_BYTES);
         var manager = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
         var maxHeapPending = new AtomicLong();
 
@@ -217,7 +267,7 @@ class StreamPartitionManagerWalTruncateTest {
     /// segment seals, with no failure, as soon as it is handed over.
     @Test
     void appendRecovered_zeroCap_neverSpillsAheadOfWalWrite_everySegmentSealsWithoutFailure() {
-        var storage = StorageInstance.storageInstance("wal-replica", List.of(MemoryTier.memoryTier(ONE_GB)));
+        var storage = DurableTestStorage.durableStorage("wal-replica", storageDir);
         var index = new SegmentIndex();
         var sealer = segmentSealer(storageSegmentSink(storage, index), 0);
         var manager = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
@@ -237,10 +287,13 @@ class StreamPartitionManagerWalTruncateTest {
     // === helpers ===
 
     /// Storage refuses every seal while it is down (disk full, DHT error), then accepts.
-    private static Promise<Unit> sealUnlessDown(AtomicBoolean storageDown, SegmentSink storageSink, SealedSegment segment) {
+    private static Promise<Unit> sealUnlessDown(AtomicBoolean storageDown,
+                                                SegmentSink storageSink,
+                                                SealedSegment segment,
+                                                Option<AppendLog> log) {
         return storageDown.get()
                ? Causes.cause("disk full").promise()
-               : storageSink.seal(segment);
+               : storageSink.seal(segment, log);
     }
 
     private static void publishTracking(StreamPartitionManager manager,
@@ -298,7 +351,7 @@ class StreamPartitionManagerWalTruncateTest {
     }
 
     private static List<Long> replayedOffsets(Path walFile) {
-        var wal = PartitionWal.open(walFile).onFailure(cause -> fail(cause.message())).unwrap();
+        var wal = AppendLog.open(walFile).onFailure(cause -> fail(cause.message())).unwrap();
         var offsets = new ArrayList<Long>();
 
         wal.replay(-1L, record -> offsets.add(record.offset())).onFailure(cause -> fail(cause.message()));

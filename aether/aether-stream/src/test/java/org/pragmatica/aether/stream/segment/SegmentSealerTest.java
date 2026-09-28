@@ -21,7 +21,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -52,7 +52,7 @@ class SegmentSealerTest {
 
     @BeforeEach
     void setUp() {
-        sealer = segmentSealer(this::captureSegment);
+        sealer = segmentSealer((segment, _) -> captureSegment(segment));
     }
 
     private Promise<Unit> captureSegment(SealedSegment segment) {
@@ -198,7 +198,7 @@ class SegmentSealerTest {
         @Test
         void onEviction_sinkFailsTwiceThenSucceeds_segmentSealed_failuresCounted_copyReleased() {
             var attempts = new AtomicInteger();
-            var retryingSealer = segmentSealer(segment -> failFirstAttempts(attempts, segment));
+            var retryingSealer = segmentSealer((segment, _) -> failFirstAttempts(attempts, segment));
 
             retryingSealer.onEviction(STREAM,
                                       PARTITION,
@@ -275,7 +275,7 @@ class SegmentSealerTest {
             var index = new SegmentIndex();
             var heldAtIndexUpdate = new AtomicBoolean(false);
             var sealerRef = new AtomicReference<SegmentSealer>();
-            var orderedSealer = segmentSealer(segment -> gate.map(_ -> indexWhileObserving(index,
+            var orderedSealer = segmentSealer((segment, _) -> gate.map(_ -> indexWhileObserving(index,
                                                                                            segment,
                                                                                            sealerRef,
                                                                                            heldAtIndexUpdate)));
@@ -350,7 +350,7 @@ class SegmentSealerTest {
         @Test
         void onStreamDeleted_stopsRetryingAFailingSeal() {
             var attempts = new AtomicInteger();
-            var failingSealer = segmentSealer(_ -> failAndCount(attempts));
+            var failingSealer = segmentSealer((_, _) -> failAndCount(attempts));
 
             failingSealer.onEviction(DOOMED,
                                      PARTITION,
@@ -472,8 +472,8 @@ class SegmentSealerTest {
         }
     }
 
-    private static PartitionWal walWith(Path dir, long... offsets) {
-        var wal = PartitionWal.open(dir.resolve("p.wal")).onFailure(cause -> fail(cause.message())).unwrap();
+    private static AppendLog walWith(Path dir, long... offsets) {
+        var wal = AppendLog.open(dir.resolve("p.wal")).onFailure(cause -> fail(cause.message())).unwrap();
 
         for (var offset : offsets) {
             wal.append(offset, ("w-" + offset).getBytes(), offset).await().onFailure(cause -> fail(cause.message()));
@@ -517,7 +517,7 @@ class SegmentSealerTest {
         private final List<Promise<Unit>> outcomes = new CopyOnWriteArrayList<>();
 
         @Override
-        public Promise<Unit> seal(SealedSegment segment) {
+        public Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
             var outcome = Promise.<Unit> promise();
 
             segments.add(segment);

@@ -16,11 +16,13 @@
 package org.pragmatica.net.tcp;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
@@ -37,8 +39,13 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.ssl.SslContext;
+import io.netty.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Promise.promise;
+import static org.pragmatica.lang.Promise.resolved;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Convenient wrapper for Netty server setup boilerplate.
@@ -60,6 +67,12 @@ public interface Server {
     ///
     /// @param intermediateOperation Operation to run between server channel shutdown and event loop groups shutdown.
     ///                              Enables graceful shutdown: stop accepting new connections, finish existing work, then shutdown.
+    ///
+    /// @return resolves once both event loop groups have terminated, with the intermediate operation's outcome. It may
+    ///         FAIL with the group shutdown's cause (a failed or timed-out termination); a caller in a shutdown sequence
+    ///         must not abort on it (#1610). Channel closes and group termination are each bounded, so a wedged event
+    ///         loop cannot hang it; an `intermediateOperation` that never resolves DOES hang it — that bound is the
+    ///         caller's.
     Promise<Unit> stop(Supplier<Promise<Unit>> intermediateOperation);
 
     /// Create a server with the given configuration (TCP only).
@@ -96,26 +109,46 @@ public interface Server {
                       Option<Channel> udpChannel,
                       Supplier<List<ChannelHandler>> channelHandlers,
                       Option<SslContext> clientSslContext) implements Server {
+            /// #1610: every step is a DEPENDENT continuation of the one before it, so the returned promise
+            /// resolves only once both event loop groups have TERMINATED — and with them every channel,
+            /// including the UDP one — rather than when their shutdown was merely requested. Before, the
+            /// group shutdown and the caller's resolution were two independent `onResult` actions with no
+            /// mutual order, and `shutdownGracefully()` only initiates, so `stop()` could resolve while the
+            /// ports were still bound. The intermediate operation's outcome is what `stop()` reports; the
+            /// groups are shut down whatever it was.
             @Override
             public Promise<Unit> stop(Supplier<Promise<Unit>> intermediate) {
-                var stopPromise = Promise.<Unit> promise();
-
-                udpChannel.onPresent(Channel::close);
                 log.trace("Stopping {}: closing server channel", name());
-                serverChannel.close()
-                             .addListener(_ -> intermediate.get()
-                                                           .onResult(_ -> shutdownGroups())
-                                                           .onResult(stopPromise::resolve));
 
-                return stopPromise;
+                return Promise.all(closed(serverChannel),
+                                   udpClosed())
+                              .id()
+                              .fold(_ -> intermediate.get())
+                              .fold(this::shutdownGroupsThen);
             }
 
-            private void shutdownGroups() {
-                log.debug("Stopping {}: shutting down boss group", name());
-                bossGroup.shutdownGracefully();
-                log.debug("Stopping {}: shutting down worker group", name());
-                workerGroup.shutdownGracefully();
-                log.info("Server {} stopped", name());
+            private Promise<Unit> udpClosed() {
+                return udpChannel.map(Server::closed)
+                                 .or(Promise.unitPromise());
+            }
+
+            private Promise<Unit> shutdownGroupsThen(Result<Unit> intermediateOutcome) {
+                return shutdownGroups().fold(groupsOutcome -> resolved(intermediateOutcome.flatMap(_ -> groupsOutcome)));
+            }
+
+            private Promise<Unit> shutdownGroups() {
+                log.debug("Stopping {}: shutting down boss and worker groups", name());
+                // Both shutdowns are requested before either is awaited; the outcome is the first failure, as
+                // the typed cause itself rather than an `all(...)` composite.
+                var bossTerminated = terminated(bossGroup);
+                var workerTerminated = terminated(workerGroup);
+
+                return bossTerminated.fold(bossOutcome -> firstFailureOf(bossOutcome, workerTerminated))
+                                     .onSuccessRun(() -> log.info("Server {} stopped",
+                                                                  name()))
+                                     .onFailure(cause -> log.warn("Server {} did not stop cleanly: {}",
+                                                                  name(),
+                                                                  cause.message()));
             }
 
             @Override
@@ -186,6 +219,41 @@ public interface Server {
                               });
 
         return promise;
+    }
+
+    /// No quiet period (#1610). A quiet period never protected in-flight writes here: in Netty 4.2.9
+    /// `SingleThreadIoEventLoop.run` calls `ioHandler.prepareToDestroy()` on the first iteration after shutdown
+    /// begins, and `NioIoHandler.prepareToDestroy` closes every registered channel — before `confirmShutdown`
+    /// ever consults the quiet period. The period would only delay termination (and a loop with live peers may
+    /// never go quiet, stretching every stop to the timeout). The timeout is enforced on the event loop
+    /// itself, so a wedged loop cannot enforce it; the caller-side [Promise#timeout] bounds the wait regardless.
+    long SHUTDOWN_TIMEOUT_MS = 5_000L;
+    /// Bound on each channel close in [#stop]. A close runs on the channel's event loop, so a wedged loop never
+    /// completes it; without this bound `stop()` would hang there and never ask the groups to shut down (#1614).
+    long CHANNEL_CLOSE_TIMEOUT_MS = 2_000L;
+
+    /// A channel close, bounded; its outcome is not what `stop()` reports — the group shutdown runs either way.
+    private static Promise<Unit> closed(Channel channel) {
+        return completion(channel.close()).timeout(timeSpan(CHANNEL_CLOSE_TIMEOUT_MS).millis());
+    }
+
+    private static Promise<Unit> terminated(EventLoopGroup group) {
+        return completion(group.shutdownGracefully(0, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)).timeout(timeSpan(SHUTDOWN_TIMEOUT_MS + 1_000L).millis());
+    }
+
+    private static Promise<Unit> firstFailureOf(Result<Unit> first, Promise<Unit> second) {
+        return second.fold(secondOutcome -> resolved(first.flatMap(_ -> secondOutcome)));
+    }
+
+    /// A Netty future as a promise: success, or its failure cause.
+    private static Promise<Unit> completion(Future<?> future) {
+        return promise(settled -> future.addListener(done -> settled.resolve(outcomeOf(done))));
+    }
+
+    private static Result<Unit> outcomeOf(Future<?> done) {
+        return done.isSuccess()
+               ? Result.unitResult()
+               : Causes.fromThrowable(done.cause()).result();
     }
 
     private static void logTcpStarted(ServerConfig config, Option<SslContext> sslContext) {

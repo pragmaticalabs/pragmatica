@@ -154,6 +154,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -841,14 +842,20 @@ public interface AetherNode extends ManageableNode {
     /// stuck members toward effective quorum, so a genuinely partitioned member (FAULTY / UNKNOWN —
     /// no probe-acks reach this node) contributes 0 and the genuine self-fence proceeds, while a
     /// single dead member no longer vetoes suppression for the reachable rest.
-    private static QuorumCoConfirmation buildQuorumCoConfirmation(MembershipFsm membershipFsm,
-                                                                  CoreSwimHealthDetector swimHealthDetector,
-                                                                  Set<NodeId> voters) {
-        var counted = voters;
+    ///
+    /// #1560: both sets are narrowed to the installed voters, but the counted set is NEVER the voter
+    /// set itself. The voter set is health-blind, so counting it re-admitted every peer the FSM had
+    /// already demoted (DEPARTING / DEAD) as a "stuck" member; on an isolated core SWIM still reads
+    /// those peers SUSPECTED (Lifeguard stretches suspicion while every local probe fails), so the
+    /// fence was suppressed with effective quorum 5 of 5 while the node could reach nobody.
+    static QuorumCoConfirmation buildQuorumCoConfirmation(MembershipFsm membershipFsm,
+                                                          Function<NodeId, SwimHealth> swimHealth,
+                                                          Set<NodeId> voters) {
+        var counted = membershipFsm.coreCountedMembers().stream().filter(voters::contains).collect(Collectors.toSet());
         var strict = membershipFsm.strictCoreMembers().stream().filter(voters::contains).collect(Collectors.toSet());
         var stuck = counted.stream().filter(id -> !strict.contains(id)).toList();
-        var swimAliveStuck = stuck.stream().filter(id -> swimAliveForCoConfirmation(swimHealthDetector, id)).toList();
-        var swimDeadStuck = stuck.stream().filter(id -> !swimAliveForCoConfirmation(swimHealthDetector, id)).toList();
+        var swimAliveStuck = stuck.stream().filter(id -> swimAliveForCoConfirmation(swimHealth, id)).toList();
+        var swimDeadStuck = stuck.stream().filter(id -> !swimAliveForCoConfirmation(swimHealth, id)).toList();
 
         return QuorumCoConfirmation.quorumCoConfirmation(strict.size(), counted.size(), swimAliveStuck, swimDeadStuck);
     }
@@ -856,8 +863,8 @@ public interface AetherNode extends ManageableNode {
     /// Raw-SWIM aliveness for the Fix C stuck-member discrimination: a stuck (SUSPECT) member counts
     /// as alive when the SWIM protocol layer reports HEALTHY or SUSPECTED — distinguishing a wedged
     /// promotion (reachable, refuting) from a real partition (FAULTY / UNKNOWN).
-    private static boolean swimAliveForCoConfirmation(CoreSwimHealthDetector swimHealthDetector, NodeId id) {
-        var health = swimHealthDetector.healthOf(id);
+    private static boolean swimAliveForCoConfirmation(Function<NodeId, SwimHealth> swimHealth, NodeId id) {
+        var health = swimHealth.apply(id);
 
         return health == SwimHealth.HEALTHY || health == SwimHealth.SUSPECTED;
     }
@@ -1034,7 +1041,15 @@ public interface AetherNode extends ManageableNode {
     private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
         var walDir = streamWalBaseDir(config);
 
-        return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+        return createStreamDirectory(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+    }
+
+    /// The stream partition logs open through the `streams` storage instance (#1567), under its log root —
+    /// the WAL dir [#resolveStreamWalDir] resolved when the instance was built; none when that dir was
+    /// unusable and streams degraded to no WAL.
+    private static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
+        return streamStorage.logRoot()
+                            .<AppendLog.Opener> map(_ -> streamStorage::openLog);
     }
 
     /// #634 item 2 — the boot gate, exposed for [org.pragmatica.aether.Main]'s verification chain (the
@@ -1049,9 +1064,37 @@ public interface AetherNode extends ManageableNode {
     public static Result<Unit> verifyWalBootable(AetherNodeConfig config) {
         var walDir = streamWalBaseDir(config);
 
-        return decideWalAvailability(walDir,
-                                     FileOps.createDirectories(walDir).mapToUnit(),
-                                     nonDurableStreamsAllowed()).mapToUnit();
+        return decideWalAvailability(walDir, createStreamDirectory(walDir), nonDurableStreamsAllowed()).mapToUnit();
+    }
+
+    /// #1567 F12/N2 — the durable-block counterpart of [#verifyWalBootable], at the same production entry
+    /// point. The `streams` instance's local-disk tier lives in `<streamDataDir>/segments`; when it cannot be
+    /// created the instance is built from memory and the in-memory DHT tier alone, where every seal refuses
+    /// (`StorageError.NoDurableTier`) -- so nothing is ever "sealed" into RAM and the WAL is never truncated
+    /// past it, but sealing stops and the WAL grows without bound. A node must not boot silently into that
+    /// state: without the same explicit non-durable opt-in, boot is refused. Directly constructed nodes
+    /// (Forge, Ember, tests) never pass through Main and keep the loud degrade, exactly as the WAL gate does.
+    public static Result<Unit> verifyStreamSegmentsBootable(AetherNodeConfig config) {
+        var segmentsDir = streamDataDir(config).resolve("segments");
+
+        return decideSegmentsAvailability(segmentsDir, createStreamDirectory(segmentsDir), nonDurableStreamsAllowed());
+    }
+
+    /// Every stream directory a node creates -- the WAL base and `segments/` -- is created with its entry
+    /// forced in its parent (#1602 N1): the files made durable inside it later are only as durable as the
+    /// directory entry that names it. The gates run first, so they are the ones that create them.
+    static Result<Unit> createStreamDirectory(Path dir) {
+        return FileOps.createDirectoriesDurable(dir).mapToUnit();
+    }
+
+    /// The pure decision, package-visible for [#verifyStreamSegmentsBootable]'s test.
+    static Result<Unit> decideSegmentsAvailability(Path segmentsDir, Result<Unit> probe, boolean allowNonDurable) {
+        return probe.fold(cause -> allowNonDurable
+                                   ? Result.unitResult()
+                                   : StorageFactory.StreamDiskTierUnavailable.streamDiskTierUnavailable(segmentsDir,
+                                                                                                        cause.message())
+                                                                             .result(),
+                          _ -> Result.unitResult());
     }
 
     /// The #492-class killer (#634 structural follow-up): every ROUTED `Message.Wired` type must have
@@ -1799,7 +1842,8 @@ public interface AetherNode extends ManageableNode {
                                                            new StorageFactory.StreamSetupRequest(dhtClientOption,
                                                                                                  streamDataDir(config),
                                                                                                  config.self().id(),
-                                                                                                 streamsKeyring));
+                                                                                                 streamsKeyring,
+                                                                                                 resolveStreamWalDir(config)));
 
         if (storageSetupsResult.isFailure()) {
             return storageSetupsResult.map(ignored -> null);
@@ -4271,7 +4315,7 @@ public interface AetherNode extends ManageableNode {
         // fails both (unreachable members are NOT SWIM-alive and age out of SUSPECT), so the real
         // self-fence is never masked.
         quorumLossDetector.setCoConfirmationSupplier(() -> buildQuorumCoConfirmation(membershipFsm,
-                                                                                     swimHealthDetector,
+                                                                                     swimHealthDetector::healthOf,
                                                                                      installedVoterIds(clusterNode)));
         // A6: gate the quorum-loss self-drain with the SAME cold-boot window the SWIM FAULTY-suppression
         // uses. On a simultaneous full-cluster restart SWIM's first probe-acks lag the QUIC attach, so the
@@ -4703,7 +4747,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
-                                                                                   resolveStreamWalDir(config),
+                                                                                   streamLogs(streamStorage),
                                                                                    streamSegmentIndex::lastSealedOffset,
                                                                                    DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
 
@@ -6283,7 +6327,7 @@ public interface AetherNode extends ManageableNode {
 
     private static boolean swimAliveIfPublished(CoreSwimHealthDetector swimHealthDetector, NodeId nodeId) {
         return Option.option(swimHealthDetector)
-                     .map(detector -> swimAliveForCoConfirmation(detector, nodeId))
+                     .map(detector -> swimAliveForCoConfirmation(detector::healthOf, nodeId))
                      .or(false);
     }
 
@@ -7600,6 +7644,10 @@ public interface AetherNode extends ManageableNode {
                                                          scheduledTaskRegistry::onScheduledTaskPut)
                                                   .onRemove(AetherKey.ScheduledTaskKey.class,
                                                             scheduledTaskRegistry::onScheduledTaskRemove)
+                                                  .onPut(AetherKey.ScheduledTaskPauseKey.class,
+                                                         scheduledTaskRegistry::onScheduledTaskPausePut)
+                                                  .onRemove(AetherKey.ScheduledTaskPauseKey.class,
+                                                            scheduledTaskRegistry::onScheduledTaskPauseRemove)
                                                   .onPut(AetherKey.ScheduledTaskStateKey.class,
                                                          scheduledTaskStateRegistry::onStatePut)
                                                   .onRemove(AetherKey.ScheduledTaskStateKey.class,

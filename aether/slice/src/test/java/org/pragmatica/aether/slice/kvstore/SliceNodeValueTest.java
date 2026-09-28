@@ -22,9 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// non-transitional / FAILED / legacy paths, and is preserved through `withState`
 /// transitions.
 ///
-/// `SliceNodeKey` and `NodeArtifactKey` are filtered out of TOML snapshots
-/// (`EphemeralKeys.EPHEMERAL_SECTIONS`) so their values are not exercised here
-/// via a TOML round-trip; the wire format is verified directly through the
+/// `SliceNodeKey` and `NodeArtifactKey` are runtime keys (`AetherKey.RuntimeKey`), excluded from
+/// KV backups, so their values are not exercised here via a backup round-trip; the wire format is verified directly through the
 /// constructor / accessor pair (the same pair used by `restoreSliceStateFromNodeArtifact`
 /// in `ClusterDeploymentState`).
 class SliceNodeValueTest {
