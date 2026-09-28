@@ -46,7 +46,7 @@ class ProvenanceEntryTest {
 
         assertThat(ProvenanceEntry.ORDER.follows(a.key().unwrap(), b.key().unwrap())).isFalse();
         assertThat(ProvenanceEntry.ORDER.follows(b.key().unwrap(), a.key().unwrap())).isFalse();
-        assertThat(a.sameEpoch(b)).isFalse();
+        assertThat(a.epoch()).isNotEqualTo(b.epoch());
     }
 
     @Test

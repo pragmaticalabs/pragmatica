@@ -36,6 +36,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
@@ -47,6 +48,7 @@ import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.provenance.LogProvenance;
+import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.provenance.ProvenanceComparison;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
@@ -200,6 +202,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// leave in between. Lock order is always ring section → this lock, never the reverse, because a promotion
     /// never appends to a ring.
     private final Object quarantineLock = new Object();
+    /// #1596: the durable partition flag, late-bound ([#partitionFlags(PartitionFlags)]).
+    private volatile Option<PartitionFlags> partitionFlags = none();
+    /// #1596: the reasons this process has already raised, `stream#partition#kind#evidence`, so a condition met on
+    /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
+    /// next occurrence.
+    private final Set<String> raisedLocally = ConcurrentHashMap.newKeySet();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -707,6 +715,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void committedConfigSource(CommittedConfigSource source) {
         this.committedConfigSource = source;
+    }
+
+    /// Late-bind the durable partition flag (#1596). `AetherNode` wires the KV-backed one. Until then -- and in
+    /// Forge/unit/legacy managers -- a provenance failure is fenced locally (quarantine, refused appends) and
+    /// logged at ERROR, but not recorded as cluster state. Set once at wiring.
+    @Contract
+    public void partitionFlags(PartitionFlags flags) {
+        this.partitionFlags = some(flags);
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -1709,7 +1725,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                                      offset,
                                                                                                                                                      payload,
                                                                                                                                                      timestamp,
-                                                                                                                                                     ownerEpoch));
+                                                                                                                                                     ownerEpoch))
+                                                                                                    .onSuccess(_ -> flagMissingHistory(streamName,
+                                                                                                                                       partition,
+                                                                                                                                       offset));
     }
 
     private static Result<LoggedAppend> writeWalFrame(Option<AppendLog> wal,
@@ -1754,6 +1773,49 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static boolean historyMayRecordAt(AppendLog wal, long offset) {
         return offset == PROVENANCE_BASE || !wal.epochHistory()
                                                 .isEmpty();
+    }
+
+    /// #1596 empty-history rule, the flag half: an attributed append the log could not attribute (records, no
+    /// history) raises `HISTORY_MISSING` for this copy -- once per process, not once per append.
+    @Contract
+    private void flagMissingHistory(String streamName, int partition, long offset) {
+        walFor(streamName, partition).filter(wal -> !historyMayRecordAt(wal, offset))
+                                     .onPresent(_ -> raiseOnce(streamName,
+                                                               partition,
+                                                               PartitionRecoveryReasonKind.HISTORY_MISSING,
+                                                               "this copy holds records written before owner-epoch provenance existed"));
+    }
+
+    /// Raise a reason about this node's copy on the durable flag, at most once per process per reason. Without a
+    /// flag wired the reason is logged at ERROR and left to the local fence.
+    @Contract
+    private void raiseOnce(String streamName, int partition, PartitionRecoveryReasonKind kind, String evidence) {
+        if (raisedLocally.add(streamName + "#" + partition + "#" + kind + "#" + evidence)) {
+            partitionFlags.onEmpty(() -> log.error("Partition {}[{}] needs the durable flag {} ({}), but no partition flag is wired here",
+                                                   streamName,
+                                                   partition,
+                                                   kind,
+                                                   evidence))
+                          .onPresent(flags -> raise(flags, streamName, partition, kind, evidence));
+        }
+    }
+
+    /// Recovery: FER -- a raise that did not commit (no leader, contention) is forgotten, so the next occurrence of
+    /// the condition raises again; the local fence (quarantine, refused appends) holds meanwhile.
+    @Contract
+    private void raise(PartitionFlags flags, String streamName, int partition, PartitionRecoveryReasonKind kind, String evidence) {
+        flags.raise(streamName, partition, flags.local(kind, evidence))
+             .onFailure(cause -> forgetRaise(streamName, partition, kind, evidence, cause));
+    }
+
+    @Contract
+    private void forgetRaise(String streamName, int partition, PartitionRecoveryReasonKind kind, String evidence, Cause cause) {
+        raisedLocally.remove(streamName + "#" + partition + "#" + kind + "#" + evidence);
+        log.warn("Partition {}[{}]: raising {} on the durable flag failed, retried at its next occurrence: {}",
+                 streamName,
+                 partition,
+                 kind,
+                 cause.message());
     }
 
     private static Result<Long> keyedWrite(AppendLog wal, long offset, byte[] payload, long timestamp, Epoch epoch) {
@@ -1868,7 +1930,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                                              payloads,
                                                                                                                                                              Collections.nCopies(payloads.size(),
                                                                                                                                                                                  timestamp),
-                                                                                                                                                             ownerEpoch));
+                                                                                                                                                             ownerEpoch))
+                                                                                                           .onSuccess(_ -> flagMissingHistory(streamName,
+                                                                                                                                              partition,
+                                                                                                                                              firstOffset));
     }
 
     private static Result<LoggedAppend> writeWalFrames(Option<AppendLog> wal,
@@ -2219,6 +2284,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                  payload,
                                                                                                                  timestamp,
                                                                                                                  provenance))));
+        provenance.onPresent(_ -> flagMissingHistory(streamName, partition, offset));
 
         return offset;
     }
@@ -2400,7 +2466,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                            .stream()
                                                                            .reduce((earlier, later) -> later)))
                      .flatMap(last -> ProvenanceEntry.provenanceEntry(last).option())
-                     .map(ProvenanceEntry::epoch);
+                     .map(entry -> entry.epoch().rank());
     }
 
     /// The owner-epoch history of this node's copy of `(streamName, partition)`, oldest first (#1596): empty when
@@ -2418,7 +2484,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// [org.pragmatica.aether.stream.provenance.ProvenanceComparison] for the promotion gate and cold-restart
     /// detection. `low` is the lowest offset held locally, `head` the highest (`-1` for none).
     public Result<LogProvenance> localProvenance(String streamName, int partition) {
-        return epochHistory(streamName, partition).map(history -> LogProvenance.logProvenance(PROVENANCE_BASE,
+        return epochHistory(streamName, partition).map(history -> LogProvenance.logProvenance(LogProvenance.baseOf(history),
                                                                                               earliestRetainedOffset(streamName,
                                                                                                                      partition),
                                                                                               nextExpectedOffset(streamName,
@@ -2432,10 +2498,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     ///
     /// N13 first: this copy's provenance must equal the slice's over every offset it already holds up to
     /// `toOffset` -- the spec's `[base, fromOffset - 1]`, widened to the held overlap a re-verifying pull covers.
-    /// On a mismatch nothing is installed or applied, the partition is quarantined at the first differing offset
-    /// (#1505 F2: nothing at or past it is acked or promoted), and [StreamError.ProvenanceMismatch] is returned.
-    /// The quarantine is in memory; the history that caused it is durable, so a restart re-derives it at the next
-    /// catch-up. The durable partition flag (AD7's row) is raised by its owner once it exists.
+    /// On a mismatch nothing is installed or applied, [StreamError.ProvenanceMismatch] is returned, and the
+    /// mismatch is recorded twice: at once, by quarantining the partition locally at the first differing offset
+    /// (#1505 F2: nothing at or past it is acked or promoted here), and durably, by raising `MARKED_DIVERGED` for
+    /// this copy on the partition flag ([PartitionFlags]), which survives a restart and blocks the partition
+    /// cluster-wide until operator resolution (AD14).
     ///
     /// Then every slice entry starting at or after `fromOffset` is recorded, in order; one already recorded is a
     /// no-op. A partition that keeps no log records no provenance, and this is a no-op for it.
@@ -2459,13 +2526,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                            long fromOffset,
                                            long toOffset,
                                            List<ProvenanceEntry> slice) {
-        var source = LogProvenance.logProvenance(PROVENANCE_BASE, PROVENANCE_BASE, toOffset, slice);
+        var sourceBase = LogProvenance.baseOf(slice);
+        var source = LogProvenance.logProvenance(sourceBase, sourceBase, toOffset, slice);
 
         return localProvenance(streamName, partition).flatMap(local -> refuseMismatch(streamName,
                                                                                       partition,
                                                                                       ProvenanceComparison.firstDivergence(local,
                                                                                                                            source,
-                                                                                                                           PROVENANCE_BASE,
+                                                                                                                           0,
                                                                                                                            Math.min(local.head(),
                                                                                                                                     toOffset))))
                               .flatMap(_ -> recordSlice(wal, fromOffset, toOffset, slice));
@@ -2478,6 +2546,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<Unit> quarantineMismatch(String streamName, int partition, long offset) {
         new PartitionQuarantine(streamName, partition).recordDivergence(offset);
+        raiseOnce(streamName,
+                  partition,
+                  PartitionRecoveryReasonKind.MARKED_DIVERGED,
+                  "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset);
 
         return new StreamError.ProvenanceMismatch(streamName, partition, offset).result();
     }

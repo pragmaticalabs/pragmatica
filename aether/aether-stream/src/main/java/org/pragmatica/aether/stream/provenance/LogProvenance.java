@@ -36,11 +36,22 @@ public record LogProvenance(long base, long low, long head, List<ProvenanceEntry
         return new LogProvenance(base, low, head, history);
     }
 
-    /// The epoch of the last history entry, if any.
+    /// The rank of the last history entry ([ProvenanceEpoch#rank]), if any.
     public Option<Epoch> lastEpoch() {
         return history.isEmpty()
                ? none()
-               : some(history.getLast().epoch());
+               : some(history.getLast()
+                             .epoch()
+                             .rank());
+    }
+
+    /// The base of a copy with this history (spec §7.5.2): the start of a first `BASE(d)` entry, else 0.
+    public static long baseOf(List<ProvenanceEntry> history) {
+        return history.stream()
+                      .findFirst()
+                      .filter(first -> first.epoch() instanceof ProvenanceEpoch.Base)
+                      .map(ProvenanceEntry::startOffset)
+                      .orElse(0L);
     }
 
     private Epoch rankEpoch() {

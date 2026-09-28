@@ -7,7 +7,6 @@ package org.pragmatica.aether.stream.provenance;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.parse.Number;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.storage.AppendLog.EpochKey;
 import org.pragmatica.storage.AppendLog.EpochOrder;
@@ -15,91 +14,82 @@ import org.pragmatica.storage.AppendLog.EpochStart;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
-import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// One entry of a partition log's owner-epoch history (#1596, spec #1569 §7.5.1): the committed owner epoch
-/// `epoch` began writing the log at `startOffset`. The epoch is the one committed in
-/// `StreamPartitionOwnershipValue` under which the record was first published, never the fence token and
-/// never a receiver's local view.
+/// One entry of a partition log's owner-epoch history (#1596, spec #1569 §7.5.1): [#epoch] began writing the log
+/// at `startOffset`. A real epoch is the one committed in `StreamPartitionOwnershipValue` under which the record
+/// was first published -- never the fence token and never a receiver's local view; see [ProvenanceEpoch] for the
+/// synthetic kinds.
 ///
-/// `incarnationUlid` is the reserved slot for a per-incarnation ULID (#1625): minted at every incarnation mint
-/// and every restore once #1529 part 2 lands, so two lineages that reuse an incarnation number never share
-/// an epoch. It is compared for EQUALITY only ([#sameEpoch]) and never ordered. Until it is populated two
-/// lineages CAN mint equal epochs, and two such histories compare prov-equal: a false CONSISTENT
-/// `[unverified: #1625 open until S2 mints the ULID]`.
+/// The components are the epoch flattened for the wire: `kind`, `rank` (the real epoch, or a synthetic one's
+/// floor) and `id` (a real epoch's incarnation ULID, or a synthetic one's `d`). Build one only through the
+/// factories, which keep the three consistent; read it through [#epoch].
 ///
-/// The log stores the epoch as an opaque [EpochKey]: `<rabiaTerm>.<localCounter>` or
-/// `<rabiaTerm>.<localCounter>.<incarnationUlid>`. The key must carry EVERY component of [Epoch] — a
-/// component missing from it makes two different epochs one key — which `ProvenanceEntryTest` pins against
-/// the record's declared components.
+/// The log stores the epoch as an opaque [EpochKey] ([ProvenanceEpoch#token]) and orders consecutive entries by
+/// [#ORDER].
 @Codec
-public record ProvenanceEntry(Epoch epoch, Option<String> incarnationUlid, long startOffset) {
-    private static final String SEPARATOR = ".";
-    /// The order the log enforces between consecutive entries: a strictly later [Epoch]. Two keys of the same
-    /// epoch that differ only in the ULID follow neither way, so the log refuses the second (#1625).
+public record ProvenanceEntry(ProvenanceKind kind, Epoch rank, Option<String> id, long startOffset) {
+    /// The order the log enforces between consecutive entries ([ProvenanceEpoch#follows]). A key this codec did
+    /// not write follows nothing, so the log refuses it; two real keys of the same epoch that differ only in the
+    /// ULID follow neither way, so one log never holds both (#1625).
     public static final EpochOrder ORDER = ProvenanceEntry::follows;
 
+    /// The wire form of [ProvenanceEpoch]'s kinds; `UNATTRIBUTED` is the spec's `UNKNOWN(d)`.
+    @Codec
+    public enum ProvenanceKind {
+        OWNED,
+        UNATTRIBUTED,
+        BASE,
+        UNKNOWN
+    }
+
+    public static ProvenanceEntry provenanceEntry(ProvenanceEpoch epoch, long startOffset) {
+        return switch (epoch) {
+            case ProvenanceEpoch.Owned owned -> new ProvenanceEntry(ProvenanceKind.OWNED,
+                                                                    owned.epoch(),
+                                                                    owned.incarnationUlid(),
+                                                                    startOffset);
+            case ProvenanceEpoch.Unknown unknown -> new ProvenanceEntry(ProvenanceKind.UNATTRIBUTED,
+                                                                        unknown.floor(),
+                                                                        some(unknown.d()),
+                                                                        startOffset);
+            case ProvenanceEpoch.Base base -> new ProvenanceEntry(ProvenanceKind.BASE, base.floor(), some(base.d()), startOffset);
+        };
+    }
+
+    /// A real owner epoch with no incarnation ULID yet (#1625, reserved).
+    public static ProvenanceEntry provenanceEntry(Epoch epoch, long startOffset) {
+        return new ProvenanceEntry(ProvenanceKind.OWNED, epoch, none(), startOffset);
+    }
+
     public static ProvenanceEntry provenanceEntry(Epoch epoch, Option<String> incarnationUlid, long startOffset) {
-        return new ProvenanceEntry(epoch, incarnationUlid, startOffset);
+        return new ProvenanceEntry(ProvenanceKind.OWNED, epoch, incarnationUlid, startOffset);
     }
 
     /// The entry as the log recorded it; a key this codec did not write is a failure, never a guess.
     public static Result<ProvenanceEntry> provenanceEntry(EpochStart start) {
-        return decode(start.key()).map(entry -> entry.startingAt(start.startOffset()));
+        return ProvenanceEpoch.fromKey(start.key())
+                              .map(epoch -> provenanceEntry(epoch, start.startOffset()));
     }
 
-    /// The log key of this entry's epoch; refused only for a ULID that cannot be framed in a key.
+    /// The epoch this entry names. A synthetic kind without its `d` (only a peer that is not this codec could send
+    /// one) reads as an unattributed range with an empty `d`, which still equals no real epoch.
+    public ProvenanceEpoch epoch() {
+        return switch (kind) {
+            case OWNED -> ProvenanceEpoch.owned(rank, id);
+            case BASE -> new ProvenanceEpoch.Base(id.or(""), rank);
+            case UNATTRIBUTED, UNKNOWN -> new ProvenanceEpoch.Unknown(id.or(""), rank);
+        };
+    }
+
+    /// The log key of this entry's epoch; refused only for a token that cannot be framed in a key.
     public Result<EpochKey> key() {
-        return EpochKey.epochKey(token(epoch, incarnationUlid));
+        return EpochKey.epochKey(epoch().token());
     }
 
-    /// Provenance equality of two epochs: the epoch and the incarnation ULID, never the start.
-    public boolean sameEpoch(ProvenanceEntry other) {
-        return epoch.equals(other.epoch) && incarnationUlid.equals(other.incarnationUlid);
-    }
-
-    private ProvenanceEntry startingAt(long offset) {
-        return new ProvenanceEntry(epoch, incarnationUlid, offset);
-    }
-
-    private static String token(Epoch epoch, Option<String> incarnationUlid) {
-        return epoch.rabiaTerm() + SEPARATOR + epoch.localCounter() + incarnationUlid.map(ulid -> SEPARATOR + ulid)
-                                                                                     .or("");
-    }
-
-    /// A key this codec did not write follows nothing, so the log refuses it.
     private static boolean follows(EpochKey later, EpochKey earlier) {
-        return Result.all(epochOf(later),
-                          epochOf(earlier))
-                     .map(Epoch::isStrictlyAfter)
+        return Result.all(ProvenanceEpoch.fromKey(later), ProvenanceEpoch.fromKey(earlier))
+                     .map(ProvenanceEpoch::follows)
                      .or(false);
-    }
-
-    private static Result<Epoch> epochOf(EpochKey key) {
-        return decode(key).map(ProvenanceEntry::epoch);
-    }
-
-    private static Result<ProvenanceEntry> decode(EpochKey key) {
-        var parts = key.token().split("\\.", -1);
-
-        return parts.length < 2 || parts.length > 3
-               ? cause("Not a provenance epoch key: '" + key.token() + "'").result()
-               : Result.all(number(parts[0]),
-                            number(parts[1]))
-                       .map(Epoch::epoch)
-                       .map(epoch -> new ProvenanceEntry(epoch,
-                                                         ulidOf(parts),
-                                                         0));
-    }
-
-    private static Option<String> ulidOf(String[] parts) {
-        return parts.length == 3
-               ? some(parts[2])
-               : none();
-    }
-
-    private static Result<Long> number(String field) {
-        return Number.parseLong(field).mapError(_ -> cause("Not a number in a provenance epoch key: '" + field + "'"));
     }
 }

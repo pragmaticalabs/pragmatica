@@ -17,8 +17,8 @@ import static org.pragmatica.lang.Option.some;
 /// the same history.
 ///
 /// `prov_X(o)`, for `o ≤ head_X`: **NONE** if `o < base_X`; the epoch of the last entry with `start ≤ o` if
-/// `o ≥ firstStart_X`; otherwise **UNDEFINED**. Real epochs are equal when [ProvenanceEntry#sameEpoch] says
-/// so, NONE equals NONE only for the same base, and **UNDEFINED equals nothing** -- not even UNDEFINED.
+/// `o ≥ firstStart_X`; otherwise **UNDEFINED**. Epochs are equal when they are the same [ProvenanceEpoch] (a real
+/// epoch with the same incarnation ULID, a synthetic one with the same `d`), NONE equals NONE only for the same base, and **UNDEFINED equals nothing** -- not even UNDEFINED.
 ///
 /// > a and b **diverge** iff there is an `o ∈ [0, min(head_a, head_b)]` with `prov_a(o) ≠ prov_b(o)`.
 ///
@@ -126,7 +126,7 @@ public sealed interface ProvenanceComparison {
     private static boolean equal(OffsetProvenance left, OffsetProvenance right) {
         return switch (left) {
             case OffsetProvenance.None none -> right instanceof OffsetProvenance.None other && none.base() == other.base();
-            case OffsetProvenance.Owned owned -> right instanceof OffsetProvenance.Owned other && owned.entry().sameEpoch(other.entry());
+            case OffsetProvenance.Owned owned -> right instanceof OffsetProvenance.Owned other && owned.entry().epoch().equals(other.entry().epoch());
             case OffsetProvenance.Undefined _ -> false;
         };
     }

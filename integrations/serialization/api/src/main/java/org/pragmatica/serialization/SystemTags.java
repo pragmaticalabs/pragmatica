@@ -536,6 +536,13 @@ public interface SystemTags {
         pin(table, 1710, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue");
         // owner-epoch provenance entry nested in catch-up answers (#1596); next free after 1710
         pin(table, 1711, "org.pragmatica.aether.stream.provenance.ProvenanceEntry");
+        pin(table, 1712, "org.pragmatica.aether.stream.provenance.ProvenanceEntry.ProvenanceKind");
+        // stream partition recovery record, the durable flag (#1596, spec #1569 §7.5.3)
+        pin(table, 1713, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionRecoveryKey");
+        pin(table, 1714, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionRecoveryValue");
+        pin(table, 1715, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryState");
+        pin(table, 1716, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReason");
+        pin(table, 1717, "org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // ---- 2114..16383 RESERVED ----

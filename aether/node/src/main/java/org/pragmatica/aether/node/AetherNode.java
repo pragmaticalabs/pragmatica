@@ -211,6 +211,7 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
+import org.pragmatica.aether.stream.provenance.PartitionFlags;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
@@ -4579,6 +4580,10 @@ public interface AetherNode extends ManageableNode {
                                                                                    DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager()));
 
         streamPartitionManagerRef.set(streamPartitionManager);
+        // #1596: provenance failures this node detects (an N13 mismatch at catch-up, a log holding records with no
+        // owner-epoch history) are raised on the durable, backed-up partition flag -- the same flag the promotion
+        // gate and cold-restart detection raise and read.
+        streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
         // pool wholesale. Until 2026-08-16 this bound was a compile-time constant while the paced-materialize
         // error message named it as a config key, so an operator whose backfills were starving had nothing to
