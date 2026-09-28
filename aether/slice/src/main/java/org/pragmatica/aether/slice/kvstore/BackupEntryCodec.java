@@ -229,8 +229,7 @@ public record BackupEntryCodec(SliceCodec codec) {
                      .flatMap(this::decodeDocument);
     }
 
-    /// Header of a backup document. `clusterIncarnation` is a placeholder until cluster incarnations
-    /// exist: it is carried and round-tripped, and nothing reads it yet.
+    /// Header of a backup document.
     public record BackupHeader(long revision, Option<String> clusterIncarnation) {
         /// A blank incarnation is normalised to absent, which is how it renders.
         public static BackupHeader backupHeader(long revision, Option<String> clusterIncarnation) {

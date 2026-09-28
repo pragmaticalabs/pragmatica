@@ -1982,9 +1982,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     /// Cluster state (#1529 part 1): the cluster's lineage and incarnation — the single authority every
     /// other component reads it from. The leader mints it at genesis if absent (incarnation 1, a fresh
-    /// lineage); a restore brings it back with the data and increments it, so a restored cluster keeps
-    /// its lineage and moves to a strictly newer incarnation. Backed up, which is what makes the restore
-    /// increment possible.
+    /// lineage); a restore keeps the restored lineage and commits an incarnation above every one the
+    /// backup has recorded for it ([ClusterIncarnation#restoreCommands]). Backed up, which is what makes the
+    /// restore possible.
     record ClusterIncarnationKey() implements ClusterStateKey {
         private static final String KEY = "cluster-incarnation";
 

@@ -21,7 +21,8 @@ import org.pragmatica.lang.Option;
 ///
 /// - [#current] — the committed incarnation, or `0` before genesis has minted one.
 /// - [#genesisCommand] — the leader's mint for a cluster that has none yet (incarnation 1, fresh lineage).
-/// - [#restoreCommands] — what a restore (#1533) commits: the restored lineage, one incarnation later.
+/// - [#restoreCommands] — what a restore (#1533) commits: the restored lineage, above every incarnation
+///   the backup has recorded for it.
 public sealed interface ClusterIncarnation {
     /// The value [#current] answers before genesis.
     long NONE = 0L;
@@ -48,11 +49,26 @@ public sealed interface ClusterIncarnation {
     }
 
     /// The commands a restore applies in ONE batch, after the restored state is in place: keep the
-    /// restored lineage and move to the next incarnation. The value is removed first so the increment is
-    /// a first write — it must land even when this cluster already minted its own genesis before the
-    /// restore ran, which the successor fence would otherwise refuse.
-    static List<KVCommand<AetherKey>> restoreCommands(ClusterIncarnationValue restored) {
-        return List.of(new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()), put(restored.next()));
+    /// restored lineage at `max(restored, highestRecordedForLineage) + 1`.
+    ///
+    /// The floor is what makes a restore monotonic. Restoring an OLDER backup of the lineage (L@3 while
+    /// the backup store has recorded L@7) must not go back to L@4, and restoring L@5 must not reuse L@6,
+    /// which already names a different history — both land at L@8. `highestRecordedForLineage` is the
+    /// highest incarnation the backup store has ever recorded for that lineage across its whole history
+    /// (#1533 scans it); a caller without that scan passes `restored.incarnation()`.
+    ///
+    /// **Residual `[unverified]`:** an incarnation that ran but whose key never reached the backup before a
+    /// crash is invisible to the floor and can be reused. #1532 narrows the window by flushing an
+    /// incarnation change immediately, as the first commit of the new incarnation.
+    ///
+    /// The value is removed first so the Put is a first write: it must land even when this cluster
+    /// already minted its own genesis before the restore ran, which the successor fence would refuse.
+    /// This bypasses the fence by design; monotonicity here comes from the floor.
+    static List<KVCommand<AetherKey>> restoreCommands(ClusterIncarnationValue restored, long highestRecordedForLineage) {
+        var next = Math.max(restored.incarnation(), highestRecordedForLineage) + 1;
+
+        return List.of(new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()),
+                       put(ClusterIncarnationValue.clusterIncarnationValue(restored.lineageId(), next)));
     }
 
     private static KVCommand<AetherKey> put(ClusterIncarnationValue value) {
