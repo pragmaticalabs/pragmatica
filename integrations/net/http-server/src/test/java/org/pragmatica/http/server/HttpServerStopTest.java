@@ -313,8 +313,14 @@ class HttpServerStopTest {
     /// create reports, not afterwards.
     private static void assertGroupsTerminatedWhenFailureReported(Promise<Unit> create, Set<EventLoopGroup> groups) {
         var terminatedAtFailure = new AtomicReference<Boolean>();
-        var outcome = create.onFailure(_ -> terminatedAtFailure.set(groups.stream()
-                                                                          .allMatch(EventLoopGroup::isTerminated)))
+        // Read termination inside a DEPENDENT completion: onFailure/onResult handlers run asynchronously, so
+        // await() on them can return before the callback ran (v1628 measured 3/12 nulls). fold's result is not
+        // resolved until the transformer has run.
+        var outcome = create.fold(result -> {
+                                      result.onFailure(_ -> terminatedAtFailure.set(groups.stream()
+                                                                                          .allMatch(EventLoopGroup::isTerminated)));
+                                      return Promise.resolved(result);
+                                  })
                             .await(timeSpan(STOP_BOUND_MS).millis());
 
         assertThat(outcome.isFailure()).as("control: the bind failed").isTrue();
