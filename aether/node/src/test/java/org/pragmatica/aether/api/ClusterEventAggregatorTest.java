@@ -634,12 +634,60 @@ class ClusterEventAggregatorTest {
         assertThat(h.events()).as("control: the first occurrence was not published").isEmpty();
 
         replaying.set(false);
-        physicalMillis.addAndGet(1_000L);
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
         h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
 
         var events = h.events();
         assertThat(events).as("the retry inside the same window is admitted").hasSize(1);
         assertThat(events.getFirst().details()).containsEntry("suppressedSince", "1");
+    }
+
+    /// #1617 R4 (v1562): while publishing keeps failing, a key is attempted at most once per retry window, not once
+    /// per occurrence. 1,000 raises spread over one 60 s window, every publish failing, make at most
+    /// ceil(60 s / 5 s) = 12 attempts. Releasing the window outright made 1,000.
+    @Test
+    void onOperatorWarning_publishAlwaysFails_attemptsAreBoundedByTheRetryWindow() {
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> attempts.incrementAndGet() > 0,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 1_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+            physicalMillis.addAndGet(60);
+        }
+
+        var bound = (int) Math.ceil(60_000.0 / ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+
+        assertThat(attempts.get()).as("publish attempts for 1,000 raises in one window, all failing")
+                                  .isBetween(2, bound);
+        assertThat(h.events()).as("control: nothing was published").isEmpty();
+    }
+
+    /// After failed attempts, the first success restores the full window.
+    @Test
+    void onOperatorWarning_afterAFailedPublish_successRestoresTheFullWindow() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               replaying::get,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        replaying.set(false);
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.events()).as("control: the retry after the short window landed").hasSize(1);
+
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        assertThat(h.events()).as("a success restores the 60 s window: 5 s later is still suppressed").hasSize(1);
     }
 
     /// #1617 R5: the stream-memory throttle's own window edge. One millisecond short of the window is still

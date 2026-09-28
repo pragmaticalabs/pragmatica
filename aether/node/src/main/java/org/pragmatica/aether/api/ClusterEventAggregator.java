@@ -168,7 +168,13 @@ public final class ClusterEventAggregator {
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
     private static final long EVENT_THROTTLE_MS = 60_000L;
-    /// Why an operator-warning event was not published; the throttle window is then handed back (#1617 R4).
+
+    /// After an operator-warning publish FAILS, its key is held for this long before the next attempt (#1617 R4, v1562).
+    /// Releasing the window outright left attempts unbounded while publishing kept failing: 1,000 raises made 1,000
+    /// publish attempts and 1,000 WARN lines. A short window bounds a failing key to one attempt per this long, and
+    /// the first success restores the normal [#EVENT_THROTTLE_MS] window.
+    static final long OPERATOR_WARNING_RETRY_MS = 5_000L;
+    /// Why an operator-warning event was not published; its throttle window is then shortened for a retry (#1617 R4).
     private static final Cause NOT_PUBLISHED_REPLAYING = Causes.cause("snapshot/resync replay in progress");
     private static final Cause NOT_PUBLISHED_UNBOUND = Causes.cause("cluster-events publisher not yet bound");
 
@@ -185,26 +191,33 @@ public final class ClusterEventAggregator {
     /// produced this state was let through, and for an admitted call `suppressedBefore` is the count held
     /// back in the window it closed.
     private record ThrottleWindow(long openedAt,
+                                  long length,
                                   long lastSeen,
                                   long suppressed,
                                   boolean admitted,
                                   long suppressedBefore) {
         /// A new window opened at `now` by an admitted call, closing one that held back `suppressedBefore`.
         static ThrottleWindow throttleWindow(long now, long suppressedBefore) {
-            return new ThrottleWindow(now, now, 0, true, suppressedBefore);
+            return new ThrottleWindow(now, EVENT_THROTTLE_MS, now, 0, true, suppressedBefore);
         }
 
         /// The same window with one more suppressed call.
         ThrottleWindow held(long now) {
-            return new ThrottleWindow(openedAt, now, suppressed + 1, false, 0);
+            return new ThrottleWindow(openedAt, length, now, suppressed + 1, false, 0);
         }
 
-        /// The window an admitted call opened, handed back because its event was not published (#1617 R4).
-        /// It is already expired, so the next call is admitted. It carries every occurrence no published event
-        /// represents: the count the failed event was meant to report, those held back while it was in flight,
-        /// and the failed occurrence itself.
-        ThrottleWindow released() {
-            return new ThrottleWindow(openedAt - EVENT_THROTTLE_MS,
+        boolean openAt(long now) {
+            return now - openedAt < length;
+        }
+
+        /// The window an admitted call opened, shortened because its event was not published (#1617 R4). It closes
+        /// [#OPERATOR_WARNING_RETRY_MS] after it opened, so the next attempt waits that long instead of a full window,
+        /// and a key whose publishes keep failing makes at most one attempt per retry window. It carries every
+        /// occurrence no published event represents: the count the failed event was meant to report, those held back
+        /// while it was in flight, and the failed occurrence itself.
+        ThrottleWindow shortenedForRetry() {
+            return new ThrottleWindow(openedAt,
+                                      OPERATOR_WARNING_RETRY_MS,
                                       lastSeen,
                                       suppressed + suppressedBefore + 1,
                                       false,
@@ -565,7 +578,7 @@ public final class ClusterEventAggregator {
 
     /// Throttle decision: emit iff no event for this `(streamName, phase)` key fired within the window.
     /// The stream-memory throttle consumes its window on admission, whether or not the event lands; only
-    /// operator warnings hand a window back on a failed publish (#1617 R4 is scoped to them).
+    /// operator warnings shorten a window to a retry window on a failed publish (#1617 R4 is scoped to them).
     private boolean shouldEmitStreamMemoryEvent(Exhaustion exhaustion) {
         return admit(streamMemoryEventThrottle,
                      exhaustion.streamName() + ":" + exhaustion.phase().name()).admitted();
@@ -578,9 +591,10 @@ public final class ClusterEventAggregator {
     /// throttled per `(code, subject)` to one event per {@link #EVENT_THROTTLE_MS}, and the next
     /// admitted event carries the number held back as `suppressedSince`.
     ///
-    /// #1617 R4: the window is consumed only by an event that is actually published. If the publish fails
-    /// (replay in progress, publisher not yet bound, or the publish itself failing), the window is handed
-    /// back, so the next occurrence is admitted and reports what this one could not.
+    /// #1617 R4: a full window is consumed only by an event that is actually published. If the publish fails
+    /// (replay in progress, publisher not yet bound, or the publish itself failing), the window is shortened to
+    /// [#OPERATOR_WARNING_RETRY_MS], so the next occurrence after it is admitted and reports what this one could not,
+    /// while a key whose publishes keep failing is attempted at most once per retry window.
     @Contract
     public void onOperatorWarning(OperatorWarning warning) {
         var key = warning.code().code() + ":" + warning.subject();
@@ -600,7 +614,7 @@ public final class ClusterEventAggregator {
                                                      operatorWarningDetails(warning, window.suppressedBefore()));
 
         lastRaisedOperatorWarning = Option.some(event);
-        publishedLocally(event).onFailure(_ -> releaseWindow(key, window));
+        publishedLocally(event).onFailure(_ -> shortenWindow(key, window));
     }
 
     /// Observability: the operator-warning event this node most recently admitted for publication,
@@ -661,16 +675,16 @@ public final class ClusterEventAggregator {
         return Unit.unit();
     }
 
-    /// Hands `window` back if it is still the key's current window. A later window is left alone.
-    private Unit releaseWindow(String key, ThrottleWindow window) {
-        operatorWarningThrottle.computeIfPresent(key, (_, current) -> releasedIfCurrent(current, window));
+    /// Shortens `window` to a retry window if it is still the key's current window. A later window is left alone.
+    private Unit shortenWindow(String key, ThrottleWindow window) {
+        operatorWarningThrottle.computeIfPresent(key, (_, current) -> shortenedIfCurrent(current, window));
 
         return Unit.unit();
     }
 
-    private static ThrottleWindow releasedIfCurrent(ThrottleWindow current, ThrottleWindow admitted) {
+    private static ThrottleWindow shortenedIfCurrent(ThrottleWindow current, ThrottleWindow admitted) {
         return current.openedAt() == admitted.openedAt()
-               ? current.released()
+               ? current.shortenedForRetry()
                : current;
     }
 
@@ -745,7 +759,7 @@ public final class ClusterEventAggregator {
             return ThrottleWindow.throttleWindow(now, 0);
         }
 
-        if (now - previous.openedAt() < EVENT_THROTTLE_MS) {
+        if (previous.openAt(now)) {
             return previous.held(now);
         }
 
