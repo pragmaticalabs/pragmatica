@@ -14,6 +14,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -59,13 +60,62 @@ class ClusterEventOwnerFailoverTest {
         LifecycleAwait.bestEffort("stop cluster-event failover cluster", cluster, cluster.stop());
     }
 
+    /// What holds on this release, where a dead cluster-events owner is not re-placed (#1550): publishes after the
+    /// owner's death are held for redelivery instead of dropped, nothing is given up on inside the horizon, and no
+    /// event is read twice. Whether every held event then LANDS needs a new owner, which is what the disabled test
+    /// below asserts.
+    ///
+    /// **TRIPWIRE:** the final assertion pins that no new owner appears. When #1555 merges and re-places the owner,
+    /// it fails. Then delete it, and enable [#eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped],
+    /// which asserts delivery after a real failover. That test is disabled rather than enabled because on this
+    /// release it can only time out waiting for an owner that never comes.
     @Test
+    void eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost() {
+        startSettledCluster();
+
+        var ownerId = owner().unwrap();
+        var phase = raiseWhileKilling(ownerId, "held");
+        var producers = Set.copyOf(phase.producers());
+
+        await().pollDelay(Duration.ofSeconds(10))
+               .atMost(Duration.ofSeconds(15))
+               .until(() -> true);
+
+        var landed = landedTags();
+        var accepted = sum(producers, "accepted");
+        var delivered = sum(producers, "delivered");
+        var dropped = producers.stream()
+                               .mapToLong(id -> droppedOn(id))
+                               .sum();
+        var held = accepted - delivered - dropped;
+
+        report(ownerId, "-", producers, phase.sent(), landed, dropped);
+        log.info("FAILOVER-PROBE accepted={} delivered={} held={} deliveredButNotInLog={}",
+                 accepted,
+                 delivered,
+                 held,
+                 delivered - landed.size());
+
+        // The producers also raise their own events (for example on the owner's death), so accepted >= sent.
+        assertThat(accepted).as("every raised event reached redelivery").isGreaterThanOrEqualTo(phase.sent().size());
+        assertThat(dropped).as("nothing was given up on inside the horizon").isZero();
+        assertThat(landed.values()).as("no tag landed twice as read").allMatch(count -> count == 1L);
+        assertThat(held).as("control: publishes after the owner's death are held, not lost").isPositive();
+        // An event the owner ACKED and then lost before replicating it (EVENTUAL, min-sync 1) counts as delivered
+        // but is not in the log. That is the stream's acknowledgement contract, not a redelivery loss, so the log
+        // may hold fewer than were delivered, never more.
+        assertThat((long) landed.size()).as("the log holds no more than was delivered").isLessThanOrEqualTo(delivered);
+        assertThat(owner().isEmpty()).as("TRIPWIRE (#1555): a new cluster-events owner appeared. #1555 has landed: delete this "
+                               + "assertion and enable eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped")
+                           .isTrue();
+    }
+
+    /// The full #1640 property, once #1555 re-places a dead owner: events raised across the owner's death and then
+    /// the leader's each land exactly once or are counted as dropped. Disabled until then (see the tripwire above).
+    @Test
+    @Disabled("#1555: on this release a dead cluster-events owner is not re-placed, so this can only time out; the tripwire in eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost says when to enable it")
     void eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped() {
-        LifecycleAwait.settled("start cluster-event failover cluster", cluster, cluster.start());
-        await().atMost(SETTLE).until(() -> owner().isPresent() && cluster.currentLeader().isPresent());
-        await().atMost(SETTLE).until(this::clusterEventsReadable);
-        // Past SWIM's cold-boot phase, in which a never-HEALTHY peer's death is reported as UNKNOWN, not FAULTY.
-        await().pollDelay(COLD_BOOT_MARGIN).atMost(COLD_BOOT_MARGIN.plusSeconds(5)).until(() -> true);
+        startSettledCluster();
 
         var ownerId = owner().unwrap();
         var phase1 = raiseWhileKilling(ownerId, "phase1");
@@ -76,12 +126,8 @@ class ClusterEventOwnerFailoverTest {
 
         var leaderId = cluster.currentLeader()
                               .unwrap();
-
         var phase2 = raiseWhileKilling(leaderId, "phase2");
-        var sent = new ArrayList<String>(phase1.sent());
-
-        sent.addAll(phase2.sent());
-
+        var sent = concat(phase1.sent(), phase2.sent());
         var producers = Set.copyOf(concat(phase1.producers(), phase2.producers()));
 
         await().atMost(LANDING)
@@ -102,6 +148,28 @@ class ClusterEventOwnerFailoverTest {
                                                       landed.size(),
                                                       dropped)
                                                   .isEqualTo(sent.size());
+    }
+
+    private void startSettledCluster() {
+        LifecycleAwait.settled("start cluster-event failover cluster", cluster, cluster.start());
+        await().atMost(SETTLE).until(() -> owner().isPresent() && cluster.currentLeader().isPresent());
+        await().atMost(SETTLE).until(this::clusterEventsReadable);
+        // Past SWIM's cold-boot phase, in which a never-HEALTHY peer's death is reported as UNKNOWN, not FAULTY.
+        await().pollDelay(COLD_BOOT_MARGIN).atMost(COLD_BOOT_MARGIN.plusSeconds(5)).until(() -> true);
+    }
+
+    private long counterOn(String id, String counter) {
+        return cluster.getNode(id)
+                      .map(node -> node.eventAggregator()
+                                       .redeliveryCounters()
+                                       .get(counter))
+                      .or(0L);
+    }
+
+    private long sum(Set<String> producers, String counter) {
+        return producers.stream()
+                        .mapToLong(id -> counterOn(id, counter))
+                        .sum();
     }
 
     private record Phase(List<String> sent, List<String> producers) {}

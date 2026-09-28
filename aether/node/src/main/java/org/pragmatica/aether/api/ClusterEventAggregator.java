@@ -560,7 +560,11 @@ public final class ClusterEventAggregator {
 
     /// Observability for #1640: publishes that landed, retries attempted, and publishes whose outcome was unknown.
     public Map<String, Long> redeliveryCounters() {
-        return Map.of("delivered",
+        return Map.of("accepted",
+                      redelivery.accepted(),
+                      "inFlight",
+                      redelivery.inFlight(),
+                      "delivered",
                       redelivery.delivered(),
                       "retried",
                       redelivery.retried(),

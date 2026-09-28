@@ -100,6 +100,8 @@ final class ClusterEventRedelivery {
     private final AtomicLong delivered = new AtomicLong();
     private final AtomicLong retried = new AtomicLong();
     private final AtomicLong outcomeUnknown = new AtomicLong();
+    private final AtomicLong inFlight = new AtomicLong();
+    private final AtomicLong accepted = new AtomicLong();
     private final Map<String, AtomicLong> failuresByCause = new ConcurrentHashMap<>();
     private final AtomicBoolean expiryReported = new AtomicBoolean();
 
@@ -117,6 +119,7 @@ final class ClusterEventRedelivery {
     /// First publish of a freshly produced event. A failure that a retry could fix is buffered.
     @Contract
     void deliver(ClusterEvent event) {
+        accepted.incrementAndGet();
         attempt(event).onFailure(cause -> onFirstFailure(event, cause));
     }
 
@@ -148,6 +151,17 @@ final class ClusterEventRedelivery {
         return delivered.get();
     }
 
+    /// Events handed to [#deliver]. Every one of them is eventually delivered, dropped, or still held, so
+    /// `accepted - delivered - dropped` is the number held (waiting or in flight).
+    long accepted() {
+        return accepted.get();
+    }
+
+    /// Publish attempts started and not yet settled, first attempts and retries alike.
+    long inFlight() {
+        return inFlight.get();
+    }
+
     /// Retries that were attempted.
     long retried() {
         return retried.get();
@@ -168,7 +182,10 @@ final class ClusterEventRedelivery {
     }
 
     private Promise<Unit> attempt(ClusterEvent event) {
+        inFlight.incrementAndGet();
+
         return publish.apply(event)
+                      .onResultRun(inFlight::decrementAndGet)
                       .onSuccess(_ -> onDelivered())
                       .onFailure(this::countUnknown);
     }
