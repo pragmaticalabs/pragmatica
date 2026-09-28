@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
@@ -139,6 +140,82 @@ class QuicLaneOwnershipTest {
                   "the dialer reads the stream the acceptor opened");
         awaitTrue(this::sameStreamAtBothEnds, "the dialer adopts the acceptor's stand-in for FORWARD");
         assertLaneCarriesBothWays("stand-in");
+    }
+
+    /// Condition 2 on the FIN route: every write queued or in flight on a stream at the moment the PEER finishes
+    /// it is delivered, or its write fails where the writer sees it — never acknowledged and then lost. The
+    /// dialer bursts onto the acceptor's stand-in; mid-burst it opens a dialer stream that outranks the
+    /// stand-in, so the acceptor (its opener) finishes it. The dialer then finishes its own half BEHIND its
+    /// queued writes, so those reach the acceptor, and a write after that fails visibly.
+    ///
+    /// Accounting: every write resolves (succeeded + failed == sent), and every succeeded write is delivered
+    /// (delivered == succeeded), so sent − delivered − failed == 0 — "0 unaccounted".
+    /// Mutation it must catch: [QuicPeerConnection#streamEnded] closes (resets) the stream instead of finishing
+    /// it — writes whose futures already succeeded are discarded, so delivered < succeeded.
+    @Test
+    void peerFinishesTheStreamMidBurst_everyWriteIsDeliveredOrFailsVisibly_zeroUnaccounted() {
+        adoptAcceptorStandIn();
+        var standIn = dialerSide.stream(LANE).unwrap();
+        var sent = 400;
+        var padding = "x".repeat(8 * 1024);
+        var succeeded = new AtomicInteger();
+        var failed = new AtomicInteger();
+
+        assertThat(standIn.streamId() & 0x1L).as("arming: the burst rides the ACCEPTOR-opened stand-in").isEqualTo(1L);
+        IntStream.range(0, sent)
+                 .forEach(i -> burstWrite(standIn, i, padding, sent / 2, succeeded, failed));
+
+        awaitTrue(() -> succeeded.get() + failed.get() == sent, "every write resolves");
+        awaitTrue(() -> finMarkers().size() == succeeded.get(),
+                  "every acknowledged write reaches the acceptor (delivered=" + finMarkers().size()
+                  + " succeeded=" + succeeded.get() + " failed=" + failed.get() + ")");
+        assertThat(acceptorSide.get().stream(LANE).map(QuicStreamChannel::streamId))
+            .as("arming: the acceptor moved FORWARD off the stand-in, so it finished it")
+            .isNotEqualTo(Option.some(standIn.streamId()));
+        assertThat(sent - finMarkers().size() - failed.get()).as("0 unaccounted").isZero();
+    }
+
+    /// The dialer's FORWARD stream is lost, the acceptor opens a stand-in, and both ends adopt it.
+    private void adoptAcceptorStandIn() {
+        var lost = dialerSide.stream(LANE).unwrap();
+        var lostAtAcceptor = acceptorSide.get().stream(LANE).unwrap();
+
+        lost.close().awaitUninterruptibly(AWAIT.millis());
+        awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != lostAtAcceptor).or(true),
+                  "the acceptor releases FORWARD once the dialer's stream for it ends");
+        openLane(acceptorSide.get());
+        writeProbe(acceptorSide.get(), ACCEPTOR, "adopt-stand-in");
+        awaitTrue(this::sameStreamAtBothEnds, "the dialer adopts the acceptor's stand-in for FORWARD");
+    }
+
+    /// One burst write; at `pivot` the dialer opens its own FORWARD stream, which makes the acceptor finish
+    /// the stand-in while the burst is still being written.
+    private void burstWrite(QuicStreamChannel stream,
+                            int index,
+                            String padding,
+                            int pivot,
+                            AtomicInteger succeeded,
+                            AtomicInteger failed) {
+        if (index == pivot) {
+            var _ = openLaneAsync(dialerSide);
+        }
+
+        stream.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "fin-" + index + "|" + padding))))
+              .addListener(future -> countWrite(future.isSuccess(), succeeded, failed));
+    }
+
+    private static void countWrite(boolean success, AtomicInteger succeeded, AtomicInteger failed) {
+        var counter = success
+                      ? succeeded
+                      : failed;
+
+        counter.incrementAndGet();
+    }
+
+    private Set<String> finMarkers() {
+        return markers(receivedByAcceptor).stream()
+                                          .filter(marker -> marker.startsWith("fin-"))
+                                          .collect(Collectors.toSet());
     }
 
     /// Condition 1: both ends open the same lane at once. Each sees its own stream first and the other's
