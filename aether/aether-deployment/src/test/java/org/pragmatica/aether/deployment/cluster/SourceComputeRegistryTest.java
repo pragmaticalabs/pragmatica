@@ -177,6 +177,31 @@ class SourceComputeRegistryTest {
         assertThat(registry.resolve(SourceName.DEFAULT, "local").isFailure()).isTrue();
     }
 
+    /// #1561 (v1561 probe 4, pins `localBound`'s equality): on the seed, only the fixed `local` binding resolves
+    /// to the local provider; a reservation bound to anything else — an operator account's binding — refuses
+    /// instead of silently re-targeting the local provider.
+    @Test
+    void resolve_bootstrapSeedWithLocalProvider_foreignBindingRefuses() {
+        var registry = SourceComputeRegistry.sourceComputeRegistry(() -> Option.some(value("")),
+                                                                   Option.<ComputeProvider>some(new NoopProvider()),
+                                                                   _ -> org.pragmatica.lang.utils.Causes.cause("factory must not run")
+                                                                                                        .result());
+
+        assertThat(registry.resolve(SourceName.DEFAULT, "0".repeat(64)).isFailure()).isTrue();
+    }
+
+    /// #1561: the refusal on a seeded cluster without a local provider names the actual condition, not an
+    /// absent configuration.
+    @Test
+    void sources_bootstrapSeedWithoutLocalProvider_refusalNamesTheSeedCondition() {
+        var registry = SourceComputeRegistry.sourceComputeRegistry(() -> Option.some(value("   \n\t")),
+                                                                   _ -> org.pragmatica.lang.utils.Causes.cause("factory must not run")
+                                                                                                        .result());
+
+        assertThat(registry.sources(java.util.Map.of()).fold(org.pragmatica.lang.Cause::message, _ -> "success"))
+            .isEqualTo(EnvironmentError.operationNotSupported(SourceComputeRegistry.NO_OPERATOR_SOURCES_NO_LOCAL_PROVIDER).message());
+    }
+
     private static SourceComputeRegistry protectedRegistry(String credential) {
         var source = org.pragmatica.config.source.MapConfigSource.mapConfigSource("test",
                                                                                   java.util.Map.of("cloud.sources.west.provider",

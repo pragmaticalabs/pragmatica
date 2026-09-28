@@ -253,8 +253,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     private Option<AetherValue.ClusterConfigValue> operatorConfig() {
-        return SourceComputeRegistry.operatorConfig(store.getTyped(AetherKey.ClusterConfigKey.CURRENT,
-                                                                   AetherValue.ClusterConfigValue.class));
+        return SourceComputeRegistry.operatorConfig(committedConfig());
+    }
+
+    private Option<AetherValue.ClusterConfigValue> committedConfig() {
+        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class);
     }
 
     private Promise<Unit> ensureSeedLedger() {
@@ -271,7 +274,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
     /// Inventory is satisfied when the operator sources were inventoried, or when there are none (seed-only).
     private boolean inventorySatisfied(CapacityLedgerValue ledger) {
-        return ledger.inventoryComplete() || operatorConfig().isEmpty();
+        return inventorySatisfied(ledger, committedConfig());
+    }
+
+    private static boolean inventorySatisfied(CapacityLedgerValue ledger, Option<AetherValue.ClusterConfigValue> config) {
+        return ledger.inventoryComplete() || SourceComputeRegistry.operatorConfig(config)
+                                                                  .isEmpty();
     }
 
     private Promise<Unit> inventoryOperatorSources(AetherValue.ClusterConfigValue config) {
@@ -312,11 +320,15 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                     : Causes.cause("Fleet inventory commit lost core authority or concurrent reservation").promise());
     }
 
+    /// The reservation's transaction witnesses the committed cluster config the inventory check read: a config
+    /// committed between the check and the apply (an operator config replacing the seed, whose sources are not yet
+    /// inventoried) refuses the reservation instead of landing it ahead of that inventory (#1561).
     private Promise<Boolean> reserveBound(NodeId node, SourceName source, String binding, String intendedRole) {
         var key = new AetherKey.CapacityReservationKey(node);
         var current = ledger();
+        var config = committedConfig();
 
-        if (store.get(key).isPresent() || current.filter(value -> inventorySatisfied(value) && value.allocated() < limit.getAsInt())
+        if (store.get(key).isPresent() || current.filter(value -> inventorySatisfied(value, config) && value.allocated() < limit.getAsInt())
                                                  .isEmpty()) {
             return Promise.success(false);
         }
@@ -331,7 +343,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                              Option.some(new CapacityReservationValue(source.value(),
                                                                                                                       binding,
                                                                                                                       intendedRole.toLowerCase(java.util.Locale.ROOT),
-                                                                                                                      CapacityReservationPhase.DISPATCHED))))));
+                                                                                                                      CapacityReservationPhase.DISPATCHED))),
+                                            List.of(configWitness(config))));
+    }
+
+    private static KVCommand.ReadWitness<AetherKey> configWitness(Option<AetherValue.ClusterConfigValue> config) {
+        return new KVCommand.ReadWitness<>(AetherKey.ClusterConfigKey.CURRENT, config.map(value -> (Object) value));
     }
 
     private Promise<Unit> observeBound(List<InstanceInfo> instances, SourceName source, String binding) {
@@ -344,6 +361,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
             var node = observedNode(instance, source);
             var key = new AetherKey.CapacityReservationKey(node);
             var existing = store.getTyped(key, CapacityReservationValue.class);
+
+            if (existing.filter(value -> isAdoptable(value, source, binding)).isPresent()) {
+                mutations.add(adoption(key, existing.unwrap(), binding));
+                continue;
+            }
 
             if (existing.filter(value -> !value.sourceName()
                                                .equals(source.value()) || !value.sourceBinding()
@@ -382,6 +404,29 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                      : Causes.cause("Fleet observation conflicted; retry inventory").promise());
     }
 
+    /// #1561: a reservation made while the cluster ran on its bootstrap seed is bound to the local provider
+    /// (`local`). When an operator config later declares the SAME source — `[source.default]` is the spec's
+    /// canonical example — its listing returns that node under the operator binding. That is the same machine
+    /// under the same source, now reachable through the declared account, not a duplicate identity: the
+    /// reservation is adopted into the operator binding (already counted, so the ledger allocation does not
+    /// change). Refusing it wedged every later provision and terminate.
+    private static boolean isAdoptable(CapacityReservationValue existing, SourceName source, String binding) {
+        return existing.sourceName()
+                       .equals(source.value()) && SourceComputeRegistry.LOCAL_SOURCE_BINDING.equals(existing.sourceBinding())
+               && !SourceComputeRegistry.LOCAL_SOURCE_BINDING.equals(binding);
+    }
+
+    private static KVCommand.Mutation<AetherKey, AetherValue> adoption(AetherKey.CapacityReservationKey key,
+                                                                       CapacityReservationValue existing,
+                                                                       String binding) {
+        return new KVCommand.Mutation<>(key,
+                                        Option.some(existing),
+                                        Option.some(new CapacityReservationValue(existing.sourceName(),
+                                                                                 binding,
+                                                                                 existing.intendedRole(),
+                                                                                 CapacityReservationPhase.OBSERVED)));
+    }
+
     private static NodeId observedNode(InstanceInfo instance, SourceName source) {
         return instance.nodeId()
                        .map(NodeId::new)
@@ -393,6 +438,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private Promise<Boolean> mutate(Option<CapacityLedgerValue> before,
                                     CapacityLedgerValue after,
                                     List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+        return mutate(before, after, changes, List.of());
+    }
+
+    private Promise<Boolean> mutate(Option<CapacityLedgerValue> before,
+                                    CapacityLedgerValue after,
+                                    List<KVCommand.Mutation<AetherKey, AetherValue>> changes,
+                                    List<KVCommand.ReadWitness<AetherKey>> guards) {
         return leader().fold(() -> Promise.success(false),
                              currentLeader -> {
                                  var mutations = new ArrayList<>(changes);
@@ -404,7 +456,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                  var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(AetherKey.CapacityLedgerKey.INSTANCE,
                                                                                                        id,
                                                                                                        currentLeader,
-                                                                                                       List.of(),
+                                                                                                       guards,
                                                                                                        mutations);
 
                                  return apply.apply(List.of(command))

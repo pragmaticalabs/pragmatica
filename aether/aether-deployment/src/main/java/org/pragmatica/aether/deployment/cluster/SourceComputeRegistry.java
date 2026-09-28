@@ -35,6 +35,10 @@ public interface SourceComputeRegistry {
     /// Durable binding of the local provider on a cluster that carries no operator source configuration.
     /// Real bindings are 64-hex SHA-256 digests, so this value cannot collide with one.
     String LOCAL_SOURCE_BINDING = "local";
+    /// Refusal when the committed config declares no operator sources (absent, or the bootstrap seed) and this
+    /// node has no local provider to fall back to (#1561: "configuration absent" was wrong on a seeded cluster).
+    String NO_OPERATOR_SOURCES_NO_LOCAL_PROVIDER = "Source registry: the committed cluster configuration declares no compute sources "
+                                                   + "(absent, or the bootstrap seed) and this node has no local compute provider";
     Result<ComputeProvider> resolve(SourceName source);
 
     default Result<ComputeProvider> resolve(SourceName source, String expectedBinding) {
@@ -117,7 +121,7 @@ public interface SourceComputeRegistry {
             }
 
             private Result<ComputeProvider> localProviderOnly() {
-                return localProvider.toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent"));
+                return localProvider.toResult(EnvironmentError.operationNotSupported(NO_OPERATOR_SOURCES_NO_LOCAL_PROVIDER));
             }
 
             private Result<ComputeProvider> localBound(SourceName source, String expectedBinding) {
@@ -233,7 +237,7 @@ public interface SourceComputeRegistry {
             @Override
             public Result<List<SourceName>> sources(Map<String, String> filter) {
                 return operatorConfig(configuration.get()).fold(() -> localProvider.map(_ -> List.of(SourceName.DEFAULT))
-                                                                                   .toResult(EnvironmentError.operationNotSupported("Source registry: committed cluster configuration absent")),
+                                                                                   .toResult(EnvironmentError.operationNotSupported(NO_OPERATOR_SOURCES_NO_LOCAL_PROVIDER)),
                                                                 value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).map(config -> matchingSources(config,
                                                                                                                                                                filter)));
             }
@@ -257,8 +261,11 @@ public interface SourceComputeRegistry {
     /// #1551: the ONE decision whether a committed cluster config carries an operator source document. A
     /// self-bootstrapped cluster commits only the BootstrapModule seed (`tomlContent=""`), which has no
     /// sources and cannot pass the parser's `config_version` gate; absent and seed both mean "no operator
-    /// config", and every reader falls back to the local provider. The unbound and bound resolution paths,
-    /// and fleet inventory, all route through here so they cannot disagree again.
+    /// config", and every reader falls back to the local provider. Every production reader routes through
+    /// here so they cannot disagree again: this registry's unbound and bound resolution paths, fleet inventory
+    /// and reservation (`CapacityControlledLifecycle`), the replacement zone/instance-type/source/user-data
+    /// reads (`ClusterTopologyManagerRecord`), community placement (`ClusterDeploymentState`) and the
+    /// seed-replacement check of the config apply route (`ClusterConfigRoutes.isBootstrapSeed`).
     static Option<ClusterConfigValue> operatorConfig(Option<ClusterConfigValue> committed) {
         return committed.filter(value -> !value.tomlContent()
                                                .isBlank());

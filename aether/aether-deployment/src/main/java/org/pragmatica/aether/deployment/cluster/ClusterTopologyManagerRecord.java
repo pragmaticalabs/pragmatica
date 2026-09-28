@@ -1036,8 +1036,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// [SourceProfile#effectiveZones]. Empty (single-attempt, no zone pin) when the persisted TOML
     /// is blank/unparseable, no cloud source backs the role, or that source declares no zones.
     private List<String> replacementZones(NodeRole intendedRole, SourceName sourceName) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
+        return SourceComputeRegistry.operatorConfig(clusterConfigReader.get())
+                                    .map(ClusterConfigValue::tomlContent)
                      .flatMap(ClusterTopologyManagerRecord::parseConfig)
                      .flatMap(config -> sourceFor(config, sourceName, intendedRole))
                      .map(SourceProfile::effectiveZones)
@@ -1056,8 +1056,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// `[cloud.compute] server_type` then applies) when the TOML is unparseable or the role
     /// declares no instance type.
     private String roleInstanceType(NodeRole intendedRole, SourceName sourceName) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
+        return SourceComputeRegistry.operatorConfig(clusterConfigReader.get())
+                                    .map(ClusterConfigValue::tomlContent)
                      .flatMap(ClusterTopologyManagerRecord::parseConfig)
                      .flatMap(config -> sourceFor(config, sourceName, intendedRole))
                      .flatMap(source -> Option.option(source.roles().get(intendedRole)))
@@ -1078,8 +1078,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// which is authoritative and, under multi-source topologies, the only correct answer
     /// (`cloudSourceFor` returns the FIRST cloud source declaring the role).
     private SourceName replacementSourceName(NodeRole intendedRole) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
+        return SourceComputeRegistry.operatorConfig(clusterConfigReader.get())
+                                    .map(ClusterConfigValue::tomlContent)
                      .flatMap(ClusterTopologyManagerRecord::parseConfig)
                      .flatMap(config -> cloudSourceFor(config, intendedRole))
                      .map(SourceProfile::name)
@@ -1448,9 +1448,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// non-cloud (Docker/forge) providers inject identity from the [ProvisionContext] directly and
     /// never consult user-data, so an absent render is correct there.
     private Result<Option<String>> renderReplacementUserData(ProvisionContext context, NodeRole intendedRole) {
-        return clusterConfigReader.get()
-                                  .map(ClusterConfigValue::tomlContent)
-                                  .filter(toml -> !toml.isBlank())
+        return SourceComputeRegistry.operatorConfig(clusterConfigReader.get())
+                                    .map(ClusterConfigValue::tomlContent)
                                   .fold(() -> Result.success(Option.none()),
                                         toml -> ClusterBootstrapConfigParser.parse(toml).flatMap(config -> renderFromConfig(config,
                                                                                                                             context,

@@ -36,6 +36,7 @@ import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.SourceComputeRegistry;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -463,8 +464,8 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// per-source spec at formation" — already promised; the version still advances by one, so the
     /// RFC-0018 successor fence is satisfied and the write is confirmed like any other.
     static boolean isBootstrapSeed(ClusterConfigValue stored) {
-        return stored.tomlContent()
-                     .isBlank();
+        return SourceComputeRegistry.operatorConfig(Option.some(stored))
+                                    .isEmpty();
     }
 
     /// Pure decision for the #289 fence — package-visible so it can be unit-tested without standing up

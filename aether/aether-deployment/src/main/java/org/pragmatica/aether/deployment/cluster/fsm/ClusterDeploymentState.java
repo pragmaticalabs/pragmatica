@@ -29,6 +29,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Bluepri
 import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ReconciliationAdjustment;
+import org.pragmatica.aether.deployment.cluster.SourceComputeRegistry;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectiveRemoveReceived;
@@ -1076,9 +1077,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var observed = ctx.kvStore()
                               .getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class);
 
-            return observed.filter(value -> !value.tomlContent()
-                                                  .isBlank())
-                           .fold(() -> Result.success(new PlacementConfiguration(observed,
+            return SourceComputeRegistry.operatorConfig(observed)
+                                        .fold(() -> Result.success(new PlacementConfiguration(observed,
                                                                                  Map.of())),
                                  value -> org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(value.tomlContent())
                                                                                                            .map(config -> new PlacementConfiguration(observed,
