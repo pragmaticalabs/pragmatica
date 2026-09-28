@@ -41,7 +41,12 @@ public sealed interface StreamError extends Cause {
         /// A batch run the ring cannot hold as one contiguous unit because one of its events is larger
         /// than the frozen ring can ever allocate (#1287). Internal routing signal: the publish path then
         /// publishes that run's events one by one, so each gets the single-publish outcome.
-        RUN_DOES_NOT_FIT("Batch run holds an event larger than the ring can allocate");
+        RUN_DOES_NOT_FIT("Batch run holds an event larger than the ring can allocate"),
+        /// #1604: this node's durable tier for sealed segments is at or above [SegmentTierPressure#REFUSE_AT].
+        /// Refused before the append takes an offset; clears as retention reclaims space. Recovery: raise
+        /// `[streaming] segment_disk_max_bytes` or add disk, or shorten retention.
+        SEGMENT_TIER_FULL("Durable segment tier nearly full on this node: new publishes are refused until retention "
+                         + "reclaims space, so the WAL disk cannot fill with records that cannot be sealed");
         private final String message;
         General(String message) {
             this.message = message;
@@ -57,7 +62,7 @@ public sealed interface StreamError extends Cause {
         /// sealer spills to WAL-backed ranges instead and never raises it.
         @Override
         public boolean transientCapacity() {
-            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND;
+            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND || this == SEGMENT_TIER_FULL;
         }
     }
 
