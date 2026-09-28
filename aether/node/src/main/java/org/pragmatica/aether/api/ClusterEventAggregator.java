@@ -168,7 +168,6 @@ public final class ClusterEventAggregator {
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
     private static final long EVENT_THROTTLE_MS = 60_000L;
-
     /// Why an operator-warning event was not published; the throttle window is then handed back (#1617 R4).
     private static final Cause NOT_PUBLISHED_REPLAYING = Causes.cause("snapshot/resync replay in progress");
     private static final Cause NOT_PUBLISHED_UNBOUND = Causes.cause("cluster-events publisher not yet bound");
@@ -178,7 +177,6 @@ public final class ClusterEventAggregator {
     /// A key with no call for this long is evicted by [#evictIdleThrottleWindows] (#1617 R3). Twice the
     /// window, so a key is never evicted while its window could still hold a call back.
     private static final long THROTTLE_IDLE_EVICTION_MS = 2 * EVENT_THROTTLE_MS;
-
     /// Most keys named in the log line that reports evicted held-back counts.
     private static final int EVICTION_SAMPLE_KEYS = 5;
 
@@ -186,7 +184,11 @@ public final class ClusterEventAggregator {
     /// `lastSeen` is the time of the latest call, admitted or not. `admitted` records whether the call that
     /// produced this state was let through, and for an admitted call `suppressedBefore` is the count held
     /// back in the window it closed.
-    private record ThrottleWindow(long openedAt, long lastSeen, long suppressed, boolean admitted, long suppressedBefore) {
+    private record ThrottleWindow(long openedAt,
+                                  long lastSeen,
+                                  long suppressed,
+                                  boolean admitted,
+                                  long suppressedBefore) {
         /// A new window opened at `now` by an admitted call, closing one that held back `suppressedBefore`.
         static ThrottleWindow throttleWindow(long now, long suppressedBefore) {
             return new ThrottleWindow(now, now, 0, true, suppressedBefore);
@@ -202,7 +204,11 @@ public final class ClusterEventAggregator {
         /// represents: the count the failed event was meant to report, those held back while it was in flight,
         /// and the failed occurrence itself.
         ThrottleWindow released() {
-            return new ThrottleWindow(openedAt - EVENT_THROTTLE_MS, lastSeen, suppressed + suppressedBefore + 1, false, 0);
+            return new ThrottleWindow(openedAt - EVENT_THROTTLE_MS,
+                                      lastSeen,
+                                      suppressed + suppressedBefore + 1,
+                                      false,
+                                      0);
         }
 
         boolean idleAt(long now) {
@@ -577,22 +583,19 @@ public final class ClusterEventAggregator {
     /// back, so the next occurrence is admitted and reports what this one could not.
     @Contract
     public void onOperatorWarning(OperatorWarning warning) {
-        var key = warning.code()
-                         .code() + ":" + warning.subject();
+        var key = warning.code().code() + ":" + warning.subject();
         var window = admit(operatorWarningThrottle, key);
 
         if (!window.admitted()) {
             LOG.debug("ClusterEventAggregator: suppressing throttled OperatorWarning {} for {}",
-                      warning.code()
-                             .code(),
+                      warning.code().code(),
                       warning.subject());
 
             return;
         }
 
         var event = new ClusterEvent.OperatorWarning(hlcClock.now(),
-                                                     severityOf(warning.code()
-                                                                       .level()),
+                                                     severityOf(warning.code().level()),
                                                      warning.message(),
                                                      operatorWarningDetails(warning, window.suppressedBefore()));
 
@@ -618,8 +621,7 @@ public final class ClusterEventAggregator {
     /// schedules it once per window. An evicted operator-warning key that still held calls back would take
     /// that count with it, so the evicted counts are reported in one aggregate log line.
     public Unit evictIdleThrottleWindows() {
-        var now = hlcClock.now()
-                          .physicalMillis();
+        var now = hlcClock.now().physicalMillis();
 
         evictIdle(streamMemoryEventThrottle, now);
 
@@ -627,7 +629,7 @@ public final class ClusterEventAggregator {
     }
 
     private static List<Map.Entry<String, ThrottleWindow>> evictIdle(ConcurrentHashMap<String, ThrottleWindow> throttle,
-                                                                      long now) {
+                                                                     long now) {
         var idle = throttle.entrySet()
                            .stream()
                            .filter(entry -> entry.getValue()
@@ -635,7 +637,6 @@ public final class ClusterEventAggregator {
                            .map(entry -> Map.entry(entry.getKey(),
                                                    entry.getValue()))
                            .toList();
-
         // remove(key, value) is conditional, so a key that saw a call after the scan is kept.
         return idle.stream()
                    .filter(entry -> throttle.remove(entry.getKey(),
@@ -644,24 +645,17 @@ public final class ClusterEventAggregator {
     }
 
     private static Unit reportEvictedHeldBack(List<Map.Entry<String, ThrottleWindow>> evicted) {
-        var heldBack = evicted.stream()
-                              .filter(entry -> entry.getValue()
-                                                    .suppressed() > 0)
-                              .toList();
-        var total = heldBack.stream()
-                            .mapToLong(entry -> entry.getValue()
-                                                     .suppressed())
-                            .sum();
+        var heldBack = evicted.stream().filter(entry -> entry.getValue()
+                                                             .suppressed() > 0).toList();
+        var total = heldBack.stream().mapToLong(entry -> entry.getValue()
+                                                              .suppressed()).sum();
 
         if (total > 0) {
             LOG.warn("ClusterEventAggregator: {} held-back operator warning(s) across {} idle key(s) were never emitted "
-                     + "as events; their log lines were written. Keys include: {}",
+                    + "as events; their log lines were written. Keys include: {}",
                      total,
                      heldBack.size(),
-                     heldBack.stream()
-                             .limit(EVICTION_SAMPLE_KEYS)
-                             .map(Map.Entry::getKey)
-                             .toList());
+                     heldBack.stream().limit(EVICTION_SAMPLE_KEYS).map(Map.Entry::getKey).toList());
         }
 
         return Unit.unit();
@@ -702,8 +696,8 @@ public final class ClusterEventAggregator {
                                                   cause.message()))
                      .async()
                      .flatMap(promise -> promise.onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} failed, dropped: {}",
-                                                                              event,
-                                                                              cause.message())));
+                                                                             event,
+                                                                             cause.message())));
     }
 
     private static Promise<Unit> unboundPublisher(ClusterEvent event) {

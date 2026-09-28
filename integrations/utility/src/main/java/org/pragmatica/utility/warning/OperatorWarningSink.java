@@ -69,7 +69,6 @@ public sealed interface OperatorWarningSink {
 
     enum LogOnly implements OperatorWarningSink {
         INSTANCE;
-
         @Contract
         @Override
         public void accept(OperatorWarning warning) {
@@ -95,9 +94,7 @@ public sealed interface OperatorWarningSink {
                                                    IDLE_THREAD_TIMEOUT_SECONDS,
                                                    TimeUnit.SECONDS,
                                                    new ArrayBlockingQueue<>(HAND_OFF_CAPACITY),
-                                                   Thread.ofVirtual()
-                                                         .name("operator-warning-hand-off")
-                                                         .factory(),
+                                                   Thread.ofVirtual().name("operator-warning-hand-off").factory(),
                                                    countingRejection());
             this.executor.allowCoreThreadTimeOut(true);
         }
@@ -139,13 +136,12 @@ public sealed interface OperatorWarningSink {
         /// A publisher that throws must not kill the drain; it is logged and the next warning is published.
         /// That is forward recovery: the warning's log line is already written.
         private Unit publish(OperatorWarning warning) {
-            return lift(Causes::fromThrowable, () -> publisher.accept(warning))
-                .onFailure(cause -> LOG.warn("[{}] operator warning for {} not emitted, the log line stands: {}",
-                                             warning.code()
-                                                    .code(),
-                                             warning.subject(),
-                                             cause.message()))
-                .or(unit());
+            return lift(Causes::fromThrowable,
+                        () -> publisher.accept(warning)).onFailure(cause -> LOG.warn("[{}] operator warning for {} not emitted, the log line stands: {}",
+                                                                                     warning.code().code(),
+                                                                                     warning.subject(),
+                                                                                     cause.message()))
+                       .or(unit());
         }
 
         private RejectedExecutionHandler countingRejection() {

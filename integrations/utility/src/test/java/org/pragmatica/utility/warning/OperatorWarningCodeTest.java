@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The code catalogue is what operators filter on (#1574), so the codes must be unique and stable.
+/// The code catalogue is how operators identify a warning (#1574), so the codes must be unique and stable.
 class OperatorWarningCodeTest {
     @Test
     void codes_areUnique() {
@@ -35,7 +35,7 @@ class OperatorWarningCodeTest {
                          .stream()
                          .filter(entry -> entry.getValue() > 1)
                          .map(Map.Entry::getKey))
-            .as("two constants sharing a code would merge their events under one operator filter")
+            .as("two constants sharing a code would make their events indistinguishable")
             .isEmpty();
     }
 

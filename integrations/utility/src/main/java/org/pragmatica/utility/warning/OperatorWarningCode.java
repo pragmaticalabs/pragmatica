@@ -17,14 +17,15 @@ package org.pragmatica.utility.warning;
 
 /// The single catalogue of operator-warning codes (#1574).
 ///
-/// Operators filter the cluster event log on `code`, so the kebab string is part of the contract.
+/// Operators identify a warning in the cluster event log by `code`, so the kebab string is part of the
+/// contract.
 /// Because call sites name a constant rather than typing a string, a typo cannot silently start a
 /// new code. Each constant also fixes its subsystem and level, so two sites cannot report the same
 /// condition under different severities. `OperatorWarningCodeTest` refuses duplicate or non-kebab
 /// codes.
 ///
-/// To add a code, append a constant here. Never rename the string of a shipped code, because
-/// operator filters depend on it.
+/// To add a code, append a constant here. Never rename the string of a shipped code, because anything
+/// that matches on it (alert rules, scripts, a future server-side filter) depends on it.
 public enum OperatorWarningCode {
     /// SWIM's #336 co-confirmation kill-gate is holding the death of a long-healthy peer. This node
     /// alone judged the peer FAULTY, with no transport corroboration.
@@ -42,7 +43,7 @@ public enum OperatorWarningCode {
         this.subsystem = subsystem;
         this.level = level;
     }
-    /// The stable kebab-case identifier that operators filter on.
+    /// The stable kebab-case identifier of the condition.
     public String code() {
         return code;
     }
