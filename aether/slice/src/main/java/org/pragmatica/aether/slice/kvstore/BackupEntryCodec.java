@@ -105,8 +105,9 @@ import static org.pragmatica.lang.Result.success;
 /// **There is exactly one valid rendering of any state.** Decoding accepts only that rendering: the
 /// decoded state must re-encode to the identical document, so `+7`, `01`, unpadded base64, reordered
 /// entries and every other spelling a lenient parser would tolerate are refused. On top of that the
-/// checksum refuses a document whose bytes changed after it was written — including a value corrupted
-/// into another value that still decodes. Each key type is bound to the one value type it holds, in
+/// checksum refuses a document ACCIDENTALLY corrupted after it was written — including a value corrupted
+/// into another value that still decodes. It is not a tamper guard: anyone who edits the document can
+/// recompute it. Each key type is bound to the one value type it holds, in
 /// both directions. Every entry is checked and every entry failure is reported with its line number.
 public record BackupEntryCodec(SliceCodec codec) {
     public static final int FORMAT_VERSION = 1;
