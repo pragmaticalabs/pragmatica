@@ -582,15 +582,15 @@ public interface RollbackManager {
                                                                          decision,
                                                                          configWitness,
                                                                          now))
-                                       .onEmpty(() -> log.debug("[requestId={}] Rollback of {} not attempted: the target no longer names {} or this node is not the committed leader",
-                                                                event.requestId(),
-                                                                rollbackArtifact.base(),
-                                                                decision.failedVersion()))
-                                       .onPresent(transaction -> submitRollback(event,
-                                                                                rollbackArtifact,
-                                                                                decision,
-                                                                                transaction,
-                                                                                now));
+                                     .onEmpty(() -> log.debug("[requestId={}] Rollback of {} not attempted: the target no longer names {} or this node is not the committed leader",
+                                                              event.requestId(),
+                                                              rollbackArtifact.base(),
+                                                              decision.failedVersion()))
+                                     .onPresent(transaction -> submitRollback(event,
+                                                                              rollbackArtifact,
+                                                                              decision,
+                                                                              transaction,
+                                                                              now));
             }
 
             private Option<LeaderValue> committedLeaderIsSelf() {
@@ -602,10 +602,10 @@ public interface RollbackManager {
             /// Empty when a committed target already names another version: someone moved it since the
             /// decision, and rolling it back would undo a newer target. An absent target is written fresh.
             private Option<KVCommand.LeaderTransaction<AetherKey, AetherValue>> fencedRollback(LeaderValue leader,
-                                                                                              ArtifactBase artifactBase,
-                                                                                              RollbackDecision decision,
-                                                                                              Option<AetherValue> configWitness,
-                                                                                              long now) {
+                                                                                               ArtifactBase artifactBase,
+                                                                                               RollbackDecision decision,
+                                                                                               Option<AetherValue> configWitness,
+                                                                                               long now) {
                 var target = currentTarget(artifactBase);
                 var movedOn = target.filter(current -> !current.currentVersion()
                                                                .equals(decision.failedVersion()))
@@ -639,18 +639,18 @@ public interface RollbackManager {
                 var targetKey = SliceTargetKey.sliceTargetKey(artifactBase);
                 var recordMutation = new KVCommand.Mutation<AetherKey, AetherValue>(recordKey,
                                                                                     recordBefore.map(AetherValue.class::cast),
-                                                                                    Option.<AetherValue>some(record));
+                                                                                    Option.<AetherValue> some(record));
                 var rolledBackTarget = target.map(current -> current.withVersion(decision.targetVersion()))
-                                             .or(() -> SliceTargetValue.sliceTargetValue(decision.targetVersion(), 1));
+                                             .or(() -> SliceTargetValue.sliceTargetValue(decision.targetVersion(),
+                                                                                         1));
                 var targetMutation = new KVCommand.Mutation<AetherKey, AetherValue>(targetKey,
                                                                                     target.map(AetherValue.class::cast),
-                                                                                    Option.<AetherValue>some(rolledBackTarget));
+                                                                                    Option.<AetherValue> some(rolledBackTarget));
                 var configGuard = new KVCommand.ReadWitness<AetherKey>(ClusterConfigKey.CURRENT,
                                                                        configWitness.map(Object.class::cast));
 
                 return new KVCommand.LeaderTransaction<AetherKey, AetherValue>(targetKey,
-                                                         UUID.randomUUID()
-                                                             .toString(),
+                                                                               UUID.randomUUID().toString(),
                                                                                leader,
                                                                                List.of(configGuard),
                                                                                List.of(recordMutation, targetMutation));
@@ -662,8 +662,9 @@ public interface RollbackManager {
                                         RollbackDecision decision,
                                         KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction,
                                         long now) {
-                cluster.<Object>apply(List.<KVCommand<AetherKey>>of(transaction))
-                       .map(results -> accepted(results, transaction.transactionId()))
+                cluster.<Object> apply(List.<KVCommand<AetherKey>> of(transaction))
+                       .map(results -> accepted(results,
+                                                transaction.transactionId()))
                        .onSuccess(accepted -> onRollbackCommitted(accepted, event, decision, rollbackArtifact, now))
                        .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
                                                      event.requestId(),
@@ -675,7 +676,8 @@ public interface RollbackManager {
                 return results.stream()
                               .anyMatch(result -> result instanceof KVCommand.TransactionResult outcome
                                                   && outcome.transactionId()
-                                                            .equals(transactionId) && outcome.accepted());
+                                                            .equals(transactionId)
+                                                  && outcome.accepted());
             }
 
             @Contract

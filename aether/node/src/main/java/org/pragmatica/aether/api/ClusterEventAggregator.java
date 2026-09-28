@@ -823,10 +823,10 @@ public final class ClusterEventAggregator {
     @Contract
     public void onAutoRollback(RollbackEvent.AutoRollbackExecuted executed) {
         emitAsLeader(new AutoRollback(hlcClock.now(),
-                              Severity.CRITICAL,
-                              "Automatic rollback of " + executed.failedArtifact().asString()
-                             + " to " + executed.targetVersion().withQualifier(),
-                              autoRollbackDetails(executed)));
+                                      Severity.CRITICAL,
+                                      "Automatic rollback of " + executed.failedArtifact().asString()
+                                     + " to " + executed.targetVersion().withQualifier(),
+                                      autoRollbackDetails(executed)));
     }
 
     private static Map<String, String> autoRollbackDetails(RollbackEvent.AutoRollbackExecuted executed) {
@@ -855,16 +855,16 @@ public final class ClusterEventAggregator {
     @Contract
     public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
         emitAsLeader(new SliceFailure(hlcClock.now(),
-                              Severity.CRITICAL,
-                              "All instances of " + event.artifact().asString()
-                             + ":" + event.method().name()
-                             + " failed",
-                              Map.of("artifact",
-                                     event.artifact().asString(),
-                                     "method",
-                                     event.method().name(),
-                                     "attemptedNodes",
-                                     String.valueOf(event.attemptedNodes().size()))));
+                                      Severity.CRITICAL,
+                                      "All instances of " + event.artifact().asString()
+                                     + ":" + event.method().name()
+                                     + " failed",
+                                      Map.of("artifact",
+                                             event.artifact().asString(),
+                                             "method",
+                                             event.method().name(),
+                                             "attemptedNodes",
+                                             String.valueOf(event.attemptedNodes().size()))));
     }
 
     @Contract

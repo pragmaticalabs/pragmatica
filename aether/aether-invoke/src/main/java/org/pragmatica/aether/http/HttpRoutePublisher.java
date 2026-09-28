@@ -110,7 +110,6 @@ public interface HttpRoutePublisher {
     @FunctionalInterface
     interface RouteOutcomeRecorder {
         RouteOutcomeRecorder NONE = (_, _, _) -> Unit.unit();
-
         Unit record(Artifact artifact, String method, ExecutionOutcome outcome);
     }
 
@@ -603,7 +602,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// lifted into a [SliceDefect.MethodThrew] failure, recorded as a defect, and answered as before by
     /// the router's error mapping instead of escaping the promise chain.
     private <T> Promise<T> recordedHandle(Handler<T> handler, RequestContext ctx, Artifact artifact, String method) {
-        return Promise.lift(HttpRoutePublisherImpl::handlerThrew, () -> handler.handle(ctx))
+        return Promise.lift(HttpRoutePublisherImpl::handlerThrew,
+                            () -> handler.handle(ctx))
                       .flatMap(promise -> promise)
                       .withResult(result -> recordRouteOutcome(artifact, method, result));
     }
