@@ -349,16 +349,18 @@ public final class InvocationMetricsCollector {
     /// | Execution ends with | Counted as |
     /// |---|---|
     /// | a value (HTTP: any value but a returned `Result.Failure`) | [#SUCCESS] |
-    /// | the method threw on the calling thread (`SliceDefect.MethodThrew`) | [#DEFECT] |
+    /// | the method threw — user code breaking the JBCT contract (`SliceDefect.MethodThrew`) | [#DEFECT] |
     /// | bridge only: request decode / response encode failed (`SliceDefect.CodecFailed`) | [#DEFECT] |
     /// | bridge only: the method does not exist in this build (`SliceDefect.MethodNotFound`) | [#DEFECT] |
-    /// | a failure the method RETURNED, whatever status it maps to (4xx or 5xx) | not counted |
+    /// | a Cause the method RETURNED — a business outcome — whatever status it maps to (4xx or 5xx) | not counted (neutral) |
     /// | HTTP: a request the router rejects before the slice (bad path/query/body → 4xx, no route → 404) | not counted |
     /// | DRAINING refusal, reply timeout, execution timeout | not counted |
     ///
-    /// A returned failure is not a defect because a downstream outage surfaces exactly that way, and
-    /// counting it would roll a healthy version back during someone else's incident. The consequence is a
-    /// stated limit: a version that fails by RETURNING errors, without throwing, is never auto-rolled back.
+    /// The classification is bridge defects (typed `SliceDefect`) versus returned Causes. A returned Cause is
+    /// not a defect because a downstream outage surfaces exactly that way, and counting it would roll a
+    /// healthy version back during someone else's incident; it is not a success either, or it could veto a
+    /// rollback. The consequence is a stated limit: a version that fails only through returned Causes is
+    /// never auto-rolled back.
     /// An HTTP request body that fails to decode is the client's input, unlike a bridge request, which
     /// another build produced.
     public enum ExecutionOutcome {
