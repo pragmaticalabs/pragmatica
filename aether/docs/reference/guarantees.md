@@ -108,7 +108,8 @@ There are **50** `AetherKey` record types (not ~40 as originally estimated), eac
     and a lower revision than the change-triggered backup head. While the head is ahead nothing is backed
     up and the head is never written over; the only signal is one `BACKUP_HEAD_AHEAD` warning per episode
     once the stall outlasts 30 s. Once this cluster's revision overtakes the head's, its state is written
-    OVER the newer head — replaced, not merely delayed — and git history keeps the replaced commit
+    OVER the newer head — replaced, not merely delayed — and git history keeps the replaced commit; the
+    replacement raises `BACKUP_HEAD_REPLACED` (WARN, naming the replaced revision), never an all-clear
     `[verified: KvBackupServiceTest.Lineage#afterAnOldPathRestart_theStallIsWarned_andTheOvertakingStateReplacesTheHead]`
     (unit level, real git; no multi-node run).
 - **The change-triggered backup (#1532)** is a separate, leader-only git repository at
@@ -118,7 +119,9 @@ There are **50** `AetherKey` record types (not ~40 as originally estimated), eac
   exactly this cluster's lineage and incarnation): a head of any other lineage is gated, whatever the
   incarnations `[mechanism: BackupDecision — another lineage is written only under a matching declaration]`. A head of this cluster's own lineage that is ahead of its state is never written over while it is
   ahead; routine lag after a leader change resolves by itself, and a stall longer than 30 s (monotonic
-  clock) raises one `BACKUP_HEAD_AHEAD` warning per episode `[verified: KvBackupServiceTest.Lineage]`.
+  clock) raises one `BACKUP_HEAD_AHEAD` warning per episode `[verified: KvBackupServiceTest.Lineage]`
+  `[unverified: a false-positive BACKUP_HEAD_AHEAD WARN needs >30 s apply lag in a newly elected leader;
+  election catch-up criterion not checked]`.
   `declare-genesis` never moves this cluster's incarnation backwards (it commits `max(own, head) + 1`,
   witnessed on the incarnation it read, so a concurrent write makes it refuse instead of being
   overwritten) and is safe to re-run after any push failure `[verified: KvBackupServiceTest.Genesis]`. The release does not cut with

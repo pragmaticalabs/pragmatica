@@ -31,9 +31,10 @@
     newer than the cluster, the refusal says to restore it instead.
 - **Git unreachable.** Commits queue in the local repository (latest state wins). Pushes retry on backoff
   capped at 60 s, and one push carries every queued commit.
-- **No credential prompts.** Git runs with `GIT_TERMINAL_PROMPT=0`, and ssh runs with
-  `-o BatchMode=yes` (appended to any `GIT_SSH_COMMAND` already set). Every git command is bounded by a
-  timeout.
+- **No credential prompts.** Git runs with `GIT_TERMINAL_PROMPT=0` (https) and ssh with
+  `-o BatchMode=yes` (appended to any `GIT_SSH_COMMAND` already set); every git command is bounded by a
+  timeout. All three are pinned by `GitBackupRepositoryTest` against a 401 http server, a prompting fake
+  ssh and a hanging fake ssh.
 - **Fixed before release:** the backup encoder no longer throws on the `LeaderKey` atom that a node's KV
   store holds beside its `AetherKey` entries. Before the fix, every flush on a real node would have
   failed.
@@ -64,5 +65,6 @@
     has no reader.
   - (d) A cold restart restored from an older snapshot writes nothing while the newer head is ahead;
     the only signal is `BACKUP_HEAD_AHEAD`. Once its revision overtakes, its state REPLACES the newer
-    head, and git history keeps the replaced commit.
+    head, and git history keeps the replaced commit. That replacement raises its own WARN,
+    `BACKUP_HEAD_REPLACED`, naming the replaced revision — never the `BACKUP_RECOVERED` all-clear.
   - The two paths never share a repository: the new one lives at `<path>/kv-backup`.
