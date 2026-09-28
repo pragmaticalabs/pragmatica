@@ -46,6 +46,13 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
         return REQUIRES_CONTEXT.promise();
     }
 
+    /// #1549: the `[streams.X]` section is bound by the SAME parse deploy validation runs, so the committed
+    /// config carries every declared key, and an unread key fails activation instead of defaulting.
+    @Override
+    public Option<SectionBinder<StreamConfig>> sectionBinder() {
+        return Option.some(StreamSectionBinding::bindStreamSection);
+    }
+
     /// #1040: qualified on the SAME rule as the publish path ([StreamAddressResolver#qualify]).
     ///
     /// Qualifying only the writer would have been worse than qualifying neither — publishers would

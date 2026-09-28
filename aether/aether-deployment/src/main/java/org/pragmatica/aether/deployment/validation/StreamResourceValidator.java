@@ -67,6 +67,8 @@ public sealed interface StreamResourceValidator {
     String RULE_PRODUCER_VERSION_EXACT = "producer-version-must-be-exact";
     String RULE_PARTITIONS_OVER_CEILING = "partitions-over-ceiling";
     String RULE_REPLICATION_INVALID = "replication-invalid";
+    String RULE_UNKNOWN_STREAM_KEY = "unknown-stream-key";
+    String RULE_STREAM_KEY_INVALID = "stream-key-invalid";
     String RULE_REPLICAS_BELOW_MINIMUM = "replicas-below-minimum";
     String RULE_SOURCE_ADDRESS_INVALID = "source-address-invalid";
     String RULE_NAMESPACE_INVALID = "namespace-invalid";
@@ -143,7 +145,7 @@ public sealed interface StreamResourceValidator {
     ///
     /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
     /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
-    /// [#RULE_REPLICAS_BELOW_MINIMUM], [#RULE_REPLICATION_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
+    /// [#RULE_REPLICAS_BELOW_MINIMUM], [#RULE_REPLICATION_INVALID], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
     /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
     /// type not named here — and #576's inert config keys ([#RULE_INERT_STREAM_CONFIG],
     /// [#RULE_INERT_CONSUMER_CONFIG]). Each names the alias it sits under, taken from the section the parser
@@ -233,10 +235,11 @@ public sealed interface StreamResourceValidator {
                                          .result();
     }
 
-    /// A STRONG declaration under either key. `consistency_mode` is the key the provisioning config binder
-    /// reads into `StreamConfig.consistencyMode` (the record component in snake case) — the one that would
-    /// actually reach the write path. `consistency` is the key `StreamConfigParser` reads and nothing binds;
-    /// a STRONG under it is refused too, because it asserts a guarantee the stream would silently not have.
+    /// A STRONG declaration under either key. `consistency` is the key `StreamConfigParser` reads, and since
+    /// #1549 the parse slice activation runs too, so it is the one that reaches the write path.
+    /// `consistency_mode` is the record-binder spelling that reached the runtime before #1549; the parser
+    /// now refuses it as an unknown key, and a STRONG under it is still refused here as a gating failure so
+    /// the deploy names the guarantee it cannot honour rather than only the misspelling.
     /// Read from the raw TOML so the check sees exactly the text the binder sees.
     private static List<StreamValidationFailure> consistencyFailures(String toml) {
         return TomlParser.parse(toml)
@@ -339,6 +342,11 @@ public sealed interface StreamResourceValidator {
             case StreamDeclarationError.PartitionsOverCeiling _ -> RULE_PARTITIONS_OVER_CEILING;
             case StreamDeclarationError.ReplicasBelowMinimum _ -> RULE_REPLICAS_BELOW_MINIMUM;
             case StreamDeclarationError.ReplicationInvalid _ -> RULE_REPLICATION_INVALID;
+            case StreamDeclarationError.UnknownStreamKeys _ -> RULE_UNKNOWN_STREAM_KEY;
+            case StreamDeclarationError.NotAnInteger _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.MalformedValue _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.ValueOverflows _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.ValueOutOfRange _ -> RULE_STREAM_KEY_INVALID;
             case ResourceAddressError.General address -> addressRule(address);
             case ResourceVersionError _ -> RULE_VERSION_FORMAT_INVALID;
             case StreamVersionSpecError _ -> RULE_VERSION_FORMAT_INVALID;
@@ -406,11 +414,21 @@ public sealed interface StreamResourceValidator {
         }
     }
 
+    /// A consumer key the parser refuses (#1549: `checkpoint-interval` that is not a duration of at least 1 ms)
+    /// rejects the section under the same per-cause rule as a stream key, instead of throwing out of validation.
     private static void guardConsumerConfigs(String alias, String toml, List<StreamValidationFailure> failures) {
-        StreamConfigParser.parseConsumers(toml, alias).onSuccess(consumers -> consumers.forEach((group, config) -> guardConsumerConfig(alias,
-                                                                                                                                       group,
-                                                                                                                                       config,
-                                                                                                                                       failures)));
+        StreamConfigParser.parseConsumers(toml, alias)
+                          .onFailure(cause -> failures.add(consumerFailure(alias, cause)))
+                          .onSuccess(consumers -> consumers.forEach((group, config) -> guardConsumerConfig(alias,
+                                                                                                           group,
+                                                                                                           config,
+                                                                                                           failures)));
+    }
+
+    private static StreamValidationFailure consumerFailure(String alias, Cause cause) {
+        return StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
+                                                               ruleFor(cause),
+                                                               cause.message());
     }
 
     private static void guardConsumerConfig(String alias,

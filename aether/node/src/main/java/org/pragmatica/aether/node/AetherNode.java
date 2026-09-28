@@ -363,7 +363,7 @@ public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
     /// Read-window upper bound for `events()` on the `system:cluster-events:1.0.0` stream
     /// (B5b — replicated partition transport). The stream's actual retention `maxCount` is now
-    /// config-overridable (see [#resolveClusterEventsMaxCount]); this constant is the read window the
+    /// config-overridable (see [ClusterEventsLimits]); this constant is the read window the
     /// aggregator requests and must stay >= that maxCount so a single fetch covers the full retained
     /// window (the B5a/#239 fix). The default retention maxCount equals this value.
     long CLUSTER_EVENTS_MAX_RETAINED = org.pragmatica.aether.api.ClusterEventAggregator.MAX_RETAINED_EVENTS;
@@ -481,25 +481,34 @@ public interface AetherNode extends ManageableNode {
                      .flatMap(_ -> createNode(config, delegateRouter, nodeCodec, jvmExit));
     }
 
+    /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
+    /// value refuses the boot ([ClusterEventsLimits.InvalidLimit]) instead of reaching the stream engine.
     private static Result<AetherNode> createNode(AetherNodeConfig config,
                                                  MessageRouter.DelegateRouter delegateRouter,
                                                  SliceCodec nodeCodec,
                                                  Runnable jvmExit) {
-        return createNodeWithBootToken(config, delegateRouter, nodeCodec, jvmExit, BootToken.bootToken());
+        return ClusterEventsLimits.clusterEventsLimits().flatMap(limits -> createNodeWithBootToken(config,
+                                                                                                   delegateRouter,
+                                                                                                   nodeCodec,
+                                                                                                   jvmExit,
+                                                                                                   BootToken.bootToken(),
+                                                                                                   limits));
     }
 
     private static Result<AetherNode> createNodeWithBootToken(AetherNodeConfig config,
                                                               MessageRouter.DelegateRouter delegateRouter,
                                                               SliceCodec nodeCodec,
                                                               Runnable jvmExit,
-                                                              long bootToken) {
+                                                              long bootToken,
+                                                              ClusterEventsLimits clusterEventsLimits) {
         return resolveStorageEncryptionKeyring(config).flatMap(keyring -> createNodeWithStorage(config,
                                                                                                 delegateRouter,
                                                                                                 nodeCodec,
                                                                                                 jvmExit,
                                                                                                 keyring,
                                                                                                 resolvePersistence(config),
-                                                                                                bootToken));
+                                                                                                bootToken,
+                                                                                                clusterEventsLimits));
     }
 
     private static Result<AetherNode> createNodeWithStorage(AetherNodeConfig config,
@@ -508,7 +517,8 @@ public interface AetherNode extends ManageableNode {
                                                             Runnable jvmExit,
                                                             Option<EncryptionKeyring> storageKeyring,
                                                             RabiaPersistence<KVCommand<AetherKey>> persistence,
-                                                            long bootToken) {
+                                                            long bootToken,
+                                                            ClusterEventsLimits clusterEventsLimits) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
@@ -672,7 +682,8 @@ public interface AetherNode extends ManageableNode {
                                                              syncHoldRegistry,
                                                              jvmExit,
                                                              storageKeyring,
-                                                             bootToken));
+                                                             bootToken,
+                                                             clusterEventsLimits));
     }
 
     /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
@@ -1505,7 +1516,8 @@ public interface AetherNode extends ManageableNode {
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit,
                                                    Option<EncryptionKeyring> storageKeyring,
-                                                   long bootToken) {
+                                                   long bootToken,
+                                                   ClusterEventsLimits clusterEventsLimits) {
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -4577,17 +4589,14 @@ public interface AetherNode extends ManageableNode {
         // the same codec app streams are wired with.
         //
         // Retention is production-grade and config-overridable (item 4 / OOM guard): bounded on count,
-        // bytes (off-heap hard cap), and age, mode ANY. The publisher/consumer refs the aggregator was
+        // bytes (off-heap hard cap), and age, mode ANY — see ClusterEventsLimits, checked at boot (#1549). The publisher/consumer refs the aggregator was
         // constructed with are bound here; until then emits fall back to log-only (bootstrap window).
-        var clusterEventsRetention = org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy(resolveClusterEventsMaxCount(),
-                                                                                                 resolveClusterEventsMaxBytes(),
-                                                                                                 resolveClusterEventsMaxAgeMs(),
-                                                                                                 org.pragmatica.aether.slice.RetentionMode.ANY);
+        var clusterEventsRetention = clusterEventsLimits.retention();
         var clusterEventsStreamConfig = org.pragmatica.aether.slice.StreamConfig.streamConfig(clusterEventsStreamName,
                                                                                               1,
                                                                                               clusterEventsRetention,
                                                                                               "earliest",
-                                                                                              resolveClusterEventsMaxEventSizeBytes(),
+                                                                                              clusterEventsLimits.maxEventSizeBytes(),
                                                                                               org.pragmatica.aether.slice.ConsistencyMode.EVENTUAL,
                                                                                               1);
         // Fix #3 / #1230: the forward-capable cluster-events CONSUMER and PUBLISHER are wired further below,
@@ -7310,45 +7319,6 @@ public interface AetherNode extends ManageableNode {
                      .filter(s -> !s.isBlank())
                      .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
                      .or(128 * 1024 * 1024L);
-    }
-
-    /// Resolve a long-valued config knob from an environment variable, falling back to `defaultValue`
-    /// when unset, blank, or unparseable. Mirrors the [#resolveStreamMaxMemoryBytes] env-var pattern —
-    /// the established node-boot config surface for stream/system operational settings.
-    private static long resolveLongEnv(String name, long defaultValue) {
-        return Option.option(System.getenv(name))
-                     .filter(s -> !s.isBlank())
-                     .flatMap(s -> Result.lift(() -> Long.parseLong(s.trim())).option())
-                     .or(defaultValue);
-    }
-
-    /// `system:cluster-events:1.0.0` retention `maxCount` (OOM guard, count dimension).
-    /// Default 10_000 — matches [#CLUSTER_EVENTS_MAX_RETAINED], the aggregator read window.
-    /// Override: `CLUSTER_EVENTS_MAX_COUNT`.
-    private static long resolveClusterEventsMaxCount() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_COUNT", CLUSTER_EVENTS_MAX_RETAINED);
-    }
-
-    /// `system:cluster-events:1.0.0` retention `maxBytes` — the byte hard-cap OOM guard for the
-    /// off-heap partition store. Default 16MB. Cluster events are small JSON records, so 16MB retains
-    /// many thousands of them while leaving the bulk of the per-node stream budget
-    /// (`DEFAULT_MAX_TOTAL_BYTES`, 128MB) for app streams — the prior 64MB default reserved HALF the
-    /// budget for one system stream and starved app-stream creation (STREAM_MEMORY_EXCEEDED).
-    /// Override: `CLUSTER_EVENTS_MAX_BYTES`.
-    private static long resolveClusterEventsMaxBytes() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_BYTES", 16L * 1024 * 1024);
-    }
-
-    /// `system:cluster-events:1.0.0` retention `maxAgeMs`. Default ~24h.
-    /// Override: `CLUSTER_EVENTS_MAX_AGE_MS`.
-    private static long resolveClusterEventsMaxAgeMs() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_AGE_MS", 24L * 60 * 60 * 1000);
-    }
-
-    /// `system:cluster-events:1.0.0` per-event size cap. Default ~64KB.
-    /// Override: `CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES`.
-    private static long resolveClusterEventsMaxEventSizeBytes() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES", 64L * 1024);
     }
 
     /// #517: same invariant as [#findSelfAddress]; `localhost` was a dead placeholder, never a default.

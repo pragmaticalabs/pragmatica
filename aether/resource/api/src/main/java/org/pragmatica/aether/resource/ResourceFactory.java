@@ -5,8 +5,11 @@
 package org.pragmatica.aether.resource;
 
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.AsyncCloseable;
 
@@ -26,6 +29,22 @@ public interface ResourceFactory<T, C> {
 
     default boolean supports(C config) {
         return true;
+    }
+
+    /// The factory's own binder for its `resources.toml` section, when the generic record binder cannot
+    /// read the section's documented format (#1549). [SpiResourceProvider] binds with it — over the
+    /// slice's configuration provider — instead of the record binder, which derives snake_case keys from
+    /// the config record's components and resolves any key it does not find from the record's `DEFAULT`.
+    /// Absent (the default) keeps the record binder.
+    default Option<SectionBinder<C>> sectionBinder() {
+        return Option.none();
+    }
+
+    /// Binds a config from the named section of a configuration provider; a declaration the binder
+    /// cannot honour is a failure, never a default.
+    @FunctionalInterface
+    interface SectionBinder<C> {
+        Result<C> bind(ConfigurationProvider provider, String section);
     }
 
     /// Default unload: close the resource through whichever close convention it implements.
