@@ -18,9 +18,9 @@ package org.pragmatica.dht.storage;
 /// Dependency-inverted owner-epoch fence for the DHT data-plane write path (#345 piece 1c).
 ///
 /// The fencing token is the owner's monotonic ownership epoch — minted CP-side as
-/// `org.pragmatica.aether.slice.generation.Epoch(rabiaTerm, localCounter)`. That `Epoch` type lives
-/// in the BSL-1.1 `aether/slice` module, which depends on this Apache-2.0 module — NEVER the reverse.
-/// So this SPI carries the epoch only as its two primitive `long`s, and the real high-water-backed
+/// `org.pragmatica.aether.slice.generation.Epoch(incarnation, rabiaTerm, localCounter)`. That `Epoch` type
+/// lives in the BSL-1.1 `aether/slice` module, which depends on this Apache-2.0 module — NEVER the reverse.
+/// So this SPI carries the epoch only as its three primitive `long`s, and the real high-water-backed
 /// implementation is injected from the aether-level wiring (the module that depends on both DHT and
 /// `aether/slice`). The default [#noOp] keeps the engine fence-free for non-cluster paths and tests.
 ///

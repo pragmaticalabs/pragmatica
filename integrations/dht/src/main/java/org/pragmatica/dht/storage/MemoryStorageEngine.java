@@ -147,7 +147,8 @@ public final class MemoryStorageEngine implements StorageEngine {
     }
 
     /// Lexicographic `(incarnation, term, counter)` comparison — identical semantics to `Epoch.compareTo`,
-    /// which mints these primitives in the BSL-1.1 module this engine must not depend on.
+    /// which mints these primitives in the BSL-1.1 module this engine must not depend on, so it cannot
+    /// delegate; the copy is pinned by `MemoryStorageEngineEpochFenceTest.NewerIncarnation` (#1529).
     private static int compareEpoch(long incarnation1,
                                     long term1,
                                     long counter1,

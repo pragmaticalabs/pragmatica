@@ -42,8 +42,10 @@ class MemoryStorageEngineEpochFenceTest {
     }
 
     /// In-test high-water-backed gate keyed by the single "core" arc (mirrors the aether wiring's
-    /// per-DHT-partition high-water, compared exactly as `Epoch.compareTo`: term then counter).
+    /// per-DHT-partition high-water, compared exactly as `Epoch.compareTo`: incarnation, then term, then
+    /// counter — #1529).
     private static final class RecordingGate implements OwnerEpochGate {
+        private long hwIncarnation = Long.MIN_VALUE;
         private long hwTerm = Long.MIN_VALUE;
         private long hwCounter = Long.MIN_VALUE;
         private int advanceCount;
@@ -54,19 +56,24 @@ class MemoryStorageEngineEpochFenceTest {
 
         @Override
         public boolean isStale(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
-            return seeded() && compare(hwTerm, hwCounter, epochTerm, epochCounter) > 0;
+            return seeded() && compare(hwIncarnation, hwTerm, hwCounter, epochIncarnation, epochTerm, epochCounter) > 0;
         }
 
         @Override
         public void advance(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
             advanceCount++;
-            if (!seeded() || compare(epochTerm, epochCounter, hwTerm, hwCounter) > 0) {
+            if (!seeded() || compare(epochIncarnation, epochTerm, epochCounter, hwIncarnation, hwTerm, hwCounter) > 0) {
+                hwIncarnation = epochIncarnation;
                 hwTerm = epochTerm;
                 hwCounter = epochCounter;
             }
         }
 
-        private static int compare(long t1, long c1, long t2, long c2) {
+        private static int compare(long i1, long t1, long c1, long i2, long t2, long c2) {
+            var byIncarnation = Long.compare(i1, i2);
+            if (byIncarnation != 0) {
+                return byIncarnation;
+            }
             var byTerm = Long.compare(t1, t2);
             return byTerm != 0 ? byTerm : Long.compare(c1, c2);
         }
@@ -181,6 +188,30 @@ class MemoryStorageEngineEpochFenceTest {
                   .await()
                   .onSuccess(_ -> fail("Prior epoch must now be fenced"))
                   .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.StaleEpochWrite.class));
+        }
+    }
+
+    /// #1529: the engine's own per-key ordering is incarnation-first, like `Epoch.compareTo`. It cannot
+    /// delegate to `Epoch.compareTo` (that type lives in the BSL-1.1 `aether/slice` module, which depends
+    /// on this Apache-2.0 module, never the reverse — see [OwnerEpochGate]), so this pins the copy: a cold
+    /// restart restarts the term, and the next run's first write must still replace the previous run's
+    /// entry however high that entry's term and HLC version were.
+    @Nested
+    class NewerIncarnation {
+        @Test
+        void putVersioned_newerIncarnationAtALowerTerm_replacesThePreviousRunsEntry() {
+            var engine = memoryStorageEngine(new RecordingGate());
+            engine.putVersioned(key("k"), value("previous-run"), 200L, 0L, 9L, 9L).await();
+
+            engine.putVersioned(key("k"), value("next-run"), 50L, 1L, 1L, 0L)
+                  .await()
+                  .onFailure(c -> fail("A newer incarnation must be accepted: " + c.message()))
+                  .onSuccess(written -> assertThat(written).isTrue());
+
+            engine.get(key("k"))
+                  .await()
+                  .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("next-run")))
+                                       .onEmpty(() -> fail("value must be present")));
         }
     }
 
