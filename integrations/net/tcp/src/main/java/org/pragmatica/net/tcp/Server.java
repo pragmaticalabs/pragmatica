@@ -43,6 +43,8 @@ import io.netty.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Promise.promise;
+import static org.pragmatica.lang.Promise.resolved;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
@@ -112,7 +114,8 @@ public interface Server {
             public Promise<Unit> stop(Supplier<Promise<Unit>> intermediate) {
                 log.trace("Stopping {}: closing server channel", name());
 
-                return Promise.all(completion(serverChannel.close()), udpClosed())
+                return Promise.all(completion(serverChannel.close()),
+                                   udpClosed())
                               .id()
                               .fold(_ -> intermediate.get())
                               .fold(this::shutdownGroupsThen);
@@ -124,17 +127,21 @@ public interface Server {
             }
 
             private Promise<Unit> shutdownGroupsThen(Result<Unit> intermediateOutcome) {
-                return shutdownGroups().fold(groupsOutcome -> Promise.resolved(intermediateOutcome.flatMap(_ -> groupsOutcome)));
+                return shutdownGroups().fold(groupsOutcome -> resolved(intermediateOutcome.flatMap(_ -> groupsOutcome)));
             }
 
             private Promise<Unit> shutdownGroups() {
                 log.debug("Stopping {}: shutting down boss and worker groups", name());
 
-                return Promise.all(terminated(bossGroup), terminated(workerGroup))
+                return Promise.all(terminated(bossGroup),
+                                   terminated(workerGroup))
                               .id()
                               .mapToUnit()
-                              .onSuccessRun(() -> log.info("Server {} stopped", name()))
-                              .onFailure(cause -> log.warn("Server {} did not stop cleanly: {}", name(), cause.message()));
+                              .onSuccessRun(() -> log.info("Server {} stopped",
+                                                           name()))
+                              .onFailure(cause -> log.warn("Server {} did not stop cleanly: {}",
+                                                           name(),
+                                                           cause.message()));
             }
 
             @Override
@@ -214,13 +221,12 @@ public interface Server {
     long SHUTDOWN_TIMEOUT_MS = 5_000L;
 
     private static Promise<Unit> terminated(EventLoopGroup group) {
-        return completion(group.shutdownGracefully(0, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS))
-                          .timeout(timeSpan(SHUTDOWN_TIMEOUT_MS + 1_000L).millis());
+        return completion(group.shutdownGracefully(0, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)).timeout(timeSpan(SHUTDOWN_TIMEOUT_MS + 1_000L).millis());
     }
 
     /// A Netty future as a promise: success, or its failure cause.
     private static Promise<Unit> completion(Future<?> future) {
-        return Promise.promise(promise -> future.addListener(done -> promise.resolve(outcomeOf(done))));
+        return promise(settled -> future.addListener(done -> settled.resolve(outcomeOf(done))));
     }
 
     private static Result<Unit> outcomeOf(Future<?> done) {
