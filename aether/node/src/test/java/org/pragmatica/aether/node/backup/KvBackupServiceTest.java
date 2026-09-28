@@ -8,12 +8,14 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -28,6 +30,8 @@ import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -68,8 +72,15 @@ class KvBackupServiceTest {
     private long slot;
 
     @BeforeEach
+    @SuppressWarnings({"unchecked", "rawtypes"})
     void setUp() {
         kvStore = new KVStore<>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
+        // The committed leader a declaration's leader transactions are authorized by.
+        kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE,
+                                                                                       LeaderValue.leaderValue(NodeId.nodeId("node-1")
+                                                                                                                         .unwrap(),
+                                                                                                                   1L)))),
+                                 ++slot);
     }
 
     @Nested
@@ -349,21 +360,113 @@ class KvBackupServiceTest {
             assertThat(commitCount(remote)).as("seed, leadership flush, the change").isEqualTo(3);
         }
 
-        /// A leader whose state is behind the backup (a deposed leader pushing late) writes nothing.
+        /// Routine lag after a leader change: the previous leader's last flush put the head a few revisions
+        /// past what this new leader has applied. Nothing is written while behind, nothing is warned, and
+        /// once this leader's state passes the head it is written.
         @Test
-        void aHeadAheadOfThisLeader_isLeftAlone() {
+        void aHeadBrieflyAheadOfThisLeader_isNotWrittenOver_andIsNotWarned() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, slot + 6));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.advance(TIMING.quietMillis());
+
+            assertThat(commitCount(remote)).as("behind the head: nothing written").isEqualTo(1);
+
+            for (int i = 0; i < 5; i++) {
+                put(service, ConfigKey.forKey("catch-up-" + i), ConfigValue.configValue("catch-up-" + i, "v"));
+            }
+            scheduler.advance(5_000);
+
+            assertThat(remoteDocument(remote).entries()).containsKey(ConfigKey.forKey("catch-up-4"));
+            assertThat(warnings).as("routine lag stays quiet").isEmpty();
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// A head that STAYS ahead past the bound is warned exactly once for the episode, and still never
+        /// written over while it is ahead.
+        @Test
+        void aHeadAheadPastTheBound_warnsOncePerEpisode_andIsNeverWrittenOverWhileAhead() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 1_000_000));
             var service = leaderService(Option.some(remote));
 
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
-            scheduler.runUntilIdle();
+            scheduler.advance(TIMING.quietMillis());
 
+            assertThat(warnings).as("inside the bound").isEmpty();
+
+            scheduler.advance(KvBackupService.Timing.DEFAULT_HEAD_AHEAD_WARN_MILLIS + 2 * TIMING.maxRetryMillis());
+            scheduler.advance(3 * TIMING.maxRetryMillis());
+
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD);
+            assertThat(warnings.getFirst()
+                               .detail()).contains("revision 1000000", "REPLACES");
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.HEAD_AHEAD);
             assertThat(commitCount(remote)).isEqualTo(1);
             assertThat(remoteDocument(remote).header()
                                              .revision()).isEqualTo(1_000_000);
-            assertThat(warnings).isEmpty();
+        }
+
+        /// The episode ends when this cluster's state passes the head; a head that later goes ahead again
+        /// is a new episode and warns again.
+        @Test
+        void aNewHeadAheadEpisode_afterRecovery_warnsAgain() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 1_000));
+            var service = leaderService(Option.some(remote));
+
+            scheduler.advance(KvBackupService.Timing.DEFAULT_HEAD_AHEAD_WARN_MILLIS + 2 * TIMING.maxRetryMillis());
+            slot = 2_000;
+            put(service, ConfigKey.forKey("overtake"), ConfigValue.configValue("overtake", "v"));
+            scheduler.advance(TIMING.maxRetryMillis());
+
+            assertThat(remoteDocument(remote).entries()).containsKey(ConfigKey.forKey("overtake"));
+            seedRemoteOnTop(remote, BackupHeader.backupHeader(LINEAGE, 1, 3_000_000));
+            put(service, ConfigKey.forKey("behind-again"), ConfigValue.configValue("behind-again", "v"));
+            scheduler.advance(TIMING.maxRetryMillis());
+
+            assertThat(warnings).as("the new episode starts its own bound")
+                                .extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_RECOVERED);
+
+            scheduler.advance(KvBackupService.Timing.DEFAULT_HEAD_AHEAD_WARN_MILLIS + 2 * TIMING.maxRetryMillis());
+
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_RECOVERED, Code.BACKUP_HEAD_AHEAD);
+        }
+
+        /// Hazard (d), pinned as it is (v1621's probe): under the interim old persistence path a cold restart
+        /// can come back with the same lineage and incarnation and an OLDER revision. Its changes are not
+        /// backed up while the head is ahead — the sustained warning is the only signal — and once its
+        /// revision overtakes, its state REPLACES the newer head (git history keeps the replaced commit).
+        /// #1533 removes the old path.
+        @Test
+        void afterAnOldPathRestart_theStallIsWarned_andTheOvertakingStateReplacesTheHead() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 1, 5_000));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ConfigKey.forKey("after-restart"), ConfigValue.configValue("after-restart", "v"));
+            scheduler.advance(KvBackupService.Timing.DEFAULT_HEAD_AHEAD_WARN_MILLIS + 2 * TIMING.maxRetryMillis());
+
+            assertThat(remoteDocument(remote).entries()).doesNotContainKey(ConfigKey.forKey("after-restart"));
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_HEAD_AHEAD);
+
+            slot = 6_000;
+            put(service, ConfigKey.forKey("after-overtake"), ConfigValue.configValue("after-overtake", "v"));
+            scheduler.advance(TIMING.maxRetryMillis());
+
+            assertThat(remoteDocument(remote).entries()).doesNotContainKey(ConfigKey.forKey("seed"))
+                                                        .containsKey(ConfigKey.forKey("after-overtake"));
+            assertThat(commitCount(remote)).as("the replaced head is still in history").isGreaterThan(1);
         }
     }
 
@@ -442,6 +545,70 @@ class KvBackupServiceTest {
             assertThat(commitCount(remote)).as("foreign head, the declaration, this cluster's state — history kept")
                                            .isEqualTo(3);
             assertThat(git(Path.of(remote), "show", "backup:" + GitBackupRepository.DECLARATION)).isEqualTo(LINEAGE + " 4\n");
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// B1: a cluster already past the head's incarnation moves further forward, never back to
+        /// head + 1 — that would reuse an incarnation this lineage already ran.
+        @Test
+        void declareGenesis_neverMovesThisClustersIncarnationBackwards() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            var service = leaderService(Option.some(remote), 9);
+
+            var declared = settle(BackupGenesis.backupGenesis(service)
+                                        .declare(commands -> applyAndNotify(service, commands)))
+                                        .unwrap();
+
+            assertThat(declared.incarnation()).isEqualTo(10);
+            assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(10);
+        }
+
+        /// N3: the supersede is witnessed on the incarnation it read. A concurrent write landing first (a
+        /// restore, another declaration) makes it refuse, and the concurrent value survives.
+        @Test
+        void declareGenesis_overAConcurrentIncarnationChange_isRefused_notClobbered() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            var service = leaderService(Option.some(remote), 1);
+            var concurrent = ClusterIncarnationValue.clusterIncarnationValue("restored-lineage", 3);
+
+            var refused = settle(BackupGenesis.backupGenesis(service)
+                                       .declare(commands -> concurrentWriteThenApply(service, concurrent, commands)));
+
+            assertThat(failureOf(refused)).isEqualTo(BackupGenesis.DeclareGenesisError.General.NOT_COMMITTED);
+            assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(concurrent));
+        }
+
+        /// B2: the push of the declaration is refused (not a fast-forward rejection — a remote policy or an
+        /// outage). Re-running the command after the remote recovers publishes the declaration already
+        /// committed locally, lifts the gate, and does not bump the incarnation a second time.
+        @Test
+        void declareGenesis_afterARefusedPush_isReRunnable_andLiftsTheGate() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, 40));
+            var service = leaderService(Option.some(remote), 1);
+            var hook = installRefusingHook(remote);
+
+            var first = settle(BackupGenesis.backupGenesis(service)
+                                     .declare(commands -> applyAndNotify(service, commands)));
+
+            assertThat(first.isFailure()).as("the remote refused the push").isTrue();
+            deleteFile(hook);
+
+            var second = settle(BackupGenesis.backupGenesis(service)
+                                      .declare(commands -> applyAndNotify(service, commands)));
+
+            assertThat(second.map(BackupGenesis.GenesisDeclared::incarnation)).isEqualTo(Result.success(4L));
+            assertThat(ClusterIncarnation.current(kvStore)).as("no second bump").isEqualTo(4);
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.advance(TIMING.maxDelayMillis());
+
+            assertThat(remoteDocument(remote).header()
+                                             .lineageId()).isEqualTo(LINEAGE);
             assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
         }
 
@@ -556,9 +723,11 @@ class KvBackupServiceTest {
 
     /// Resolve a promise whose steps run on the manual scheduler: keep running scheduled work until it
     /// settles.
+    /// Only work due NOW runs (the worker steps a declaration queues): a retry pending on backoff — a head
+    /// ahead, a failed push — must not be spun through while waiting.
     private <T> Result<T> settle(Promise<T> promise) {
         for (int i = 0; i < 200 && !promise.isResolved(); i++) {
-            scheduler.runUntilIdle();
+            scheduler.advance(0);
             pause();
         }
 
@@ -588,26 +757,80 @@ class KvBackupServiceTest {
         return result.fold(cause -> cause, _ -> Assertions.fail("expected a failure"));
     }
 
-    /// The consensus applier as a node would run it: apply the batch, then deliver the notifications.
+    /// The consensus applier as a node would run it: apply the batch (in order, one command at a time, so
+    /// each notification carries the value it replaced), deliver the notifications, answer the results.
     private Promise<List<Object>> applyAndNotify(KvBackupService service, List<KVCommand<AetherKey>> commands) {
-        var olds = commands.stream()
-                           .map(command -> kvStore.get(command.key()))
-                           .toList();
+        var results = new ArrayList<Object>();
 
-        kvStore.processCommitted(kvStore.createBatch(commands), ++slot);
-        for (int i = 0; i < commands.size(); i++) {
-            notify(service, commands.get(i), olds.get(i));
+        for (var command : commands) {
+            results.add(applyOneAndNotify(service, command));
         }
 
-        return Promise.success(List.of());
+        return Promise.success(List.copyOf(results));
+    }
+
+    private Object applyOneAndNotify(KvBackupService service, KVCommand<AetherKey> command) {
+        var old = kvStore.get(command.key());
+        List<Object> results = kvStore.processCommitted(kvStore.createBatch(List.of(command)), ++slot);
+        var result = results.getFirst();
+
+        notify(service, command, old, result);
+
+        return result;
+    }
+
+    /// A concurrent incarnation write that commits just before the declaration's batch.
+    private Promise<List<Object>> concurrentWriteThenApply(KvBackupService service,
+                                                           ClusterIncarnationValue concurrent,
+                                                           List<KVCommand<AetherKey>> commands) {
+        applyOneAndNotify(service, new KVCommand.Remove<>(ClusterIncarnationKey.clusterIncarnationKey()));
+        applyOneAndNotify(service, new KVCommand.Put<>(ClusterIncarnationKey.clusterIncarnationKey(), concurrent));
+
+        return applyAndNotify(service, commands);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void notify(KvBackupService service, KVCommand<AetherKey> command, Option<AetherValue> old) {
+    private static void notify(KvBackupService service, KVCommand<AetherKey> command, Option<AetherValue> old, Object result) {
         switch (command) {
             case KVCommand.Put put -> service.onValuePut(new ValuePut<>(put, old));
             case KVCommand.Remove remove -> service.onValueRemove(new ValueRemove<>(remove, old));
+            case KVCommand.LeaderTransaction transaction when result instanceof KVCommand.TransactionResult outcome && outcome.accepted() -> notifyMutations(service,
+                                                                                                                                                          transaction);
             default -> {}
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void notifyMutations(KvBackupService service, KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction) {
+        for (var mutation : transaction.mutations()) {
+            mutation.replacement()
+                    .onPresent(value -> service.onValuePut(new ValuePut<>(new KVCommand.Put<>(mutation.key(), value),
+                                                                          mutation.expected())))
+                    .onEmpty(() -> service.onValueRemove(new ValueRemove<>(new KVCommand.Remove<>(mutation.key()),
+                                                                           mutation.expected())));
+        }
+    }
+
+    private static Path installRefusingHook(String remote) {
+        var hook = Path.of(remote)
+                       .resolve("hooks")
+                       .resolve("pre-receive");
+
+        writeFile(hook, "#!/bin/sh\necho refused by policy\nexit 1\n");
+        try {
+            Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+        return hook;
+    }
+
+    private static void deleteFile(Path path) {
+        try {
+            Files.delete(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 

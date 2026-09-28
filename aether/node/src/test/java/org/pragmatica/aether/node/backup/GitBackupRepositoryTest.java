@@ -4,7 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Map;
 
 import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
 import org.pragmatica.lang.Option;
@@ -12,6 +17,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -136,5 +142,75 @@ class GitBackupRepositoryTest {
 
     private GitBackupRepository repository(String name, Option<String> remote) {
         return GitBackupRepository.gitBackupRepository(temp.resolve(name), remote, "backup", TIMEOUT);
+    }
+
+    /// ssh prompts on the controlling tty and ignores `GIT_TERMINAL_PROMPT`. A fake `ssh` that fails at once
+    /// in batch mode and otherwise waits like a password prompt: the fetch must fail fast, well inside the
+    /// git timeout.
+    @Test
+    @Timeout(60)
+    void anSshRemote_neverWaitsOnAPrompt() {
+        var repository = sshRepository(PROMPTING_SSH, TimeSpan.timeSpan(20).seconds());
+
+        repository.prepare();
+        var started = System.nanoTime();
+        var fetched = repository.fetchRemoteHead();
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+        assertThat(fetched.isFailure()).isTrue();
+        assertThat(elapsedMillis).as("failed without waiting on the prompt").isLessThan(10_000);
+    }
+
+    /// A git that hangs (a remote that accepts the connection and never answers) is bounded by the timeout.
+    @Test
+    @Timeout(90)
+    void aHungGit_isBoundedByTheTimeout() {
+        var repository = sshRepository(HANGING_SSH, TimeSpan.timeSpan(2).seconds());
+
+        repository.prepare();
+        var started = System.nanoTime();
+        var fetched = repository.fetchRemoteHead();
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+        assertThat(fetched.isFailure()).isTrue();
+        assertThat(elapsedMillis).as("bounded by the 2s timeout").isLessThan(15_000);
+    }
+
+    @Test
+    void batchModeSsh_keepsTheOperatorsSshCommand_andAddsBatchMode() {
+        assertThat(GitBackupRepository.batchModeSsh(Option.some("ssh -i /keys/backup -p 2222"))).isEqualTo("ssh -i /keys/backup -p 2222 -o BatchMode=yes");
+        assertThat(GitBackupRepository.batchModeSsh(Option.none())).isEqualTo("ssh -o BatchMode=yes");
+    }
+
+    private static final String PROMPTING_SSH = """
+                                                #!/bin/sh
+                                                case "$*" in *BatchMode=yes*) echo "Permission denied (publickey)." >&2; exit 255;; esac
+                                                sleep 30
+                                                exit 255
+                                                """;
+    private static final String HANGING_SSH = """
+                                              #!/bin/sh
+                                              sleep 40
+                                              exit 255
+                                              """;
+
+    /// A repository whose remote is reached over ssh, with `ssh` on the PATH replaced by `script`.
+    private GitBackupRepository sshRepository(String script, TimeSpan timeout) {
+        var bin = temp.resolve("bin");
+        var ssh = bin.resolve("ssh");
+
+        try {
+            Files.createDirectories(bin);
+            Files.writeString(ssh, script);
+            Files.setPosixFilePermissions(ssh, PosixFilePermissions.fromString("rwxr-xr-x"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+        return GitBackupRepository.gitBackupRepository(temp.resolve("local"),
+                                                       Option.some("ssh://git@backup.invalid/backup.git"),
+                                                       "backup",
+                                                       timeout,
+                                                       Map.of("PATH", bin + ":" + System.getenv("PATH")));
     }
 }

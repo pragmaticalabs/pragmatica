@@ -82,6 +82,7 @@ public final class KvBackupService {
     private final AtomicLong lastDirtyAt = new AtomicLong();
     private final AtomicReference<Status> status = new AtomicReference<>(Status.CURRENT);
     private final AtomicLong pushFailingSince = new AtomicLong(-1);
+    private final AtomicLong headAheadSince = new AtomicLong(-1);
     private final AtomicLong retryDelay;
     // Owned by the worker thread only.
     private Option<String> lastWrittenBody = Option.none();
@@ -95,19 +96,48 @@ public final class KvBackupService {
         void schedule(Runnable task, long delayMillis);
     }
 
+    /// `headAheadWarnMillis` bounds how long the head may stay ahead of this leader before it warns: a new
+    /// leader whose apply lags its predecessor's last flush catches up in seconds.
     public record Timing(long quietMillis,
                          long maxDelayMillis,
                          long initialRetryMillis,
                          long maxRetryMillis,
-                         long pushLagWarnMillis) {
-        public static final Timing DEFAULT = new Timing(500, 5_000, 1_000, 60_000, 60_000);
+                         long pushLagWarnMillis,
+                         long headAheadWarnMillis) {
+        public static final long DEFAULT_HEAD_AHEAD_WARN_MILLIS = 30_000;
+
+        public static final Timing DEFAULT = new Timing(500,
+                                                        5_000,
+                                                        1_000,
+                                                        60_000,
+                                                        60_000,
+                                                        DEFAULT_HEAD_AHEAD_WARN_MILLIS);
 
         public static Timing timing(long quietMillis,
                                     long maxDelayMillis,
                                     long initialRetryMillis,
                                     long maxRetryMillis,
                                     long pushLagWarnMillis) {
-            return new Timing(quietMillis, maxDelayMillis, initialRetryMillis, maxRetryMillis, pushLagWarnMillis);
+            return new Timing(quietMillis,
+                              maxDelayMillis,
+                              initialRetryMillis,
+                              maxRetryMillis,
+                              pushLagWarnMillis,
+                              DEFAULT_HEAD_AHEAD_WARN_MILLIS);
+        }
+
+        public static Timing timing(long quietMillis,
+                                    long maxDelayMillis,
+                                    long initialRetryMillis,
+                                    long maxRetryMillis,
+                                    long pushLagWarnMillis,
+                                    long headAheadWarnMillis) {
+            return new Timing(quietMillis,
+                              maxDelayMillis,
+                              initialRetryMillis,
+                              maxRetryMillis,
+                              pushLagWarnMillis,
+                              headAheadWarnMillis);
         }
     }
 
@@ -115,6 +145,7 @@ public final class KvBackupService {
     public enum Status {
         CURRENT,
         GATED,
+        HEAD_AHEAD,
         HEAD_UNREADABLE,
         PUSH_FAILING,
         COMMIT_FAILED
@@ -157,7 +188,8 @@ public final class KvBackupService {
     }
 
     /// The production service: its own single-threaded worker (so a slow or hung git never delays another
-    /// component), wall-clock time, logged warnings, default timing. [#stop] shuts the worker down.
+    /// component), a monotonic clock (every bound here is a duration, which a wall-clock step would make
+    /// fire early or never), logged warnings, default timing. [#stop] shuts the worker down.
     public static KvBackupService kvBackupService(KVStore<AetherKey, AetherValue> kvStore,
                                                   BackupEntryCodec codec,
                                                   GitBackupRepository repository) {
@@ -170,7 +202,7 @@ public final class KvBackupService {
                                    codec,
                                    repository,
                                    (task, delay) -> worker.schedule(task, delay, TimeUnit.MILLISECONDS),
-                                   System::currentTimeMillis,
+                                   KvBackupService::monotonicMillis,
                                    BackupWarning.Sink.logging(),
                                    Timing.DEFAULT,
                                    worker::shutdownNow);
@@ -178,6 +210,10 @@ public final class KvBackupService {
 
     @Contract
     private static void nothingToRelease() {}
+
+    private static long monotonicMillis() {
+        return System.nanoTime() / 1_000_000;
+    }
 
     /// Stop flushing and release the worker. A node that stopped must not keep writing backups.
     @Contract
@@ -211,11 +247,27 @@ public final class KvBackupService {
         return repository.prepare()
                          .flatMap(_ -> readHead())
                          .flatMap(this::alignWithRemote)
-                         .flatMap(_ -> repository.commitFile(GitBackupRepository.DECLARATION,
-                                                             declaration.render(),
-                                                             "declare genesis " + declaration.render().strip()))
+                         .flatMap(_ -> commitDeclarationUnlessPresent(declaration))
                          .flatMap(_ -> pushDeclaration())
                          .onSuccess(_ -> afterDeclaration());
+    }
+
+    /// A re-run after a failed push finds its declaration already committed locally: commit nothing then
+    /// (git refuses an empty commit) and let the push carry the earlier one.
+    private Result<Unit> commitDeclarationUnlessPresent(BackupDecision.Declaration declaration) {
+        return repository.localFile(GitBackupRepository.DECLARATION)
+                         .flatMap(present -> present.equals(Option.some(declaration.render()))
+                                             ? Result.unitResult()
+                                             : repository.commitFile(GitBackupRepository.DECLARATION,
+                                                                     declaration.render(),
+                                                                     "declare genesis " + declaration.render().strip()));
+    }
+
+    /// The declaration committed in the local repository, if any. Worker thread only.
+    Result<Option<BackupDecision.Declaration>> localDeclaration() {
+        return repository.prepare()
+                         .flatMap(_ -> repository.localFile(GitBackupRepository.DECLARATION))
+                         .map(KvBackupService::parseDeclaration);
     }
 
     private Result<Unit> pushDeclaration() {
@@ -447,7 +499,7 @@ public final class KvBackupService {
                                                         .header());
 
         return switch (BackupDecision.decide(header, existing, head.declaration())) {
-            case STALE -> success(Outcome.STALE);
+            case STALE -> success(Outcome.stale(existing.unwrap(), header));
             case GATED -> success(Outcome.gated(existing.unwrap(), header));
             case WRITE -> write(document, body, head, pushAttempts);
         };
@@ -558,7 +610,8 @@ public final class KvBackupService {
     @Contract
     private void settle(Outcome outcome) {
         switch (outcome.kind()) {
-            case WRITTEN, UNCHANGED, STALE -> recover();
+            case WRITTEN, UNCHANGED -> recover();
+            case STALE -> onHeadAhead(outcome);
             case AWAITING_GENESIS -> scheduleRetry();
             case GATED -> enter(Status.GATED, gatedDetail(outcome));
             case HEAD_UNREADABLE -> enter(Status.HEAD_UNREADABLE,
@@ -577,6 +630,43 @@ public final class KvBackupService {
                                   + "; restore that backup, or run `" + DECLARE_GENESIS_COMMAND
                                   + "` to make this cluster's state the backup head")
                       .or("the backup head belongs to another lineage; run `" + DECLARE_GENESIS_COMMAND + "`");
+    }
+
+    /// Never written while behind (the head stays; see [BackupDecision]). A head briefly ahead is routine —
+    /// the previous leader's last flush racing this leader's apply lag — and resolves by itself, so the pass
+    /// re-runs on backoff and stays quiet. A head still ahead after [Timing#headAheadWarnMillis] is warned
+    /// once per episode; the episode ends when this cluster's state passes the head, and a later one warns
+    /// again.
+    @Contract
+    private void onHeadAhead(Outcome outcome) {
+        var now = clock.getAsLong();
+        // Re-read the head on the next pass: an unchanged body must not short-circuit past it.
+        lastWrittenBody = Option.none();
+        headAheadSince.compareAndSet(-1, now);
+        if (now - headAheadSince.get() >= timing.headAheadWarnMillis()) {
+            enter(Status.HEAD_AHEAD, headAheadDetail(outcome, (now - headAheadSince.get()) / 1000));
+        }
+
+        scheduleRetry();
+    }
+
+    private static String headAheadDetail(Outcome outcome, long seconds) {
+        return "the backup head (incarnation " + outcome.head()
+                                                        .map(BackupHeader::incarnation)
+                                                        .or(0L)
+             + ", revision " + outcome.head()
+                                      .map(BackupHeader::revision)
+                                      .or(0L)
+             + ") has been ahead of this cluster's state (incarnation " + outcome.ours()
+                                                                                 .map(BackupHeader::incarnation)
+                                                                                 .or(0L)
+             + ", revision " + outcome.ours()
+                                      .map(BackupHeader::revision)
+                                      .or(0L)
+             + ") for " + seconds
+             + "s, so nothing is being backed up; this cluster may have been restored from an"
+             + " older snapshot (the old persistence path) while a newer backup head exists — see #1533. Once this"
+             + " cluster's revision passes the head's, its state REPLACES that head (git history keeps it)";
     }
 
     @Contract
@@ -604,6 +694,7 @@ public final class KvBackupService {
     @Contract
     private void recover() {
         pushFailingSince.set(-1);
+        headAheadSince.set(-1);
         retryDelay.set(timing.initialRetryMillis());
         var previous = status.getAndSet(Status.CURRENT);
 
@@ -624,6 +715,7 @@ public final class KvBackupService {
     private static Code codeFor(Status status) {
         return switch (status) {
             case GATED -> Code.BACKUP_GATED;
+            case HEAD_AHEAD -> Code.BACKUP_HEAD_AHEAD;
             case HEAD_UNREADABLE -> Code.BACKUP_REMOTE_UNREADABLE;
             case PUSH_FAILING -> Code.BACKUP_PUSH_FAILING;
             case COMMIT_FAILED -> Code.BACKUP_COMMIT_FAILED;
@@ -669,13 +761,16 @@ public final class KvBackupService {
     record Outcome(OutcomeKind kind, Option<BackupHeader> head, Option<BackupHeader> ours) {
         static final Outcome WRITTEN = simple(OutcomeKind.WRITTEN);
         static final Outcome UNCHANGED = simple(OutcomeKind.UNCHANGED);
-        static final Outcome STALE = simple(OutcomeKind.STALE);
         static final Outcome AWAITING_GENESIS = simple(OutcomeKind.AWAITING_GENESIS);
         static final Outcome HEAD_UNREADABLE = simple(OutcomeKind.HEAD_UNREADABLE);
         static final Outcome PUSH_FAILED = simple(OutcomeKind.PUSH_FAILED);
 
         private static Outcome simple(OutcomeKind kind) {
             return new Outcome(kind, Option.none(), Option.none());
+        }
+
+        static Outcome stale(BackupHeader head, BackupHeader ours) {
+            return new Outcome(OutcomeKind.STALE, Option.some(head), Option.some(ours));
         }
 
         static Outcome gated(BackupHeader head, BackupHeader ours) {
