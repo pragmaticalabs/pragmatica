@@ -39,7 +39,7 @@ class NodeRoutesValueTest {
     class NewFactory {
         @Test
         void nodeRoutesValue_withEpoch_preservesEpoch() {
-            var epoch = Epoch.epoch(7L, 0L);
+            var epoch = Epoch.epoch(0L, 7L, 0L);
 
             var v = NodeRoutesValue.nodeRoutesValue(List.of(
                     RouteEntry.activeRoute("POST", "/orders/", "create")), epoch);
@@ -53,10 +53,10 @@ class NodeRoutesValueTest {
             var original = NodeRoutesValue.nodeRoutesValue(List.of(
                     RouteEntry.activeRoute("GET", "/api/", "fetch")));
 
-            var updated = original.withObservedCoreEpoch(Epoch.epoch(42L, 3L));
+            var updated = original.withObservedCoreEpoch(Epoch.epoch(0L, 42L, 3L));
 
             assertThat(updated.routes()).isEqualTo(original.routes());
-            assertThat(updated.observedCoreEpoch()).isEqualTo(Epoch.epoch(42L, 3L));
+            assertThat(updated.observedCoreEpoch()).isEqualTo(Epoch.epoch(0L, 42L, 3L));
         }
     }
 
@@ -71,16 +71,16 @@ class NodeRoutesValueTest {
 
         @Test
         void construct_nullRoutes_normalizesToEmptyList() {
-            var v = new NodeRoutesValue(null, Epoch.epoch(1L, 0L));
+            var v = new NodeRoutesValue(null, Epoch.epoch(0L, 1L, 0L));
 
             assertThat(v.routes()).isEmpty();
-            assertThat(v.observedCoreEpoch()).isEqualTo(Epoch.epoch(1L, 0L));
+            assertThat(v.observedCoreEpoch()).isEqualTo(Epoch.epoch(0L, 1L, 0L));
         }
 
         @Test
         void construct_validInput_storesBothFields() {
             var routes = List.of(RouteEntry.activeRoute("DELETE", "/items/", "remove"));
-            var epoch = Epoch.epoch(100L, 0L);
+            var epoch = Epoch.epoch(0L, 100L, 0L);
 
             var v = new NodeRoutesValue(routes, epoch);
 
@@ -94,8 +94,8 @@ class NodeRoutesValueTest {
         @Test
         void sameRoutesAndEpoch_areEqual() {
             var route = new RouteEntry("GET", "/x/", "m", "ACTIVE", 100, 1710000000000L, "PUBLIC");
-            var a = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.epoch(5L, 0L));
-            var b = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.epoch(5L, 0L));
+            var a = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.epoch(0L, 5L, 0L));
+            var b = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.epoch(0L, 5L, 0L));
 
             assertThat(a).isEqualTo(b);
             assertThat(a.hashCode()).isEqualTo(b.hashCode());
@@ -105,8 +105,8 @@ class NodeRoutesValueTest {
         void differentEpoch_notEqual() {
             var route = new RouteEntry("GET", "/x/", "m", "ACTIVE", 100, 1710000000000L, "PUBLIC");
             var routes = List.of(route);
-            var a = NodeRoutesValue.nodeRoutesValue(routes, Epoch.epoch(5L, 0L));
-            var b = NodeRoutesValue.nodeRoutesValue(routes, Epoch.epoch(6L, 0L));
+            var a = NodeRoutesValue.nodeRoutesValue(routes, Epoch.epoch(0L, 5L, 0L));
+            var b = NodeRoutesValue.nodeRoutesValue(routes, Epoch.epoch(0L, 6L, 0L));
 
             assertThat(a).isNotEqualTo(b);
         }

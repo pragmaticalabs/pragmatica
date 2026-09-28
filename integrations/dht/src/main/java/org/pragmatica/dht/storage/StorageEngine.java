@@ -59,12 +59,12 @@ public interface StorageEngine {
     /// Convenience overload at the unfenced epoch floor (`Epoch.ZERO` → `0:0`): used by migration,
     /// anti-entropy and non-cluster paths where there is no owner-epoch fence to apply.
     default Promise<Boolean> putVersioned(byte[] key, byte[] value, long version) {
-        return putVersioned(key, value, version, 0L, 0L);
+        return putVersioned(key, value, version, 0L, 0L, 0L);
     }
 
     /// Store a value subject to the owner-epoch fence then the within-epoch HLC-version LWW
     /// (#345 piece 1c). The presented owner epoch is carried as its two primitive `long`s
-    /// (`epochTerm`, `epochCounter`) so this Apache-2.0 module stays independent of the BSL-1.1
+    /// (`epochIncarnation`, `epochTerm`, `epochCounter`) so this Apache-2.0 module stays independent of the BSL-1.1
     /// `Epoch` type that mints it.
     ///
     /// Decision order, applied identically on every replica:
@@ -78,7 +78,7 @@ public interface StorageEngine {
     ///
     /// @return `true` if written, `false` if superseded within the epoch, or a failed promise if
     ///         rejected by the epoch fence.
-    default Promise<Boolean> putVersioned(byte[] key, byte[] value, long version, long epochTerm, long epochCounter) {
+    default Promise<Boolean> putVersioned(byte[] key, byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {
         return put(key, value).map(_ -> true);
     }
 

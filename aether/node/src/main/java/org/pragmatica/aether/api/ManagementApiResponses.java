@@ -620,7 +620,7 @@ public sealed interface ManagementApiResponses {
                                      List<ClusterGenerationCommunity> communities,
                                      List<ClusterGenerationPartition> partitions) {}
 
-    record EpochInfo(long rabiaTerm, long localCounter) {}
+    record EpochInfo(long incarnation, long rabiaTerm, long localCounter) {}
 
     record ClusterGenerationCore(int desiredSize, List<ClusterGenerationMember> members) {}
 

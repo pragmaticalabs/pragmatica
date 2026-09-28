@@ -16,16 +16,26 @@ package org.pragmatica.aether.slice.generation;
 ///
 /// Not a `@Codec` type: `StreamCursorCheckpointValue` carries the two longs directly and derives
 /// this, so the checkpoint value needs no nested record and no new wire tag. The values mirror the
-/// projection facade's `ProjectionStore.RewindToken(generation, rewind)` one-to-one.
-public record RewindEpoch(long generation, long rewind) implements Comparable<RewindEpoch> {
-    public static final RewindEpoch NONE = new RewindEpoch(0L, 0L);
+/// projection facade's `ProjectionStore.RewindToken(incarnation, generation, rewind)` one-to-one.
+///
+/// `incarnation` is the cluster incarnation (#1529) and ranks first: the node-local cursor survives a
+/// cold restart on disk, and a rewind minted in the new run must outrank it however high its rewind
+/// epoch from the previous run.
+public record RewindEpoch(long incarnation, long generation, long rewind) implements Comparable<RewindEpoch> {
+    public static final RewindEpoch NONE = new RewindEpoch(0L, 0L, 0L);
 
-    public static RewindEpoch rewindEpoch(long generation, long rewind) {
-        return new RewindEpoch(generation, rewind);
+    public static RewindEpoch rewindEpoch(long incarnation, long generation, long rewind) {
+        return new RewindEpoch(incarnation, generation, rewind);
     }
 
     @Override
     public int compareTo(RewindEpoch other) {
+        var byIncarnation = Long.compare(incarnation, other.incarnation);
+
+        if (byIncarnation != 0) {
+            return byIncarnation;
+        }
+
         var byGeneration = Long.compare(generation, other.generation);
 
         return byGeneration != 0
@@ -43,6 +53,6 @@ public record RewindEpoch(long generation, long rewind) implements Comparable<Re
 
     @Override
     public String toString() {
-        return generation + "/" + rewind;
+        return incarnation + "/" + generation + "/" + rewind;
     }
 }

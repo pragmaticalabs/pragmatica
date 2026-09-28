@@ -1170,7 +1170,7 @@ class KVStoreSerializerTest {
     /// serialize switch found nine further key types with the same asymmetry; they are reported
     /// separately rather than fixed here.
     private static final AssignmentToken TOKEN = AssignmentToken.assignmentToken(NodeId.nodeId("node-a").unwrap(),
-                                                                                 Epoch.epoch(7L, 1L));
+                                                                                 Epoch.epoch(2L, 7L, 1L));
 
     @Nested
     class RoundTripSymmetry {
@@ -1178,16 +1178,37 @@ class KVStoreSerializerTest {
         @Test
         void fromToml_streamCursorCheckpoint_recoversKeyAndOffset() {
             var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("orders", 2, "orders-onOrderEvent");
-            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L, TOKEN, 3L, 2L, true);
+            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L, TOKEN, 2L, 3L, 2L, true);
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(entries -> {
                                  assertThat(entries).containsKey(key);
-                                 assertThat(entries.get(key)).describedAs("offset, the assignment token (#1271) AND the rewind epoch + rewind flag (#1333) survive the round-trip")
+                                 assertThat(entries.get(key)).describedAs("offset, the assignment token (#1271) AND the rewind epoch + rewind flag (#1333), both with their cluster incarnation (#1529), survive the round-trip")
                                                              .isEqualTo(value);
                              });
+        }
+
+        /// A snapshot written before #1529 carries no incarnation in either epoch; it must still restore,
+        /// reading both as incarnation 0 — below every incarnation a cluster mints.
+        @Test
+        void fromToml_preIncarnationStreamCursorCheckpoint_readsBothIncarnationsAsZero() {
+            var legacyRow = "4321|1710072000000|node-a|7|1|3|2|true";
+
+            KVStoreSerializer.parseKeyValue("stream-cursor", "orders/2/orders-onOrderEvent", legacyRow)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> assertThat(entry.getValue()).isEqualTo(new StreamCursorCheckpointValue(4321L,
+                                                                                                                        1710072000000L,
+                                                                                                                        AssignmentToken.assignmentToken(NodeId.nodeId("node-a")
+                                                                                                                                                              .unwrap(),
+                                                                                                                                                        Epoch.epoch(0L,
+                                                                                                                                                                    7L,
+                                                                                                                                                                    1L)),
+                                                                                                                        0L,
+                                                                                                                        3L,
+                                                                                                                        2L,
+                                                                                                                        true)));
         }
 
         @Test
@@ -1229,7 +1250,7 @@ class KVStoreSerializerTest {
                                                                         "orders-onOrderEvent",
                                                                         false,
                                                                         "java.lang.String"));
-            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L, TOKEN, 0L, 0L, false));
+            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L, TOKEN, 0L, 0L, 0L, false));
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)
@@ -1264,7 +1285,7 @@ class KVStoreSerializerTest {
         void fromToml_consumerAssignment_recoversAssigneeEpochAndTerm() {
             var key = ConsumerAssignmentKey.consumerAssignmentKey("orders", 3, "orders-onOrderEvent");
             var value = ConsumerAssignmentValue.consumerAssignmentValue(NodeId.nodeId("node-b").unwrap(),
-                                                                        Epoch.epoch(7L, 2L),
+                                                                        Epoch.epoch(0L, 7L, 2L),
                                                                         2L,
                                                                         new HlcTimestamp(123456789L,
                                                                                          NodeId.nodeId("node-a").unwrap()));

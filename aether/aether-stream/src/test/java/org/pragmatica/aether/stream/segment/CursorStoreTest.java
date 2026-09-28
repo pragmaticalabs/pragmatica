@@ -57,8 +57,8 @@ class CursorStoreTest {
     /// earlier tenure's cursor, which can be ahead of what the successor committed (skipping events).
     @Nested
     class AssignmentEpoch {
-        private static final Epoch FIRST_TENURE = Epoch.epoch(1L, 1L);
-        private static final Epoch SECOND_TENURE = Epoch.epoch(1L, 3L);
+        private static final Epoch FIRST_TENURE = Epoch.epoch(0L, 1L, 1L);
+        private static final Epoch SECOND_TENURE = Epoch.epoch(0L, 1L, 3L);
 
         @Test
         void fencedFetch_returnsTheCursor_forTheEpochItWasWrittenUnder() {
@@ -443,9 +443,9 @@ class CursorStoreTest {
     /// commit from #1333 on); anything else absent.
     @Nested
     class RewindEpochLayout {
-        private static final Epoch TENURE = Epoch.epoch(1L, 1L);
-        private static final Epoch OTHER_TENURE = Epoch.epoch(1L, 3L);
-        private static final RewindEpoch EPOCH = RewindEpoch.rewindEpoch(7L, 3L);
+        private static final Epoch TENURE = Epoch.epoch(0L, 1L, 1L);
+        private static final Epoch OTHER_TENURE = Epoch.epoch(0L, 1L, 3L);
+        private static final RewindEpoch EPOCH = RewindEpoch.rewindEpoch(0L, 7L, 3L);
 
         @Test
         void encodeRewoundCursor_decodeCursor_roundTrip_carriesBothEpochs() {
@@ -526,7 +526,7 @@ class CursorStoreTest {
         void blockOfAnUnknownLength_readsAsAbsent() {
             var refName = CursorStore.buildRefName(GROUP, STREAM, PARTITION);
 
-            storage.putRef(refName, new byte[4 * Long.BYTES]).await();
+            storage.putRef(refName, new byte[6 * Long.BYTES]).await();
             assertThat(store.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(Result.success(Option.none()));
             assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await()).isEqualTo(Result.success(Option.none()));
         }

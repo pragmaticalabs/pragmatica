@@ -25,7 +25,7 @@ package org.pragmatica.dht.storage;
 /// `aether/slice`). The default [#noOp] keeps the engine fence-free for non-cluster paths and tests.
 ///
 /// **Comparison semantics (must match `Epoch.compareTo`).** An epoch is stale iff it is STRICTLY
-/// older than the partition high-water — compare `epochTerm` first, then `epochCounter`. Equal is NOT
+/// older than the partition high-water — compare `epochIncarnation` first, then `epochTerm`, then `epochCounter`. Equal is NOT
 /// stale (a genuinely-current owner re-writes at its own epoch); newer is NOT stale (and advances the
 /// high-water). The implementation owns this comparison so the DHT engine needs no epoch type.
 ///
@@ -41,10 +41,10 @@ package org.pragmatica.dht.storage;
 public interface OwnerEpochGate {
     /// `true` iff the presented owner epoch is STRICTLY older than the high-water for the ownership
     /// arc the `key` belongs to — a deposed owner's write that must be rejected with no mutation.
-    boolean isStale(byte[] key, long epochTerm, long epochCounter);
+    boolean isStale(byte[] key, long epochIncarnation, long epochTerm, long epochCounter);
     /// Advance the ownership arc's high-water on an accepted write. Monotonic: older is ignored,
     /// equal is a no-op, newer advances.
-    void advance(byte[] key, long epochTerm, long epochCounter);
+    void advance(byte[] key, long epochIncarnation, long epochTerm, long epochCounter);
 
     /// `true` when this gate enforces per-key epoch ordering inside the storage engine's compute
     /// step (spec §3.2). The no-op gate returns `false` — epoch ordering is bypassed entirely so

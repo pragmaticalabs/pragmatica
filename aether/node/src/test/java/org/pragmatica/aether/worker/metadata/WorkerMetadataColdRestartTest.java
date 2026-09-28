@@ -32,7 +32,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// core's committed revision restarts far below the revision the surviving worker installed. Without
 /// a cluster incarnation the worker cannot tell that core from one lagging behind it: it sends its
 /// installed revision as the minimum, the core answers `core-behind-worker`, and the worker never
-/// installs another manifest.
+/// installs another manifest. The restore increments the cluster incarnation, and the manifest carries
+/// it: a newer incarnation resets the worker's revision latch.
+///
+/// The lagging-core refusal within ONE incarnation is `WorkerMetadataChannelTest.laggingCoreRefusesWorkersInstalledRevision`;
+/// the arm below pins that a manifest from an OLDER incarnation is refused however high its revision.
 class WorkerMetadataColdRestartTest {
     private static final NodeId CORE = new NodeId("core");
     private static final NodeId WORKER = new NodeId("worker");
@@ -65,19 +69,36 @@ class WorkerMetadataColdRestartTest {
 
     @Test
     void survivingWorker_installsTheRestoredRunsManifest_afterACoreColdRestart() {
-        var firstRun = new Core();
+        var firstRun = new Core(1L);
 
         firstRun.seed(5, "before-restart");
         exchange(firstRun);
         assertThat(configValue()).isEqualTo("before-restart");
 
-        var restoredRun = new Core();
+        var restoredRun = new Core(2L);
 
         restoredRun.seed(2, "after-restart");
         exchange(restoredRun);
 
         assertThat(configValue()).as("the worker installs the new run's manifest despite its lower revision")
                                  .isEqualTo("after-restart");
+    }
+
+    @Test
+    void survivingWorker_refusesAManifestFromAnOlderIncarnation_evenAtAHigherRevision() {
+        var restoredRun = new Core(2L);
+
+        restoredRun.seed(2, "current-run");
+        exchange(restoredRun);
+        assertThat(configValue()).isEqualTo("current-run");
+
+        var previousRun = new Core(1L);
+
+        previousRun.seed(9, "previous-run");
+        exchange(previousRun);
+
+        assertThat(configValue()).as("a core still serving the previous incarnation cannot overwrite the current one")
+                                 .isEqualTo("current-run");
     }
 
     private String configValue() {
@@ -112,15 +133,20 @@ class WorkerMetadataColdRestartTest {
     private final class Core {
         final KVStore<AetherKey, AetherValue> store = new KVStore<>(MessageRouter.mutable(), codec, codec);
         final ArrayDeque<ProtocolMessage> responses = new ArrayDeque<>();
-        final WorkerMetadataServer server = new WorkerMetadataServer(CORE,
-                                                                     store,
-                                                                     codec,
-                                                                     (_, message) -> responses.add(message),
-                                                                     WORKER::equals,
-                                                                     () -> Set.of(CORE),
-                                                                     _ -> List.of(),
-                                                                     LIMITS,
-                                                                     (_, _) -> {});
+        final WorkerMetadataServer server;
+
+        Core(long clusterIncarnation) {
+            server = new WorkerMetadataServer(CORE,
+                                              store,
+                                              codec,
+                                              (_, message) -> responses.add(message),
+                                              WORKER::equals,
+                                              () -> Set.of(CORE),
+                                              _ -> List.of(),
+                                              LIMITS,
+                                              (_, _) -> {},
+                                              () -> clusterIncarnation);
+        }
 
         void seed(long revision, String value) {
             var activation = new AetherKey.ActivationDirectiveKey(WORKER);

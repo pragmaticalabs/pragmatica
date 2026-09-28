@@ -34,7 +34,7 @@ import org.pragmatica.lang.Unit;
 /// Thread-safe and suitable for development and testing.
 /// Data is not persisted across restarts.
 public final class MemoryStorageEngine implements StorageEngine {
-    private record VersionedEntry(byte[] value, long version, long epochTerm, long epochCounter) {}
+    private record VersionedEntry(byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {}
 
     private final ConcurrentHashMap<ByteArrayKey, VersionedEntry> data = new ConcurrentHashMap<>();
     private final OwnerEpochGate epochGate;
@@ -63,15 +63,15 @@ public final class MemoryStorageEngine implements StorageEngine {
 
     @Override
     public Promise<Unit> put(byte[] key, byte[] value) {
-        data.put(new ByteArrayKey(key), new VersionedEntry(value.clone(), 0L, 0L, 0L));
+        data.put(new ByteArrayKey(key), new VersionedEntry(value.clone(), 0L, 0L, 0L, 0L));
 
         return Promise.success(Unit.unit());
     }
 
     @Override
-    public Promise<Boolean> putVersioned(byte[] key, byte[] value, long version, long epochTerm, long epochCounter) {
-        if (epochGate.isStale(key, epochTerm, epochCounter)) {
-            return DHTError.staleEpochWrite(epochTerm, epochCounter).promise();
+    public Promise<Boolean> putVersioned(byte[] key, byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {
+        if (epochGate.isStale(key, epochIncarnation, epochTerm, epochCounter)) {
+            return DHTError.staleEpochWrite(epochIncarnation, epochTerm, epochCounter).promise();
         }
 
         var bkey = new ByteArrayKey(key);
@@ -82,12 +82,13 @@ public final class MemoryStorageEngine implements StorageEngine {
                      (_, existing) -> computeVersionedEntry(existing,
                                                             clonedValue,
                                                             version,
+                                                            epochIncarnation,
                                                             epochTerm,
                                                             epochCounter,
                                                             written,
                                                             epochGate.epochOrderingEnabled()));
         if (written.get()) {
-            epochGate.advance(key, epochTerm, epochCounter);
+            epochGate.advance(key, epochIncarnation, epochTerm, epochCounter);
         }
 
         return Promise.success(written.get());
@@ -108,19 +109,25 @@ public final class MemoryStorageEngine implements StorageEngine {
     private static VersionedEntry computeVersionedEntry(VersionedEntry existing,
                                                         byte[] clonedValue,
                                                         long version,
+                                                        long epochIncarnation,
                                                         long epochTerm,
                                                         long epochCounter,
                                                         AtomicBoolean written,
                                                         boolean epochOrdering) {
         if (existing == null) {
-            return new VersionedEntry(clonedValue, version, epochTerm, epochCounter);
+            return new VersionedEntry(clonedValue, version, epochIncarnation, epochTerm, epochCounter);
         }
 
         if (epochOrdering) {
-            var epochOrder = compareEpoch(epochTerm, epochCounter, existing.epochTerm(), existing.epochCounter());
+            var epochOrder = compareEpoch(epochIncarnation,
+                                          epochTerm,
+                                          epochCounter,
+                                          existing.epochIncarnation(),
+                                          existing.epochTerm(),
+                                          existing.epochCounter());
 
             if (epochOrder > 0) {
-                return new VersionedEntry(clonedValue, version, epochTerm, epochCounter);
+                return new VersionedEntry(clonedValue, version, epochIncarnation, epochTerm, epochCounter);
             }
 
             if (epochOrder < 0) {
@@ -136,12 +143,23 @@ public final class MemoryStorageEngine implements StorageEngine {
             return existing;
         }
 
-        return new VersionedEntry(clonedValue, version, epochTerm, epochCounter);
+        return new VersionedEntry(clonedValue, version, epochIncarnation, epochTerm, epochCounter);
     }
 
-    /// Lexicographic `(term, counter)` comparison — identical semantics to `Epoch.compareTo`, which
-    /// mints these primitives in the BSL-1.1 module this engine must not depend on.
-    private static int compareEpoch(long term1, long counter1, long term2, long counter2) {
+    /// Lexicographic `(incarnation, term, counter)` comparison — identical semantics to `Epoch.compareTo`,
+    /// which mints these primitives in the BSL-1.1 module this engine must not depend on.
+    private static int compareEpoch(long incarnation1,
+                                    long term1,
+                                    long counter1,
+                                    long incarnation2,
+                                    long term2,
+                                    long counter2) {
+        var byIncarnation = Long.compare(incarnation1, incarnation2);
+
+        if (byIncarnation != 0) {
+            return byIncarnation;
+        }
+
         var byTerm = Long.compare(term1, term2);
 
         return byTerm != 0
@@ -202,6 +220,7 @@ public final class MemoryStorageEngine implements StorageEngine {
         return new DHTMessage.KeyValue(e.getKey().data(),
                                        e.getValue().value(),
                                        e.getValue().version(),
+                                       e.getValue().epochIncarnation(),
                                        e.getValue().epochTerm(),
                                        e.getValue().epochCounter());
     }

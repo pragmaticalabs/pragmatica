@@ -414,28 +414,31 @@ public final class KVStoreSerializer {
     private static String serializeDhtPartitionOwnership(DhtPartitionOwnershipValue v) {
         return v.ownerNodeId()
                 .id() + PIPE + v.ownerCommunityId() + PIPE + v.ownerEpoch()
-                                                              .rabiaTerm() + PIPE + v.ownerEpoch()
-                                                                                     .localCounter() + PIPE + v.ownershipTerm() + PIPE + v.transferredAt()
-                                                                                                                                          .packed() + PIPE + v.transferredAt()
-                                                                                                                                                              .nodeId();
+                                                              .incarnation() + PIPE + v.ownerEpoch()
+                                                                                       .rabiaTerm() + PIPE + v.ownerEpoch()
+                                                                                                              .localCounter() + PIPE + v.ownershipTerm() + PIPE + v.transferredAt()
+                                                                                                                                                                   .packed() + PIPE + v.transferredAt()
+                                                                                                                                                                                       .nodeId();
     }
 
     private static String serializeStreamPartitionOwnership(StreamPartitionOwnershipValue v) {
         return v.owner()
                 .id() + PIPE + v.ownerEpoch()
-                                .rabiaTerm() + PIPE + v.ownerEpoch()
-                                                       .localCounter() + PIPE + v.ownershipTerm() + PIPE + v.transferredAt()
-                                                                                                            .packed() + PIPE + v.transferredAt()
-                                                                                                                                .nodeId();
+                                .incarnation() + PIPE + v.ownerEpoch()
+                                                         .rabiaTerm() + PIPE + v.ownerEpoch()
+                                                                                .localCounter() + PIPE + v.ownershipTerm() + PIPE + v.transferredAt()
+                                                                                                                                     .packed() + PIPE + v.transferredAt()
+                                                                                                                                                         .nodeId();
     }
 
     private static String serializeSpokesman(SpokesmanValue v) {
         return String.join(",", v.communities()) + PIPE + v.assignedEpoch()
-                                                           .rabiaTerm() + PIPE + v.assignedEpoch()
-                                                                                  .localCounter() + PIPE + v.assignedAt()
-                                                                                                            .packed() + PIPE + v.assignedAt()
-                                                                                                                                .nodeId() + PIPE + v.version() + PIPE + v.status()
-                                                                                                                                                                         .name() + PIPE + v.failureReason();
+                                                           .incarnation() + PIPE + v.assignedEpoch()
+                                                                                    .rabiaTerm() + PIPE + v.assignedEpoch()
+                                                                                                           .localCounter() + PIPE + v.assignedAt()
+                                                                                                                                     .packed() + PIPE + v.assignedAt()
+                                                                                                                                                         .nodeId() + PIPE + v.version() + PIPE + v.status()
+                                                                                                                                                                                                  .name() + PIPE + v.failureReason();
     }
 
     private static String serializeSliceTarget(SliceTargetValue v) {
@@ -1402,11 +1405,12 @@ public final class KVStoreSerializer {
     private static String serializeConsumerAssignment(ConsumerAssignmentValue v) {
         return v.assignee()
                 .id() + PIPE + v.epoch()
-                                .rabiaTerm() + PIPE + v.epoch()
-                                                       .localCounter() + PIPE + v.assignmentTerm() + PIPE + v.assignedAt()
-                                                                                                             .packed() + PIPE + v.assignedAt()
-                                                                                                                                 .nodeId()
-                                                                                                                                 .id();
+                                .incarnation() + PIPE + v.epoch()
+                                                         .rabiaTerm() + PIPE + v.epoch()
+                                                                                .localCounter() + PIPE + v.assignmentTerm() + PIPE + v.assignedAt()
+                                                                                                                                      .packed() + PIPE + v.assignedAt()
+                                                                                                                                                          .nodeId()
+                                                                                                                                                          .id();
     }
 
     private static String serializeStreamCursorCheckpoint(StreamCursorCheckpointValue v) {
@@ -1414,9 +1418,11 @@ public final class KVStoreSerializer {
                                                                           .assignee()
                                                                           .id() + PIPE + v.token()
                                                                                           .epoch()
-                                                                                          .rabiaTerm() + PIPE + v.token()
-                                                                                                                 .epoch()
-                                                                                                                 .localCounter() + PIPE + v.rewindGeneration() + PIPE + v.rewindSequence() + PIPE + v.rewind();
+                                                                                          .incarnation() + PIPE + v.token()
+                                                                                                                   .epoch()
+                                                                                                                   .rabiaTerm() + PIPE + v.token()
+                                                                                                                                          .epoch()
+                                                                                                                                          .localCounter() + PIPE + v.rewindIncarnation() + PIPE + v.rewindGeneration() + PIPE + v.rewindSequence() + PIPE + v.rewind();
     }
 
     private static String serializeStreamRegistration(StreamRegistrationValue v) {
@@ -1680,32 +1686,53 @@ public final class KVStoreSerializer {
     private static Result<Map.Entry<AetherKey, AetherValue>> parseConsumerAssignmentEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 6) {
-            return parseFailure("consumer-assign value requires 6 fields, got " + parts.length);
+        if (parts.length != 6 && parts.length != 7) {
+            return parseFailure("consumer-assign value requires 6 or 7 fields, got " + parts.length);
         }
 
-        return ConsumerAssignmentKey.consumerAssignmentKey("consumer-assign/" + identity).flatMap(key -> buildConsumerAssignmentValue(parts).map(value -> entry(key,
-                                                                                                                                                                value)));
+        return ConsumerAssignmentKey.consumerAssignmentKey("consumer-assign/" + identity).flatMap(key -> buildConsumerAssignmentValue(withIncarnation(parts,
+                                                                                                                                                      1,
+                                                                                                                                                      7)).map(value -> entry(key,
+                                                                                                                                                                             value)));
     }
 
+    /// Current form `assignee|incarnation|rabiaTerm|localCounter|assignmentTerm|packed|hlcNode` (#1529);
+    /// the pre-#1529 six-field form has no incarnation and reads as incarnation 0.
     private static Result<AetherValue> buildConsumerAssignmentValue(String[] parts) {
         return Result.all(NodeId.nodeId(parts[0]),
                           Number.parseLong(parts[1]),
                           Number.parseLong(parts[2]),
                           Number.parseLong(parts[3]),
-                          Number.parseLong(parts[4]))
-                     .map((assignee, rabiaTerm, localCounter, assignmentTerm, packed) -> ConsumerAssignmentValue.consumerAssignmentValue(assignee,
-                                                                                                                                         Epoch.epoch(rabiaTerm,
-                                                                                                                                                     localCounter),
-                                                                                                                                         assignmentTerm,
-                                                                                                                                         new HlcTimestamp(packed,
-                                                                                                                                                          new NodeId(parts[5]))));
+                          Number.parseLong(parts[4]),
+                          Number.parseLong(parts[5]))
+                     .map((assignee, incarnation, rabiaTerm, localCounter, assignmentTerm, packed) -> ConsumerAssignmentValue.consumerAssignmentValue(assignee,
+                                                                                                                                                      Epoch.epoch(incarnation,
+                                                                                                                                                                  rabiaTerm,
+                                                                                                                                                                  localCounter),
+                                                                                                                                                      assignmentTerm,
+                                                                                                                                                      new HlcTimestamp(packed,
+                                                                                                                                                                       new NodeId(parts[6]))));
     }
 
-    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (8 fields, pipe-delimited):
-    /// `committedOffset|commitTimestamp|assignee|rabiaTerm|localCounter|rewindGeneration|rewindSequence|rewind`
-    /// — fields 3–5 are the [AssignmentToken] the checkpoint was written under (#1271), fields 6–8 its
-    /// rewind epoch and rewind-record flag (#1333). Consensus-visible consumer checkpoints (#488): a
+    /// A pre-#1529 snapshot row lacks the incarnation fields; insert `0` at each position (ascending, in
+    /// the CURRENT layout) so one parser reads both forms. A row already of `currentLength` is unchanged.
+    private static String[] withIncarnation(String[] parts, int position, int currentLength) {
+        if (parts.length == currentLength) {
+            return parts;
+        }
+
+        var widened = new ArrayList<>(Arrays.asList(parts));
+
+        widened.add(position, "0");
+
+        return widened.toArray(String[]::new);
+    }
+
+    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (10 fields, pipe-delimited):
+    /// `committedOffset|commitTimestamp|assignee|incarnation|rabiaTerm|localCounter|rewindIncarnation|rewindGeneration|rewindSequence|rewind`
+    /// — fields 3–6 are the [AssignmentToken] the checkpoint was written under (#1271), fields 7–10 its
+    /// rewind epoch and rewind-record flag (#1333); both epochs lead with the cluster incarnation (#1529).
+    /// The pre-#1529 eight-field form has neither incarnation and reads both as `0`. Consensus-visible consumer checkpoints (#488): a
     /// declarative consumer resumes from the cluster cursor when a partition's owner changes, so the entry
     /// MUST survive a snapshot round-trip — including its rewind epoch, which is what fences a zombie's
     /// post-restore checkpoint.
@@ -1713,36 +1740,44 @@ public final class KVStoreSerializer {
                                                                                               String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 8) {
-            return parseFailure("stream-cursor value requires 8 fields, got " + parts.length);
+        if (parts.length != 8 && parts.length != 10) {
+            return parseFailure("stream-cursor value requires 8 or 10 fields, got " + parts.length);
         }
 
-        return StreamCursorCheckpointKey.streamCursorCheckpointKey("stream-cursor/" + identity).flatMap(key -> buildStreamCursorCheckpointValue(parts).map(value -> entry(key,
-                                                                                                                                                                          value)));
+        return StreamCursorCheckpointKey.streamCursorCheckpointKey("stream-cursor/" + identity).flatMap(key -> buildStreamCursorCheckpointValue(withIncarnation(withIncarnation(parts,
+                                                                                                                                                                                3,
+                                                                                                                                                                                10),
+                                                                                                                                                                6,
+                                                                                                                                                                10)).map(value -> entry(key,
+                                                                                                                                                                                        value)));
     }
 
     private static Result<AetherValue> buildStreamCursorCheckpointValue(String[] parts) {
         return Result.all(Number.parseLong(parts[0]),
                           Number.parseLong(parts[1]),
-                          parseAssignmentToken(parts[2], parts[3], parts[4]),
-                          Number.parseLong(parts[5]),
-                          Number.parseLong(parts[6]))
-                     .map((offset, timestamp, token, rewindGeneration, rewindSequence) -> new StreamCursorCheckpointValue(offset,
-                                                                                                                          timestamp,
-                                                                                                                          token,
-                                                                                                                          rewindGeneration,
-                                                                                                                          rewindSequence,
-                                                                                                                          Boolean.parseBoolean(parts[7])));
+                          parseAssignmentToken(parts[2], parts[3], parts[4], parts[5]),
+                          Number.parseLong(parts[6]),
+                          Number.parseLong(parts[7]),
+                          Number.parseLong(parts[8]))
+                     .map((offset, timestamp, token, rewindIncarnation, rewindGeneration, rewindSequence) -> new StreamCursorCheckpointValue(offset,
+                                                                                                                                             timestamp,
+                                                                                                                                             token,
+                                                                                                                                             rewindIncarnation,
+                                                                                                                                             rewindGeneration,
+                                                                                                                                             rewindSequence,
+                                                                                                                                             Boolean.parseBoolean(parts[9])));
     }
 
     private static Result<AssignmentToken> parseAssignmentToken(String assignee,
+                                                                String incarnation,
                                                                 String rabiaTerm,
                                                                 String localCounter) {
         return Result.all(NodeId.nodeId(assignee),
+                          Number.parseLong(incarnation),
                           Number.parseLong(rabiaTerm),
                           Number.parseLong(localCounter))
-                     .map((node, term, counter) -> AssignmentToken.assignmentToken(node,
-                                                                                   Epoch.epoch(term, counter)));
+                     .map((node, inc, term, counter) -> AssignmentToken.assignmentToken(node,
+                                                                                        Epoch.epoch(inc, term, counter)));
     }
 
     /// Mirror of [#serializeStreamRegistration]. Declarative stream-consumer registrations have been

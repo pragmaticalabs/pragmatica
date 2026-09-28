@@ -41,7 +41,7 @@ class HttpRouteRegistryEpochFenceTest {
             snapshotSource.setTerm(10L);
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(10L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 10L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isZero();
             assertThat(registry.findRoute("GET", "/users/").isPresent()).isTrue();
@@ -52,7 +52,7 @@ class HttpRouteRegistryEpochFenceTest {
             snapshotSource.setTerm(20L);
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(5L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 5L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
             assertThat(registry.findRoute("GET", "/users/").isPresent())
@@ -66,7 +66,7 @@ class HttpRouteRegistryEpochFenceTest {
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
             // Diff of exactly 5 is NOT flagged — only diff > 5 is stale
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(5L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 5L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isZero();
         }
@@ -77,7 +77,7 @@ class HttpRouteRegistryEpochFenceTest {
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
             // Diff of 6 is flagged
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(4L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 4L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
         }
@@ -87,9 +87,9 @@ class HttpRouteRegistryEpochFenceTest {
             snapshotSource.setTerm(100L);
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(10L, 0L)));
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(11L, 0L)));
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(12L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 10L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 11L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 12L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isEqualTo(3L);
         }
@@ -100,7 +100,7 @@ class HttpRouteRegistryEpochFenceTest {
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
             // Value's term > observed term: cannot be "stale" from snapshot's perspective
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(50L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 50L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isZero();
         }
@@ -109,8 +109,8 @@ class HttpRouteRegistryEpochFenceTest {
         void noopSnapshotSource_neverFlags() {
             var registry = HttpRouteRegistry.httpRouteRegistry(GenerationSnapshotSource.noop());
 
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 0L)));
-            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(100L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 0L, 0L)));
+            registry.onNodeRoutesPut(putWithEpoch(Epoch.epoch(0L, 100L, 0L)));
 
             assertThat(registry.staleFenceObservationCount()).isZero();
         }

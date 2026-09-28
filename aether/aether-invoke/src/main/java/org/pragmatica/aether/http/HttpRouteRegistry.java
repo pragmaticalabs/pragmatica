@@ -102,7 +102,13 @@ public interface HttpRouteRegistry {
                 return staleFenceCounter.get();
             }
 
+            /// Term arithmetic is meaningful only within one cluster incarnation (#1529): a cold restart
+            /// restarts the Rabia term, so a value stamped in another incarnation is never fenced by it.
             private boolean isStaleFence(NodeId nodeId, String artifact, NodeRoutesValue value) {
+                if (value.observedCoreEpoch().incarnation() != snapshotSource.observedEpochIncarnation()) {
+                    return false;
+                }
+
                 var valueTerm = value.observedCoreEpoch().rabiaTerm();
                 var observedTerm = snapshotSource.observedEpochRabiaTerm();
 

@@ -2294,7 +2294,7 @@ strict=2  threshold=3  below=true  armed=true
 
 ### `aether cluster ownership`
 
-Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-TERM`/`HW-CTR`, and `FENCED`). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/ownership/{domain}`.
+Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-INC`/`EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-INC`/`HW-TERM`/`HW-CTR`, and `FENCED`; the cluster incarnation leads each epoch, #1529). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/ownership/{domain}`.
 
 The `<domain>` argument is one of `community` (governor ownership — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Any other value is rejected with an error.
 
@@ -2314,13 +2314,13 @@ aether cluster ownership community --format json
 | `<domain>` | Ownership domain: `community`, `dht`, or `stream` (required positional argument) |
 | `--format` | Output format: `table` (default), `json`, `value`, `csv` |
 
-`FENCED` is `true` when the local high-water is strictly after the committed epoch — this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here. In steady state `HW-TERM`/`HW-CTR` equal `EPOCH-TERM`/`EPOCH-CTR` and `FENCED` is `false`.
+`FENCED` is `true` when the local high-water is strictly after the committed epoch — this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here. In steady state `HW-INC`/`HW-TERM`/`HW-CTR` equal `EPOCH-INC`/`EPOCH-TERM`/`EPOCH-CTR` and `FENCED` is `false`.
 
 Example output (table):
 ```
-IDENTITY  OWNER   EPOCH-TERM  EPOCH-CTR  HW-TERM  HW-CTR  FENCED
-orders:0  core-1  7           3          7        3       false
-orders:1  core-2  7           1          8        0       true
+IDENTITY  OWNER   EPOCH-INC  EPOCH-TERM  EPOCH-CTR  HW-INC  HW-TERM  HW-CTR  FENCED
+orders:0  core-1  1          7           3          1       7        3       false
+orders:1  core-2  1          7           1          1       8        0       true
 ```
 
 ### `aether cluster journal`
@@ -2435,7 +2435,7 @@ Example:
 aether cluster generation
 
 # Output (table):
-# Epoch:              7:142
+# Epoch:              1:7:142
 # Mode:               HIERARCHICAL
 # Quiescence:         QUIESCED
 # Rabia term:         7
@@ -2452,12 +2452,12 @@ JSON output returns the full snapshot shape exposed by `GET /api/cluster/generat
 Block until the queried node observes the requested cluster generation epoch AND the snapshot reports cluster-wide quiescence. Use this in test harnesses or operator scripts that depend on a deterministic settled state before proceeding.
 
 ```bash
-aether cluster await-quiesced --epoch <T:C> [--timeout 30s]
+aether cluster await-quiesced --epoch <I:T:C> [--timeout 30s]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--epoch` | Required, epoch in `term:counter` form (e.g. `7:142`). |
+| `--epoch` | Required, epoch in `incarnation:term:counter` form (e.g. `1:7:142`); the cluster incarnation leads (#1529). |
 | `--timeout` | Optional, default `30s`, capped at `120s`. |
 | `--format` | Output format: `table` (default) — concise one-liner; `json` — raw response body. |
 
@@ -2465,8 +2465,8 @@ Exit codes: `0` on success, non-zero on timeout (HTTP 408) or other failure.
 
 Example:
 ```bash
-aether cluster await-quiesced --epoch 7:142 --timeout 60s
-# Output: Quiesced at 7:142 (response: {"epoch":"7:142","quiescence":"QUIESCED","waitedMs":1234})
+aether cluster await-quiesced --epoch 1:7:142 --timeout 60s
+# Output: Quiesced at 1:7:142 (response: {"epoch":"1:7:142","quiescence":"QUIESCED","waitedMs":1234})
 ```
 
 See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.

@@ -425,7 +425,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         log.debug("Publishing {} HTTP routes for slice {}", effectiveRoutes.size(), artifact);
         var routeEntries = effectiveRoutes.stream().map(HttpRoutePublisherImpl::toRouteEntry).toList();
         var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
-        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochRabiaTerm(), 0L);
+        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochIncarnation(),
+                                       snapshotSource.observedEpochRabiaTerm(),
+                                       0L);
         var value = NodeRoutesValue.nodeRoutesValue(routeEntries, stampedEpoch);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
 

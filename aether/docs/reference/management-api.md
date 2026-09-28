@@ -2832,7 +2832,7 @@ Complete the deployment (finalize new version, decommission old). Requires leade
 
 Get live cluster topology with per-node details. Returns core/passive/worker counts from the actual connected topology (not static boot-time config).
 
-When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.reportedActiveNodeCount()` and the `epoch` field is omitted.
+When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"incarnation:rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.reportedActiveNodeCount()` and the `epoch` field is omitted.
 
 The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul spec item 6) exposes the queried node's authoritative per-member `MembershipFsm` truth: lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`), the SWIM incarnation high-water mark, and the last-known descriptor `role` / `source` labels. DEAD members are included (retained for incarnation-fenced rejoin), so a remote run reads membership truth without `docker logs`.
 
@@ -2868,7 +2868,7 @@ Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted
       "address": "0.0.0.0:7000"
     }
   ],
-  "epoch": "7:142",
+  "epoch": "1:7:142",
   "fsmMembers": [
     {
       "nodeId": "node-1",
@@ -3008,8 +3008,8 @@ Committed ownership + fence diagnostics (#345 item 1f) — for every partition/k
 {
   "domain": "stream",
   "entries": [
-    {"identity": "orders:0", "owner": "core-1", "epoch": {"rabiaTerm": 7, "localCounter": 3}, "highWater": {"rabiaTerm": 7, "localCounter": 3}, "fenced": false},
-    {"identity": "orders:1", "owner": "core-2", "epoch": {"rabiaTerm": 7, "localCounter": 1}, "highWater": {"rabiaTerm": 8, "localCounter": 0}, "fenced": true}
+    {"identity": "orders:0", "owner": "core-1", "epoch": {"incarnation": 1, "rabiaTerm": 7, "localCounter": 3}, "highWater": {"incarnation": 1, "rabiaTerm": 7, "localCounter": 3}, "fenced": false},
+    {"identity": "orders:1", "owner": "core-2", "epoch": {"incarnation": 1, "rabiaTerm": 7, "localCounter": 1}, "highWater": {"incarnation": 1, "rabiaTerm": 8, "localCounter": 0}, "fenced": true}
   ]
 }
 ```
@@ -3020,8 +3020,8 @@ Committed ownership + fence diagnostics (#345 item 1f) — for every partition/k
 | `entries[]` | One row per committed ownership atom, sorted by `identity` |
 | `entries[].identity` | Domain-specific partition/key: community id (`community`), partition id (`dht`), or `{stream}:{partition}` (`stream`) |
 | `entries[].owner` | Committed owner `NodeId` (governor id for `community`) |
-| `entries[].epoch` | Committed fence `Epoch` (`fenceEpoch`) as `{rabiaTerm, localCounter}` — the fencing token |
-| `entries[].highWater` | This node's LOCAL per-domain monotonic epoch high-water as `{rabiaTerm, localCounter}`; equals `epoch` in steady state, floors to `epoch` when the arc has not been observed |
+| `entries[].epoch` | Committed fence `Epoch` (`fenceEpoch`) as `{incarnation, rabiaTerm, localCounter}` — the fencing token |
+| `entries[].highWater` | This node's LOCAL per-domain monotonic epoch high-water as `{incarnation, rabiaTerm, localCounter}`; equals `epoch` in steady state, floors to `epoch` when the arc has not been observed |
 | `entries[].fenced` | `true` when `highWater` is strictly after `epoch` — the deposed-owner window in which this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here (`false` in steady state) |
 
 ### GET /api/v1/cluster/generation
@@ -3033,7 +3033,7 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
 **Response (snapshot present):**
 ```json
 {
-  "epoch": { "rabiaTerm": 7, "localCounter": 142 },
+  "epoch": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 142 },
   "rabiaTerm": 7,
   "mode": "HIERARCHICAL",
   "quiescence": "QUIESCED",
@@ -3047,8 +3047,8 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
         "port": 6000,
         "lifecycle": "ON_DUTY",
         "healthHint": "HEALTHY",
-        "joinedEpoch": { "rabiaTerm": 7, "localCounter": 0 },
-        "lastSeenEpoch": { "rabiaTerm": 7, "localCounter": 142 }
+        "joinedEpoch": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 0 },
+        "lastSeenEpoch": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 142 }
       }
     ]
   },
@@ -3057,11 +3057,11 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
       "communityId": "worker-pool-a",
       "governorNodeId": "node-6",
       "communityTerm": 3,
-      "communityEpoch": { "rabiaTerm": 3, "localCounter": 42 },
+      "communityEpoch": { "incarnation": 1, "rabiaTerm": 3, "localCounter": 42 },
       "memberCount": 4,
       "health": { "healthy": 4, "suspected": 0, "faulty": 0 },
       "partitions": ["worker-pool-a"],
-      "lastAckAtCore": { "rabiaTerm": 7, "localCounter": 140 },
+      "lastAckAtCore": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 140 },
       "quiescence": "QUIESCED",
       "quiescenceDetail": ""
     }
@@ -3071,7 +3071,7 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
       "partitionId": "core",
       "ownerNodeId": "node-1",
       "ownerCommunityId": "core",
-      "ownerEpoch": { "rabiaTerm": 7, "localCounter": 0 },
+      "ownerEpoch": { "incarnation": 1, "rabiaTerm": 7, "localCounter": 0 },
       "ownershipTerm": 1
     }
   ]
@@ -3097,7 +3097,7 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
 Block until the queried node has `observedEpoch >= requested` AND the local snapshot reports cluster-wide quiescence at that epoch. Useful for tests and operators that need to wait for a known steady state before proceeding.
 
 **Query parameters:**
-- `epoch` — required, in `term:counter` form (e.g. `7:142`).
+- `epoch` — required, in `incarnation:term:counter` form (e.g. `1:7:142`); the cluster incarnation leads (#1529), and the pre-#1529 `term:counter` form is refused with `400`.
 - `timeout` — optional, default `30s`, max `120s`. Plain numbers are treated as seconds; suffix `s` is permitted.
 
 **Status codes:**
@@ -3108,7 +3108,7 @@ Block until the queried node has `observedEpoch >= requested` AND the local snap
 **Response (success):**
 ```json
 {
-  "epoch": "7:142",
+  "epoch": "1:7:142",
   "quiescence": "QUIESCED",
   "waitedMs": 1234
 }

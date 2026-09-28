@@ -40,14 +40,14 @@ public sealed interface DHTError extends Cause {
     /// data-plane rejects are surfaced, not silent). It is the data-plane sibling of the
     /// CP-plane `org.pragmatica.cluster.state.kvstore.StaleEpoch`; the aether-level gate impl can
     /// translate to that shared vocabulary at its module boundary.
-    static DHTError staleEpochWrite(long epochTerm, long epochCounter) {
-        return new StaleEpochWrite(epochTerm, epochCounter);
+    static DHTError staleEpochWrite(long epochIncarnation, long epochTerm, long epochCounter) {
+        return new StaleEpochWrite(epochIncarnation, epochTerm, epochCounter);
     }
 
-    record StaleEpochWrite(long epochTerm, long epochCounter) implements DHTError {
+    record StaleEpochWrite(long epochIncarnation, long epochTerm, long epochCounter) implements DHTError {
         @Override
         public String message() {
-            return "Stale-epoch DHT write rejected: presented owner epoch " + epochTerm
+            return "Stale-epoch DHT write rejected: presented owner epoch " + epochIncarnation + ":" + epochTerm
                  + ":" + epochCounter
                  + " is older than the partition high-water";
         }

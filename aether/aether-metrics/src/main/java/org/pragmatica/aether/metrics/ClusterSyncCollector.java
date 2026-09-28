@@ -626,7 +626,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
             retainPingRoster(ping.allMetrics().keySet());
         }
 
-        advanceObservedEpoch(Epoch.epoch(ping.epochTerm(), ping.epochCounter()));
+        advanceObservedEpoch(Epoch.epoch(ping.epochIncarnation(), ping.epochTerm(), ping.epochCounter()));
         processEvictionHints(ping);
         cacheReadinessView(ping);
         retainDispatchedNodes(ping);
@@ -884,6 +884,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
         var buffer = peerObservationBuffer.get();
         var epoch = observedEpoch.get();
+        var epochIncarnation = epoch.incarnation();
         var epochTerm = epoch.rabiaTerm();
         var epochCounter = epoch.localCounter();
 
@@ -893,6 +894,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                                              connected.contains(peer)
                                                              ? ConnectivityState.CONNECTED
                                                              : ConnectivityState.DISCONNECTED,
+                                                             epochIncarnation,
                                                              epochTerm,
                                                              epochCounter,
                                                              nowMs))
@@ -946,6 +948,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                    observation,
                                    membershipIncarnationSupplier.get().getAsLong(),
                                    observedRabiaTerm.get(),
+                                   epoch.incarnation(),
                                    epoch.rabiaTerm(),
                                    epoch.localCounter(),
                                    reportedLifecycleState(),

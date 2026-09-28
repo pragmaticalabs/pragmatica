@@ -628,7 +628,8 @@ public interface AetherNode extends ManageableNode {
         var snapshotSource = PresenceGenerationSnapshotSource.presenceGenerationSnapshotSource(presenceMemberSupplier,
                                                                                                presenceCoreSizeSupplier,
                                                                                                ctmProvisionedSupplier,
-                                                                                               rabiaTermSupplier);
+                                                                                               rabiaTermSupplier,
+                                                                                               () -> ClusterIncarnation.current(kvStore));
         // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
         // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
         // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
@@ -2682,7 +2683,9 @@ public interface AetherNode extends ManageableNode {
         // above every prior committed leadership cluster-wide — so a new leader's lower local counter
         // still orders strictly after the prior leader's epoch via the term.
         var generationCounter = new AtomicLong(0L);
-        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.current(), generationCounter.get());
+        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(ClusterIncarnation.current(kvStore),
+                                                                leaderTerm.current(),
+                                                                generationCounter.get());
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier,
                                                                                                    generationCounter),
@@ -3784,7 +3787,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                       message -> metadataFailureReporter.report(config.self(),
                                                                                                                                                                 message),
                                                                                                                       metadataFailureReporter::report,
-                                                                                                                      org.pragmatica.aether.worker.metadata.WorkerMetadataLimits.DEFAULT);
+                                                                                                                      org.pragmatica.aether.worker.metadata.WorkerMetadataLimits.DEFAULT,
+                                                                                                                      () -> ClusterIncarnation.current(kvStore));
 
         workerProjectionFreshRef.set(workerMetadataChannel::hasFreshProjection);
         allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest.class,
@@ -4455,7 +4459,7 @@ public interface AetherNode extends ManageableNode {
         // role-blind countedMembers() previously wired here could seed a worker as a DHT core
         // partition member).
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
-                                                              rabiaTermSupplier,
+                                                              generationEpoch(kvStore, rabiaTermSupplier),
                                                               () -> isLeaderSupplier.getAsBoolean()
                                                                     ? Option.some(leaderTerm.current())
                                                                     : Option.<Long> none(),
@@ -4829,7 +4833,8 @@ public interface AetherNode extends ManageableNode {
         // a SINGLE consensus batch, so a mass reshuffle commits one batch per pass, not one apply per moved
         // partition. This keeps the reshuffle fan-out bound the promise #265 makes.
         var streamOwnershipWriter = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
-                                                                                                  rabiaTermSupplier,
+                                                                                                  generationEpoch(kvStore,
+                                                                                                                  rabiaTermSupplier),
                                                                                                   hlcClock,
                                                                                                   (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                   partition),
@@ -5076,7 +5081,8 @@ public interface AetherNode extends ManageableNode {
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
         var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
                                                                                                         ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,
-                                                                                                                                                          rabiaTermSupplier,
+                                                                                                                                                          generationEpoch(kvStore,
+                                                                                                                                                                          rabiaTermSupplier),
                                                                                                                                                           hlcClock,
                                                                                                                                                           committedConsumerAssignments),
                                                                                                         commands -> switchableCluster.apply(commands)
@@ -5122,7 +5128,8 @@ public interface AetherNode extends ManageableNode {
                                                                                 PartitionBounds.routed(streamReadRouter),
                                                                                 cursorCommandWriter,
                                                                                 committedCursorReader,
-                                                                                committedConsumerAssignments);
+                                                                                committedConsumerAssignments,
+                                                                                () -> ClusterIncarnation.current(kvStore));
 
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> spi.registerExtension(ProjectionNodeSupport.class, projectionNodeSupport));
@@ -5261,7 +5268,8 @@ public interface AetherNode extends ManageableNode {
                                                                                             streamReplicaSetController::reconciledMembers,
                                                                                             clusterNode::isActive,
                                                                                             entityArcOwner -> StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
-                                                                                                                                                                            rabiaTermSupplier,
+                                                                                                                                                                            generationEpoch(kvStore,
+                                                                                                                                                                                            rabiaTermSupplier),
                                                                                                                                                                             hlcClock,
                                                                                                                                                                             (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                                                                                             partition),
@@ -5857,6 +5865,13 @@ public interface AetherNode extends ManageableNode {
     /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
     /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
     /// holder is populated before any snapshot is taken).
+    /// The committed generation epoch at local counter 0 (#1529): the cluster incarnation (dominant) and the
+    /// leader term — the base every ownership writer mints its owner epochs from.
+    private static Supplier<Epoch> generationEpoch(KVStore<AetherKey, AetherValue> kvStore,
+                                                   Supplier<Long> rabiaTermSupplier) {
+        return () -> Epoch.epoch(ClusterIncarnation.current(kvStore), rabiaTermSupplier.get(), 0L);
+    }
+
     private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
@@ -6420,6 +6435,7 @@ public interface AetherNode extends ManageableNode {
 
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.DISCONNECTED,
+                                                                        epochSupplier.get().incarnation(),
                                                                         term,
                                                                         counter,
                                                                         now));
@@ -6440,6 +6456,7 @@ public interface AetherNode extends ManageableNode {
 
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.CONNECTED,
+                                                                        epochSupplier.get().incarnation(),
                                                                         term,
                                                                         counter,
                                                                         now));
@@ -6522,6 +6539,7 @@ public interface AetherNode extends ManageableNode {
                    .send(peer,
                          new org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing(clusterNode.self(),
                                                                                                Map.of(),
+                                                                                               0,
                                                                                                0,
                                                                                                0,
                                                                                                0,

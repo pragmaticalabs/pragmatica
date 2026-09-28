@@ -1,0 +1,28 @@
+### Changed (2026-09-28 — #1529 part 2: epochs order by cluster incarnation first; workers and replay rewinds survive a cold restart)
+- **`Epoch` is `(incarnation, rabiaTerm, localCounter)` and `RewindEpoch` is `(incarnation, generation,
+  rewind)`, both ordered incarnation-first.** A cold restart restarts the Rabia term, so before this every
+  epoch-bearing write of the new run lost to the restored, numerically higher epochs of the previous run.
+  Every place an epoch travels as primitives carries the incarnation too: the KV snapshot rows
+  (`consumer-assign`, `stream-cursor`, which still read their pre-#1529 forms as incarnation 0), the
+  on-disk consumer cursor block (old 24/40-byte blocks still decode, as incarnation 0), the ClusterSync
+  ping/pong and peer observations, the DHT put/migration messages, and the management API (`epoch`
+  objects gain `incarnation`; epoch strings are `incarnation:term:counter`).
+  [verified: `aether/slice/src/test/java/org/pragmatica/aether/slice/kvstore/KVStoreAetherEpochFenceTest.java` (AcrossAColdRestart)]
+- **Wire break (pre-GA):** the shapes of `Epoch`, `StreamCursorCheckpointValue`, `ClusterSyncPing`/`Pong`,
+  `CommunityReport`, `PeerConnectivityObservation`, `PeerHealthObservation`, `DHTMessage.PutRequest`/`KeyValue`
+  and the worker metadata `ManifestRequest`/`Manifest` changed; mixed-version clusters are not supported.
+- **Workers survive a core cold restart.** The metadata `Manifest` carries the cluster incarnation and the
+  worker's `ManifestRequest` its installed one; a newer incarnation resets the worker's revision latch, so
+  the restored core's lower revision is no longer answered with `core-behind-worker` and refused forever.
+  A manifest from an older incarnation is refused whatever its revision.
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/worker/metadata/WorkerMetadataColdRestartTest.java` — component level, real server and client; the Ember cold-restart version waits for #1533's restore]
+- **A replay rewind minted after a cold restart wins over the surviving on-disk cursor.** `NodeReplayCursor`
+  mints the first rewind of a newer incarnation as `(incarnation, generation, 1)`, which outranks the
+  previous run's rewind epochs however high.
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/stream/ClusterCursorStoreTest.java`, `aether/node/src/test/java/org/pragmatica/aether/node/projection/NodeReplayCursorMintTest.java`]
+- **`aether cluster await-quiesced --epoch` takes `incarnation:term:counter`**; the pre-#1529 `term:counter`
+  form is refused (`400`) rather than read as incarnation 0, which would rank below every epoch a cluster
+  mints and report quiescence at once. `aether cluster ownership` gains `EPOCH-INC`/`HW-INC` columns.
+- [limit: incarnation-source-stub] The incarnation is read through `ClusterIncarnation.current(KVStore)`,
+  which returns `0` until #1529 part 1 commits the `ClusterIncarnationKey`; until then every epoch carries
+  incarnation 0 and orders exactly as before.

@@ -983,7 +983,7 @@ public sealed interface AetherValue {
                                                  newTcpAddress,
                                                  System.currentTimeMillis(),
                                                  nextTerm,
-                                                 Epoch.epoch(nextTerm, 0L),
+                                                 Epoch.epoch(communityEpoch.incarnation(), nextTerm, 0L),
                                                  newObservedCoreEpoch,
                                                  newTransitionedAt,
                                                  false);
@@ -1454,8 +1454,8 @@ public sealed interface AetherValue {
 
     /// Consensus-visible consumer cursor (#488), guarded TWICE by the applier: `token` names the committed
     /// assignment it was written under (#1271 — admitted only while that token is the committed
-    /// [ConsumerAssignmentValue]'s, `AssignmentGuarded`), and `rewindGeneration`/`rewindSequence` are the
-    /// [RewindEpoch] it was committed under (#1333 — through [EpochBearing] a put stamped with a STRICTLY
+    /// [ConsumerAssignmentValue]'s, `AssignmentGuarded`), and `rewindIncarnation`/`rewindGeneration`/
+    /// `rewindSequence` are the [RewindEpoch] it was committed under (#1333 — through [EpochBearing] a put stamped with a STRICTLY
     /// older epoch is refused, so a zombie consumer's pre-rewind checkpoint cannot move the cursor forward
     /// again; `0/0` for a group never rewound). The two arms are pure predicates the applier ORs, so a
     /// checkpoint lands only when BOTH admit it, whichever is evaluated first.
@@ -1468,6 +1468,7 @@ public sealed interface AetherValue {
     record StreamCursorCheckpointValue(long committedOffset,
                                        long commitTimestamp,
                                        ConsumerAssignmentValue.AssignmentToken token,
+                                       long rewindIncarnation,
                                        long rewindGeneration,
                                        long rewindSequence,
                                        boolean rewind) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
@@ -1487,6 +1488,7 @@ public sealed interface AetherValue {
             return new StreamCursorCheckpointValue(committedOffset,
                                                    System.currentTimeMillis(),
                                                    token,
+                                                   epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
                                                    false);
@@ -1500,13 +1502,14 @@ public sealed interface AetherValue {
             return new StreamCursorCheckpointValue(fromOffset,
                                                    System.currentTimeMillis(),
                                                    token,
+                                                   epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
                                                    true);
         }
 
         public RewindEpoch rewindEpoch() {
-            return RewindEpoch.rewindEpoch(rewindGeneration, rewindSequence);
+            return RewindEpoch.rewindEpoch(rewindIncarnation, rewindGeneration, rewindSequence);
         }
 
         @Override

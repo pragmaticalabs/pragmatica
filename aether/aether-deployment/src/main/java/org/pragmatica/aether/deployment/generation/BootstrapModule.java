@@ -68,7 +68,7 @@ public interface BootstrapModule {
     void onMembershipDecision(MembershipDecision decision);
 
     static BootstrapModule bootstrapModule(BooleanSupplier isLeaderSupplier,
-                                           Supplier<Long> rabiaTermSupplier,
+                                           Supplier<Epoch> generationEpochSupplier,
                                            Supplier<Option<Long>> leaderEpochSupplier,
                                            HlcClock hlcClock,
                                            Supplier<Set<NodeId>> coreMembersSupplier,
@@ -77,7 +77,7 @@ public interface BootstrapModule {
                                            Supplier<ClusterConfigBaseline> configBaselineSupplier,
                                            ClusterNode<KVCommand<AetherKey>> cluster) {
         return new BootstrapModuleRecord(isLeaderSupplier,
-                                         rabiaTermSupplier,
+                                         generationEpochSupplier,
                                          leaderEpochSupplier,
                                          hlcClock,
                                          coreMembersSupplier,
@@ -92,7 +92,7 @@ public interface BootstrapModule {
 }
 
 record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
-                             Supplier<Long> rabiaTermSupplier,
+                             Supplier<Epoch> generationEpochSupplier,
                              Supplier<Option<Long>> leaderEpochSupplier,
                              HlcClock hlcClock,
                              Supplier<Set<NodeId>> coreMembersSupplier,
@@ -401,7 +401,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     private Epoch currentEpoch() {
-        return Epoch.epoch(rabiaTermSupplier.get(), 0L);
+        return generationEpochSupplier.get();
     }
 
     private KVCommand<AetherKey> buildCorePartitionCommand(NodeId owner, Epoch committedEpoch, long ownershipTerm) {
@@ -429,7 +429,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     /// `generationCounter`) is the local counter by design: it is committed state, whereas the
     /// generation counter is a per-node time-based value that would break determinism.
     private static Epoch ownerEpoch(Epoch committedEpoch, long ownershipTerm) {
-        return Epoch.epoch(committedEpoch.rabiaTerm(), ownershipTerm);
+        return committedEpoch.withCounter(ownershipTerm);
     }
 
     @Contract

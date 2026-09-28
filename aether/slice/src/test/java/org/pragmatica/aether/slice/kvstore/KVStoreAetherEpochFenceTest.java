@@ -98,24 +98,24 @@ class KVStoreAetherEpochFenceTest {
     class GovernorAnnouncementFence {
         @Test
         void firstAnnouncement_applied() {
-            apply(GOV_KEY, governor(GOV_A, Epoch.epoch(1, 0)));
+            apply(GOV_KEY, governor(GOV_A, Epoch.epoch(0L, 1, 0)));
 
-            assertThat(stored(GOV_KEY)).isEqualTo(governor(GOV_A, Epoch.epoch(1, 0)));
+            assertThat(stored(GOV_KEY)).isEqualTo(governor(GOV_A, Epoch.epoch(0L, 1, 0)));
         }
 
         @Test
         void newerEpochHandover_applied() {
-            apply(GOV_KEY, governor(GOV_A, Epoch.epoch(1, 0)));
-            apply(GOV_KEY, governor(GOV_B, Epoch.epoch(2, 0)));
+            apply(GOV_KEY, governor(GOV_A, Epoch.epoch(0L, 1, 0)));
+            apply(GOV_KEY, governor(GOV_B, Epoch.epoch(0L, 2, 0)));
 
             assertThat(stored(GOV_KEY))
                 .as("a real governor handover bumps communityEpoch and must commit")
-                .isEqualTo(governor(GOV_B, Epoch.epoch(2, 0)));
+                .isEqualTo(governor(GOV_B, Epoch.epoch(0L, 2, 0)));
         }
 
         @Test
         void sameEpochReannounce_applied() {
-            var first = governor(GOV_A, Epoch.epoch(3, 0));
+            var first = governor(GOV_A, Epoch.epoch(0L, 3, 0));
             apply(GOV_KEY, first);
 
             // withMembers keeps communityEpoch unchanged — a legitimate periodic reannouncement.
@@ -129,7 +129,7 @@ class KVStoreAetherEpochFenceTest {
 
         @Test
         void sameEpochDissolve_applied() {
-            var first = governor(GOV_A, Epoch.epoch(3, 0));
+            var first = governor(GOV_A, Epoch.epoch(0L, 3, 0));
             apply(GOV_KEY, first);
 
             // withDissolved keeps communityEpoch unchanged — a legitimate dissolution write.
@@ -148,9 +148,9 @@ class KVStoreAetherEpochFenceTest {
         /// real leader-transaction write channel.
         @Test
         void sameEpochDifferentGovernor_rejected() {
-            var incumbent = governor(GOV_A, Epoch.epoch(3, 0));
+            var incumbent = governor(GOV_A, Epoch.epoch(0L, 3, 0));
             apply(GOV_KEY, incumbent);
-            apply(GOV_KEY, governor(GOV_B, Epoch.epoch(3, 0)));
+            apply(GOV_KEY, governor(GOV_B, Epoch.epoch(0L, 3, 0)));
 
             assertThat(stored(GOV_KEY))
                 .as("an equal-epoch announcement from a DIFFERENT governor must not take over the community")
@@ -159,12 +159,12 @@ class KVStoreAetherEpochFenceTest {
 
         @Test
         void staleGovernorOlderEpoch_rejected() {
-            apply(GOV_KEY, governor(GOV_B, Epoch.epoch(5, 0)));
-            apply(GOV_KEY, governor(GOV_A, Epoch.epoch(2, 0)));
+            apply(GOV_KEY, governor(GOV_B, Epoch.epoch(0L, 5, 0)));
+            apply(GOV_KEY, governor(GOV_A, Epoch.epoch(0L, 2, 0)));
 
             assertThat(stored(GOV_KEY))
                 .as("a deposed governor's older-epoch announcement must be rejected on every replica")
-                .isEqualTo(governor(GOV_B, Epoch.epoch(5, 0)));
+                .isEqualTo(governor(GOV_B, Epoch.epoch(0L, 5, 0)));
         }
     }
 
@@ -172,17 +172,17 @@ class KVStoreAetherEpochFenceTest {
     class DhtPartitionOwnershipFence {
         @Test
         void firstOwnership_applied() {
-            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(1, 0), 1L));
+            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(0L, 1, 0), 1L));
 
-            assertThat(stored(OWN_KEY)).isEqualTo(ownership(OWNER_A, Epoch.epoch(1, 0), 1L));
+            assertThat(stored(OWN_KEY)).isEqualTo(ownership(OWNER_A, Epoch.epoch(0L, 1, 0), 1L));
         }
 
         @Test
         void newerEpochTransfer_applied() {
-            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(1, 0), 1L));
-            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(2, 0), 1L));
+            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(0L, 1, 0), 1L));
+            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(0L, 2, 0), 1L));
 
-            assertThat(stored(OWN_KEY)).isEqualTo(ownership(OWNER_B, Epoch.epoch(2, 0), 1L));
+            assertThat(stored(OWN_KEY)).isEqualTo(ownership(OWNER_B, Epoch.epoch(0L, 2, 0), 1L));
         }
 
         @Test
@@ -191,22 +191,22 @@ class KVStoreAetherEpochFenceTest {
             // so the fence accepts it. (The #345 DHT-parity writer now advances the ownerEpoch's local
             // counter on every takeover, so it no longer mints same-epoch takeovers — but the applier
             // must still accept a same-epoch higher-ownershipTerm value to stay strictly-older-only.)
-            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(4, 0), 1L));
-            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(4, 0), 2L));
+            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(0L, 4, 0), 1L));
+            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(0L, 4, 0), 2L));
 
             assertThat(stored(OWN_KEY))
                 .as("a stale-owner takeover at the same epoch (ownershipTerm+1) must NOT be fenced")
-                .isEqualTo(ownership(OWNER_B, Epoch.epoch(4, 0), 2L));
+                .isEqualTo(ownership(OWNER_B, Epoch.epoch(0L, 4, 0), 2L));
         }
 
         @Test
         void staleOwnerOlderEpoch_rejected() {
-            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(5, 0), 3L));
-            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(2, 0), 99L));
+            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(0L, 5, 0), 3L));
+            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(0L, 2, 0), 99L));
 
             assertThat(stored(OWN_KEY))
                 .as("a deposed owner's older-epoch ownership write must be rejected — even with a higher ownershipTerm")
-                .isEqualTo(ownership(OWNER_B, Epoch.epoch(5, 0), 3L));
+                .isEqualTo(ownership(OWNER_B, Epoch.epoch(0L, 5, 0), 3L));
         }
     }
 
@@ -217,39 +217,39 @@ class KVStoreAetherEpochFenceTest {
     class StreamPartitionOwnershipFence {
         @Test
         void firstOwnership_applied() {
-            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(1, 0), 1L));
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(0L, 1, 0), 1L));
 
-            assertThat(stored(STREAM_KEY)).isEqualTo(streamOwnership(OWNER_A, Epoch.epoch(1, 0), 1L));
+            assertThat(stored(STREAM_KEY)).isEqualTo(streamOwnership(OWNER_A, Epoch.epoch(0L, 1, 0), 1L));
         }
 
         @Test
         void newerEpochTransfer_applied() {
-            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(1, 0), 1L));
-            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(2, 0), 2L));
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(0L, 1, 0), 1L));
+            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(0L, 2, 0), 2L));
 
             assertThat(stored(STREAM_KEY))
                 .as("a reshuffle owner change bumps ownerEpoch and must commit")
-                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(2, 0), 2L));
+                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(0L, 2, 0), 2L));
         }
 
         @Test
         void sameEpochOwnershipTermBump_applied() {
-            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(4, 0), 1L));
-            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(4, 0), 2L));
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(0L, 4, 0), 1L));
+            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(0L, 4, 0), 2L));
 
             assertThat(stored(STREAM_KEY))
                 .as("a takeover at the same epoch (ownershipTerm+1) must NOT be fenced")
-                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(4, 0), 2L));
+                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(0L, 4, 0), 2L));
         }
 
         @Test
         void staleOwnerOlderEpoch_rejected() {
-            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(5, 0), 3L));
-            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(2, 0), 99L));
+            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(0L, 5, 0), 3L));
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(0L, 2, 0), 99L));
 
             assertThat(stored(STREAM_KEY))
                 .as("a deposed stream-partition owner's older-epoch write must be rejected by the applier — even with a higher ownershipTerm")
-                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(5, 0), 3L));
+                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(0L, 5, 0), 3L));
         }
     }
 
@@ -278,20 +278,29 @@ class KVStoreAetherEpochFenceTest {
     class AcrossAColdRestart {
         @Test
         void newRunOwnership_isAccepted_overTheRestoredHigherEpoch() {
-            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(7, 5), 3L));
-            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(1, 0), 1L));
+            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(1L, 7, 5), 3L));
+            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(2L, 1, 0), 1L));
 
             assertThat(stored(OWN_KEY)).as("the new run's owner replaces the restored owner")
-                                       .isEqualTo(ownership(OWNER_B, Epoch.epoch(1, 0), 1L));
+                                       .isEqualTo(ownership(OWNER_B, Epoch.epoch(2L, 1, 0), 1L));
         }
 
         @Test
         void newRunStreamOwnership_isAccepted_overTheRestoredHigherEpoch() {
-            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(7, 5), 3L));
-            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(1, 0), 1L));
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(1L, 7, 5), 3L));
+            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(2L, 1, 0), 1L));
 
             assertThat(stored(STREAM_KEY)).as("the new run's stream owner replaces the restored owner")
-                                          .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(1, 0), 1L));
+                                          .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(2L, 1, 0), 1L));
+        }
+
+        /// The previous run's owner, restored or delayed, never displaces an owner of the current run.
+        @Test
+        void previousRunOwnership_isRejected_whateverItsTerm() {
+            apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(2L, 1, 0), 1L));
+            apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(1L, 9, 9), 5L));
+
+            assertThat(stored(OWN_KEY)).isEqualTo(ownership(OWNER_B, Epoch.epoch(2L, 1, 0), 1L));
         }
     }
 }

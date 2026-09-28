@@ -132,7 +132,7 @@ class HierarchicalRecoveryEnvelopeTest {
     private boolean readiness(NodeReportedState state) {
         var core = leader();
         workers.forEach(worker -> core.route(new org.pragmatica.consensus.net.NetworkServiceMessage.Send(worker,
-            new org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing(core.self(), Map.of(), 0, 0, 0,
+            new org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing(core.self(), Map.of(), 0, 0L, 0, 0,
                 Set.of(), Set.of(), Map.of(), Set.of(), false, false))));
         return workers.stream().allMatch(worker -> core.metricsCollector().reportedStates().get(worker) == state);
     }

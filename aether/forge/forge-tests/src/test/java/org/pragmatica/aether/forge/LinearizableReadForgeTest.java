@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.ReadPreference;
@@ -159,7 +160,7 @@ class LinearizableReadForgeTest {
 
     private StreamPartitionOwnershipWriter liveWriter(long term, NodeId owner) {
         return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
-                                                                             () -> term,
+                                                                             () -> Epoch.epoch(0L, term, 0L),
                                                                              HlcClock.hlcClock(leaderNode().self()),
                                                                              (stream, partition) -> committedOwner(partition),
                                                                              (stream, partition) -> Option.some(owner));

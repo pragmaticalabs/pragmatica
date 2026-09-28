@@ -157,6 +157,7 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         var version = node.hlcClock().now().packed();
+        var epochIncarnation = ownerEpochSource.currentEpochIncarnation();
         var epochTerm = ownerEpochSource.currentEpochTerm();
         var epochCounter = ownerEpochSource.currentEpochCounter();
         Promise<Unit> promise = Promise.promise();
@@ -164,9 +165,9 @@ public final class DistributedDHTClient implements DHTClient {
 
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
-                handleLocalPut(key, value, version, epochTerm, epochCounter, collector);
+                handleLocalPut(key, value, version, epochIncarnation, epochTerm, epochCounter, collector);
             } else {
-                sendRemotePut(target, key, value, version, epochTerm, epochCounter, collector);
+                sendRemotePut(target, key, value, version, epochIncarnation, epochTerm, epochCounter, collector);
             }
         }
 
@@ -467,11 +468,12 @@ public final class DistributedDHTClient implements DHTClient {
     private void handleLocalPut(byte[] key,
                                 byte[] value,
                                 long version,
+                                long epochIncarnation,
                                 long epochTerm,
                                 long epochCounter,
                                 QuorumCollector<Unit> collector) {
         var _ = node.storage()
-                    .putVersioned(key, value, version, epochTerm, epochCounter)
+                    .putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter)
                     .onSuccess(_ -> collector.onSuccess(unit()))
                     .onFailure(collector::onFailure);
     }
@@ -498,6 +500,7 @@ public final class DistributedDHTClient implements DHTClient {
                                byte[] key,
                                byte[] value,
                                long version,
+                               long epochIncarnation,
                                long epochTerm,
                                long epochCounter,
                                QuorumCollector<Unit> collector) {
@@ -510,6 +513,7 @@ public final class DistributedDHTClient implements DHTClient {
                                                   key,
                                                   value,
                                                   version,
+                                                  epochIncarnation,
                                                   epochTerm,
                                                   epochCounter),
                         correlationId,

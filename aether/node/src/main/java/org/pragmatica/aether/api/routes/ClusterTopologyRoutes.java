@@ -361,7 +361,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private static EpochInfo epochInfo(Epoch epoch) {
-        return new EpochInfo(epoch.rabiaTerm(), epoch.localCounter());
+        return new EpochInfo(epoch.incarnation(), epoch.rabiaTerm(), epoch.localCounter());
     }
 
     /// Typed failure for an unrecognized `domain` path segment — surfaced as a clean bad-request by the

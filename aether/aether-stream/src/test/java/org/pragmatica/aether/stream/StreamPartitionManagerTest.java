@@ -68,7 +68,7 @@ class StreamPartitionManagerTest {
         void appendRecovered_zeroEpoch_rejectedWhenHighWaterAdvanced() {
             // Pre-fix behavior: the 4-arg recovery overload stamps Epoch.ZERO. With the committed high-water at
             // 1:3, 0:0 is STRICTLY older → the append is fenced (StaleEpochAppend) — the real-infra symptom.
-            var fenced = fencedManager(highWaterAt(Epoch.epoch(1, 3)));
+            var fenced = fencedManager(highWaterAt(Epoch.epoch(0L, 1, 3)));
             assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
 
             var rejected = fenced.appendRecovered(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L);
@@ -82,10 +82,10 @@ class StreamPartitionManagerTest {
         void appendRecovered_committedEpoch_passesFenceWhenHighWaterAdvanced() {
             // The fix stamps the COMMITTED owner epoch (1:3) — equal to the high-water → passes the fence, so
             // the backfilled event lands and the fresh owner can reach CAUGHT_UP.
-            var fenced = fencedManager(highWaterAt(Epoch.epoch(1, 3)));
+            var fenced = fencedManager(highWaterAt(Epoch.epoch(0L, 1, 3)));
             assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
 
-            var accepted = fenced.appendRecovered(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, Epoch.epoch(1, 3));
+            var accepted = fenced.appendRecovered(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, Epoch.epoch(0L, 1, 3));
 
             assertThat(accepted.isSuccess()).isTrue();
             assertThat(accepted.or(-1L)).isEqualTo(0L); // first offset landed locally
@@ -111,11 +111,11 @@ class StreamPartitionManagerTest {
         /// redirected (`NotOwnerAppend`, transient). Admission-before-fence reddens this test alone.
         @Test
         void publishLocal_staleEpochFromNonOwner_isRejectedByTheFenceBeforeAdmission() {
-            var fenced = fencedManager(highWaterAt(Epoch.epoch(1, 3)));
+            var fenced = fencedManager(highWaterAt(Epoch.epoch(0L, 1, 3)));
             assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
             fenced.ownerWriteAdmission((_, _) -> Option.some(new NodeId("successor")));
 
-            var rejected = fenced.publishLocal(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, Epoch.epoch(1, 2));
+            var rejected = fenced.publishLocal(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, Epoch.epoch(0L, 1, 2));
 
             assertThat(rejected.isFailure()).isTrue();
             rejected.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StaleEpochAppend.class));
