@@ -13,19 +13,30 @@
     part 1) and the KV committed revision.
   - A head of the same lineage is written over only when it is not ahead of this cluster, compared
     lexicographically by incarnation, then revision. A deposed leader's late write is therefore dropped.
+  - A head that stays ahead longer than 30 s (monotonic clock) raises one `BACKUP_HEAD_AHEAD` warning per
+    episode. Routine lag after a leader change resolves by itself and stays quiet.
   - An empty remote is written freely, which establishes this cluster's lineage.
   - **The remote's lineage changes only by an operator declaration.** A head of any other lineage is
     GATED, whatever the incarnations; the transition warning names both lineages and the command.
     `aether backup declare-genesis` commits a declaration (`declared-lineage.txt`) for exactly this
     cluster's `(lineage, incarnation)`, and only that lets the service replace the head.
 - **`aether backup declare-genesis` / `POST /api/v1/backup/declare-genesis`** (ADMIN, leader).
-  - It moves this cluster's incarnation past a foreign head, commits the declaration beside the backup,
-    and pushes it; the next flush then supersedes the head. It is safe to repeat if the declaration push
-    fails (`DeclarationNotPublished`).
+  - It moves this cluster's incarnation to `max(own, head) + 1` (never backwards), commits the
+    declaration beside the backup, and pushes it; the next flush then supersedes the head.
+  - The incarnation step is a leader transaction witnessed on the incarnation it read. A concurrent
+    write makes it refuse (`NOT_COMMITTED`) instead of being overwritten.
+  - It is safe to re-run after any push failure (`DeclarationNotPublished`): a re-run publishes the
+    declaration already committed locally and does not move the incarnation again.
   - It is refused, with a typed conflict, when the head is this cluster's own lineage. When that head is
     newer than the cluster, the refusal says to restore it instead.
 - **Git unreachable.** Commits queue in the local repository (latest state wins). Pushes retry on backoff
   capped at 60 s, and one push carries every queued commit.
+- **No credential prompts.** Git runs with `GIT_TERMINAL_PROMPT=0`, and ssh runs with
+  `-o BatchMode=yes` (appended to any `GIT_SSH_COMMAND` already set). Every git command is bounded by a
+  timeout.
+- **Fixed before release:** the backup encoder no longer throws on the `LeaderKey` atom that a node's KV
+  store holds beside its `AetherKey` entries. Before the fix, every flush on a real node would have
+  failed.
 - **Warnings are emitted on transitions only:** `BACKUP_GATED` (it names the command),
   `BACKUP_REMOTE_UNREADABLE`, `BACKUP_PUSH_FAILING` (after 60 s of lag), `BACKUP_COMMIT_FAILED` and
   `BACKUP_RECOVERED`. They are logged; the `OperatorWarning` cluster event is #1574.
@@ -51,4 +62,7 @@
   - Its interim hazards: it restores the whole KV, runtime keys included; it never advances
     `ClusterIncarnationKey` on a cold restart; it ignores `[backup] enabled`; and `[backup] interval`
     has no reader.
+  - (d) A cold restart restored from an older snapshot writes nothing while the newer head is ahead;
+    the only signal is `BACKUP_HEAD_AHEAD`. Once its revision overtakes, its state REPLACES the newer
+    head, and git history keeps the replaced commit.
   - The two paths never share a repository: the new one lives at `<path>/kv-backup`.

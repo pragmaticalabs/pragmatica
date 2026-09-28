@@ -3685,12 +3685,14 @@ land.
 ### POST /api/v1/backup/declare-genesis
 
 Make this cluster's state the KV backup head in place of a backup of ANOTHER lineage (#1532). The
-leader raises its committed cluster incarnation past the head's (`ClusterIncarnationKey`, lineage
-unchanged), then commits a declaration naming exactly that lineage and incarnation (`declared-lineage.txt`)
+leader raises its committed cluster incarnation to `max(its own, the head's) + 1` — never backwards
+(`ClusterIncarnationKey`, lineage unchanged) — then commits a declaration naming exactly that lineage and incarnation (`declared-lineage.txt`)
 beside the backup and pushes it; the next change-triggered flush then supersedes the head as a
 fast-forward, and the old lineage stays in git history. The declaration is the only way the backup's
 lineage changes: a head of another lineage is otherwise gated whatever the incarnations. The incarnation
-write is version-fenced and confirmed by re-read.
+write is a leader transaction witnessed on the incarnation the leader read, so a concurrent restore or
+declaration makes it refuse (`NOT_COMMITTED`) rather than be overwritten. Re-running after a failed push
+publishes the declaration already committed locally, without moving the incarnation again.
 
 **Refusals:**
 
