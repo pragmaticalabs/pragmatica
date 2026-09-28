@@ -310,9 +310,9 @@ class ManagementServerImpl implements ManagementServer {
                                                                                    () -> buildStatusJson(nodeSupplier));
         this.eventWsHandler = new EventWebSocketHandler(wsAuthenticator);
         this.eventWsPublisher = EventWebSocketPublisher.eventWebSocketPublisher(eventWsHandler,
-                                                                                since -> nodeSupplier.get()
-                                                                                                     .eventAggregator()
-                                                                                                     .eventsSince(since),
+                                                                                fromOffset -> nodeSupplier.get()
+                                                                                                          .eventAggregator()
+                                                                                                          .eventsFrom(fromOffset),
                                                                                 ManagementServerImpl::buildEventsJson);
         this.staticFileHandler = StaticFileHandler.staticFileHandler();
         this.observability = ObservabilityRegistry.prometheus();

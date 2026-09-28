@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
@@ -526,6 +527,39 @@ class ClusterEventAggregatorTest {
 
         assertThat(h.events()).hasSize(1);
         assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies are in the log").isEqualTo(1);
+    }
+
+    /// #1653: the id is stamped ONCE, when the aggregator accepts the event, before the first attempt. Here the first
+    /// attempt LANDS and still fails (the unknown-outcome case), and the retry lands a second copy: both copies carry
+    /// the same id, and a read returns one.
+    @Test
+    void emit_firstAttemptLandsButFails_retryCopyHasTheSameId_andIsReadOnce() {
+        var h = Harness.create();
+        var real = h.publisher().get();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var landsThenFails = FrameworkStreamPublishers.<ClusterEvent>testPublisher(SystemStreams.CLUSTER_EVENTS,
+                                                                                  event -> landThenFailFirst(real, event, calls))
+                                                      .unwrap();
+
+        h.publisher().set(landsThenFails);
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "once", Map.of()));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: the first attempt failed and is held").isEqualTo(1);
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(calls.get()).as("control: two attempts").isEqualTo(2);
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.aggregator().lastReadDuplicates()).as("control: both copies landed").isEqualTo(1);
+    }
+
+    private static void landThenFailFirst(FrameworkStreamPublisher<ClusterEvent> real,
+                                          ClusterEvent event,
+                                          java.util.concurrent.atomic.AtomicInteger calls) {
+        real.publish(event)
+            .await();
+        if (calls.incrementAndGet() == 1) {
+            throw new IllegalStateException("landed, then the outcome was lost");
+        }
     }
 
     /// #1653 round 2: `at` is not an identity. Two DISTINCT events that share `at` (one node, one millisecond,

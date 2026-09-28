@@ -346,6 +346,39 @@ public final class ClusterEventAggregator {
                        .orElse(0L);
     }
 
+    /// A page of the log from an offset: the events at `[from, nextOffset)` in log order, as stored (not
+    /// de-duplicated or sorted: the event feed does both against what it has already sent).
+    public record EventPage(List<ClusterEvent> events, long nextOffset) {}
+
+    /// #1653: the event feed's incremental read. Reads from `fromOffset` (clamped up to the oldest retained offset)
+    /// and reports where the next read starts. A redelivered event is APPENDED, so it lands at an offset beyond any
+    /// earlier read, whatever its `at`: a reader that follows `nextOffset` sees it without any time window, and each
+    /// read costs what is new since the last one.
+    public Promise<EventPage> eventsFrom(long fromOffset) {
+        return Option.option(consumerSupplier.get())
+                     .map(consumer -> pageFrom(consumer, fromOffset))
+                     .or(() -> Promise.success(new EventPage(List.of(), fromOffset)));
+    }
+
+    private static Promise<EventPage> pageFrom(FrameworkStreamConsumer<ClusterEvent> consumer, long fromOffset) {
+        return consumer.metadata()
+                       .map(ClusterEventAggregator::retainedTailOffset)
+                       .flatMap(tail -> consumer.fetch(Math.max(fromOffset, tail), FETCH_BATCH))
+                       .map(raw -> page(raw, fromOffset));
+    }
+
+    private static EventPage page(List<StreamEvent<ClusterEvent>> raw, long fromOffset) {
+        var nextOffset = raw.stream()
+                            .mapToLong(StreamEvent::offset)
+                            .max()
+                            .orElse(fromOffset - 1) + 1;
+
+        return new EventPage(raw.stream()
+                                .map(StreamEvent::payload)
+                                .toList(),
+                             nextOffset);
+    }
+
     /// Read events whose timestamp is strictly after `since`.
     public Promise<List<ClusterEvent>> eventsSince(Instant since) {
         return events().map(events -> filterSince(events, since));
