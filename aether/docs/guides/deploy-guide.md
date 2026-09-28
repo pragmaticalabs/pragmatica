@@ -95,7 +95,10 @@ change.
 
 **What it does not detect.** A version that fails only on some instances or only for some requests;
 business-logic regressions; hangs and deadlocks; exceptions thrown asynchronously inside the slice's
-own Promise chain; a version that receives no traffic.
+own Promise chain; a version that receives no traffic. A hosting node that dies stops counting as a
+host only once membership declares it DEAD; until then — including during the cold-boot convergence
+window, when a never-healthy peer is reported UNKNOWN rather than FAULTY — its stale metrics make the
+version undecidable and nothing triggers.
 
 **Recovery.** After an automatic rollback the failed version is recorded and is never an automatic
 rollback target again. Deploy a fixed version, or roll forward manually. When the rollback budget is
