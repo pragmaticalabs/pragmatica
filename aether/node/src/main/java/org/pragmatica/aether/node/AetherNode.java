@@ -3112,7 +3112,8 @@ public interface AetherNode extends ManageableNode {
         // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
         // non-leader, so a new leader starts from fresh windows.
         var allInstancesFailedDetector = AllInstancesFailedDetector.allInstancesFailedDetector(metricsCollector::allObservations,
-                                                                                               () -> activeInstancesByArtifact(deploymentMap),
+                                                                                               () -> activeInstancesByArtifact(deploymentMap,
+                                                                                                                               Option.option(membershipFsmRef.get())),
                                                                                                isLeaderSupplier,
                                                                                                delegateRouter::route,
                                                                                                System::currentTimeMillis);
@@ -5824,23 +5825,33 @@ public interface AetherNode extends ManageableNode {
     /// could only mirror it; `PresenceMemberSupplierSeamTest` now pins THIS method against a real
     /// seeded FSM. `or(Set.of())` guards the pre-FSM-published boot window (lazy supplier; the FSM
     /// holder is populated before any snapshot is taken).
-    /// #1573: the ACTIVE instances of every deployed artifact version, as the all-instances-failed detector
-    /// needs them. An unparsable artifact or node id is skipped, never guessed.
-    private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap) {
+    /// #1573: the ACTIVE instances of every deployed artifact version on nodes the membership FSM still counts,
+    /// as the all-instances-failed detector needs them. An instance left in KV on a node membership has declared
+    /// DEAD serves nothing and is not a host; a counted node that stopped reporting still is — and its stale
+    /// metrics make the version undecidable. An unparsable artifact or node id is skipped, never guessed.
+    private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap,
+                                                                        Option<MembershipFsm> membershipFsm) {
+        return membershipFsm.map(fsm -> activeInstancesByArtifact(deploymentMap, fsm))
+                            .or(Map.of());
+    }
+
+    private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap,
+                                                                        MembershipFsm membershipFsm) {
         var result = new HashMap<Artifact, Set<NodeId>>();
 
         deploymentMap.allDeployments()
                      .forEach(info -> Artifact.artifact(info.artifact())
-                                              .onSuccess(artifact -> result.put(artifact, activeNodes(info))));
+                                              .onSuccess(artifact -> result.put(artifact, activeNodes(info, membershipFsm))));
 
         return Map.copyOf(result);
     }
 
-    private static Set<NodeId> activeNodes(DeploymentMap.SliceDeploymentInfo info) {
+    private static Set<NodeId> activeNodes(DeploymentMap.SliceDeploymentInfo info, MembershipFsm membershipFsm) {
         return info.instances()
                    .stream()
                    .filter(instance -> instance.state() == SliceState.ACTIVE)
                    .map(instance -> new NodeId(instance.nodeId()))
+                   .filter(membershipFsm::isCountedMember)
                    .collect(Collectors.toUnmodifiableSet());
     }
 

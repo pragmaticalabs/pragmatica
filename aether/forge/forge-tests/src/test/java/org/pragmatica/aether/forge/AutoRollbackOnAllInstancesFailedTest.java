@@ -26,6 +26,8 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.SliceDefect;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
@@ -35,6 +37,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -127,12 +130,12 @@ class AutoRollbackOnAllInstancesFailedTest {
 
         while (System.currentTimeMillis() < deadline) {
             cluster.allNodes()
-                   .forEach(this::requestBusinessFailure);
+                   .forEach(node -> assertThat(businessFailureOnOwnInstance(node))
+                                        .as("arming: %s executed the method and returned its business failure", node.self().id())
+                                        .isTrue());
             sleep(250);
         }
 
-        assertThat(cluster.allNodes()).as("arming: every instance executed and returned the business failure")
-                                      .allMatch(AutoRollbackOnAllInstancesFailedTest::recordedFailures);
         assertThat(alertRaised()).as("a failure the slice returns deliberately is never a defect").isFalse();
         assertNotRolledBack();
     }
@@ -238,28 +241,26 @@ class AutoRollbackOnAllInstancesFailedTest {
         }
     }
 
-    private void requestBusinessFailure(AetherNode node) {
-        var status = cluster.status()
-                            .nodes()
-                            .stream()
-                            .filter(candidate -> candidate.id().equals(node.self().id()))
-                            .findFirst();
-
-        status.ifPresent(candidate -> jdkHttpOperations().sendString(HttpRequest.newBuilder(URI.create("http://localhost:"
-                                                                                                        + (candidate.port() + APP_OFFSET)
-                                                                                                        + "/fail/500"))
-                                                                                .timeout(REQUEST.duration())
-                                                                                .GET()
-                                                                                .build())
-                                                         .await(REQUEST));
+    /// Invokes the echo slice's `fail(FailRequest(500))` on the node's OWN instance. The method returns a
+    /// failed Promise carrying the slice's own ControlledFailure — a business failure. True when the call
+    /// executed and came back as exactly that: a failure, and not a [SliceDefect].
+    private static boolean businessFailureOnOwnInstance(AetherNode node) {
+        return node.invocationHandler()
+                   .localSlice(ARTIFACT)
+                   .map(bridge -> invokeFail(bridge))
+                   .or(false);
     }
 
-    private static boolean recordedFailures(AetherNode node) {
-        return node.invocationMetrics()
-                   .snapshot()
-                   .stream()
-                   .filter(snapshot -> snapshot.artifact().equals(ARTIFACT))
-                   .anyMatch(snapshot -> snapshot.metrics().failureCount() > 0);
+    private static boolean invokeFail(SliceBridge bridge) {
+        return Result.lift(() -> bridge.classLoader()
+                                       .loadClass("org.pragmatica.aether.e2e.slice.EchoService$FailRequest")
+                                       .getDeclaredConstructor(int.class)
+                                       .newInstance(500))
+                     .async()
+                     .flatMap(bridge::encode)
+                     .flatMap(bytes -> bridge.invoke("fail", bytes))
+                     .await(REQUEST)
+                     .fold(cause -> !(cause instanceof SliceDefect), _ -> false);
     }
 
     private boolean rolledBack() {
