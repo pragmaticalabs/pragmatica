@@ -17,6 +17,12 @@ public interface SnapshotManager {
     @Contract
     void forceSnapshot();
 
+    /// Force a snapshot and return exactly what was written, or why nothing was (#1604) -- for a caller that
+    /// acts on "this state is now on disk" and must not act when the write failed.
+    default Result<MetadataSnapshot> snapshotNow() {
+        return SnapshotError.General.SNAPSHOT_NOW_UNSUPPORTED.result();
+    }
+
     /// Restore metadata from the latest local disk snapshot. Three outcomes, kept apart (#1013):
     /// success with the snapshot when one restored (#1353: possibly an older retained one, WARNed);
     /// success with none when NOTHING is on disk -- no `LATEST` and no snapshot file, established
