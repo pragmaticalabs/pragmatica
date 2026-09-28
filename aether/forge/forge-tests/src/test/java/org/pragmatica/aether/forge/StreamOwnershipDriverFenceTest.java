@@ -83,6 +83,10 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///     paired with the per-partition takeover counter as its local component. It advances on a leader
 ///     re-election (rabiaTerm, the dominant component) AND on every owner change (ownershipTerm, the
 ///     local counter), so a deposed-but-alive owner is fenced even within a single generation term.
+///     `incarnation` is the LIVE cluster incarnation read from the leader (1 after genesis, #1529),
+///     never a literal: the pre-#1529 expectations encoded incarnation 0 only because incarnations did
+///     not exist yet, not because the fence requires it, and an incarnation-0 writer is correctly
+///     outranked by everything a real genesis mints.
 ///   - The same-term owner0→owner1 RELOCATION (test 3) cannot be driven by a real single-JVM membership
 ///     change while keeping owner0 alive — HRW only relocates a partition when its OWNER leaves, which
 ///     would kill owner0. The test therefore drives the transfer through the production writer with a
