@@ -73,6 +73,7 @@ class ProvenanceComparisonTest {
             var a = copy(0, 10, at(E1, 0));
             var b = LogProvenance.logProvenance(0, 50, 60, List.of(at(E1, 0), at(E2, 5)));
 
+            assertThat(ProvenanceComparison.diverge(a, b)).isTrue();
             assertThat(ProvenanceComparison.firstDivergence(a, b, 0, 10)).isEqualTo(Option.some(5L));
         }
 
