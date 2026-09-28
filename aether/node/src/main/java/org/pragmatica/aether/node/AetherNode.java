@@ -5166,6 +5166,13 @@ public interface AetherNode extends ManageableNode {
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  bootstrapAdminKeyRegistrar::onLeaderChange));
+        // #1529 part 1: the leader mints the cluster lineage/incarnation at genesis if absent. Same
+        // self-healing, leader-armed shape as the bootstrap admin key; a restored value is left alone.
+        var clusterIncarnationRegistrar = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
+                                                                                                                                         clusterCommandApplier));
+
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 clusterIncarnationRegistrar::onLeaderChange));
         // Publish-side mirror: same forward client + HRW owner resolver the read router uses, so a
         // management publish landing on a metadata-only node write-forwards to the owner (#265) instead
         // of failing PARTITION_NOT_LOCAL on a local append.

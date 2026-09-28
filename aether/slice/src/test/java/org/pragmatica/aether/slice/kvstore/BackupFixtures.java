@@ -36,6 +36,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
@@ -59,6 +60,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
@@ -222,6 +224,8 @@ final class BackupFixtures {
                                    BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of(NamedAddress.namedAddress("stock", topic)))),
                        new Fixture(EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5),
                                    EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab")),
+                       new Fixture(ClusterIncarnationKey.clusterIncarnationKey(),
+                                   ClusterIncarnationValue.clusterIncarnationValue("01K4ZT9Q6W3X8Y2B7C5D1E0F9G", 3)),
                        new Fixture(ScheduledTaskPauseKey.scheduledTaskPauseKey("orders.cleanup",
                                                                                artifact("org.example:orders-slice:1.2.3"),
                                                                                MethodName.methodName("purgeExpired")

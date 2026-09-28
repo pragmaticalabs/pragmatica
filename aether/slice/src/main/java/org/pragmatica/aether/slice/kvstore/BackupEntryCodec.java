@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
@@ -48,6 +49,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
@@ -189,7 +191,10 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                                                    EntityCheckpointKey::entityCheckpointKey),
                                                              KeyBinding.keyBinding(ScheduledTaskPauseKey.class,
                                                                                    ScheduledTaskPauseValue.class,
-                                                                                   ScheduledTaskPauseKey::scheduledTaskPauseKey));
+                                                                                   ScheduledTaskPauseKey::scheduledTaskPauseKey),
+                                                             KeyBinding.keyBinding(ClusterIncarnationKey.class,
+                                                                                   ClusterIncarnationValue.class,
+                                                                                   ClusterIncarnationKey::clusterIncarnationKey));
 
     private static final Map<Class<?>, Class<?>> VALUE_TYPES = BINDINGS.stream().collect(Collectors.toMap(KeyBinding::keyType,
                                                                                                           KeyBinding::valueType));

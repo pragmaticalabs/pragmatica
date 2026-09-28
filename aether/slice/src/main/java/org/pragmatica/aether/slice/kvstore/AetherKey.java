@@ -1980,6 +1980,43 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> AUTO_HEAL_STATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid auto-heal-state key format: %s");
 
+    /// Cluster state (#1529 part 1): the cluster's lineage and incarnation — the single authority every
+    /// other component reads it from. The leader mints it at genesis if absent (incarnation 1, a fresh
+    /// lineage); a restore brings it back with the data and increments it, so a restored cluster keeps
+    /// its lineage and moves to a strictly newer incarnation. Backed up, which is what makes the restore
+    /// increment possible.
+    record ClusterIncarnationKey() implements ClusterStateKey {
+        private static final String KEY = "cluster-incarnation";
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static final ClusterIncarnationKey SINGLETON = new ClusterIncarnationKey();
+
+        @Override
+        public String asString() {
+            return KEY;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static ClusterIncarnationKey clusterIncarnationKey() {
+            return SINGLETON;
+        }
+
+        public static Result<ClusterIncarnationKey> clusterIncarnationKey(String key) {
+            if (!KEY.equals(key)) {
+                return CLUSTER_INCARNATION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> CLUSTER_INCARNATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-incarnation key format: %s");
+
     record ConsumerGroupKey(String groupId, String streamName, int partition) implements RuntimeKey {
         private static final String PREFIX = "consumer-group/";
 
