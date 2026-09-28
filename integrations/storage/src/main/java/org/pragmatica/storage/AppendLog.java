@@ -12,6 +12,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.zip.CRC32;
 
 import org.pragmatica.lang.Cause;
@@ -22,6 +23,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.FileOps;
 
 import org.slf4j.Logger;
@@ -50,7 +52,9 @@ import static org.pragmatica.lang.Unit.unit;
 /// Beside the log sits `<log>.epochs`, the durable history of which owner epoch began writing at which
 /// offset ([#recordEpochStart], [#epochHistory]) -- what ranks replicas by `(last owner epoch, head)` after
 /// an ownership move or a cold restart. It is a separate file written by temp, force, rename and directory
-/// force ([EpochHistory]); the record framing below is unchanged by it.
+/// force ([EpochHistory]); the record framing below is unchanged by it. An epoch is an opaque [EpochKey]:
+/// the caller encodes it and supplies its order ([EpochOrder]), so the log knows nothing of what an owner
+/// epoch is made of (#1596).
 ///
 /// ## Seal-gated truncation (#1567)
 /// [#truncate] never discards past [#sealedThrough], and only [StorageInstance#seal] advances that
@@ -311,12 +315,13 @@ public final class AppendLog implements AutoCloseable {
         return sealedThrough.get();
     }
 
-    /// Record, durably, that owner epoch `ownerEpoch` begins writing this log at `startOffset` (#1567 A11,
+    /// Record, durably, that owner epoch `key` begins writing this log at `startOffset` (#1567 A11,
     /// KIP-101's leader-epoch checkpoint). Durable before it returns -- see [EpochHistory] for the write
-    /// sequence -- and monotonic: refused with [WalError.EpochRegression] for an epoch at or below the last
-    /// one or a start below the last start, a no-op when it repeats the last entry exactly.
-    public Result<Unit> recordEpochStart(long ownerEpoch, long startOffset) {
-        return epochs.recordStart(ownerEpoch, startOffset);
+    /// sequence -- and monotonic under `order`: refused with [WalError.EpochRegression] for a key that does
+    /// not follow the last one or a start below the last start, a no-op when it repeats the last entry
+    /// exactly.
+    public Result<Unit> recordEpochStart(EpochKey key, long startOffset, EpochOrder order) {
+        return epochs.recordStart(key, startOffset, order);
     }
 
     /// The owner-epoch history, oldest first, as last made durable. Reads memory only.
@@ -819,8 +824,26 @@ public final class AppendLog implements AutoCloseable {
 
     private record ScanResult(long validEnd, long lastOffset) {}
 
-    /// Owner epoch `ownerEpoch` began writing the log at `startOffset`.
-    public record EpochStart(long ownerEpoch, long startOffset) {}
+    /// Owner epoch `key` began writing the log at `startOffset`.
+    public record EpochStart(EpochKey key, long startOffset) {}
+
+    /// An owner epoch as the log's caller encodes it (#1596): an opaque token of printable, non-space
+    /// characters. Equality is token equality; order is the caller's ([EpochOrder]).
+    public record EpochKey(String token) {
+        private static final Pattern TOKEN = Pattern.compile("\\p{Graph}+");
+
+        public static Result<EpochKey> epochKey(String token) {
+            return Verify.ensure(token, Verify.Is::matches, TOKEN)
+                         .map(EpochKey::new);
+        }
+    }
+
+    /// The caller's order over [EpochKey]s: `later` may start after `earlier` in one history. Not required
+    /// to be total -- two keys neither of which follows the other refuse the second.
+    @FunctionalInterface
+    public interface EpochOrder {
+        boolean follows(EpochKey later, EpochKey earlier);
+    }
 
     /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record.
     public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {}
@@ -927,12 +950,12 @@ public final class AppendLog implements AutoCloseable {
         }
 
         /// A [#recordEpochStart] that would move the history backwards (#1567 A11).
-        record EpochRegression(long ownerEpoch, long startOffset, long lastEpoch, long lastStart) implements WalError {
+        record EpochRegression(EpochKey key, long startOffset, EpochKey lastKey, long lastStart) implements WalError {
             @Override
             public String message() {
-                return "Epoch start refused: epoch %d at offset %d does not follow epoch %d at offset %d".formatted(ownerEpoch,
+                return "Epoch start refused: epoch %s at offset %d does not follow epoch %s at offset %d".formatted(key.token(),
                                                                                                                     startOffset,
-                                                                                                                    lastEpoch,
+                                                                                                                    lastKey.token(),
                                                                                                                     lastStart);
             }
         }

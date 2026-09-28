@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.zip.CRC32;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -19,8 +20,11 @@ import org.pragmatica.storage.AppendLog.EpochStart;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// #1567 A11: the durable owner-epoch history beside each append log.
+/// #1567 A11: the durable owner-epoch history beside each append log; #1596: opaque keys, caller order.
 class AppendLogEpochHistoryTest {
+    /// Keys are decimal numbers here, ordered numerically -- the log itself never interprets a token.
+    private static final AppendLog.EpochOrder NUMERIC = (later, earlier) -> number(later) > number(earlier);
+
     @TempDir
     Path dir;
 
@@ -36,36 +40,36 @@ class AppendLogEpochHistoryTest {
 
         logRef.set(wal);
 
-        var forced = FileForceRecording.forcedFilesDuring(() -> wal.recordEpochStart(3, 10).onFailure(c -> fail(c.message())));
+        var forced = FileForceRecording.forcedFilesDuring(() -> wal.recordEpochStart(key(3), 10, NUMERIC).onFailure(c -> fail(c.message())));
         var forcedNames = forced.stream().map(f -> f.path().getFileName().toString()).toList();
 
         assertThat(forcedNames).containsSubsequence("p.epochs.tmp", dir.getFileName().toString());
         assertThat(forced).filteredOn(f -> f.path().getFileName().toString().equals("p.epochs.tmp"))
                           .allSatisfy(f -> assertThat(f.metaData()).isTrue());
         assertThat(visibleDuringWrite.get()).as("not visible while the write is in progress").isEmpty();
-        assertThat(wal.epochHistory()).containsExactly(new EpochStart(3, 10));
+        assertThat(wal.epochHistory()).containsExactly(start(3, 10));
         wal.close();
 
-        assertThat(AppendLog.readEpochHistory(file()).unwrap()).containsExactly(new EpochStart(3, 10));
+        assertThat(AppendLog.readEpochHistory(file()).unwrap()).containsExactly(start(3, 10));
     }
 
     @Test
     void recordEpochStart_isMonotonic_refusalsLeaveTheHistoryAndTheFileUntouched() throws Exception {
         var wal = AppendLog.open(file()).unwrap();
 
-        wal.recordEpochStart(5, 100).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(5), 100, NUMERIC).onFailure(c -> fail(c.message()));
         var before = Files.readAllBytes(sidecar());
 
-        assertRefused(wal.recordEpochStart(4, 200), "a lower epoch");
-        assertRefused(wal.recordEpochStart(5, 150), "the same epoch at another start");
-        assertRefused(wal.recordEpochStart(6, 99), "a start below the last start");
-        wal.recordEpochStart(5, 100).onFailure(c -> fail("an exact repeat is a no-op: " + c.message()));
+        assertRefused(wal.recordEpochStart(key(4), 200, NUMERIC), "a lower epoch");
+        assertRefused(wal.recordEpochStart(key(5), 150, NUMERIC), "the same epoch at another start");
+        assertRefused(wal.recordEpochStart(key(6), 99, NUMERIC), "a start below the last start");
+        wal.recordEpochStart(key(5), 100, NUMERIC).onFailure(c -> fail("an exact repeat is a no-op: " + c.message()));
 
-        assertThat(wal.epochHistory()).containsExactly(new EpochStart(5, 100));
+        assertThat(wal.epochHistory()).containsExactly(start(5, 100));
         assertThat(Files.readAllBytes(sidecar())).isEqualTo(before);
 
-        wal.recordEpochStart(6, 100).onFailure(c -> fail(c.message()));
-        assertThat(wal.epochHistory()).containsExactly(new EpochStart(5, 100), new EpochStart(6, 100));
+        wal.recordEpochStart(key(6), 100, NUMERIC).onFailure(c -> fail(c.message()));
+        assertThat(wal.epochHistory()).containsExactly(start(5, 100), start(6, 100));
         wal.close();
     }
 
@@ -73,15 +77,15 @@ class AppendLogEpochHistoryTest {
     void truncateEpochsAbove_dropsLaterStarts_durably() {
         var wal = AppendLog.open(file()).unwrap();
 
-        wal.recordEpochStart(1, 0).onFailure(c -> fail(c.message()));
-        wal.recordEpochStart(2, 50).onFailure(c -> fail(c.message()));
-        wal.recordEpochStart(3, 90).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(2), 50, NUMERIC).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(3), 90, NUMERIC).onFailure(c -> fail(c.message()));
         wal.truncateEpochsAbove(60).onFailure(c -> fail(c.message()));
         wal.close();
 
         var reopened = AppendLog.open(file()).unwrap();
 
-        assertThat(reopened.epochHistory()).containsExactly(new EpochStart(1, 0), new EpochStart(2, 50));
+        assertThat(reopened.epochHistory()).containsExactly(start(1, 0), start(2, 50));
         reopened.close();
     }
 
@@ -92,22 +96,22 @@ class AppendLogEpochHistoryTest {
         var tornWrite = (Fn2<Result<Unit>, Path, byte[]>) AppendLogEpochHistoryTest::writeHalfThenFail;
         var first = AppendLog.open(file()).unwrap();
 
-        first.recordEpochStart(1, 0).onFailure(c -> fail(c.message()));
+        first.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
         first.close();
 
         var crashing = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), tornWrite).unwrap();
 
-        crashing.recordEpochStart(2, 40).onSuccess(_ -> fail("the temp write was injected to fail"));
-        assertThat(crashing.epochHistory()).containsExactly(new EpochStart(1, 0));
+        crashing.recordEpochStart(key(2), 40, NUMERIC).onSuccess(_ -> fail("the temp write was injected to fail"));
+        assertThat(crashing.epochHistory()).containsExactly(start(1, 0));
         crashing.close();
 
         assertThat(Files.exists(sidecar().resolveSibling("p.epochs.tmp"))).as("the torn temp is left behind").isTrue();
 
         var reopened = AppendLog.open(file()).unwrap();
 
-        assertThat(reopened.epochHistory()).containsExactly(new EpochStart(1, 0));
-        reopened.recordEpochStart(2, 40).onFailure(c -> fail(c.message()));
-        assertThat(reopened.epochHistory()).containsExactly(new EpochStart(1, 0), new EpochStart(2, 40));
+        assertThat(reopened.epochHistory()).containsExactly(start(1, 0));
+        reopened.recordEpochStart(key(2), 40, NUMERIC).onFailure(c -> fail(c.message()));
+        assertThat(reopened.epochHistory()).containsExactly(start(1, 0), start(2, 40));
         reopened.close();
     }
 
@@ -118,7 +122,7 @@ class AppendLogEpochHistoryTest {
         var wal = AppendLog.open(file()).unwrap();
 
         wal.append(0, "a".getBytes(StandardCharsets.UTF_8), 1L).await().onFailure(c -> fail(c.message()));
-        wal.recordEpochStart(1, 0).onFailure(c -> fail(c.message()));
+        wal.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
         wal.close();
 
         var damaged = Files.readAllBytes(sidecar());
@@ -140,6 +144,68 @@ class AppendLogEpochHistoryTest {
         assertThat(Files.getLastModifiedTime(sidecar())).isEqualTo(sidecarTime);
         assertThat(Files.readAllBytes(file())).isEqualTo(logBytes);
         assertThat(Files.getLastModifiedTime(file())).isEqualTo(logTime);
+    }
+
+    /// Two keys neither of which follows the other (the caller's order is partial): the second is refused, so
+    /// a history can never interleave epochs its caller cannot order (#1596, the #1625 collision shape).
+    @Test
+    void recordEpochStart_refusesAKeyTheCallersOrderCannotPlaceAfterTheLast() {
+        var wal = AppendLog.open(file()).unwrap();
+        AppendLog.EpochOrder sameTermOnly = (later, earlier) -> later.token().compareTo(earlier.token()) > 0
+                                                                && later.token().charAt(0) == earlier.token().charAt(0);
+
+        wal.recordEpochStart(key("a1"), 0, sameTermOnly).onFailure(c -> fail(c.message()));
+        assertRefused(wal.recordEpochStart(key("b2"), 10, sameTermOnly), "an unordered key");
+        wal.recordEpochStart(key("a2"), 10, sameTermOnly).onFailure(c -> fail(c.message()));
+
+        assertThat(wal.epochHistory()).containsExactly(new EpochStart(key("a1"), 0), new EpochStart(key("a2"), 10));
+        wal.close();
+    }
+
+    /// Format v1 held one number per epoch and no production path wrote it: it reads as an EMPTY history, so a
+    /// log carrying it has records without provenance -- flagged by the divergence rule, never trusted (#1596).
+    @Test
+    void legacyV1Sidecar_readsAsAnEmptyHistory_andTheNextRecordWritesV2() throws Exception {
+        var body = EpochHistory.LEGACY_HEADER + "\n3 10\n";
+        var crc = new CRC32();
+
+        crc.update(body.getBytes(StandardCharsets.UTF_8));
+        Files.writeString(sidecar(), body + "crc " + Long.toHexString(crc.getValue()) + "\n");
+
+        assertThat(AppendLog.readEpochHistory(file()).unwrap()).isEmpty();
+
+        var wal = AppendLog.open(file()).unwrap();
+
+        assertThat(wal.epochHistory()).isEmpty();
+        wal.recordEpochStart(key(4), 0, NUMERIC).onFailure(c -> fail(c.message()));
+        wal.close();
+
+        assertThat(Files.readString(sidecar())).startsWith(EpochHistory.HEADER + "\n");
+        assertThat(AppendLog.readEpochHistory(file()).unwrap()).containsExactly(start(4, 0));
+    }
+
+    /// A key token that is blank or carries a space cannot be framed in the sidecar and is refused up front.
+    @Test
+    void epochKey_refusesBlankAndSpacedTokens() {
+        AppendLog.EpochKey.epochKey("").onSuccess(_ -> fail("a blank token must be refused"));
+        AppendLog.EpochKey.epochKey("a b").onSuccess(_ -> fail("a spaced token must be refused"));
+        AppendLog.EpochKey.epochKey("7.3.-").onFailure(c -> fail(c.message()));
+    }
+
+    private static AppendLog.EpochKey key(long epoch) {
+        return key(Long.toString(epoch));
+    }
+
+    private static AppendLog.EpochKey key(String token) {
+        return AppendLog.EpochKey.epochKey(token).unwrap();
+    }
+
+    private static EpochStart start(long epoch, long startOffset) {
+        return new EpochStart(key(epoch), startOffset);
+    }
+
+    private static long number(AppendLog.EpochKey key) {
+        return Long.parseLong(key.token());
     }
 
     private static Result<Unit> observeThenWrite(AtomicReference<AppendLog> logRef,
