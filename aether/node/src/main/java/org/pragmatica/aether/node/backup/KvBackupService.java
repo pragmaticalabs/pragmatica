@@ -17,8 +17,8 @@ import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -207,7 +207,35 @@ public final class KvBackupService {
     @Contract
     public void onValuePut(ValuePut<?, ?> put) {
         if (isBackedUp(put.cause().key()) && !put.oldValue().equals(Option.some(put.cause().value()))) {
+            markChanged(put.cause()
+                           .key());
+        }
+    }
+
+    /// An incarnation change skips the debounce: it is flushed at once, so the first commit of a new
+    /// incarnation is the one that records it. That narrows — it does not close — the window in which
+    /// an incarnation runs without any backup recording it, which is the residual a restore's floor
+    /// cannot see (`ClusterIncarnation.restoreCommands`) `[unverified]`.
+    @Contract
+    private void markChanged(Object key) {
+        if (key instanceof ClusterIncarnationKey) {
+            markUrgent();
+        } else {
             markDirty();
+        }
+    }
+
+    @Contract
+    private void markUrgent() {
+        var now = clock.getAsLong();
+
+        dirty.set(true);
+        lastDirtyAt.set(now - timing.quietMillis());
+        firstDirtyAt.set(now - timing.maxDelayMillis());
+        if (leader.get()) {
+            // Scheduled even when a debounced tick is pending: the extra tick flushes now, and the
+            // pending one then finds nothing dirty.
+            scheduler.schedule(this::tick, 0);
         }
     }
 
@@ -283,19 +311,18 @@ public final class KvBackupService {
 
     /// One pass: read the state, decide against the head, commit locally, push. `pushAttempts` bounds
     /// the re-decide loop after a rejected (raced) push.
+    ///
+    /// The header's lineage and incarnation come from the captured state's own incarnation entry
+    /// ([BackupEntryCodec#headerFor]), so the document can never disagree with itself. A state that has
+    /// none yet (genesis pending) is not backed up.
     private Result<Outcome> attemptFlush(int pushAttempts) {
-        return ClusterIncarnation.committed(kvStore)
-                                 .map(incarnation -> flushAt(incarnation, pushAttempts))
-                                 .or(() -> success(Outcome.AWAITING_GENESIS));
-    }
-
-    private Result<Outcome> flushAt(ClusterIncarnationValue incarnation, int pushAttempts) {
         var captured = capture();
-        var header = BackupHeader.backupHeader(incarnation.lineageId(), incarnation.incarnation(), captured.revision());
+        var header = BackupEntryCodec.headerFor(captured.revision(), captured.entries());
 
-        return codec.encode(header,
-                            captured.entries())
-                    .flatMap(document -> writeIfChanged(header, document, pushAttempts));
+        return header.incarnation() == ClusterIncarnation.NONE
+               ? success(Outcome.AWAITING_GENESIS)
+               : codec.encode(captured.revision(), captured.entries())
+                      .flatMap(document -> writeIfChanged(header, document, pushAttempts));
     }
 
     /// The committed revision and the entries it produced, read under the store's monitor so neither

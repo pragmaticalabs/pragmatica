@@ -27,6 +27,12 @@
   `BACKUP_RECOVERED`. They are logged; the `OperatorWarning` cluster event is #1574.
 - **The backup header format changed.** It now carries `lineage=`, `incarnation=` and `revision=`
   (format version still 1: no document was written before this).
+  - Lineage and incarnation are DERIVED from the document's own `ClusterIncarnationKey` entry. A
+    document whose header disagrees with that entry is refused on decode (`HeaderEntryMismatch`).
+  - A pre-genesis state carries incarnation 0 and no lineage, and is not backed up.
+- **An incarnation change is flushed immediately**, with no debounce, so the new incarnation's first
+  commit records it. This narrows, but does not close, the window in which an incarnation runs without
+  any backup recording it — the residual a restore's floor cannot see `[unverified]`.
 - **Verification.** Unit tests run against real git with bare remotes in temp directories:
   - a burst of changes is one commit, and unchanged, runtime-only and follower flushes make none;
   - handoff, stale leader, foreign lineage, a remote that moved, and unreachable-then-recovered;
@@ -34,3 +40,11 @@
   - the local repository carries `(lineage, incarnation, revision)`.
   - No multi-node verification yet `[design intent — unverified]`.
 - **Restore is #1533.** This change takes backups; nothing reads them back yet.
+- **The old consensus-snapshot path stays until #1533 deletes it** (rc4 does not cut with both live).
+  - It is what a full-cluster restart restores from today: a whole snapshot installed at boot through
+    sync adoption, the node's own included `[verified: ApiKeyFullRestartForgeTest]`. guarantees.md's
+    "detect-only" wording is corrected.
+  - Its interim hazards: it restores the whole KV, runtime keys included; it never advances
+    `ClusterIncarnationKey` on a cold restart; it ignores `[backup] enabled`; and `[backup] interval`
+    has no reader.
+  - The two paths never share a repository: the new one lives at `<path>/kv-backup`.

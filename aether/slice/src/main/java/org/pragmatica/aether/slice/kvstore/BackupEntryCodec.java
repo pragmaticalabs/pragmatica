@@ -116,6 +116,8 @@ public record BackupEntryCodec(SliceCodec codec) {
     public static final int FORMAT_VERSION = 1;
     private static final String MAGIC = "aether-kv-backup/";
     private static final String LINEAGE = "lineage=";
+    private static final String NO_LINEAGE = "";
+    private static final long NO_INCARNATION = 0L;
     private static final String INCARNATION = "incarnation=";
     private static final String REVISION = "revision=";
     private static final String ENTRIES = "entries=";
@@ -215,13 +217,32 @@ public record BackupEntryCodec(SliceCodec codec) {
     /// Render the backed-up subset of `entries`. Fails, naming every offending key, if a value cannot
     /// be encoded, is not the type its key holds, or a key would not parse back to itself — a backup
     /// that cannot be restored as taken is refused at the moment it is taken, not discovered at restore.
-    public Result<String> encode(BackupHeader header, Map<AetherKey, AetherValue> entries) {
+    ///
+    /// The header's lineage and incarnation are DERIVED from the [ClusterIncarnationKey] entry, so a
+    /// document has one incarnation source; `revision` is the caller's (the KV committed revision). A
+    /// state with no incarnation entry (before genesis) carries incarnation 0 and an empty lineage.
+    public Result<String> encode(long revision, Map<AetherKey, AetherValue> entries) {
+        var header = headerFor(revision, entries);
+
         return Result.allOf(entries.entrySet()
                                    .stream()
                                    .filter(BackupEntryCodec::isBackedUpEntry)
                                    .sorted(BY_KEY)
                                    .map(this::encodeEntry)
                                    .toList()).flatMap(lines -> seal(header, lines));
+    }
+
+    /// The header a state renders with: lineage and incarnation from its incarnation entry.
+    public static BackupHeader headerFor(long revision, Map<AetherKey, AetherValue> entries) {
+        return incarnationOf(entries).map(value -> BackupHeader.backupHeader(value.lineageId(),
+                                                                             value.incarnation(),
+                                                                             revision))
+                                     .or(() -> BackupHeader.backupHeader(NO_LINEAGE, NO_INCARNATION, revision));
+    }
+
+    private static Option<ClusterIncarnationValue> incarnationOf(Map<AetherKey, AetherValue> entries) {
+        return option(entries.get(ClusterIncarnationKey.clusterIncarnationKey())).filter(ClusterIncarnationValue.class::isInstance)
+                                                                                 .map(ClusterIncarnationValue.class::cast);
     }
 
     /// Parse a document produced by [#encode], and only such a document. Header faults and a checksum
@@ -376,6 +397,11 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                                                           DuplicateKey::new);
         }
 
+        record HeaderEntryMismatch(String header, String entry, String message) implements BackupError {
+            static final Fn2<HeaderEntryMismatch, String, String> FACTORY = Causes.forTwoValues("The header says lineage/incarnation %s but the incarnation entry says %s",
+                                                                                                HeaderEntryMismatch::new);
+        }
+
         record NonCanonicalDocument(int lineNumber, String message) implements BackupError {
             static final Fn1<NonCanonicalDocument, Integer> FACTORY = Causes.forOneValue("Line %d: the document is not in canonical form",
                                                                                          NonCanonicalDocument::new);
@@ -517,7 +543,9 @@ public record BackupEntryCodec(SliceCodec codec) {
 
     /// The decoded state must render back to exactly the document it came from.
     private Result<BackupDocument> ensureCanonical(String document, BackupDocument decoded) {
-        return encode(decoded.header(), decoded.entries()).flatMap(rendered -> matchRendering(document,
+        return encode(decoded.header()
+                             .revision(),
+                      decoded.entries()).flatMap(rendered -> matchRendering(document,
                                                                                               rendered,
                                                                                               decoded));
     }
@@ -575,8 +603,7 @@ public record BackupEntryCodec(SliceCodec codec) {
     }
 
     private static Result<String> parseLineage(String raw, int lineNumber) {
-        return unescape(raw).filter(Verify.Is::notBlank)
-                       .toResult(BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber, LINEAGE + raw));
+        return unescape(raw).toResult(BackupError.MalformedHeaderValue.FACTORY.apply(lineNumber, LINEAGE + raw));
     }
 
     private static Result<Integer> parseEntryCount(String raw, int lineNumber) {
@@ -593,8 +620,22 @@ public record BackupEntryCodec(SliceCodec codec) {
         return ensureEntryCount(parsed.declaredEntries(),
                                 entryLines.size()).flatMap(_ -> decodeEntryLines(entryLines))
                                .flatMap(BackupEntryCodec::toEntryMap)
+                               .flatMap(entries -> ensureHeaderMatchesEntry(parsed.header(), entries))
                                .map(entries -> BackupDocument.backupDocument(parsed.header(),
                                                                              entries));
+    }
+
+    /// The header's lineage and incarnation must be exactly what the incarnation entry says — a document
+    /// with two disagreeing incarnation sources is refused rather than ordered by the wrong one.
+    private static Result<Map<AetherKey, AetherValue>> ensureHeaderMatchesEntry(BackupHeader header,
+                                                                                Map<AetherKey, AetherValue> entries) {
+        var expected = headerFor(header.revision(), entries);
+
+        return expected.equals(header)
+               ? success(entries)
+               : BackupError.HeaderEntryMismatch.FACTORY.apply(header.lineageId() + "@" + header.incarnation(),
+                                                                expected.lineageId() + "@" + expected.incarnation())
+                                                         .result();
     }
 
     private static Result<Unit> ensureEntryCount(int declared, int found) {

@@ -123,6 +123,21 @@ class KvBackupServiceTest {
             assertThat(commitCount(remote)).isEqualTo(2);
         }
 
+        /// An incarnation change is flushed at once — no debounce — so the new incarnation's first commit
+        /// is the one that records it.
+        @Test
+        void anIncarnationChange_isFlushedImmediately() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            put(service, ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 2));
+            scheduler.advance(0);
+
+            assertThat(commitCount(remote)).as("flushed without waiting out the quiet period").isEqualTo(2);
+            assertThat(remoteDocument(remote).header()
+                                             .incarnation()).isEqualTo(2);
+        }
+
         @Test
         void aRemove_isACommit() {
             var remote = bareRemote(temp.resolve("remote.git"));
@@ -530,7 +545,12 @@ class KvBackupServiceTest {
     }
 
     private void commitDocument(Path clone, BackupHeader header, boolean onTopOfExisting) {
-        var document = CODEC.encode(header, Map.of(ConfigKey.forKey("seed"), ConfigValue.configValue("seed", "x")))
+        var document = CODEC.encode(header.revision(),
+                                    Map.of(ConfigKey.forKey("seed"),
+                                           ConfigValue.configValue("seed", "x"),
+                                           ClusterIncarnationKey.clusterIncarnationKey(),
+                                           ClusterIncarnationValue.clusterIncarnationValue(header.lineageId(),
+                                                                                           header.incarnation())))
                             .unwrap();
 
         if (onTopOfExisting) {
