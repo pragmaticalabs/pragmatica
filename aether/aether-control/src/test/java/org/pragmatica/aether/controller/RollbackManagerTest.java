@@ -83,8 +83,13 @@ class RollbackManagerTest {
             assertThat(updated.lastRolledBackTo().isPresent()).isTrue();
             assertThat(updated.lastRolledBackTo().unwrap()).isEqualTo(V1);
             assertThat(updated.currentVersion()).isEqualTo(V1);
-            // previousVersion is cleared after rollback
-            assertThat(updated.previousVersion().isEmpty()).isTrue();
+            // #1573: the previous version is no longer cleared in memory only — that guard died with the
+            // leader. The failed version is recorded, as in the committed rollback record, and is never a
+            // rollback target again.
+            assertThat(updated.previousVersion()).isEqualTo(Option.some(V2));
+            assertThat(updated.failedVersions()).containsExactly(V2);
+            assertThat(updated.canRollback(config, 1000L + config.cooldown().millis() + 1)
+                              .fold(cause -> cause, _ -> null)).isEqualTo(RollbackError.General.TARGET_PREVIOUSLY_FAILED);
         }
 
         @Test
