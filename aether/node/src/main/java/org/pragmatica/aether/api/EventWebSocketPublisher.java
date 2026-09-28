@@ -93,8 +93,7 @@ public class EventWebSocketPublisher {
             return;
         }
 
-        var since = lastBroadcast.get()
-                                 .minusMillis(LOOKBACK_MS);
+        var since = lastBroadcast.get().minusMillis(LOOKBACK_MS);
         var now = Instant.now();
         Promise<?> ignored = eventsSinceProvider.apply(since)
                                                 .onSuccess(events -> broadcastIfPresent(events, now))

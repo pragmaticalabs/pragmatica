@@ -7524,7 +7524,8 @@ public interface AetherNode extends ManageableNode {
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               ownershipEpochHighWater::onStreamPartitionOwnershipPut);
         // #1640: a new cluster-events owner re-sends every event waiting for redelivery at once.
-        kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class, eventAggregator::onStreamPartitionOwnershipPut);
+        kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                              eventAggregator::onStreamPartitionOwnershipPut);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));

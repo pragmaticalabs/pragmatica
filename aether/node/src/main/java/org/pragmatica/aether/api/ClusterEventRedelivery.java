@@ -27,6 +27,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Redelivers cluster events whose publish did not land (#1640).
 ///
 /// **Why.** The cluster-events stream is EVENTUAL with a min-sync of 1, and a non-owner write-forwards to the
@@ -53,7 +54,6 @@ import static org.pragmatica.lang.Unit.unit;
 /// once at ERROR, because the warning announcing such a flag is itself a cluster event and cannot land.
 final class ClusterEventRedelivery {
     private static final Logger LOG = LoggerFactory.getLogger(ClusterEventRedelivery.class);
-
     /// Most events waiting for redelivery.
     static final int CAPACITY = 1_024;
     /// An event not delivered within this long after its first failure is dropped as expired.
@@ -87,7 +87,7 @@ final class ClusterEventRedelivery {
         }
 
         private static long backoff(int attempts) {
-            return Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS << Math.min(attempts - 1, 3));
+            return Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS<< Math.min(attempts - 1, 3));
         }
     }
 
@@ -110,7 +110,7 @@ final class ClusterEventRedelivery {
 
     /// `publish` attempts one publish and reports its outcome; `clock` is the time in milliseconds.
     static ClusterEventRedelivery clusterEventRedelivery(Function<ClusterEvent, Promise<Unit>> publish,
-                                                        LongSupplier clock) {
+                                                         LongSupplier clock) {
         return new ClusterEventRedelivery(publish, clock);
     }
 
@@ -138,7 +138,8 @@ final class ClusterEventRedelivery {
     }
 
     long dropped(DropReason reason) {
-        return dropped.computeIfAbsent(reason, _ -> new AtomicLong())
+        return dropped.computeIfAbsent(reason,
+                                       _ -> new AtomicLong())
                       .get();
     }
 
@@ -176,8 +177,8 @@ final class ClusterEventRedelivery {
         if (cause instanceof PublishOutcomeUnknown) {
             outcomeUnknown.incrementAndGet();
         }
-        failuresByCause.computeIfAbsent(causeName(cause), _ -> new AtomicLong())
-                       .incrementAndGet();
+
+        failuresByCause.computeIfAbsent(causeName(cause), _ -> new AtomicLong()).incrementAndGet();
 
         return unit();
     }
@@ -215,18 +216,16 @@ final class ClusterEventRedelivery {
 
     /// A cause no retry can fix: the event itself is refused (too large for the stream), whoever owns it.
     private static boolean isPermanent(Cause cause) {
-        return cause instanceof StreamError.EventTooLarge
-               || cause == StreamError.General.EVENT_DROPPED
-               || cause == StreamError.General.RUN_DOES_NOT_FIT;
+        return cause instanceof StreamError.EventTooLarge || cause == StreamError.General.EVENT_DROPPED || cause == StreamError.General.RUN_DOES_NOT_FIT;
     }
 
     private Unit enqueue(Pending pending) {
         synchronized (lock) {
             if (waiting.size() >= CAPACITY) {
                 drop(DropReason.OVERFLOW,
-                     waiting.pollFirst()
-                            .event());
+                     waiting.pollFirst().event());
             }
+
             waiting.addLast(pending);
         }
 
@@ -258,10 +257,9 @@ final class ClusterEventRedelivery {
     private Unit expire(Pending pending) {
         if (expiryReported.compareAndSet(false, true)) {
             LOG.error("ClusterEventRedelivery: a {} could not be published for {} s ({} attempts) and is dropped. The "
-                      + "cluster-events stream is refusing publishes; if its partition is flagged, it waits for an "
-                      + "operator, and events raised meanwhile are lost after this horizon. Reported once per node.",
-                      pending.event()
-                             .type(),
+                     + "cluster-events stream is refusing publishes; if its partition is flagged, it waits for an "
+                     + "operator, and events raised meanwhile are lost after this horizon. Reported once per node.",
+                      pending.event().type(),
                       RETRY_HORIZON_MS / 1_000,
                       pending.attempts());
         }
@@ -270,11 +268,11 @@ final class ClusterEventRedelivery {
     }
 
     private Unit drop(DropReason reason, ClusterEvent event) {
-        dropped.computeIfAbsent(reason, _ -> new AtomicLong())
-               .incrementAndGet();
-
+        dropped.computeIfAbsent(reason, _ -> new AtomicLong()).incrementAndGet();
         synchronized (droppedTypesSinceReport) {
-            droppedTypesSinceReport.merge(event.type() + "/" + reason.name(), 1L, Long::sum);
+            droppedTypesSinceReport.merge(event.type() + "/" + reason.name(),
+                                          1L,
+                                          Long::sum);
         }
 
         return unit();
@@ -282,7 +280,6 @@ final class ClusterEventRedelivery {
 
     private Unit onDelivered() {
         delivered.incrementAndGet();
-
         var report = takeDroppedReport();
 
         if (!report.isEmpty()) {

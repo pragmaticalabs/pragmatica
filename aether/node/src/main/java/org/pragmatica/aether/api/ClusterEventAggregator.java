@@ -185,6 +185,7 @@ public final class ClusterEventAggregator {
     /// #1640: events whose publish did not land wait here and are retried.
     private final ClusterEventRedelivery redelivery;
     private volatile int lastReadDuplicates;
+
     private static final Cause PUBLISHER_NOT_BOUND = Causes.cause("cluster-events publisher not yet bound");
 
     private ClusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -363,10 +364,7 @@ public final class ClusterEventAggregator {
     /// occurrence. Every reader goes through this method.
     private List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
         var seen = new HashSet<HlcTimestamp>();
-        var unique = raw.stream()
-                        .map(StreamEvent::payload)
-                        .filter(event -> seen.add(event.at()))
-                        .toList();
+        var unique = raw.stream().map(StreamEvent::payload).filter(event -> seen.add(event.at())).toList();
 
         lastReadDuplicates = raw.size() - unique.size();
 
@@ -512,9 +510,9 @@ public final class ClusterEventAggregator {
                                                   cause.message()))
                      .async()
                      .flatMap(promise -> promise.onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} at {} failed: {}",
-                                                                              event.type(),
-                                                                              event.at(),
-                                                                              cause.message())));
+                                                                             event.type(),
+                                                                             event.at(),
+                                                                             cause.message())));
     }
 
     private static Promise<Unit> unboundPublisher(ClusterEvent event) {
@@ -536,15 +534,13 @@ public final class ClusterEventAggregator {
     /// event is re-sent at once instead of on its backoff.
     @Contract
     public void onStreamPartitionOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
-        if (isClusterEventsPartition(put.cause()
-                                        .key())) {
+        if (isClusterEventsPartition(put.cause().key())) {
             redelivery.redeliver(true);
         }
     }
 
     private static boolean isClusterEventsPartition(StreamPartitionOwnershipKey key) {
-        return key.partition() == 0 && SystemStreams.CLUSTER_EVENTS.asString()
-                                                                   .equals(key.stream());
+        return key.partition() == 0 && SystemStreams.CLUSTER_EVENTS.asString().equals(key.stream());
     }
 
     /// Observability for #1640: events waiting for redelivery on this node.
