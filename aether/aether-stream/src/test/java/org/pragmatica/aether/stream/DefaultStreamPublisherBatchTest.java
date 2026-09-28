@@ -14,7 +14,7 @@ import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
-import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.lang.Option;
@@ -314,12 +314,12 @@ class DefaultStreamPublisherBatchTest {
     }
 
     private static List<Long> replayOffsets(Path walDir) {
-        var wal = PartitionWal.open(walDir.resolve(STREAM).resolve("0.wal")).unwrap();
-        var records = new java.util.ArrayList<PartitionWal.WalRecord>();
+        var wal = AppendLog.open(walDir.resolve(STREAM).resolve("0.wal")).unwrap();
+        var records = new java.util.ArrayList<AppendLog.WalRecord>();
 
         wal.replay(-1L, records::add).onFailure(cause -> fail(cause.message()));
         wal.close();
-        return records.stream().map(PartitionWal.WalRecord::offset).toList();
+        return records.stream().map(AppendLog.WalRecord::offset).toList();
     }
 
     /// Payloads of `size` bytes whose first 8 bytes are a distinct zero-padded index.
@@ -363,7 +363,7 @@ class DefaultStreamPublisherBatchTest {
     private static StreamConfig replicatedConfig() {
         var base = config(1);
         return StreamConfig.streamConfig(base.name(), base.partitions(), base.retention(), base.autoOffsetReset(),
-            base.maxEventSizeBytes(), base.consistencyMode(), 2, 2, base.compression(), base.encryptionKeyId());
+            base.maxEventSizeBytes(), base.consistencyMode(), 3, 2, base.compression(), base.encryptionKeyId());
     }
 
     private static StreamConfig config(int partitions) {

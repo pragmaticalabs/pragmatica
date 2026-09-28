@@ -11,7 +11,7 @@
     <packaging>jar</packaging>
 
     <name>Test Blueprint - Stream (Replicated)</name>
-    <description>RF=2 synchronously-replicated stream — for the 02-chaos replica-failover test</description>
+    <description>RF=3 synchronously-replicated stream — for the 02-chaos replica-failover test</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

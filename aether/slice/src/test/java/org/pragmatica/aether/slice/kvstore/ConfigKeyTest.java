@@ -52,7 +52,7 @@ class ConfigKeyTest {
         void forKey_with_nodeId_asString_produces_correct_format() {
             var nodeId = NodeId.nodeId("node-42").unwrap();
             var key = ConfigKey.forKey("max-retries", nodeId);
-            assertThat(key.asString()).isEqualTo("config/node/node-42/max-retries");
+            assertThat(key.asString()).isEqualTo("config-node/node-42/max-retries");
         }
     }
 
@@ -67,7 +67,7 @@ class ConfigKeyTest {
 
         @Test
         void configKey_parses_node_scoped_key() {
-            ConfigKey.configKey("config/node/node-42/max-retries")
+            ConfigKey.configKey("config-node/node-42/max-retries")
                      .onSuccess(this::assertNodeScopedMaxRetries)
                      .onFailureRun(Assertions::fail);
         }
@@ -98,14 +98,14 @@ class ConfigKeyTest {
 
         @Test
         void configKey_from_string_with_empty_node_scoped_key_fails() {
-            ConfigKey.configKey("config/node/node-42/")
+            ConfigKey.configKey("config-node/node-42/")
                      .onSuccessRun(Assertions::fail)
                      .onFailure(cause -> assertThat(cause.message()).contains("Invalid config key format"));
         }
 
         @Test
         void configKey_from_string_with_empty_nodeId_fails() {
-            ConfigKey.configKey("config/node//max-retries")
+            ConfigKey.configKey("config-node//max-retries")
                      .onSuccessRun(Assertions::fail)
                      .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }

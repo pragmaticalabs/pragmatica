@@ -13,8 +13,8 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
-import org.pragmatica.aether.stream.wal.PartitionWal;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.WalRecord;
 import org.pragmatica.lang.Option;
 
 import java.nio.file.Path;
@@ -34,7 +34,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// replayed the phantom as `head + 1`, shifting every later offset.
 ///
 /// The drop must FAIL the publish for anything with durability semantics — `minSyncReplicas >= 2`
-/// (durable topics and their DLQs are parse-enforced to `min-sync == replicas >= 2`) OR a partition WAL.
+/// (durable topics and their DLQs are parse-enforced to `min-sync == replicas >= 3`) OR a partition WAL.
 /// So is any entity keyspace log (`entity:`) or durable-topic / DLQ stream (`topic:`), identified by name.
 /// Each disjunct is pinned by its own test so none can be weakened unnoticed. Any other stream is
 /// best-effort: the drop is absorbed, counted and logged, and never stored.
@@ -219,7 +219,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     // === helpers ===
 
     private static StreamConfig durableTopicConfig() {
-        var spec = DurableTopicSpec.durableTopicSpec(1, 2, 2, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
+        var spec = DurableTopicSpec.durableTopicSpec(1, 3, 3, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
 
         return DurableTopicSubstrate.topicStreamConfig("orders-1233", spec);
     }
@@ -231,7 +231,7 @@ class StreamPartitionManagerFrozenRingDropTest {
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
-                                         1,
+                                         3,
                                          1,
                                          StreamCompression.NONE,
                                          Option.none());
@@ -291,7 +291,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     }
 
     private long walLastOffset(StreamConfig config) {
-        var wal = PartitionWal.open(walFile(config)).unwrap();
+        var wal = AppendLog.open(walFile(config)).unwrap();
         var last = wal.lastOffset();
 
         wal.close();
@@ -299,7 +299,7 @@ class StreamPartitionManagerFrozenRingDropTest {
     }
 
     private List<WalRecord> walRecords(StreamConfig config) {
-        var wal = PartitionWal.open(walFile(config)).unwrap();
+        var wal = AppendLog.open(walFile(config)).unwrap();
         var records = new ArrayList<WalRecord>();
 
         wal.replay(-1L, records::add).onFailure(cause -> fail(cause.message()));

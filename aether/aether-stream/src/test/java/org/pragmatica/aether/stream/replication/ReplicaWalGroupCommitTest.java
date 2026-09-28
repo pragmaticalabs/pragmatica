@@ -11,8 +11,8 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
-import org.pragmatica.aether.stream.wal.PartitionWal;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.WalRecord;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -192,12 +192,12 @@ class ReplicaWalGroupCommitTest {
                       .flatMap(view -> view.partitions().stream())
                       .filter(view -> view.partition() == PARTITION)
                       .flatMap(view -> view.wal().stream())
-                      .mapToLong(PartitionWal.WalStats::fsyncCount)
+                      .mapToLong(AppendLog.WalStats::fsyncCount)
                       .sum();
     }
 
     private List<Long> replayOffsets() {
-        var wal = PartitionWal.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal")).unwrap();
+        var wal = AppendLog.open(walDir.resolve(STREAM).resolve(PARTITION + ".wal")).unwrap();
         var records = new ArrayList<WalRecord>();
 
         wal.replay(-1L, records::add).onFailure(cause -> fail(cause.message()));
