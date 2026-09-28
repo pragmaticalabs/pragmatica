@@ -713,11 +713,11 @@ public final class KvBackupService {
     /// OVER it — hazard (d): the newer head is replaced, not merely delayed. That is never an all-clear.
     private String headReplacedDetail() {
         return "this cluster's state has REPLACED the newer backup head (incarnation " + aheadHead.map(BackupHeader::incarnation)
-                                                                                                 .or(0L)
-               + ", revision " + aheadHead.map(BackupHeader::revision)
-                                          .or(0L)
-               + ") it had been waiting behind; git history retains the replaced commit. If this cluster was"
-               + " restored from an older snapshot, the replaced head holds newer state — see #1533";
+                                                                                                  .or(0L)
+             + ", revision " + aheadHead.map(BackupHeader::revision)
+                                        .or(0L)
+             + ") it had been waiting behind; git history retains the replaced commit. If this cluster was"
+             + " restored from an older snapshot, the replaced head holds newer state — see #1533";
     }
 
     @Contract
