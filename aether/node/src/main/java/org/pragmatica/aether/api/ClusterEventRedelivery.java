@@ -234,8 +234,10 @@ final class ClusterEventRedelivery {
                 if (oldest.isEmpty()) {
                     return drop(DropReason.OVERFLOW, pending.event());
                 }
+
                 oldest.onPresent(entry -> dropHeld(DropReason.OVERFLOW, entry.event()));
             }
+
             held.incrementAndGet();
             waiting.addLast(pending);
         }

@@ -113,9 +113,7 @@ public class EventWebSocketPublisher {
 
     /// Keys of events that left the retained log can never be read again, so they are forgotten.
     private void pruneToRetained(List<ClusterEvent> retained) {
-        var retainedKeys = retained.stream()
-                                   .map(ClusterEventIdentity::key)
-                                   .collect(Collectors.toSet());
+        var retainedKeys = retained.stream().map(ClusterEventIdentity::key).collect(Collectors.toSet());
 
         broadcast.retainAll(retainedKeys);
     }

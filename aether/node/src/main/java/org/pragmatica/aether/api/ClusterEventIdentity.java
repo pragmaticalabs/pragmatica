@@ -7,12 +7,14 @@ package org.pragmatica.aether.api;
 import java.lang.reflect.RecordComponent;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.ULID;
+
 
 /// The identity that makes a cluster event's copies recognisable as ONE event (#1640, #1653 round 2).
 ///
@@ -29,8 +31,7 @@ import org.pragmatica.utility.ULID;
 final class ClusterEventIdentity {
     static final String EVENT_ID = "eventId";
 
-    private final String incarnation = ULID.ulid()
-                                           .encoded();
+    private final String incarnation = ULID.ulid().encoded();
     private final AtomicLong sequence = new AtomicLong();
 
     private ClusterEventIdentity() {}
@@ -50,35 +51,44 @@ final class ClusterEventIdentity {
     /// The key two copies of one event share: its `eventId`, or `at` for an event without one.
     static String key(ClusterEvent event) {
         return event.details()
-                    .getOrDefault(EVENT_ID, "at:" + event.at());
+                    .getOrDefault(EVENT_ID,
+                                  "at:" + event.at());
     }
 
     private static ClusterEvent withEventId(ClusterEvent event, String eventId) {
         return event.getClass()
                     .isRecord()
-               ? Result.lift(Causes::fromThrowable, () -> copyWithDetails(event, eventId))
-                       .or(event)
+               ? copyWithDetails(event, eventId).or(event)
                : event;
     }
 
-    private static ClusterEvent copyWithDetails(ClusterEvent event, String eventId) throws ReflectiveOperationException {
-        var components = event.getClass()
-                              .getRecordComponents();
-        var types = Arrays.stream(components)
-                          .map(RecordComponent::getType)
-                          .toArray(Class<?>[]::new);
-        var arguments = new Object[components.length];
+    /// A copy of the record `event` through its canonical constructor, with `details` replaced. Any reflective
+    /// failure leaves the caller with the original event (de-duplicated by `at`, as before).
+    private static Result<ClusterEvent> copyWithDetails(ClusterEvent event, String eventId) {
+        var components = event.getClass().getRecordComponents();
 
-        for (int i = 0; i < components.length; i++) {
-            arguments[i] = "details".equals(components[i].getName())
-                           ? detailsWithId(event.details(), eventId)
-                           : components[i].getAccessor()
-                                          .invoke(event);
-        }
+        return Result.allOf(Arrays.stream(components).map(component -> argument(event, component, eventId)).toList()).flatMap(arguments -> construct(event,
+                                                                                                                                                     components,
+                                                                                                                                                     arguments));
+    }
 
-        return (ClusterEvent) event.getClass()
-                                   .getDeclaredConstructor(types)
-                                   .newInstance(arguments);
+    private static Result<Object> argument(ClusterEvent event, RecordComponent component, String eventId) {
+        return "details".equals(component.getName())
+               ? Result.success(detailsWithId(event.details(), eventId))
+               : Result.lift(Causes::fromThrowable,
+                             () -> component.getAccessor()
+                                            .invoke(event));
+    }
+
+    private static Result<ClusterEvent> construct(ClusterEvent event,
+                                                  RecordComponent[] components,
+                                                  List<Object> arguments) {
+        var types = Arrays.stream(components).map(RecordComponent::getType).toArray(Class<?>[]::new);
+
+        return Result.lift(Causes::fromThrowable,
+                           () -> (ClusterEvent) event.getClass()
+                                                     .getDeclaredConstructor(types)
+                                                     .newInstance(arguments.toArray()));
     }
 
     private static Map<String, String> detailsWithId(Map<String, String> details, String eventId) {
