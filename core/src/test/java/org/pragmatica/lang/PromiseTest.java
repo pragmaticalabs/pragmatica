@@ -106,15 +106,22 @@ public class PromiseTest {
                .onSuccess(_ -> fail("Promise should be cancelled"));
     }
 
+    /// #1605: each action releases the latch after its own effect. A separate `onSuccessRun(latch::countDown)`
+    /// is a third independent action with no order relative to the other two.
     @Test
     void successActionsAreExecutedAfterResolutionWithSuccess() throws InterruptedException {
-        var latch = new CountDownLatch(1);
+        var latch = new CountDownLatch(2);
         var ref1 = new AtomicInteger();
         var ref2 = new AtomicBoolean(false);
         var promise = Promise.<Integer>promise()
-                             .onSuccess(ref1::set)
-                             .onSuccessRun(() -> ref2.set(true))
-                             .onSuccessRun(latch::countDown);
+                             .onSuccess(value -> {
+                                 ref1.set(value);
+                                 latch.countDown();
+                             })
+                             .onSuccessRun(() -> {
+                                 ref2.set(true);
+                                 latch.countDown();
+                             });
 
         assertEquals(0, ref1.get());
         assertFalse(ref2.get());
@@ -325,7 +332,9 @@ public class PromiseTest {
 
         assertEquals(Result.success(1), ref1.get());
         assertTrue(ref2.get());
-        assertTrue(lastPromise.isResolved());
+        // #1605: `withResult`'s action counts down BEFORE its derived promise resolves, so `isResolved()` read
+        // right after the latch opens can be false; await it instead.
+        assertEquals(Result.success(1), lastPromise.await(timeSpan(1).seconds()));
     }
 
     @Test
@@ -794,12 +803,17 @@ public class PromiseTest {
                   .onFailureRun(Assertions::fail);
     }
 
+    /// #1605: the value is set and the latch released by ONE action. Two independent actions (`onSuccess` +
+    /// `onSuccessRun`) have no mutual order, so the latch could open before the value was set.
     @Test
     void promiseCanBeConfiguredAsynchronously() throws InterruptedException {
         var ref = new AtomicInteger(0);
         var latch = new CountDownLatch(1);
 
-        var promise = Promise.<Integer>promise(p -> p.onSuccess(ref::set).onSuccessRun(latch::countDown));
+        var promise = Promise.<Integer>promise(p -> p.onSuccess(value -> {
+            ref.set(value);
+            latch.countDown();
+        }));
 
         promise.succeed(1);
         latch.await();
