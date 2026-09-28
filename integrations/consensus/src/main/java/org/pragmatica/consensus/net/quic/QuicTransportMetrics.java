@@ -56,6 +56,11 @@ public final class QuicTransportMetrics {
     /// send path is the defect #718 exists to remove. A persistently non-zero value here means the
     /// bound is too small for the offered load, not that the dedup is misbehaving.
     private final LongAdder streamZombieLazyOpenDrops = new LongAdder();
+    /// #1578: writes re-sent once because their stream was retired under them — the lane moved to the
+    /// stream `QuicPeerConnection.registerStream` kept between the write resolving its stream and
+    /// running. Non-zero is expected around a lane-ownership change; each one is a message that would
+    /// otherwise have been lost with only a write-failure line to show for it.
+    private final LongAdder retiredStreamResends = new LongAdder();
     /// #487: count of sends DROPPED to a peer with no PeerState (dead or never-connected). Counts EVERY
     /// drop, not just the rate-limited WARNs, so ops see true drop volume (the invisibility of this class
     /// hid the #467/#457 self-send drops for months).
@@ -171,6 +176,12 @@ public final class QuicTransportMetrics {
     @Contract
     public void onStreamZombieLazyOpenDrop() {
         streamZombieLazyOpenDrops.increment();
+    }
+
+    /// #1578: records a write re-sent on the stream its lane kept after its own stream was retired.
+    @Contract
+    public void onRetiredStreamResend() {
+        retiredStreamResends.increment();
     }
 
     /// #487: records a send DROPPED to a peer with no PeerState. Every drop is counted, whether or not
@@ -298,6 +309,11 @@ public final class QuicTransportMetrics {
     /// #718: pending messages dropped on per-(peer, lane) queue overflow during an open, cumulative.
     public long streamZombieLazyOpenDropCount() {
         return streamZombieLazyOpenDrops.sum();
+    }
+
+    /// #1578: writes re-sent on the kept stream after their own stream was retired, cumulative.
+    public long retiredStreamResendCount() {
+        return retiredStreamResends.sum();
     }
 
     public long dropToUnknownPeerCount() {

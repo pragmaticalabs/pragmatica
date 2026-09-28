@@ -30,7 +30,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 
+import io.netty.buffer.Unpooled;
 import io.netty.channel.WriteBufferWaterMark;
+import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.slf4j.Logger;
@@ -266,44 +268,82 @@ public final class QuicPeerConnection {
     /// async retry wrap in `QuicClusterNetwork.writeIfWritable` is the safety net for the
     /// pathological case. `WriteBufferWaterMark` is a Netty `ChannelConfig` facility and is
     /// supported by the incubator `QuicStreamChannel`'s config.
-    /// #718 — a re-registration that REPLACES a live stream now CLOSES the one it displaced. The
+    /// #718 — a re-registration that REPLACES a live stream retires the one it displaced. The
     /// overwrite was silent before: nothing can look the old stream up again, so it stayed open,
     /// unreachable, holding one of the connection's 64 bidirectional stream credits for the lifetime
     /// of the connection. That is a credit leak on the exact resource the lazy-open storm exhausts.
     ///
-    /// Honest bound on the close: writes already sitting in the superseded channel's Netty buffer at
-    /// the instant of replacement are failed by `close()`. Those messages were ALREADY unreachable —
-    /// the lane now resolves to `channel` — and recovering them is the retransmit's job, which is the
-    /// convention this send path already documents for the lazy-open and offline-buffer outcomes it
-    /// reports as optimistically `Sent`.
-    @Contract
-    public void registerStream(StreamType type, QuicStreamChannel channel) {
+    /// #1578 — which stream a lane keeps is decided by [#outranks], not by arrival order. Both ends
+    /// of a connection see the same streams under the same ids, so ranking by id makes both ends keep
+    /// the SAME stream without negotiating; arrival order differs between the ends, and choosing by it
+    /// left each end writing into a stream the other had displaced. A candidate that does not outrank
+    /// the live incumbent is not installed and is retired instead.
+    ///
+    /// A retired stream is finished, not closed: see [#retire]. Returns the stream the lane resolves
+    /// to after the call — the candidate, or the incumbent that kept the lane — so a caller holding
+    /// messages for the lane writes them to the stream that will carry the lane from now on.
+    public QuicStreamChannel registerStream(StreamType type, QuicStreamChannel channel) {
         if (type == StreamType.CONSENSUS) {
             channel.config()
                    .setWriteBufferWaterMark(new WriteBufferWaterMark(consensusWatermarkLowBytes,
                                                                      consensusWatermarkHighBytes));
         }
 
-        var superseded = longLivedStreams[type.streamIndex()];
+        var incumbent = longLivedStreams[type.streamIndex()];
+
+        if (keepsLane(incumbent, channel)) {
+            retire(type, channel, incumbent);
+
+            return incumbent;
+        }
 
         longLivedStreams[type.streamIndex()] = channel;
-        closeSuperseded(type, superseded, channel);
+        retire(type, incumbent, channel);
+
+        return channel;
     }
 
-    /// Closes a lane stream displaced by [#registerStream]. A re-register with the SAME channel (the
-    /// idempotent case) and an already-dead channel are both no-ops — only a live, genuinely
-    /// displaced stream is closed.
+    private static boolean keepsLane(QuicStreamChannel incumbent, QuicStreamChannel candidate) {
+        return incumbent != null && incumbent != candidate && incumbent.isActive() && !outranks(candidate, incumbent);
+    }
+
+    /// #1578 — the lane-ownership rule, identical at both ends. A stream opened by the DIALER (the
+    /// QUIC client: stream-id bit 0 clear, RFC 9000 §2.1) outranks one opened by the acceptor, and
+    /// between two streams opened by the same side the newer (higher id) wins. The acceptor's lazily
+    /// opened lane is therefore a stand-in, kept only until a dialer-opened stream for the lane
+    /// exists. Equal ids never occur for two distinct live streams of one connection; the candidate
+    /// wins a tie so a re-registration keeps its pre-#1578 replace semantics.
+    static boolean outranks(QuicStreamChannel candidate, QuicStreamChannel incumbent) {
+        var candidateByDialer = openedByDialer(candidate);
+
+        return candidateByDialer == openedByDialer(incumbent)
+               ? candidate.streamId() >= incumbent.streamId()
+               : candidateByDialer;
+    }
+
+    private static boolean openedByDialer(QuicStreamChannel stream) {
+        return (stream.streamId() & 0x1L) == 0;
+    }
+
+    /// Retires a stream that no longer carries `type`. Only the side that OPENED the stream finishes
+    /// it, and it finishes gracefully: a FIN queued behind every write already on the stream, so
+    /// those writes are delivered before the stream ends — `close()` would discard them. The other
+    /// side keeps reading until that FIN arrives and the stream closes on its own, returning the
+    /// credit. A side never finishes a stream the other side opened, because under [#outranks] the
+    /// other side may still be writing into it until it learns of the winner. An already-dead stream,
+    /// or re-registering the lane's own stream, is a no-op.
     @Contract
-    private void closeSuperseded(StreamType type, QuicStreamChannel superseded, QuicStreamChannel replacement) {
-        if (superseded == null || superseded == replacement || !superseded.isActive()) {
+    private void retire(StreamType type, QuicStreamChannel retired, QuicStreamChannel kept) {
+        if (retired == null || retired == kept || !retired.isActive() || !retired.isLocalCreated()) {
             return;
         }
 
-        log.debug("Closing superseded {} stream for peer {} — re-registered on the same connection, "
-                 + "returning its stream credit",
+        log.debug("Finishing superseded {} stream {} for peer {} — {} carries the lane",
                   type,
-                  peerId);
-        superseded.close();
+                  retired.streamId(),
+                  peerId,
+                  kept.streamId());
+        var _ = retired.writeAndFlush(new DefaultQuicStreamFrame(Unpooled.EMPTY_BUFFER, true));
     }
 
     /// Check if the underlying QUIC connection is active.

@@ -52,7 +52,6 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicServerCodecBuilder;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
-import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -187,11 +186,6 @@ public sealed interface QuicClusterServer {
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
 
-    /// Parent-QuicChannel attribute carrying the per-peer connection, stamped by the CONTROL
-    /// (Hello) stream and read by each subsequently-accepted data-lane stream so it can attach
-    /// itself to the right [QuicPeerConnection]. Package-visible: stamped + read here.
-    static final AttributeKey<QuicPeerConnection> PEER_CONNECTION = AttributeKey.valueOf("aether.quic.peerConnection");
-
     private static final long HELLO_TIMEOUT_MS = 15_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 0;  // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 64_000_000;
@@ -209,6 +203,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private final PeerConnectionHandler connectionHandler;
     private final MessageReceiver messageReceiver;
     private final BootTokens bootTokens;
+    private final PeerOpenedLaneRouter laneRouter;
     /// #1456: a publish slot, not a bare reference. `stop()` closes it, so a bind completing after
     /// stop had already read an empty field is handed back to `handleBind` to close, instead of
     /// leaving the cluster UDP port bound with nothing owning it for the life of the process.
@@ -244,6 +239,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         this.connectionHandler = connectionHandler;
         this.messageReceiver = messageReceiver;
         this.bootTokens = bootTokens;
+        this.laneRouter = new PeerOpenedLaneRouter(deserializer, quicMetrics, messageReceiver, log);
     }
 
     @Override
@@ -489,22 +485,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void handlePreamble(ChannelHandlerContext ctx, ByteBuf buf) {
-            if (buf.readableBytes() < 1) {
-                log.warn("Empty stream preamble from {} — closing",
-                         ctx.channel().remoteAddress());
-                ctx.close();
-
-                return;
-            }
-
-            var idx = buf.readByte();
-
-            StreamType.fromIndex(idx).fold(() -> onInvalidPreamble(ctx, idx), lane -> routePreamble(ctx, lane));
+            PeerOpenedLaneRouter.preambleLane(buf)
+                                .fold(() -> onInvalidPreamble(ctx), lane -> routePreamble(ctx, lane));
         }
 
-        private Unit onInvalidPreamble(ChannelHandlerContext ctx, byte idx) {
-            log.warn("Invalid stream preamble index {} from {} — closing",
-                     idx,
+        private Unit onInvalidPreamble(ChannelHandlerContext ctx) {
+            log.warn("Missing or invalid stream preamble from {} — closing",
                      ctx.channel().remoteAddress());
             ctx.close();
 
@@ -522,31 +508,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private Unit attachDataLane(ChannelHandlerContext ctx, StreamType lane) {
-            var parentQuicChannel = (QuicChannel) ctx.channel().parent();
-            var peerConnection = parentQuicChannel.attr(PEER_CONNECTION).get();
-
-            if (peerConnection == null) {
-                log.warn("No peer connection on parent channel for {} lane from {} — closing (handshake-first ordering violated)",
-                         lane,
-                         ctx.channel().remoteAddress());
-                ctx.close();
-
-                return unit();
-            }
-
-            peerConnection.registerStream(lane, (QuicStreamChannel) ctx.channel());
-            ctx.pipeline()
-               .replace(this,
-                        "data-handler",
-                        new QuicLaneDataHandler(peerConnection.peerId(),
-                                                lane,
-                                                deserializer,
-                                                quicMetrics,
-                                                messageReceiver,
-                                                log));
-            log.debug("Attached {} lane stream from peer {}", lane, peerConnection.peerId());
-
-            return unit();
+            return laneRouter.attach(ctx, this, lane);
         }
 
         @SuppressWarnings("JBCT-PAT-01")  // Adapter boundary: catch deserialization errors from external input
@@ -632,7 +594,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             var quicChannel = (QuicChannel) ctx.channel().parent();
             var peerConnection = quicPeerConnection(hello.sender(), hello.sender(), quicChannel);
             // The handshake stream is the CONTROL lane.
-            peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
+            var _ = peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
             // Install the lazy lane-opener so a write that races the data-lane preamble window can
             // (re)open the missing lane on this live channel instead of failing "No stream available".
             // The acceptor formerly populated its stream table ONLY passively (as the dialer's
@@ -641,7 +603,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             peerConnection.laneOpener(laneOpenerFor(quicChannel, hello.sender(), peerConnection));
             // Stamp the parent QuicChannel so subsequently-accepted data-lane streams can find
             // the peer connection by reading this attribute.
-            quicChannel.attr(PEER_CONNECTION).set(peerConnection);
+            quicChannel.attr(PeerOpenedLaneRouter.PEER_CONNECTION).set(peerConnection);
             // Replace the preamble/Hello handler with the shared data handler (CONTROL lane).
             ctx.pipeline()
                .replace(this,
@@ -714,9 +676,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
             // #726: PAYLOAD bytes at the lane boundary — acceptor-side lazy-reopen preamble.
             quicMetrics.onBytesSent(preamble.length);
-            peerConnection.registerStream(lane, streamChannel);
+            // #1578: report the stream the lane KEEPS — a dialer-opened stream that arrived while this
+            // open was in flight outranks it, and the messages waiting on the open belong on that one.
+            var kept = peerConnection.registerStream(lane, streamChannel);
+
             log.info("Lazily (re)opened {} lane to peer {} — stream-zombie healed without re-dial", lane, peerNodeId);
-            onResult.accept(option(streamChannel));
+            onResult.accept(option(kept));
         }
     }
 }
