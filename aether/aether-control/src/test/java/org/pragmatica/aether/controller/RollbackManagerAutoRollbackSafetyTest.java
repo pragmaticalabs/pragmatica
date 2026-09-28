@@ -22,10 +22,12 @@ import org.pragmatica.aether.controller.RollbackManagerOverridePreservationTest.
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -66,15 +68,22 @@ class RollbackManagerAutoRollbackSafetyTest {
         clusterNode = new CapturingClusterNode(SELF);
         kvStore = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
         seed(SliceTargetKey.sliceTargetKey(BASE), SliceTargetValue.sliceTargetValue(V2, 3));
+        RollbackManagerOverridePreservationTest.seedCommittedLeader(kvStore, SELF);
     }
 
+    /// v1608 N1: the batch boundary itself is asserted — ONE applied command, a leader transaction whose
+    /// mutations are the record and then the target. A capture that flattened batches could not see a split.
     @Test
     void insideBakeWindow_rollsBack_recordFirstInOneBatch() {
         seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
 
         manager().onAllInstancesFailed(failure(V2));
 
-        assertThat(clusterNode.appliedCommands).hasSize(2);
+        assertThat(clusterNode.appliedCommands).as("record and target commit in ONE command").hasSize(1);
+        assertThat(clusterNode.appliedCommands.getFirst()).isInstanceOf(KVCommand.LeaderTransaction.class);
+        assertThat(((KVCommand.LeaderTransaction<?, ?>) clusterNode.appliedCommands.getFirst()).mutations())
+            .extracting(KVCommand.Mutation::key)
+            .containsExactly(PreviousVersionKey.previousVersionKey(BASE), SliceTargetKey.sliceTargetKey(BASE));
         var first = value(0);
         var second = value(1);
 
@@ -153,7 +162,7 @@ class RollbackManagerAutoRollbackSafetyTest {
 
         manager().onAllInstancesFailed(failure(V2));
 
-        assertThat(clusterNode.appliedCommands).hasSize(2);
+        assertThat(clusterNode.writtenValues()).hasSize(2);
     }
 
     @Test
@@ -185,7 +194,85 @@ class RollbackManagerAutoRollbackSafetyTest {
 
         policy.set(CONFIG);
         manager.onAllInstancesFailed(failure(V2));
-        assertThat(clusterNode.appliedCommands).as("re-enabled without a restart").hasSize(2);
+        assertThat(clusterNode.writtenValues()).as("re-enabled without a restart").hasSize(2);
+    }
+
+    /// v1608 N1 (M14 left 0 red): `enabled = false` ALONE refuses. The trigger stays on and every other
+    /// condition is the positive case's, so only the `enabled` check stands between this and a rollback.
+    @Test
+    void enabledFalse_withTheTriggerOn_neverRollsBack() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        var disabled = RollbackConfig.rollbackConfig(false,
+                                                     true,
+                                                     TimeSpan.timeSpan(5).minutes(),
+                                                     2,
+                                                     TimeSpan.timeSpan(15).minutes())
+                                     .unwrap();
+
+        RollbackManager.rollbackManager(SELF, () -> disabled, clusterNode, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+                       .onAllInstancesFailed(failure(V2));
+
+        assertThat(disabled.triggerOnAllInstancesFailed()).as("arming: the trigger is on").isTrue();
+        assertThat(clusterNode.appliedCommands).isEmpty();
+    }
+
+    /// #1573 N2: an operator disable committed between the decision and its write refuses the write — the
+    /// rollback is fenced on the cluster config it was decided from.
+    @Test
+    void disableCommittedBetweenDecisionAndWrite_refusesTheRollback() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        seed(ClusterConfigKey.CURRENT, clusterConfig("[rollback]\nenabled = true\n", 1));
+        var racing = new CapturingClusterNode(SELF,
+                                              kvStore,
+                                              () -> seed(ClusterConfigKey.CURRENT, clusterConfig("[rollback]\nenabled = false\n", 2)));
+
+        RollbackManager.rollbackManager(SELF, () -> CONFIG, racing, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+                       .onAllInstancesFailed(failure(V2));
+
+        assertThat(racing.appliedCommands).as("arming: the rollback was decided and submitted").hasSize(1);
+        assertThat(currentTargetVersion()).as("the disable won the race: the target never moved").isEqualTo(V2);
+        assertThat(reported).as("a refused rollback is never reported as executed").isEmpty();
+    }
+
+    /// #1573 N2: a newer target committed between the decision and its write (an autoscaler or operator
+    /// write) is never rolled back.
+    @Test
+    void newerTargetCommittedBetweenDecisionAndWrite_isNeverRolledBack() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        var racing = new CapturingClusterNode(SELF,
+                                              kvStore,
+                                              () -> seed(SliceTargetKey.sliceTargetKey(BASE), SliceTargetValue.sliceTargetValue(V3, 3)));
+
+        RollbackManager.rollbackManager(SELF, () -> CONFIG, racing, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+                       .onAllInstancesFailed(failure(V2));
+
+        assertThat(racing.appliedCommands).as("arming: the rollback was decided and submitted").hasSize(1);
+        assertThat(currentTargetVersion()).as("the newer target stands").isEqualTo(V3);
+        assertThat(reported).isEmpty();
+    }
+
+    /// The store-backed control for the two races above: with no interleaved write the same fixture commits.
+    @Test
+    void noInterleavedWrite_storeBackedRollbackCommits() {
+        seed(PreviousVersionKey.previousVersionKey(BASE), record(V1, V2, now(), 0, 0, List.of()));
+        seed(ClusterConfigKey.CURRENT, clusterConfig("[rollback]\nenabled = true\n", 1));
+        var direct = new CapturingClusterNode(SELF, kvStore, () -> {});
+
+        RollbackManager.rollbackManager(SELF, () -> CONFIG, direct, kvStore, new AlwaysLeaderManager(SELF), reported::add)
+                       .onAllInstancesFailed(failure(V2));
+
+        assertThat(currentTargetVersion()).isEqualTo(V1);
+        assertThat(reported).hasSize(1);
+    }
+
+    private Version currentTargetVersion() {
+        return kvStore.getTyped(SliceTargetKey.sliceTargetKey(BASE), SliceTargetValue.class)
+                      .map(SliceTargetValue::currentVersion)
+                      .unwrap();
+    }
+
+    private static ClusterConfigValue clusterConfig(String toml, long configVersion) {
+        return new ClusterConfigValue(toml, "test", "1.0.0", List.of(), 3, 3, "forge", configVersion, configVersion);
     }
 
     /// Every committed rollback is reported with the artifact, from→to and the per-host evidence.
@@ -218,7 +305,8 @@ class RollbackManagerAutoRollbackSafetyTest {
     }
 
     private AetherValue value(int index) {
-        return (AetherValue) ((KVCommand.Put<?, ?>) clusterNode.appliedCommands.get(index)).value();
+        return clusterNode.writtenValues()
+                          .get(index);
     }
 
     private static long now() {

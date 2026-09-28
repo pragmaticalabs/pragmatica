@@ -113,6 +113,24 @@ class AllInstancesFailedDetectorTest {
         assertThat(published).as("B's pong stopped advancing: undecidable, never a trigger").isEmpty();
     }
 
+    /// v1608 N1: freshness ALONE decides here. `staleHost_excludesTheVersion` publishes (and latches) before B
+    /// goes stale, so the latch keeps it green with the freshness check removed. Here nothing has published:
+    /// B's defects are inside the window but B's pong stopped advancing before A's defects arrived, so every
+    /// other condition holds and only B's staleness keeps the version undecidable.
+    @Test
+    void staleHostWithDefectsInTheWindow_neverTriggers_whenNothingHasPublishedYet() {
+        pong(A, 1, 0, 0);
+        pong(B, 1, 0, 0);
+        tick();
+        pong(B, 1, 0, 5);
+        tick();
+        advance(AllInstancesFailedDetector.FRESHNESS.millis() + 1);
+        pong(A, 1, 0, 5);
+        tick();
+
+        assertThat(published).as("B is stale: its in-window defects must not complete a verdict").isEmpty();
+    }
+
     @Test
     void counterReset_isAFreshBaseline_notANegativeCount() {
         pong(A, 1, 0, 0);

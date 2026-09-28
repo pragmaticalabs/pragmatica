@@ -2468,6 +2468,12 @@ public interface AetherNode extends ManageableNode {
                                                                        GenerationSnapshotSource.noop(),
                                                                        routeMountMode(config.appHttp()));
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
+        // #1573 B1: HTTP routes call the typed slice instance, not the bridge, so they record into the
+        // same execution counters here. recordExecution cannot fail (it returns unitResult()).
+        httpRoutePublisher.setRouteOutcomeRecorder((artifact, method, outcome) -> invocationMetrics.recordExecution(artifact,
+                                                                                                                    method,
+                                                                                                                    outcome)
+                                                                                                   .or(Unit.unit()));
         var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
         var traceStore = InvocationTraceStore.invocationTraceStore();
         // #277 increment 5a: the strategy-cell system is the ONE observability engine. Unconfigured

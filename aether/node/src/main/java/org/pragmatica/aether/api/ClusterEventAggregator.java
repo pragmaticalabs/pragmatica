@@ -817,10 +817,12 @@ public final class ClusterEventAggregator {
                                   buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
-    /// #1573: every committed automatic rollback, CRITICAL, with its evidence.
+    /// #1573: every committed automatic rollback, CRITICAL, with its evidence. Leader-gated
+    /// ([#emitAsLeader]), not owner-gated: the rollback is decided and committed on the leader only, so
+    /// under the owner gate the event was lost whenever another node owned the cluster-events partition.
     @Contract
     public void onAutoRollback(RollbackEvent.AutoRollbackExecuted executed) {
-        emit(new AutoRollback(hlcClock.now(),
+        emitAsLeader(new AutoRollback(hlcClock.now(),
                               Severity.CRITICAL,
                               "Automatic rollback of " + executed.failedArtifact().asString()
                              + " to " + executed.targetVersion().withQualifier(),
@@ -848,9 +850,11 @@ public final class ClusterEventAggregator {
         return Map.copyOf(details);
     }
 
+    /// #1573: produced by the leader's all-instances-failed detector only, so it is leader-gated for
+    /// the same reason as [#onAutoRollback].
     @Contract
     public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
-        emit(new SliceFailure(hlcClock.now(),
+        emitAsLeader(new SliceFailure(hlcClock.now(),
                               Severity.CRITICAL,
                               "All instances of " + event.artifact().asString()
                              + ":" + event.method().name()

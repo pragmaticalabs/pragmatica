@@ -15,7 +15,9 @@ import java.net.http.HttpRequest;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -40,6 +42,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
@@ -157,6 +161,52 @@ class AutoRollbackOnAllInstancesFailedTest {
         assertNotRolledBack();
     }
 
+    /// #1573 B1 (v1608's probe shape): every node serves real HTTP successes on its OWN instance while its
+    /// bridge sees only defects. HTTP executions count, so no host has "zero successes" and the version is
+    /// not wholly broken. Before B1 this exact stimulus rolled the version back.
+    @Test
+    @Timeout(600)
+    void httpSuccessesOnEveryNode_withBridgeOnlyDefects_neverRaisesOrRollsBack() {
+        startDeployed();
+        seedRollbackRecord(System.currentTimeMillis());
+        var served = new AtomicInteger();
+        var other = new AtomicInteger();
+        var deadline = System.currentTimeMillis() + 2 * QUIET_MS;
+
+        while (System.currentTimeMillis() < deadline) {
+            IntStream.range(0, NODES)
+                     .forEach(slot -> countStatus(httpPing(basePort + APP_OFFSET + slot), served, other));
+            probeRounds(1);
+            sleep(500);
+        }
+
+        assertThat(served.get()).as("arming: HTTP successes were served on every node").isGreaterThan(30);
+        assertThat(other.get()).as("arming: no HTTP failures").isZero();
+        assertThat(alertRaised()).as("HTTP successes veto the all-instances-failed verdict").isFalse();
+        assertNotRolledBack();
+    }
+
+    /// #1573 B2: the leader decides and commits the rollback, and the events describing it must reach the
+    /// cluster-events stream even when another node owns that stream's partition. v1608 measured prefix
+    /// `b2` losing both events under the owner gate; the arming assertion keeps this arm honest if a
+    /// placement change ever makes the leader the owner.
+    @Test
+    @Timeout(600)
+    void everyInstanceDefective_leaderDoesNotOwnTheEventsStream_eventsStillReachIt() {
+        startDeployed("b2");
+        var ids = cluster.allNodes().stream().map(AetherNode::self).toList();
+
+        assertThat(ReplicaPlacement.isOwner(SystemStreams.CLUSTER_EVENTS.asString(), 0, ids, NODES, leader().self()))
+            .as("arming: the leader is NOT the cluster-events owner")
+            .isFalse();
+        seedRollbackRecord(System.currentTimeMillis());
+
+        probeUntil(this::rolledBack);
+
+        assertEventAndAlert();
+        assertAutoRollbackEvent();
+    }
+
     /// The kill happens after the 75 s cold-boot convergence window: inside it SWIM deliberately reports a
     /// never-healthy peer UNKNOWN rather than FAULTY, so membership keeps counting the dead leader, and a counted
     /// host whose metrics went stale makes the version undecidable — the detector holds off by design. The
@@ -183,8 +233,12 @@ class AutoRollbackOnAllInstancesFailedTest {
     }
 
     private void startDeployed() {
+        startDeployed("arb");
+    }
+
+    private void startDeployed(String prefix) {
         basePort = freeBasePort();
-        cluster = EmberCluster.emberCluster(NODES, basePort, basePort + MGMT_OFFSET, basePort + APP_OFFSET, "arb");
+        cluster = EmberCluster.emberCluster(NODES, basePort, basePort + MGMT_OFFSET, basePort + APP_OFFSET, prefix);
         LifecycleAwait.settled("start auto-rollback cluster", cluster, cluster.start());
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
                .until(() -> cluster.currentLeader().isPresent());
@@ -358,6 +412,26 @@ class AutoRollbackOnAllInstancesFailedTest {
                      .flatMap(bytes -> bridge.invoke("fail", bytes))
                      .await(REQUEST)
                      .fold(cause -> !(cause instanceof SliceDefect), _ -> false);
+    }
+
+    private static int httpPing(int port) {
+        var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/ping"))
+                                 .timeout(REQUEST.duration())
+                                 .GET()
+                                 .build();
+
+        return jdkHttpOperations().sendString(request)
+                                  .await(REQUEST)
+                                  .map(response -> response.statusCode())
+                                  .or(-1);
+    }
+
+    private static void countStatus(int status, AtomicInteger served, AtomicInteger other) {
+        var counter = status == 200
+                      ? served
+                      : other;
+
+        counter.incrementAndGet();
     }
 
     private boolean rolledBack() {

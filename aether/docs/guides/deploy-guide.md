@@ -84,10 +84,15 @@ enabled = false
 The policy (`enabled`, `trigger_on_all_instances_failed`, `cooldown`, `max_rollbacks`, `bake_window`) is
 cluster-wide; see the `[rollback]` section of the bootstrap config reference.
 
-**What counts as broken.** Only failures the slice bridge itself produces: the method threw instead of
-returning, the request could not be decoded or the response encoded, or the method does not exist in
-this version. A failure the slice method returns (a business error) never counts, however often it
-happens. An execution timeout does not count either: a stall is as consistent with overload or a
+**What counts as broken.** Every execution counts, whichever way it arrived: an HTTP route, an inter-slice
+call, a topic message or a scheduled task. A success on any of them is a success. Only failures the
+runtime itself produces count as defects: the method threw instead of returning, a bridge request could
+not be decoded or its response encoded, or the method does not exist in this version. A failure the slice
+method returns (a business error) never counts, however often it happens and whatever HTTP status it maps
+to; neither does an HTTP request rejected before the slice runs (a bad path, query or body, or no route).
+[verified: `aether/aether-invoke/src/test/java/org/pragmatica/aether/http/HttpRoutePublisherOutcomeTest.java`,
+`aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`
+(HTTP successes on every node veto a rollback)] An execution timeout does not count either: a stall is as consistent with overload or a
 downstream outage as with a broken version.
 
 **The verdict.** For a version with at least one ACTIVE instance, every hosting node must report at least
@@ -102,8 +107,13 @@ cluster event and the slice-failure alert are raised, but nothing is rolled back
 back while a managed deployment owns the artifact, never to a version that already failed once, and it
 honours the cooldown (default 5 minutes) and the rollback budget (default 2), both set in `[rollback]`. The rollback record — count, last rollback
 and failed versions — is committed together with the new target, so these limits hold across a leader
-change.
-[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`]
+change. The commit is fenced on the state it was decided from: if the cluster config (and so the
+`[rollback]` policy) or the slice's target changed in the meantime, or this node is no longer the committed
+leader, the rollback is not applied.
+[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/AutoRollbackOnAllInstancesFailedTest.java`, and for the
+fence `aether/aether-control/src/test/java/org/pragmatica/aether/controller/RollbackManagerAutoRollbackSafetyTest.java`]
+[unverified: that the previous version is actually running afterwards. The end-to-end proof stops at the committed
+target, because the test's previous version is not a real artifact.]
 
 **What it does not detect.** A version that fails only on some instances or only for some requests;
 business-logic regressions; hangs and deadlocks; exceptions thrown asynchronously inside the slice's

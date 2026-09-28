@@ -343,6 +343,22 @@ public final class InvocationMetricsCollector {
     }
 
     /// #1573: how one slice execution ended, as far as the all-instances-failed detector is concerned.
+    /// One classification for every ingress; the bridge (`AdmittedSliceBridge`: inter-slice, topic,
+    /// scheduled) and the HTTP route recorder (`HttpRoutePublisher.RouteOutcomeRecorder`) both apply it.
+    ///
+    /// | Execution ends with | Counted as |
+    /// |---|---|
+    /// | a value (HTTP: any value but a returned `Result.Failure`) | [#SUCCESS] |
+    /// | the method threw on the calling thread (`SliceDefect.MethodThrew`) | [#DEFECT] |
+    /// | bridge only: request decode / response encode failed (`SliceDefect.CodecFailed`) | [#DEFECT] |
+    /// | bridge only: the method does not exist in this build (`SliceDefect.MethodNotFound`) | [#DEFECT] |
+    /// | a failure the method RETURNED, whatever status it maps to (4xx or 5xx) | not counted |
+    /// | HTTP: a request the router rejects before the slice (bad path/query/body → 4xx, no route → 404) | not counted |
+    /// | DRAINING refusal, reply timeout, execution timeout | not counted |
+    ///
+    /// A returned failure is not a defect because a downstream outage surfaces exactly that way, and
+    /// counting it would roll a healthy version back during someone else's incident. An HTTP request body
+    /// that fails to decode is the client's input, unlike a bridge request, which another build produced.
     public enum ExecutionOutcome {
         SUCCESS,
         DEFECT
