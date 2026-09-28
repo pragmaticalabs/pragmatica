@@ -61,6 +61,18 @@ public final class SegmentReader {
         return readFromSegmentRefs(streamName, partition, refs, fromOffset, maxEvents);
     }
 
+    /// The latest event timestamp in `ref`'s block (#1604), decoded the same way a read decodes it -- the
+    /// event-time value a live seal records as the segment's `maxTimestamp`. Empty for a block with no events.
+    /// Taken from the block's own bytes, it is immune to content-addressed dedup (a shared block's first
+    /// writer's creation time is not this segment's age) and to clock skew between owner and replica.
+    public Promise<Option<Long>> maxEventTimestamp(String streamName, int partition, SegmentIndex.SegmentRef ref) {
+        return containedStep(streamName, partition, ref, Long.MIN_VALUE, Integer.MAX_VALUE).map(SegmentReader::latestTimestamp);
+    }
+
+    private static Option<Long> latestTimestamp(List<RawEvent> events) {
+        return Option.from(events.stream().map(RawEvent::timestamp).max(Long::compare));
+    }
+
     private Promise<List<RawEvent>> readFromSegmentRefs(String streamName,
                                                         int partition,
                                                         List<SegmentIndex.SegmentRef> refs,

@@ -8,6 +8,19 @@ import org.pragmatica.lang.utils.Causes;
 public sealed interface SnapshotError extends Cause {
     SnapshotError INTEGRITY_CHECK_FAILED = new IntegrityCheckFailed();
 
+    /// A [SnapshotManager] that cannot report what it wrote (#1604).
+    enum General implements SnapshotError {
+        SNAPSHOT_NOW_UNSUPPORTED("This snapshot manager cannot report the snapshot it writes");
+        private final String message;
+        General(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     record DirectoryCreateFailed(Throwable cause) implements SnapshotError {
         @Override
         public String message() {
