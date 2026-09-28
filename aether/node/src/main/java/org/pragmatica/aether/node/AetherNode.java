@@ -190,8 +190,6 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.StreamAddressResolver;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.aether.stream.StreamingCoordinator;
-import org.pragmatica.aether.stream.forward.CatchupRead;
-import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardHandler;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage;
@@ -1579,7 +1577,7 @@ public interface AetherNode extends ManageableNode {
                                                                             long from,
                                                                             long to) {
         return node.equals(self)
-               ? OwnerPeerReads.appendedRange(localCatchupPage(manager, tieredReader),
+               ? OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(manager, Option.some(tieredReader)),
                                               node,
                                               streamName,
                                               partition,
@@ -1587,25 +1585,6 @@ public interface AetherNode extends ManageableNode {
                                               to,
                                               STREAM_CATCHUP_BATCH_SIZE)
                : readPeerRange(forwardClient, node, streamName, partition, from, to);
-    }
-
-    /// This node's own copy, read as a peer's catch-up forward would be answered.
-    private static OwnerPeerReads.PageRead localCatchupPage(StreamPartitionManager manager,
-                                                            TieredStreamReader tieredReader) {
-        return (_, streamName, partition, fromOffset, maxEvents) -> CatchupRead.readAppended(manager,
-                                                                                             Option.some(tieredReader),
-                                                                                             streamName,
-                                                                                             partition,
-                                                                                             fromOffset,
-                                                                                             maxEvents)
-                                                                               .map(AetherNode::asCatchupPage);
-    }
-
-    private static StreamForwardClient.ReadForwardResult asCatchupPage(List<OffHeapRingBuffer.RawEvent> events) {
-        return StreamForwardClient.ReadForwardResult.readForwardResult(events.stream()
-                                                                             .map(RawEventDto::fromRawEvent)
-                                                                             .toList(),
-                                                                       false);
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> readPeerRange(StreamForwardClient forwardClient,

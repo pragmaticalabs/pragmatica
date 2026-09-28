@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
@@ -27,7 +28,6 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSink;
-import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -316,10 +316,10 @@ class ReplicaCatchupTierFallbackTest {
         publish(3);
         awaitSealedThrough(0);
 
-        var throughTier = OwnerPeerReads.appendedRange(localPage(Option.some(tieredStreamReader(index, storage))), OWNER, STREAM, PARTITION, 0, 2, 100)
+        var throughTier = OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(owner, Option.some(tieredStreamReader(index, storage))), OWNER, STREAM, PARTITION, 0, 2, 100)
                                         .await()
                                         .unwrap();
-        var ringOnly = OwnerPeerReads.appendedRange(localPage(Option.none()), OWNER, STREAM, PARTITION, 0, 2, 100)
+        var ringOnly = OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(owner, Option.none()), OWNER, STREAM, PARTITION, 0, 2, 100)
                                      .await()
                                      .unwrap();
 
@@ -328,12 +328,57 @@ class ReplicaCatchupTierFallbackTest {
                             .extracting(OffHeapRingBuffer.RawEvent::offset).containsExactly(1L, 2L);
     }
 
-    private OwnerPeerReads.PageRead localPage(Option<TieredStreamReader> tier) {
-        return (_, stream, partition, from, max) -> CatchupRead.readAppended(owner, tier, stream, partition, from, max)
-                                                               .map(events -> StreamForwardClient.ReadForwardResult.readForwardResult(events.stream()
-                                                                                                                                              .map(RawEventDto::fromRawEvent)
-                                                                                                                                              .toList(),
-                                                                                                                                        false));
+    /// #1555 R3 end to end on a REAL evicted ring and tier (v1555's lenient-peer shape): the candidate — this test's
+    /// owner, ring capacity 2 — holds common 0..10 plus a divergent 11..15, so its ring holds only 14..15 and its
+    /// tier the rest; a lower peer holds common 0..10 plus the ACKED 11'..12'. The candidate is the highest head, so
+    /// the peer is compared leniently against the candidate's own window 0..12. Read through the tier, offsets 11
+    /// and 12 differ and promotion is refused; read from the ring alone, nothing is compared and the divergent
+    /// candidate would activate over the peer's acknowledged records.
+    @Test
+    void ownerGate_divergentCandidateWithEvictedRing_isRefusedOverTheLowerAckedPeer() {
+        var peerNode = NodeId.randomNodeId();
+        var peer = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            peer.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+            publishTagged(owner, "common", 11);
+            publishTagged(owner, "divergent", 5);
+            publishTagged(peer, "common", 11);
+            publishTagged(peer, "acked", 2);
+            awaitSealedThrough(13);
+
+            var alarms = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+            var gate = OwnerActivation.ownerActivation(OWNER,
+                                                       (_, _) -> Option.none(),
+                                                       (_, _) -> true,
+                                                       Option.none(),
+                                                       () -> List.of(OWNER, peerNode),
+                                                       (_, _, _) -> Promise.success(12L),
+                                                       (_, _) -> ownerRing().headOffset(),
+                                                       (_, _, _, _) -> Promise.success(-1L),
+                                                       () -> true,
+                                                       (node, stream, partition, from, to) -> node.equals(OWNER)
+                                                                                              ? OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(owner, Option.some(tieredStreamReader(index, storage))),
+                                                                                                                             node, stream, partition, from, to, 100)
+                                                                                              : peer.readAppended(stream, partition, from, (int) (to - from + 1)).async(),
+                                                       block -> {
+                                                           alarms.add(block);
+                                                           return Unit.unit();
+                                                       },
+                                                       TimeSpan.timeSpan(1).hours());
+
+            assertThat(ownerRing().tailOffset()).as("arming: the candidate's ring starts above the peer's head").isGreaterThan(12L);
+            assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("a divergent candidate never activates").isFalse();
+            assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+        } finally {
+            peer.close();
+        }
+    }
+
+    private static void publishTagged(StreamPartitionManager manager, String tag, int count) {
+        for (var i = 0; i < count; i++) {
+            manager.publishLocal(STREAM, PARTITION, (tag + "-" + i).getBytes(UTF_8), 1L).onFailure(cause -> fail("publish failed: " + cause.message()));
+        }
     }
 
     /// Without a tier wired (base handler) the read stays ring-only and the ring's refusal stands, as before.

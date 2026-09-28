@@ -88,7 +88,7 @@ class LivePlacementMembersWiringTest {
         assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
         assertThat(code).contains("(node,stream,partition,from,to)->readOwnerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient,node,stream,partition,from,to)");
         assertThat(code).as("v1555 R3: the candidate's own window is read through its tier, as a peer's is")
-                        .contains("CatchupRead.readAppended(manager,Option.some(tieredReader),");
+                        .contains("OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(manager,Option.some(tieredReader)),");
     }
 
     @Test

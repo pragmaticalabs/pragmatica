@@ -8,7 +8,10 @@ import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.stream.forward.CatchupRead;
+import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -39,6 +42,27 @@ public sealed interface OwnerPeerReads {
     }
 
     Pattern OLDEST_AVAILABLE = Pattern.compile("oldest available is (-?\\d+)");
+
+    /// This node's OWN copy, paged exactly as a peer's catch-up forward is answered — ring, then tier for a prefix the
+    /// ring has evicted ([CatchupRead#readAppended]) — so the gate reads both sides of a comparison with the same
+    /// retention (v1555 R3: a ring-only read of the candidate's own window compared nothing once its ring was
+    /// evicted below a lower peer's head, and a divergent candidate was accepted over that peer's acked records).
+    static PageRead localPages(StreamPartitionManager manager, Option<TieredStreamReader> tier) {
+        return (_, streamName, partition, fromOffset, maxEvents) -> CatchupRead.readAppended(manager,
+                                                                                             tier,
+                                                                                             streamName,
+                                                                                             partition,
+                                                                                             fromOffset,
+                                                                                             maxEvents)
+                                                                               .map(OwnerPeerReads::asPage);
+    }
+
+    private static StreamForwardClient.ReadForwardResult asPage(List<OffHeapRingBuffer.RawEvent> events) {
+        return StreamForwardClient.ReadForwardResult.readForwardResult(events.stream()
+                                                                             .map(RawEventDto::fromRawEvent)
+                                                                             .toList(),
+                                                                       false);
+    }
 
     /// The peer's appended head; `-1` when the peer holds no ring for the partition (it answers
     /// PARTITION_NOT_LOCAL, so there is nothing to catch up from), or holds an empty one.
