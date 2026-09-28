@@ -231,10 +231,11 @@ SHAPE org.pragmatica.aether.stream.forward.RawEventDto (offset:long,timestamp:lo
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,payload:byte[],timestamp:long)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,offset:long,errorMessage:java.lang.String,retryable:boolean,outcomeUnknown:boolean)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,fromOffset:long,maxEvents:int,linearizable:boolean,catchup:boolean)
-SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,events:java.util.List<org.pragmatica.aether.stream.forward.RawEventDto>,truncated:boolean,errorMessage:java.lang.String,earliestRetained:long,visibleHead:long)
+SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,events:java.util.List<org.pragmatica.aether.stream.forward.RawEventDto>,truncated:boolean,errorMessage:java.lang.String,earliestRetained:long,visibleHead:long,history:java.util.List<org.pragmatica.aether.stream.provenance.ProvenanceEntry>)
+SHAPE org.pragmatica.aether.stream.provenance.ProvenanceEntry (epoch:org.pragmatica.aether.slice.generation.Epoch,incarnationUlid:org.pragmatica.lang.Option<java.lang.String>,startOffset:long)
 SHAPE org.pragmatica.aether.stream.replication.ReplicationMessage$BatchSync (governorId:org.pragmatica.consensus.NodeId,streamName:java.lang.String,partition:int,fromOffset:long,toOffset:long,compressedBatch:byte[])
 SHAPE org.pragmatica.aether.stream.replication.ReplicationMessage$CatchupRequest (replicaId:org.pragmatica.consensus.NodeId,streamName:java.lang.String,partition:int,fromOffset:long)
-SHAPE org.pragmatica.aether.stream.replication.ReplicationMessage$CatchupResponse (governorId:org.pragmatica.consensus.NodeId,streamName:java.lang.String,partition:int,fromOffset:long,toOffset:long,payloads:java.util.List<byte[]>,timestamps:java.util.List<java.lang.Long>)
+SHAPE org.pragmatica.aether.stream.replication.ReplicationMessage$CatchupResponse (governorId:org.pragmatica.consensus.NodeId,streamName:java.lang.String,partition:int,fromOffset:long,toOffset:long,payloads:java.util.List<byte[]>,timestamps:java.util.List<java.lang.Long>,history:java.util.List<org.pragmatica.aether.stream.provenance.ProvenanceEntry>)
 SHAPE org.pragmatica.aether.stream.replication.ReplicationMessage$ReplicateAck (replicaId:org.pragmatica.consensus.NodeId,streamName:java.lang.String,partition:int,confirmedOffset:long)
 SHAPE org.pragmatica.aether.stream.replication.ReplicationMessage$ReplicateEvents (governorId:org.pragmatica.consensus.NodeId,streamName:java.lang.String,partition:int,fromOffset:long,payloads:java.util.List<byte[]>,timestamps:java.util.List<java.lang.Long>,ownerEpoch:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.stream.topic.DlqEnvelope (messageId:java.lang.String,sourceTopic:java.lang.String,sourcePartition:int,sourceOffset:long,failingGroup:java.lang.String,attemptCount:int,lastFailureCause:java.lang.String,publishedAtMs:long,deadLetteredAtMs:long,payload:byte[],rawEvent:boolean)
@@ -572,6 +573,7 @@ TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForward 93
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForwardResponse 94
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForward 95
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForwardResponse 96
+TAG  org.pragmatica.aether.stream.provenance.ProvenanceEntry 1711
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$BatchSync 97
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$CatchupRequest 98
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$CatchupResponse 99

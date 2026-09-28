@@ -59,12 +59,17 @@ class SystemCodecPinningTest {
     /// The wire win, stated as a property rather than as 89 numbers. Tags are VLQ-encoded, so a hot type
     /// that drifted past 127 would silently start costing a second byte on every message of the
     /// cluster's highest-frequency traffic — a regression with no other symptom.
+    ///
+    /// `ProvenanceEntry` (#1596) is exempt like the refusals: it is a history entry, carried only by a replica
+    /// catch-up answer (a handful per catch-up, none on any other read, and an empty list encodes no element tag),
+    /// so it is not the per-message traffic the window was bought for -- and no one-byte slot is free to give it.
     @Test
     void hotProtocolTypes_fitInTheOneByteWindow() {
         var hot = SystemTags.TAGS.entrySet()
                                  .stream()
                                  .filter(entry -> !entry.getKey().endsWith(".SyncRejected") && !entry.getKey().endsWith(".HelloRefused")
-                                                  && !entry.getKey().endsWith(".IdentityRefused"))
+                                                  && !entry.getKey().endsWith(".IdentityRefused")
+                                                  && !entry.getKey().endsWith(".ProvenanceEntry"))
                                  .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))
                                  .filter(entry -> HOT_PREFIXES.stream().anyMatch(prefix -> entry.getKey().startsWith(prefix)))
                                  .toList();
