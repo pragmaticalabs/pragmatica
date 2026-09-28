@@ -730,7 +730,10 @@ public final class StorageFactory {
         var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
                                                                                metadataStore,
                                                                                GarbageCollectorConfig.garbageCollectorConfig());
-        // #1604: this node's streams instance is its own -- its collector runs here, never leader-pinned.
+        // #1604: NOT leader-pinned, deliberately -- do not move it back into leader activation. This instance's
+        // metadata store and disk tier are node-private, so this node's records are the authority on them, and
+        // GC deletes only from private tiers (deleteFromPrivateTiers skips the shared DHT tier). Pinned to the
+        // leader, every other node would never reclaim its own disk once retention stopped deleting blocks.
         garbageCollector.activate()
                         .onFailure(cause -> log.warn("Streams garbage collector could not be activated: {}",
                                                      cause.message()));
