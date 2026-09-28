@@ -1368,6 +1368,18 @@ public sealed interface AetherValue {
                                           attemptCount,
                                           System.currentTimeMillis());
         }
+
+        /// The same record with only `status` replaced — every other field, `updatedAt` included, kept.
+        public SchemaVersionValue withStatus(SchemaStatus newStatus) {
+            return new SchemaVersionValue(datasourceName,
+                                          currentVersion,
+                                          lastMigration,
+                                          newStatus,
+                                          artifactCoords,
+                                          owningBlueprint,
+                                          attemptCount,
+                                          updatedAt);
+        }
     }
 
     /// `lockVersion` is the lost-update fence (RFC-0018, #570) added for #766: the lock claim is a

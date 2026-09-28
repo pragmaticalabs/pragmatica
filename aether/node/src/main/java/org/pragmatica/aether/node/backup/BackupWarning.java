@@ -33,7 +33,9 @@ public record BackupWarning(Code code, String detail) {
         /// writes stay refused until it can, or until a restart with `[backup] restore = "fresh"`.
         BACKUP_RESTORE_BLOCKED,
         /// #1533: `[backup]` has no remote, so a restore reads only the deciding leader's local repository.
-        BACKUP_RESTORE_SOURCE_LOCAL
+        BACKUP_RESTORE_SOURCE_LOCAL,
+        /// #1533: the restore withheld the previous cluster's entity checkpoints; entity state restarts empty.
+        BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED
     }
 
     public static BackupWarning backupWarning(Code code, String detail) {

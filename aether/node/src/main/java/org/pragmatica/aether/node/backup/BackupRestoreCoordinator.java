@@ -26,7 +26,15 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupDocument;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -385,6 +393,20 @@ public final class BackupRestoreCoordinator {
                : success(Option.none());
     }
 
+    @Contract
+    private void warnEntityCheckpointsNotRestored(BackupDocument document) {
+        var withheld = entityCheckpointsNotRestored(document);
+
+        if (!withheld.isEmpty()) {
+            // TODO(#1574): also emit as an OperatorWarning cluster event once #1617 lands.
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED,
+                                                      "entity checkpoints from the previous cluster were not restored: their"
+                                                      + " offsets belong to a log that did not survive, so entity state"
+                                                      + " restarts empty for " + withheld.size() + " partition(s): "
+                                                      + String.join(", ", withheld)));
+        }
+    }
+
     // --- restoring ---
     private Promise<Unit> start(Loaded loaded) {
         var marker = BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
@@ -404,6 +426,8 @@ public final class BackupRestoreCoordinator {
                  marker.lineageId(),
                  marker.incarnation(),
                  marker.revision());
+
+        warnEntityCheckpointsNotRestored(loaded.document());
 
         return submit(markerTransaction(marker)).flatMap(_ -> restore(loaded,
                                                                                                              marker));
@@ -426,6 +450,7 @@ public final class BackupRestoreCoordinator {
                                   .entrySet()
                                   .stream()
                                   .filter(entry -> !(entry.getKey() instanceof ClusterIncarnationKey))
+                                  .flatMap(entry -> normalised(entry).stream())
                                   .filter(entry -> !kvStore.get(entry.getKey())
                                                            .equals(Option.some(entry.getValue())))
                                   .map(entry -> codec.map(present -> present.entrySize(entry.getKey(),
@@ -434,6 +459,52 @@ public final class BackupRestoreCoordinator {
                                                      .map(size -> new Sized(entry, size)))
                                   .toList())
                      .map(sized -> split(sized, CHUNK_BYTES));
+    }
+
+    /// THE restore normalisation — the one place a backed-up entry is changed or withheld on its way into
+    /// a FRESH cluster (#1533 audit, CTO rulings 2026-09-28). Declared intent restores unchanged; a value
+    /// that also records what the OLD cluster was doing is reset to what a fresh cluster would observe, and
+    /// one that points into the old cluster's data is not installed at all:
+    ///
+    /// - [CommunityValue] ACTIVE/DEGRADED → FORMING. Those states observed the old cluster's live members;
+    ///   a fresh cluster has none yet, and placement admits only ACTIVE. The leader promotes it as members
+    ///   join (`ClusterDeploymentState.nextCommunityState`). Teardown states and the sentinel are kept.
+    /// - [DeploymentOutcomeValue] IN_PROGRESS → withheld. It names an apply that died with the old cluster;
+    ///   absence means "no attempt reached a terminal write", and the fresh cluster's reconcile writes the
+    ///   next outcome. Terminal outcomes are kept.
+    /// - [SchemaVersionValue] MIGRATING → PENDING. The database outlives the cluster, but the migration
+    ///   lock (a runtime key) died with it, so a restored MIGRATING would never re-arm; PENDING re-runs the
+    ///   migration's check. `attemptCount` and `updatedAt` are kept.
+    /// - [EntityFoldCheckpointValue] → withheld (INTERIM, safe side). The pointer carries no incarnation, so
+    ///   a fresh cluster's restarted log cannot be told from the old one: installed, it would freeze new
+    ///   checkpoints below it (the value is monotonic-fenced) and, once the new log passed it, seed the fold
+    ///   from the OLD state and skip the new records. It stays in the backup document; [#entityCheckpointsNotRestored]
+    ///   names what was withheld.
+    static Option<Map.Entry<AetherKey, AetherValue>> normalised(Map.Entry<AetherKey, AetherValue> entry) {
+        return switch (entry.getValue()) {
+            case CommunityValue community when isLiveMembershipState(community.state()) -> Option.some(Map.entry(entry.getKey(),
+                                                                                                             community.withState(CommunityState.FORMING)));
+            case DeploymentOutcomeValue outcome when outcome.status() == DeploymentOutcomeStatus.IN_PROGRESS -> Option.none();
+            case SchemaVersionValue schema when schema.status() == SchemaStatus.MIGRATING -> Option.some(Map.entry(entry.getKey(),
+                                                                                                                  schema.withStatus(SchemaStatus.PENDING)));
+            case EntityFoldCheckpointValue _ -> Option.none();
+            default -> Option.some(entry);
+        };
+    }
+
+    private static boolean isLiveMembershipState(CommunityState state) {
+        return state == CommunityState.ACTIVE || state == CommunityState.DEGRADED;
+    }
+
+    /// The entity checkpoints a restore of `document` withholds (see [#normalised]), by key.
+    static List<String> entityCheckpointsNotRestored(BackupDocument document) {
+        return document.entries()
+                       .keySet()
+                       .stream()
+                       .filter(EntityCheckpointKey.class::isInstance)
+                       .map(AetherKey::asString)
+                       .sorted()
+                       .toList();
     }
 
     static List<List<Map.Entry<AetherKey, AetherValue>>> split(List<Sized> entries, long limit) {

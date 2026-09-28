@@ -23,6 +23,7 @@ import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
@@ -31,9 +32,19 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -67,6 +78,8 @@ class BackupRestoreCoordinatorTest {
     private static final String LINEAGE = "01K4ZT9Q6W3X8Y2B7C5D1E0F9G";
     private static final ConfigValue ALPHA = ConfigValue.configValue("alpha", "1");
     private static final ConfigValue BETA = ConfigValue.configValue("beta", "2");
+    private static final BlueprintId BLUEPRINT = BlueprintId.blueprintId("org.test:restore:1.0.0")
+                                                            .unwrap();
     private static final ClusterConfigValue CLUSTER_CONFIG = new ClusterConfigValue("",
                                                                                "restore-test",
                                                                                "1.0.0",
@@ -254,6 +267,46 @@ class BackupRestoreCoordinatorTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(4);
         }
 
+        /// The one restore normalisation (#1533 audit rulings): each runtime observation is reset to what a
+        /// fresh cluster would see, declared intent passes through unchanged.
+        @Test
+        void normalised_resetsRuntimeObservations_andKeepsDeclaredIntent() {
+            var active = CommunityValue.communityValue("hetzner", "worker", 4, CommunityState.ACTIVE, 123L, Option.none());
+            var dissolved = CommunityValue.communityValue("hetzner", "worker", 4, CommunityState.DISSOLVED, 123L, Option.some(456L));
+            var migrating = SchemaVersionValue.schemaVersionValue("orders", 3, "V3", SchemaStatus.MIGRATING, "g:a:1", BLUEPRINT, 2);
+            var succeeded = DeploymentOutcomeValue.succeeded(77L);
+
+            assertThat(normalise(CommunityKey.communityKey("c1"), active)).isEqualTo(Option.some(active.withState(CommunityState.FORMING)));
+            assertThat(normalise(CommunityKey.communityKey("c2"), dissolved)).isEqualTo(Option.some(dissolved));
+            assertThat(normalise(DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT), DeploymentOutcomeValue.inProgress(77L))).isEqualTo(Option.none());
+            assertThat(normalise(DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT), succeeded)).isEqualTo(Option.some(succeeded));
+            assertThat(normalise(SchemaVersionKey.schemaVersionKey("orders"), migrating)).isEqualTo(Option.some(migrating.withStatus(SchemaStatus.PENDING)));
+            assertThat(normalise(EntityCheckpointKey.entityCheckpointKey("orders", 3),
+                                 EntityFoldCheckpointValue.entityFoldCheckpointValue(500, "ab"))).isEqualTo(Option.none());
+            assertThat(normalise(ConfigKey.forKey("alpha"), ALPHA)).isEqualTo(Option.some(ALPHA));
+        }
+
+        /// A backed-up entity checkpoint is withheld from the fresh cluster, loudly, naming the partition.
+        @Test
+        void aBackedUpEntityCheckpoint_isNotRestored_andTheWithholdingIsWarned() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var checkpointKey = EntityCheckpointKey.entityCheckpointKey("orders", 3);
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
+                                                                                  checkpointKey,
+                                                                                  EntityFoldCheckpointValue.entityFoldCheckpointValue(500, "ab")));
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            runToCompletion(coordinator);
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(kvStore.get(ConfigKey.forKey("alpha"))).isEqualTo(Option.some(ALPHA));
+            assertThat(kvStore.get(checkpointKey)).as("the checkpoint pointer is not installed").isEqualTo(Option.none());
+            assertThat(warnings).filteredOn(warning -> warning.code() == Code.BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED)
+                                .singleElement()
+                                .satisfies(warning -> assertThat(warning.detail()).contains(checkpointKey.asString()));
+        }
+
         @Test
         void chunks_stayUnderTheLimit_andAnOversizedEntryTravelsAlone() {
             var sized = List.of(sized("a", 4),
@@ -402,6 +455,11 @@ class BackupRestoreCoordinatorTest {
         return RestoreGate.decision(kvStore)
                           .map(BackupRestoreValue::outcome)
                           .or(BackupRestoreOutcome.UNKNOWN);
+    }
+
+    private static Option<AetherValue> normalise(AetherKey key, AetherValue value) {
+        return BackupRestoreCoordinator.normalised(Map.entry(key, value))
+                                       .map(Map.Entry::getValue);
     }
 
     private static BackupRestoreCoordinator.Sized sized(String key, int size) {
