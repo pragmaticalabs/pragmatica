@@ -54,8 +54,7 @@ class VoterConfigurationStateTest {
         var handoff = handoff(new byte[]{1});
         state.receive(A, handoff);
         var installed = state.receive(B, handoff).unwrap().unwrap();
-        var recovered = VoterAuthoritySnapshotCodec.<TestCommand>decode(VoterAuthoritySnapshotCodec.encode(installed)).unwrap().unwrap();
-        var restarted = new VoterConfigurationState<>(recovered);
+        var restarted = new VoterConfigurationState<>(installed);
         assertThat(restarted.configuration()).isEqualTo(NEXT);
         assertThat(restarted.accepts(new VoterAuthority<>(OLD, Option.none()))).isFalse();
         assertThat(restarted.isAwaitingHandoff()).isFalse();

@@ -232,6 +232,12 @@ public record BackupEntryCodec(SliceCodec codec) {
                                    .toList()).flatMap(lines -> seal(header, lines));
     }
 
+    /// The length of `key`'s rendered entry line — an upper bound on the value's binary size (the line
+    /// carries it as base64). A restore sizes its consensus batches by it.
+    public Result<Integer> entrySize(AetherKey key, AetherValue value) {
+        return encodeEntry(Map.entry(key, value)).map(String::length);
+    }
+
     /// The header a state renders with: lineage and incarnation from its incarnation entry.
     public static BackupHeader headerFor(long revision, Map<AetherKey, AetherValue> entries) {
         return incarnationOf(entries).map(value -> BackupHeader.backupHeader(value.lineageId(),

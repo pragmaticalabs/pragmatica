@@ -25,7 +25,12 @@ public record BackupWarning(Code code, String detail) {
         /// The local repository could not take a commit (disk, permissions, git missing).
         BACKUP_COMMIT_FAILED,
         /// A failing or gated backup is current again.
-        BACKUP_RECOVERED
+        BACKUP_RECOVERED,
+        /// #1533: the cold-restart restore cannot read the backup (unreachable, undecodable); cluster-state
+        /// writes stay refused until it can, or until a restart with `[backup] restore = "fresh"`.
+        BACKUP_RESTORE_BLOCKED,
+        /// #1533: `[backup]` has no remote, so a restore reads only the deciding leader's local repository.
+        BACKUP_RESTORE_SOURCE_LOCAL
     }
 
     public static BackupWarning backupWarning(Code code, String detail) {

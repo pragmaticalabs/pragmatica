@@ -2017,6 +2017,42 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> CLUSTER_INCARNATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-incarnation key format: %s");
 
+    /// Runtime (#1533): the committed outcome of this incarnation's restore decision. Every node's submit
+    /// path refuses writes to backed-up keys until it holds a terminal outcome, so no seeder can race a
+    /// restore. Runtime, so never backed up: after a cold restart it is absent and the decision is taken
+    /// again; within an incarnation it survives leader changes, which makes the restore exactly-once.
+    record BackupRestoreKey() implements RuntimeKey {
+        private static final String KEY = "backup-restore";
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static final BackupRestoreKey SINGLETON = new BackupRestoreKey();
+
+        @Override
+        public String asString() {
+            return KEY;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static BackupRestoreKey backupRestoreKey() {
+            return SINGLETON;
+        }
+
+        public static Result<BackupRestoreKey> backupRestoreKey(String key) {
+            if (!KEY.equals(key)) {
+                return BACKUP_RESTORE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> BACKUP_RESTORE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid backup-restore key format: %s");
+
     record ConsumerGroupKey(String groupId, String streamName, int partition) implements RuntimeKey {
         private static final String PREFIX = "consumer-group/";
 

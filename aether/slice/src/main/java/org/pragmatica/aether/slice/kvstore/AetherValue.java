@@ -1075,6 +1075,56 @@ public sealed interface AetherValue {
         }
     }
 
+    /// What a restore decision concluded (#1533), under [AetherKey.BackupRestoreKey].
+    @Codec
+    enum BackupRestoreOutcome {
+        /// A restore of `commit` has started and not finished; a new leader resumes the same commit.
+        IN_PROGRESS,
+        /// The backup at `commit` was restored.
+        RESTORED,
+        /// Nothing to restore (an empty backup, or `[backup] restore = fresh`); genesis follows.
+        FRESH,
+        /// The KV already held cluster state — a live cluster is never restored over.
+        SKIPPED_EXISTING_STATE,
+        /// The deciding leader has no `[backup]` enabled.
+        DISABLED,
+        /// Wire sentinel: an ordinal this node cannot name decodes here instead of throwing. Not terminal,
+        /// so a node that cannot name the outcome keeps its restore gate closed. Must stay LAST.
+        UNKNOWN;
+
+        /// Whether the decision is final — the restore gate opens only on these.
+        public boolean isTerminal() {
+            return this == RESTORED || this == FRESH || this == SKIPPED_EXISTING_STATE || this == DISABLED;
+        }
+    }
+
+    /// The committed restore decision (#1533). `lineageId`/`incarnation`/`revision` are the restored
+    /// document's header and `commit` its backup commit, for [BackupRestoreOutcome#IN_PROGRESS] and
+    /// [BackupRestoreOutcome#RESTORED]; empty and zero otherwise.
+    record BackupRestoreValue(BackupRestoreOutcome outcome,
+                              String lineageId,
+                              long incarnation,
+                              long revision,
+                              String commit) implements AetherValue {
+        public static BackupRestoreValue backupRestoreValue(BackupRestoreOutcome outcome,
+                                                            String lineageId,
+                                                            long incarnation,
+                                                            long revision,
+                                                            String commit) {
+            return new BackupRestoreValue(outcome, lineageId, incarnation, revision, commit);
+        }
+
+        /// A decision that restores nothing.
+        public static BackupRestoreValue decided(BackupRestoreOutcome outcome) {
+            return new BackupRestoreValue(outcome, "", 0L, 0L, "");
+        }
+
+        /// The same restore, finished.
+        public BackupRestoreValue restored() {
+            return new BackupRestoreValue(BackupRestoreOutcome.RESTORED, lineageId, incarnation, revision, commit);
+        }
+    }
+
     /// Durable record of the operator's cluster-wide auto-heal enable/disable flag (#685), keyed by
     /// [AetherKey.AutoHealStateKey]. A read reflects the log applied LOCALLY: the disable becomes
     /// visible on a node when that node applies the committed Put — bounded by consensus latency, not

@@ -534,6 +534,10 @@ public interface SystemTags {
         // cluster incarnation — the single lineage/incarnation authority (#1529 part 1); next free after 1708
         pin(table, 1709, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey");
         pin(table, 1710, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue");
+        // restore decision marker (#1533); next free after 1710
+        pin(table, 1711, "org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey");
+        pin(table, 1712, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue");
+        pin(table, 1713, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // ---- 2114..16383 RESERVED ----

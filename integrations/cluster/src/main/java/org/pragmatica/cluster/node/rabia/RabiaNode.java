@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.function.Function;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
@@ -193,6 +194,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     default org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
         return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #1533 — install the check every batch this node submits must pass before entering consensus. Default
+    /// no-op for implementations without a Rabia engine.
+    default Unit installSubmitGuard(Function<List<C>, Result<Unit>> guard) {
+        return Unit.unit();
     }
 
     default Promise<Unit> reconfigure(ClusterConfig configuration) {
@@ -785,6 +792,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public <R> Promise<List<R>> apply(List<C> commands) {
                 return consensus().apply(commands);
+            }
+
+            @Override
+            public Unit installSubmitGuard(Function<List<C>, Result<Unit>> guard) {
+                return consensus().installSubmitGuard(guard);
             }
         }
 
