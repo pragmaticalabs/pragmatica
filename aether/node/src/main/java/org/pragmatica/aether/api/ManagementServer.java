@@ -573,9 +573,9 @@ class ManagementServerImpl implements ManagementServer {
         var h3Stop = h3ServerSlot.take().map(HttpServer::stop).or(Promise.success(unit()));
 
         return bothStopped(h1Stop, h3Stop).onFailure(cause -> log.warn("Management listeners did not stop cleanly before "
-                                                                       + "certificate rotation; restarting anyway: {}",
+                                                                      + "certificate rotation; restarting anyway: {}",
                                                                        cause.message()))
-                                          .recover(_ -> unit());
+                          .recover(_ -> unit());
     }
 
     @SuppressWarnings("JBCT-PAT-01")

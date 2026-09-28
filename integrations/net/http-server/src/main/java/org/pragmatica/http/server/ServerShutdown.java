@@ -30,6 +30,7 @@ import static org.pragmatica.lang.Promise.promise;
 import static org.pragmatica.lang.Promise.resolved;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Bounded, outcome-reporting shutdown steps shared by [NettyHttpServer] and [Http3Server] (#1612). This is the
 /// shape `org.pragmatica.net.tcp.Server` got in #1610/#1614, whose helpers are private to that interface.
 ///
@@ -62,8 +63,7 @@ sealed interface ServerShutdown {
 
     /// Requests the group's shutdown with no quiet period, then waits for termination, bounded caller-side.
     static Promise<Unit> terminated(EventLoopGroup group) {
-        return completion(group.shutdownGracefully(0, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS))
-        .timeout(timeSpan(SHUTDOWN_TIMEOUT_MS + 1_000L).millis());
+        return completion(group.shutdownGracefully(0, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)).timeout(timeSpan(SHUTDOWN_TIMEOUT_MS + 1_000L).millis());
     }
 
     /// Resolves once `second` settles, with `first`'s failure if it has one, otherwise `second`'s outcome. The
@@ -80,8 +80,7 @@ sealed interface ServerShutdown {
     private static Result<Unit> outcomeOf(Future<?> done) {
         return done.isSuccess()
                ? Result.unitResult()
-               : Causes.fromThrowable(done.cause())
-                       .result();
+               : Causes.fromThrowable(done.cause()).result();
     }
 
     record unused() implements ServerShutdown {}

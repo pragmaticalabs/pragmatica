@@ -117,10 +117,10 @@ final class Http3Server {
 
     private Promise<Unit> shutdownGroupThen(Result<Unit> closeOutcome) {
         return shutdownOwnedGroup().fold(groupOutcome -> resolved(closeOutcome.flatMap(_ -> groupOutcome)))
-                                   .onSuccessRun(() -> log.info("HTTP/3 server on port {} stopped", port))
-                                   .onFailure(cause -> log.warn("HTTP/3 server on port {} did not stop cleanly: {}",
-                                                                port,
-                                                                cause.message()));
+                                 .onSuccessRun(() -> log.info("HTTP/3 server on port {} stopped", port))
+                                 .onFailure(cause -> log.warn("HTTP/3 server on port {} did not stop cleanly: {}",
+                                                              port,
+                                                              cause.message()));
     }
 
     private Promise<Unit> shutdownOwnedGroup() {
@@ -196,9 +196,8 @@ final class Http3Server {
 
     private static Promise<Unit> releaseGroupOnBindFailure(boolean ownsGroup, EventLoopGroup group) {
         return ownsGroup
-               ? ServerShutdown.terminated(group)
-                               .onFailure(cause -> log.warn("HTTP/3 server event loop did not terminate after a failed bind: {}",
-                                                            cause.message()))
+               ? ServerShutdown.terminated(group).onFailure(cause -> log.warn("HTTP/3 server event loop did not terminate after a failed bind: {}",
+                                                                              cause.message()))
                : Promise.unitPromise();
     }
 

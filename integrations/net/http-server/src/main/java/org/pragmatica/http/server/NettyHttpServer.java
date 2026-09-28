@@ -48,6 +48,7 @@ import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Promise.resolved;
 
 
@@ -107,10 +108,10 @@ final class NettyHttpServer implements HttpServer {
 
     private Promise<Unit> shutdownGroupsThen(Result<Unit> closeOutcome) {
         return shutdownOwnedGroups().fold(groupsOutcome -> resolved(closeOutcome.flatMap(_ -> groupsOutcome)))
-                                    .onSuccessRun(() -> log.info("HTTP server on port {} stopped", port))
-                                    .onFailure(cause -> log.warn("HTTP server on port {} did not stop cleanly: {}",
-                                                                 port,
-                                                                 cause.message()));
+                                  .onSuccessRun(() -> log.info("HTTP server on port {} stopped", port))
+                                  .onFailure(cause -> log.warn("HTTP server on port {} did not stop cleanly: {}",
+                                                               port,
+                                                               cause.message()));
     }
 
     private Promise<Unit> shutdownOwnedGroups() {
@@ -210,9 +211,8 @@ final class NettyHttpServer implements HttpServer {
                                                             EventLoopGroup bossGroup,
                                                             EventLoopGroup workerGroup) {
         return ownsGroups
-               ? shutdownGroups(Option.some(bossGroup),
-                                Option.some(workerGroup)).onFailure(cause -> log.warn("HTTP server event loops did not terminate after a failed bind: {}",
-                                                                                      cause.message()))
+               ? shutdownGroups(some(bossGroup), some(workerGroup)).onFailure(cause -> log.warn("HTTP server event loops did not terminate after a failed bind: {}",
+                                                                                                cause.message()))
                : Promise.unitPromise();
     }
 
