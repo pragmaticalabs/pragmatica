@@ -280,6 +280,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// queue provides the ordering). Replaced wholesale by [#reshuffleConcurrency(int)] at wiring time, which
     /// is why neither this nor the limit beside it is final.
     private volatile Semaphore reshuffleSlots = new Semaphore(RESHUFFLE_CONCURRENCY);
+    /// See [#segmentTierPressure(SegmentTierPressure)].
+    private volatile SegmentTierPressure segmentTierPressure = SegmentTierPressure.NONE;
 
     /// The reshuffle-slot limit in force. Reported by [org.pragmatica.aether.stream.StreamError.ReshufflePaced]
     /// so the operator-facing message states the ACTUAL bound rather than a compile-time constant.
@@ -1663,7 +1665,22 @@ public final class StreamPartitionManager implements AutoCloseable {
         return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
                                   .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
                                   .or(Result::unitResult)
-                                  .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks));
+                                  .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks))
+                                  .flatMap(_ -> ensureSegmentTierRoom());
+    }
+
+    /// #1604: refuse an owner write while the durable segment tier is at or above
+    /// [SegmentTierPressure#REFUSE_AT] -- see [SegmentTierPressure] for why here and not on replicas.
+    private Result<Unit> ensureSegmentTierRoom() {
+        return segmentTierPressure.utilization() >= SegmentTierPressure.REFUSE_AT
+               ? StreamError.General.SEGMENT_TIER_FULL.result()
+               : Result.unitResult();
+    }
+
+    /// Bind the durable segment tier's pressure (#1604); the default reads none, so no write is refused.
+    @Contract
+    public void segmentTierPressure(SegmentTierPressure pressure) {
+        this.segmentTierPressure = pressure;
     }
 
     /// The owner-side pre-checks — epoch fence, then `admission` (owner admission and replica floor, #1230/#1236)

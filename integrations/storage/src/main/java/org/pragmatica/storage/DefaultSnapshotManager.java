@@ -111,12 +111,24 @@ final class DefaultSnapshotManager implements SnapshotManager {
         }
     }
 
-    private void takeSnapshot() {
+    /// Under the same lock as [#forceSnapshot], so it is ordered with every other snapshot write.
+    @Override
+    public Result<MetadataSnapshot> snapshotNow() {
+        writeLock.lock();
+        try {
+            return takeSnapshot();
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    private Result<MetadataSnapshot> takeSnapshot() {
         var snapshot = captureSnapshot();
 
-        writeSnapshotToDisk(snapshot).onSuccess(_ -> recordSnapshotTaken(snapshot))
-                           .onFailure(cause -> LOG.warn("Snapshot write failed: {}",
-                                                        cause.message()));
+        return writeSnapshotToDisk(snapshot).onSuccess(_ -> recordSnapshotTaken(snapshot))
+                                  .onFailure(cause -> LOG.warn("Snapshot write failed: {}",
+                                                               cause.message()))
+                                  .map(_ -> snapshot);
     }
 
     /// #1353: the file `LATEST` names is tried first; when it is missing, torn or fails its hash

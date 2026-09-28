@@ -24,6 +24,12 @@
 - **`aether cluster await-quiesced --epoch` takes `incarnation:term:counter`**; the pre-#1529 `term:counter`
   form is refused (`400`) rather than read as incarnation 0, which would rank below every epoch a cluster
   mints and report quiescence at once. `aether cluster ownership` gains `EPOCH-INC`/`HW-INC` columns.
-- [limit: incarnation-source-stub] The incarnation is read through `ClusterIncarnation.current(KVStore)`,
-  which returns `0` until #1529 part 1 commits the `ClusterIncarnationKey`; until then every epoch carries
-  incarnation 0 and orders exactly as before.
+- **`ClusterIncarnationValue` gains `incarnationId`**, a ULID minted fresh at every genesis mint and every
+  restore and compared for equality only (#1625): a reused incarnation number no longer names the same
+  incarnation. Shape change of a backed-up value (pre-GA; tag unchanged).
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/ClusterIncarnationTest.java`]
+- [limit: incarnation-advances-only-with-1533] The incarnation is read from the committed
+  `ClusterIncarnationKey` (#1529 part 1). Until #1533's restore advances it, `GitBackedPersistence` restores
+  the key as-is, so a cold restart keeps the same incarnation and epochs, worker latches and rewinds behave
+  exactly as before #1529. The restore-path behaviour above is what the tests show with an advanced
+  incarnation.

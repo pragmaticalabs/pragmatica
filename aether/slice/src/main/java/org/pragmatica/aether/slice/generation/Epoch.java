@@ -13,6 +13,11 @@ import org.pragmatica.serialization.Codec;
 /// (#1533). It ranks first because a cold restart restarts the Rabia term, so without it every
 /// epoch-bearing write of the new run would lose to the restored, numerically higher epochs of the
 /// previous run. Within one incarnation the order is the pre-#1529 `(rabiaTerm, localCounter)`.
+///
+/// [limit: incarnation-advances-only-with-1533] This fixes a cold restart only once the restore advances the
+/// incarnation (#1533, `ClusterIncarnation.restoreCommands`). Until #1533 lands, `GitBackedPersistence`
+/// restores the committed `ClusterIncarnationKey` as-is, the incarnation is unchanged across a cold
+/// restart, and these epochs order exactly as they did before #1529 — never worse.
 @Codec
 public record Epoch(long incarnation, long rabiaTerm, long localCounter) implements Comparable<Epoch> {
     public static final Epoch ZERO = new Epoch(0L, 0L, 0L);

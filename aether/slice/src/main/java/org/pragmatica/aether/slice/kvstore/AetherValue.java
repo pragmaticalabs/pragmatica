@@ -1043,6 +1043,44 @@ public sealed interface AetherValue {
         }
     }
 
+    /// The cluster's lineage and incarnation, under [AetherKey.ClusterIncarnationKey] (#1529 part 1).
+    /// `lineageId` names the cluster's history across cold restarts; `incarnation` counts those restarts
+    /// and dominates any per-incarnation counter (a consensus revision restarts with the cluster).
+    /// `incarnationId` is a ULID minted fresh at every genesis mint and every restore (#1529 part 2,
+    /// #1625): unlike the number, it is never reused, so two histories that happen to reach the same
+    /// incarnation number (a restore whose predecessor never reached the backup, or two lineages) stay
+    /// distinguishable. It is an identity, compared for equality only — ordering is the number's job.
+    ///
+    /// [VersionFenced] on `incarnation`, which gives two per-operation guarantees and no more: a genesis
+    /// mint against an absent key is first-wins, and a Put through the fence is accepted only as the
+    /// immediate successor of the committed value. A Remove is NOT fenced, and a restore deliberately goes
+    /// Remove-then-Put to bypass the fence; a restore's monotonicity comes from the floor in
+    /// `ClusterIncarnation.restoreCommands`, not from this fence.
+    record ClusterIncarnationValue(String lineageId, long incarnation, String incarnationId) implements AetherValue, VersionFenced {
+        public static final long GENESIS = 1L;
+
+        public static ClusterIncarnationValue clusterIncarnationValue(String lineageId,
+                                                                      long incarnation,
+                                                                      String incarnationId) {
+            return new ClusterIncarnationValue(lineageId, incarnation, incarnationId);
+        }
+
+        /// A brand-new cluster: a fresh lineage at the first incarnation, with a fresh incarnation id.
+        public static ClusterIncarnationValue genesis(String lineageId, String incarnationId) {
+            return new ClusterIncarnationValue(lineageId, GENESIS, incarnationId);
+        }
+
+        /// The same lineage, one incarnation later, under a fresh incarnation id — what a restore commits.
+        public ClusterIncarnationValue next(String freshIncarnationId) {
+            return new ClusterIncarnationValue(lineageId, incarnation + 1, freshIncarnationId);
+        }
+
+        @Override
+        public long fenceVersion() {
+            return incarnation;
+        }
+    }
+
     /// Durable record of the operator's cluster-wide auto-heal enable/disable flag (#685), keyed by
     /// [AetherKey.AutoHealStateKey]. A read reflects the log applied LOCALLY: the disable becomes
     /// visible on a node when that node applies the committed Put — bounded by consensus latency, not

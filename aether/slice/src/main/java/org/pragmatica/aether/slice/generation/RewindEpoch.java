@@ -21,6 +21,11 @@ package org.pragmatica.aether.slice.generation;
 /// `incarnation` is the cluster incarnation (#1529) and ranks first: the node-local cursor survives a
 /// cold restart on disk, and a rewind minted in the new run must outrank it however high its rewind
 /// epoch from the previous run.
+///
+/// [limit: incarnation-advances-only-with-1533] This fixes a cold restart only once the restore advances the
+/// incarnation (#1533, `ClusterIncarnation.restoreCommands`). Until #1533 lands, `GitBackedPersistence`
+/// restores the committed `ClusterIncarnationKey` as-is, the incarnation is unchanged across a cold
+/// restart, and these epochs order exactly as they did before #1529 — never worse.
 public record RewindEpoch(long incarnation, long generation, long rewind) implements Comparable<RewindEpoch> {
     public static final RewindEpoch NONE = new RewindEpoch(0L, 0L, 0L);
 
