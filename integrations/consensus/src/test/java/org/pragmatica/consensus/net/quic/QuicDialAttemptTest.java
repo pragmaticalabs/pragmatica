@@ -16,6 +16,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.io.IOException;
+import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -86,6 +87,9 @@ class QuicDialAttemptTest {
     /// as an attach cause).
     private static final String DIALER_HELLO = "dialer-hello";
     private static final int CORES = 5;
+    /// After the gate opens, a live seed attempt's retransmitted Initial (PTO backoff ≈ 1, 2, 4 s) must have time to
+    /// land and complete, so that a missing abandon is SEEN as a supersede (28), not missed.
+    private static final long GATE_SETTLE_MS = 8_000L;
     private static final List<String> SUPERSEDING_CAUSES = List.of(PeerState.CAUSE_ATTACH_SUPERSEDE,
                                                                    PeerState.CAUSE_ATTACH_STALE_REPLACE);
 
@@ -178,33 +182,43 @@ class QuicDialAttemptTest {
         }
 
         var late = CORES - 1;
-
-        for (int i = 0; i < late; i++) {
-            start(nodes.get(i).network(), ports.get(i));
-        }
-        // Each seed dials every higher id — the designated dialer — including the late core, which is not
-        // listening yet, so those four attempts stay pending.
-        for (int i = 0; i < late; i++) {
-            for (int j = i + 1; j < CORES; j++) {
-                nodes.get(i).network().dialForTests(nodeInfo(ids.get(j), ports.get(j)), false);
+        // The seeds reach the late core through a gate that drops every packet until the late core's own links are
+        // attached at all of them. Without it, a seed's retransmitted Initial can reach the late core FIRST under load:
+        // that seed's dial then completes (legitimately — the late core's own dial becomes a DUPLICATE, 20 still holds)
+        // and there is nothing left to abandon, so the arming below would be timing. The gate makes it exact.
+        try (var gate = UdpGate.udpGate(ports.get(late))) {
+            for (int i = 0; i < late; i++) {
+                start(nodes.get(i).network(), ports.get(i));
             }
-        }
-        awaitTrue(() -> seedsConnected(nodes, ids, late), "the seeds are connected to each other");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(LATE_START_DELAY_MS));
-        start(nodes.get(late).network(), ports.get(late));
-        // The late core is the designated dialer for no pair; it initiates from its isolation branch (forced).
-        for (int i = 0; i < late; i++) {
-            nodes.get(late).network().dialForTests(nodeInfo(ids.get(i), ports.get(i)), true);
-        }
+            // Each seed dials every higher id — the designated dialer — including the late core, through the closed
+            // gate, so those four attempts stay pending.
+            for (int i = 0; i < late; i++) {
+                for (int j = i + 1; j < late; j++) {
+                    nodes.get(i).network().dialForTests(nodeInfo(ids.get(j), ports.get(j)), false);
+                }
+                nodes.get(i).network().dialForTests(nodeInfo(ids.get(late), gate.port()), false);
+            }
+            awaitTrue(() -> seedsConnected(nodes, ids, late), "the seeds are connected to each other");
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(LATE_START_DELAY_MS));
+            start(nodes.get(late).network(), ports.get(late));
+            // The late core is the designated dialer for no pair; it initiates from its isolation branch (forced).
+            for (int i = 0; i < late; i++) {
+                nodes.get(late).network().dialForTests(nodeInfo(ids.get(i), ports.get(i)), true);
+            }
 
-        awaitTrue(() -> fullyConnected(nodes, ids), "every core CONNECTED to every other");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MS));
+            awaitTrue(() -> fullyConnected(nodes, ids), "every core CONNECTED to every other");
+            awaitTrue(() -> nodes.stream().mapToLong(node -> node.network().quicMetrics().dialAbandonedCount()).sum() == late,
+                      "arming: each seed's pending dial to the late core was abandoned when the late core's link attached");
+            // Open the gate: an attempt that was NOT abandoned would now complete and supersede the live link.
+            gate.open();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(GATE_SETTLE_MS));
+        }
 
         assertThat(nodes.stream().mapToLong(node -> node.network().quicMetrics().handshakeTotalCount()).sum())
             .as("one connection per pair, counted at both ends: 5 × 4, no second handshake from a late designated dial")
             .isEqualTo((long) CORES * (CORES - 1));
         assertThat(nodes.stream().mapToLong(node -> node.network().quicMetrics().dialAbandonedCount()).sum())
-            .as("arming: each seed's pending dial to the late core was abandoned when the late core's link attached")
+            .as("arming: exactly the four seeds' dials to the late core were abandoned")
             .isEqualTo(late);
         nodes.forEach(node -> assertThat(causes(node.journal())).as("nothing superseded at " + node.id())
                                                                 .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES));
@@ -269,6 +283,102 @@ class QuicDialAttemptTest {
 
     private static void start(QuicClusterNetwork network, int port) {
         network.startOnPort(port).await(AWAIT).onFailure(cause -> fail("start failed: " + cause.message()));
+    }
+
+    /// A UDP relay on its own port in front of `targetPort`: drops every datagram while closed; once open, relays each
+    /// client (by source address) through its own upstream socket and relays the replies back.
+    private static final class UdpGate implements AutoCloseable {
+        private final DatagramSocket front;
+        private final InetSocketAddress target;
+        private final Map<SocketAddress, DatagramSocket> upstreams = new ConcurrentHashMap<>();
+        private final List<Thread> threads = new CopyOnWriteArrayList<>();
+        private volatile boolean open;
+        private volatile boolean closed;
+
+        private UdpGate(DatagramSocket front, InetSocketAddress target) {
+            this.front = front;
+            this.target = target;
+        }
+
+        static UdpGate udpGate(int targetPort) {
+            try {
+                var gate = new UdpGate(new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0)),
+                                       new InetSocketAddress(InetAddress.getLoopbackAddress(), targetPort));
+
+                gate.spawn(gate::relayFromClients);
+                return gate;
+            } catch (IOException e) {
+                return fail("gate: " + e.getMessage());
+            }
+        }
+
+        int port() {
+            return front.getLocalPort();
+        }
+
+        void open() {
+            open = true;
+        }
+
+        private void spawn(Runnable loop) {
+            var thread = Thread.ofPlatform().daemon().start(loop);
+
+            threads.add(thread);
+        }
+
+        private void relayFromClients() {
+            var buffer = new byte[65_535];
+
+            while (!closed) {
+                try {
+                    var packet = new DatagramPacket(buffer, buffer.length);
+
+                    front.receive(packet);
+                    if (open) {
+                        upstream(packet.getSocketAddress()).send(new DatagramPacket(packet.getData(), packet.getLength(), target));
+                    }
+                } catch (IOException e) {
+                    return;
+                }
+            }
+        }
+
+        private DatagramSocket upstream(SocketAddress client) {
+            return upstreams.computeIfAbsent(client, this::newUpstream);
+        }
+
+        private DatagramSocket newUpstream(SocketAddress client) {
+            try {
+                var socket = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+
+                spawn(() -> relayToClient(socket, client));
+                return socket;
+            } catch (IOException e) {
+                return fail("gate upstream: " + e.getMessage());
+            }
+        }
+
+        private void relayToClient(DatagramSocket socket, SocketAddress client) {
+            var buffer = new byte[65_535];
+
+            while (!closed) {
+                try {
+                    var packet = new DatagramPacket(buffer, buffer.length);
+
+                    socket.receive(packet);
+                    front.send(new DatagramPacket(packet.getData(), packet.getLength(), client));
+                } catch (IOException e) {
+                    return;
+                }
+            }
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+            front.close();
+            upstreams.values().forEach(DatagramSocket::close);
+        }
     }
 
     private record TestNode(NodeId id,
