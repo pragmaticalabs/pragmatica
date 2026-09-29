@@ -11,6 +11,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -672,17 +673,25 @@ class ClusterDeploymentStateActiveTest {
         private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
 
         private ClusterDeploymentState.Active activeWithSchemaRecord(SchemaStatus status, RecordingSchemaOrchestrator orchestrator) {
+            return (ClusterDeploymentState.Active) activatedHarness(Option.some(status), orchestrator).state();
+        }
+
+        private static SchemaVersionValue schemaRecord(SchemaStatus status) {
+            return SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                         7,
+                                                         "V007__baseline",
+                                                         status,
+                                                         "org.example:orders-app:1.0.0",
+                                                         OWNER);
+        }
+
+        private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> activatedHarness(Option<SchemaStatus> seeded,
+                                                                                          RecordingSchemaOrchestrator orchestrator) {
             var router = MessageRouter.mutable();
             var localKv = new InMemoryKvStore(router);
             var localCluster = new RecordingClusterNode(SELF);
 
-            localKv.put(SchemaVersionKey.schemaVersionKey(DATASOURCE),
-                        SchemaVersionValue.schemaVersionValue(DATASOURCE,
-                                                              7,
-                                                              "V007__baseline",
-                                                              status,
-                                                              "org.example:orders-app:1.0.0",
-                                                              OWNER));
+            seeded.onPresent(status -> localKv.put(SchemaVersionKey.schemaVersionKey(DATASOURCE), schemaRecord(status)));
 
             Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
                     fsm -> new ClusterDeploymentContext(fsm,
@@ -700,9 +709,49 @@ class ClusterDeploymentStateActiveTest {
                                                         3,
                                                         timeSpan(300).seconds(),
                                                         injectedClock::get).dormant();
-            var localHarness = FsmTestHarness.harness("schema-recovery-" + status + "-" + System.nanoTime(), factory);
+            var localHarness = FsmTestHarness.harness("schema-recovery-" + seeded + "-" + System.nanoTime(), factory);
             localHarness.dispatch(new Activate());
-            return (ClusterDeploymentState.Active) localHarness.state();
+            return localHarness;
+        }
+
+        /// #1533: on a fresh cluster this FSM activates on an EMPTY KV, so its once-only
+        /// `recoverStalledSchemaMigrations` finds nothing. The restored schema record arrives LATER, as an
+        /// ordinary put. The restore normalises MIGRATING to PENDING
+        /// (`BackupRestoreCoordinator.normalised`, pinned in node by
+        /// `BackupRestoreCoordinatorTest$Restore#normalised_resetsRuntimeObservations_andKeepsDeclaredIntent`)
+        /// because only a PENDING put re-drives the migration. These two tests are this FSM's half of that
+        /// chain.
+        private void deliverRestoredRecord(FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> activated,
+                                           SchemaStatus status) {
+            activated.dispatch(new SchemaVersionPutReceived(new ValuePut<>(new KVCommand.Put<>(SchemaVersionKey.schemaVersionKey(DATASOURCE),
+                                                                                              schemaRecord(status)),
+                                                                          Option.none())));
+        }
+
+        @Test
+        void restoredPendingRecord_arrivingAfterActivation_reDrivesTheMigration() {
+            var orchestrator = new RecordingSchemaOrchestrator();
+            var activated = activatedHarness(Option.none(), orchestrator);
+
+            assertThat(orchestrator.migrateIfNeededCalls).as("activation on an empty KV dispatches nothing").isEmpty();
+
+            deliverRestoredRecord(activated, SchemaStatus.PENDING);
+
+            assertThat(orchestrator.migrateIfNeededCalls).as("the restored PENDING record re-drives the migration")
+                                                         .containsExactly(DATASOURCE);
+        }
+
+        /// What an un-normalised restore would leave behind: a MIGRATING put after activation reaches only a
+        /// debug log, and the once-only recovery has already run, so nothing ever re-drives it.
+        @Test
+        void restoredMigratingRecord_arrivingAfterActivation_isStuck() {
+            var orchestrator = new RecordingSchemaOrchestrator();
+            var activated = activatedHarness(Option.none(), orchestrator);
+
+            deliverRestoredRecord(activated, SchemaStatus.MIGRATING);
+
+            assertThat(orchestrator.migrateIfNeededCalls).as("MIGRATING after activation is never re-driven — hence the restore's rewrite")
+                                                         .isEmpty();
         }
 
         @Test

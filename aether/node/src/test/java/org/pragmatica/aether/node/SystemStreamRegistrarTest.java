@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Option;
@@ -267,6 +268,36 @@ class SystemStreamRegistrarTest {
             assertThat(bootstrapCalls.get()).isEqualTo(2);
             assertThat(registrar.isComplete()).isTrue();
             assertThat(scheduler.hasPending()).isFalse();
+        }
+
+        /// #1533: on a fresh cluster the restore gate refuses a seeder's write with `RestorePending` until the
+        /// restore decision commits. That refusal is retryable. A leg that latched DONE on it would never
+        /// write its seed, and the registrar would report complete without having done anything.
+        @Test
+        void onLeaderChange_restorePending_isRetried_untilTheGateOpens() {
+            var bootstrapResult = new AtomicReference<Result<?>>(new RestoreGate.RestorePending("stream-namespace/system",
+                                                                                                "restore decision pending").result());
+            var bootstrapCalls = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> {
+                                                                            bootstrapCalls.incrementAndGet();
+                                                                            return bootstrapResult.get();
+                                                                        },
+                                                                        scheduler);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+
+            assertThat(registrar.isComplete()).as("RestorePending must not latch the leg DONE")
+                                              .isFalse();
+            assertThat(scheduler.hasPending()).isTrue();
+
+            bootstrapResult.set(unitResult());
+            scheduler.fireNext();
+
+            assertThat(bootstrapCalls.get()).isEqualTo(2);
+            assertThat(registrar.isComplete()).isTrue();
         }
     }
 

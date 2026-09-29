@@ -28,12 +28,25 @@ class RestoreDecisionHookTest {
     private final DeploymentManager deploymentManager = mock(DeploymentManager.class);
     private final AbTestManager abTestManager = mock(AbTestManager.class);
 
+    /// One test per re-driven component, so dropping any one re-drive reddens a test that names it.
     @Test
-    void onRestoreDecision_reDrivesEveryLoadOnceComponent_onATerminalDecision() {
+    void onRestoreDecision_reDrivesTheBootstrapConfigSeed_onATerminalDecision() {
         AetherNode.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
 
         verify(bootstrapModule).retryIfNeeded();
+    }
+
+    @Test
+    void onRestoreDecision_reDrivesTheRolloutManager_onATerminalDecision() {
+        AetherNode.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
+
         verify(deploymentManager).reloadRestoredState();
+    }
+
+    @Test
+    void onRestoreDecision_reDrivesTheAbTestManager_onATerminalDecision() {
+        AetherNode.onRestoreDecision(decision(BackupRestoreOutcome.RESTORED), bootstrapModule, deploymentManager, abTestManager);
+
         verify(abTestManager).reloadRestoredState();
     }
 

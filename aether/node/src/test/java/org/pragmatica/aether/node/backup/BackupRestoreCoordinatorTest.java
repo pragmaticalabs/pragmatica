@@ -48,6 +48,7 @@ import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
@@ -96,6 +97,7 @@ class BackupRestoreCoordinatorTest {
     Path temp;
 
     private KVStore<AetherKey, AetherValue> kvStore;
+    private final MessageRouter.MutableRouter router = MessageRouter.mutable();
     private final KvBackupServiceTest.ManualScheduler worker = new KvBackupServiceTest.ManualScheduler();
     private final List<Runnable> retries = new ArrayList<>();
     private final List<BackupWarning> warnings = new ArrayList<>();
@@ -105,7 +107,7 @@ class BackupRestoreCoordinatorTest {
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
     void setUp() {
-        kvStore = new KVStore<>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
+        kvStore = new KVStore<>(router, NODE_CODEC, NODE_CODEC);
         kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE,
                                                                                        LeaderValue.leaderValue(NodeId.nodeId("node-1")
                                                                                                                      .unwrap(),
@@ -207,6 +209,27 @@ class BackupRestoreCoordinatorTest {
                                                 assertThat(marker.commit()).isEqualTo(head);
                                                 assertThat(marker.incarnation()).isEqualTo(3);
                                             });
+        }
+
+        /// The restore reaches the running cluster's caches only through put notifications: a component that
+        /// loaded before the restore (see `AetherNode.onRestoreDecision`) and keeps current by a put listener
+        /// sees the restored state only if EACH restored key is published as its own `ValuePut`.
+        @Test
+        void everyRestoredKey_isPublishedAsItsOwnPut() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var published = new ArrayList<Object>();
+
+            router.addRoute(KVStoreNotification.ValuePut.class, put -> published.add(put.cause().key()));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
+                                                                                  ConfigKey.forKey("beta"), BETA));
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            runToCompletion(coordinator);
+
+            assertThat(published).as("one ValuePut per restored key")
+                                 .contains(ConfigKey.forKey("alpha"), ConfigKey.forKey("beta"))
+                                 .filteredOn(key -> key instanceof ConfigKey)
+                                 .hasSize(2);
         }
 
         /// The acceptance for "restore FROM the head": after the restore, the backup of the restored state is
