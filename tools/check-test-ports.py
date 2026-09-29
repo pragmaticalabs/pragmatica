@@ -33,7 +33,12 @@ import sys
 
 TABLE = "aether/forge/forge-tests/src/test/resources/TEST_PORT_ALLOCATION.md"   # the one table today
 TABLE_NAME = "TEST_PORT_ALLOCATION.md"
-SKIP_DIRS = (".git", "target", "node_modules", ".m2-local")
+# never walked: hidden dirs (.git, .m2-local, the 144 GB .ndx ...) and build output, which can hold stale table copies
+SKIP_DIRS = ("target", "bin", "out", "build", "node_modules")
+
+
+def prune(dirs):
+    dirs[:] = [x for x in dirs if not x.startswith(".") and x not in SKIP_DIRS]
 SWIM_PORT_OFFSET = 100
 NUMBER = re.compile(r"(?<![\w.])(\d{4,5})(?![\w.])")
 
@@ -122,7 +127,7 @@ def registered(rows, port):
 def unregistered_literals(root, rows):
     hits = []
     for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if x not in (".git", "target", "node_modules", ".m2-local")]
+        prune(dirs)
         if "/src/test" not in d.replace(os.sep, "/") + "/":
             continue
         for f in files:
@@ -144,7 +149,7 @@ def unregistered_literals(root, rows):
 def find_tables(root):
     found = []
     for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
+        prune(dirs)
         if TABLE_NAME in files:
             found.append(os.path.relpath(os.path.join(d, TABLE_NAME), root))
     return sorted(found)

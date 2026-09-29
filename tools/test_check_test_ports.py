@@ -139,6 +139,18 @@ class GlobTest(unittest.TestCase):
              + ctp.parse_table(table(("B", "14500", "14600", "0", "3 nodes")), "two.md")
         self.assertTrue(ctp.overlaps(rows))
 
+    def test_stale_tables_in_hidden_and_build_dirs_are_ignored(self):
+        # a copy under target/, bin/, out/, build/ or a hidden dir (.ndx) is stale output, not the contract
+        good = table(("A", "14500", "14600", "0", "5 nodes"))
+        stale = table(("B", "14500", "14600", "0", "3 nodes"))       # would collide with A if it were read
+        tables = {ctp.TABLE: good}
+        for d in ("target", "bin", "out", "build", ".ndx"):
+            tables["aether/m/%s/%s" % (d, ctp.TABLE_NAME)] = stale
+        with tempfile.TemporaryDirectory() as root:
+            write_tree(root, tables)
+            self.assertEqual([ctp.TABLE], ctp.find_tables(root))
+            self.assertEqual(0, ctp.main(["--root", root]))
+
     def test_no_table_anywhere_examines_nothing(self):
         with tempfile.TemporaryDirectory() as root:
             os.makedirs(os.path.join(root, "m", "src", "test", "java"))
