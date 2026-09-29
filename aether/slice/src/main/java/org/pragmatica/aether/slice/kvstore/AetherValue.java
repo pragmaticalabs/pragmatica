@@ -1275,24 +1275,39 @@ public sealed interface AetherValue {
             }
         }
 
+        /// `security` is the policy the publishing node ENFORCES (its declared policy with the node's security
+        /// overrides applied); `declaredSecurity` is the slice-declared policy BEFORE any override (#1659). An
+        /// ingress node that does not host the route re-applies ITS OWN committed overrides to `declaredSecurity`,
+        /// so an override takes effect -- and a relaxed one relaxes -- at every ingress without waiting for the
+        /// hosting nodes to republish.
         public record RouteEntry(String httpMethod,
                                  String pathPrefix,
                                  String sliceMethod,
                                  String state,
                                  int weight,
                                  long registeredAt,
-                                 String security) {
+                                 String security,
+                                 String declaredSecurity) {
             public static RouteEntry activeRoute(String httpMethod,
                                                  String pathPrefix,
                                                  String sliceMethod,
                                                  String security) {
+                return activeRoute(httpMethod, pathPrefix, sliceMethod, security, security);
+            }
+
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security,
+                                                 String declaredSecurity) {
                 return new RouteEntry(httpMethod,
                                       pathPrefix,
                                       sliceMethod,
                                       "ACTIVE",
                                       100,
                                       System.currentTimeMillis(),
-                                      security);
+                                      security,
+                                      declaredSecurity);
             }
 
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {

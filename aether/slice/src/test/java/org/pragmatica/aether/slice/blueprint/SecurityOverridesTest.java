@@ -95,6 +95,62 @@ class SecurityOverridesTest {
         }
     }
 
+    /// #1659 (v1670 audit b): overlapping patterns resolve to the MOST SPECIFIC one, whatever order they are listed
+    /// in. First-listed-wins let a PUBLIC `/api/*` listed first shadow a `role:admin` `/api/admin/*` -- and the list
+    /// order of a TOML table carries no security meaning.
+    @Nested
+    class SpecificityTests {
+        private static final SecurityOverrides.Entry PARENT_PUBLIC = SecurityOverrides.Entry.entry("GET /api/*", "public");
+        private static final SecurityOverrides.Entry CHILD_ADMIN = SecurityOverrides.Entry.entry("GET /api/admin/*", "role:admin");
+
+        @Test
+        void findMatch_childRoute_resolvesToTheChildPattern_parentListedFirst() {
+            var overrides = SecurityOverrides.securityOverrides(List.of(PARENT_PUBLIC, CHILD_ADMIN), SecurityOverridePolicy.FULL);
+
+            assertThat(overrides.findMatch("GET", "/api/admin/").or("none")).isEqualTo("role:admin");
+        }
+
+        @Test
+        void findMatch_childRoute_resolvesToTheChildPattern_childListedFirst() {
+            var overrides = SecurityOverrides.securityOverrides(List.of(CHILD_ADMIN, PARENT_PUBLIC), SecurityOverridePolicy.FULL);
+
+            assertThat(overrides.findMatch("GET", "/api/admin/").or("none")).isEqualTo("role:admin");
+        }
+
+        /// CONTROL: the parent pattern still governs the routes the child does not cover, in either order.
+        @Test
+        void findMatch_parentRoute_resolvesToTheParentPattern_inEitherOrder() {
+            assertThat(SecurityOverrides.securityOverrides(List.of(PARENT_PUBLIC, CHILD_ADMIN), SecurityOverridePolicy.FULL)
+                                        .findMatch("GET", "/api/orders/")
+                                        .or("none")).isEqualTo("public");
+            assertThat(SecurityOverrides.securityOverrides(List.of(CHILD_ADMIN, PARENT_PUBLIC), SecurityOverridePolicy.FULL)
+                                        .findMatch("GET", "/api/orders/")
+                                        .or("none")).isEqualTo("public");
+        }
+
+        /// An exact pattern beats a wildcard over the same path, and a named method beats `*`, in either order.
+        @Test
+        void findMatch_exactBeatsWildcard_andANamedMethodBeatsTheWildcardMethod() {
+            var wildcard = SecurityOverrides.Entry.entry("GET /x/*", "role:admin");
+            var exact = SecurityOverrides.Entry.entry("GET /x/", "public");
+            var anyMethod = SecurityOverrides.Entry.entry("/y/*", "public");
+            var getOnly = SecurityOverrides.Entry.entry("GET /y/*", "role:admin");
+
+            assertThat(SecurityOverrides.securityOverrides(List.of(wildcard, exact), SecurityOverridePolicy.FULL)
+                                        .findMatch("GET", "/x/")
+                                        .or("none")).isEqualTo("public");
+            assertThat(SecurityOverrides.securityOverrides(List.of(exact, wildcard), SecurityOverridePolicy.FULL)
+                                        .findMatch("GET", "/x/")
+                                        .or("none")).isEqualTo("public");
+            assertThat(SecurityOverrides.securityOverrides(List.of(anyMethod, getOnly), SecurityOverridePolicy.FULL)
+                                        .findMatch("GET", "/y/z/")
+                                        .or("none")).isEqualTo("role:admin");
+            assertThat(SecurityOverrides.securityOverrides(List.of(getOnly, anyMethod), SecurityOverridePolicy.FULL)
+                                        .findMatch("GET", "/y/z/")
+                                        .or("none")).isEqualTo("role:admin");
+        }
+    }
+
     @Nested
     class FactoryTests {
 
