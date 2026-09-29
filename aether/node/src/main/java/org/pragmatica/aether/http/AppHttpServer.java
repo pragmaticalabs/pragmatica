@@ -27,6 +27,7 @@ import org.pragmatica.aether.http.fsm.AppHttpState;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.aether.update.VersionRouting;
+import org.pragmatica.aether.http.HttpRoutePublisher.LocalResolution;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
@@ -804,8 +805,9 @@ class AppHttpServerAdapter implements AppHttpServer {
 
             return;
         }
-
-        var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable);
+        // #1678 (v1670 R2-N4): ONE local resolution per request; the policy check and the dispatch below both read it.
+        var local = httpRoutePublisher.flatMap(pub -> pub.resolveLocal(method, normalizedPath));
+        var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable, local);
 
         if (requiresAuthentication(effectivePolicy) && config.securityMode() == SecurityMode.NONE) {
             handleSecurityFailure(response, SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
@@ -825,11 +827,15 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              method,
                                                              normalizedPath,
                                                              path,
-                                                             requestId));
+                                                             requestId,
+                                                             local));
     }
 
-    private SecurityPolicy resolveEffectivePolicy(String method, String normalizedPath, RouteTable routeTable) {
-        var routePolicy = findRouteSecurityPolicy(method, normalizedPath, routeTable);
+    private SecurityPolicy resolveEffectivePolicy(String method,
+                                                  String normalizedPath,
+                                                  RouteTable routeTable,
+                                                  Option<LocalResolution> local) {
+        var routePolicy = findRouteSecurityPolicy(method, normalizedPath, routeTable, local);
 
         return routePolicy.or(globalSecurityPolicy());
     }
@@ -857,8 +863,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// the exact partially-migrated state the #763 remedy instructions produce.
     private Option<SecurityPolicy> findRouteSecurityPolicy(String method,
                                                            String normalizedPath,
-                                                           RouteTable routeTable) {
-        var localRoute = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath));
+                                                           RouteTable routeTable,
+                                                           Option<LocalResolution> local) {
+        var localRoute = local.map(LocalResolution::route);
 
         if (localRoute.isPresent()) {
             return localRoute.map(LocalRouteInfo::security)
@@ -917,7 +924,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                        String method,
                                        String normalizedPath,
                                        String path,
-                                       String requestId) {
+                                       String requestId,
+                                       Option<LocalResolution> local) {
         var principal = securityContext.principal().value();
 
         if (config.securityEnabled()) {
@@ -937,7 +945,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                             routeTable,
                                                                                                             method,
                                                                                                             normalizedPath,
-                                                                                                            requestId))));
+                                                                                                            requestId,
+                                                                                                            local))));
     }
 
     private void dispatchToRoute(HttpRequest request,
@@ -945,17 +954,16 @@ class AppHttpServerAdapter implements AppHttpServer {
                                  RouteTable routeTable,
                                  String method,
                                  String normalizedPath,
-                                 String requestId) {
+                                 String requestId,
+                                 Option<LocalResolution> local) {
         // Local fast path: a request matching a locally-hosted ACTIVE slice dispatches locally
         // REGARDLESS of isRouteReady()/republish-in-progress state. The live publisher registry
         // is the source of truth for local availability — NOT the propagating route-table
         // snapshot, which transiently reports empty during generation churn while the slice
         // instance is still serving. Only requests needing REMOTE forwarding consult the snapshot
         // and the route-ready barrier.
-        var localRouteOpt = httpRoutePublisher.flatMap(pub -> resolveLocalRoute(pub, method, normalizedPath));
-
-        if (localRouteOpt.isPresent()) {
-            dispatchLocalRoute(request, response, routeTable, method, normalizedPath, localRouteOpt.unwrap(), requestId);
+        if (local.isPresent()) {
+            dispatchLocalRoute(request, response, routeTable, method, normalizedPath, local.unwrap(), requestId);
 
             return;
         }
@@ -976,9 +984,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                     RouteTable routeTable,
                                     String method,
                                     String normalizedPath,
-                                    HttpNodeRouteKey localRouteKey,
+                                    LocalResolution local,
                                     String requestId) {
-        if (shouldForwardForStrategy(localRouteKey, method, normalizedPath, routeTable)) {
+        var localRouteKey = routeKeyOf(local.route());
+
+        if (shouldForwardForStrategy(local.route(), method, normalizedPath, routeTable)) {
             var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
 
             if (remoteRouteOpt.isPresent()) {
@@ -992,7 +1002,7 @@ class AppHttpServerAdapter implements AppHttpServer {
             }
         }
 
-        handleLocalRoute(request, response, localRouteKey, requestId);
+        handleLocalRoute(request, response, localRouteKey, local.router(), requestId);
     }
 
     private void dispatchRemoteRoute(HttpRequest request,
@@ -1077,25 +1087,24 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private record RoutingDecision(Artifact artifact, ActiveRouting activeRouting) {}
 
-    private boolean shouldForwardForStrategy(HttpNodeRouteKey localRouteKey,
+    private boolean shouldForwardForStrategy(LocalRouteInfo localRoute,
                                              String method,
                                              String normalizedPath,
                                              RouteTable routeTable) {
-        return resolveRoutingDecision(method, normalizedPath).map(decision -> evaluateRoutingDecision(decision.artifact(),
-                                                                                                      decision.activeRouting(),
-                                                                                                      method,
-                                                                                                      normalizedPath,
-                                                                                                      routeTable))
+        return resolveRoutingDecision(localRoute).map(decision -> evaluateRoutingDecision(decision.artifact(),
+                                                                                          decision.activeRouting(),
+                                                                                          method,
+                                                                                          normalizedPath,
+                                                                                          routeTable))
                                      .or(false);
     }
 
-    private Option<RoutingDecision> resolveRoutingDecision(String method, String normalizedPath) {
-        return strategyCoordinator.flatMap(coordinator -> httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method,
-                                                                                                               normalizedPath))
-                                                                            .flatMap(info -> Artifact.artifact(info.artifactCoord()).option())
-                                                                            .flatMap(artifact -> coordinator.activeRouting(artifact.base())
-                                                                                                            .map(routing -> new RoutingDecision(artifact,
-                                                                                                                                                routing))));
+    private Option<RoutingDecision> resolveRoutingDecision(LocalRouteInfo localRoute) {
+        return strategyCoordinator.flatMap(coordinator -> Artifact.artifact(localRoute.artifactCoord())
+                                                                  .option()
+                                                                  .flatMap(artifact -> coordinator.activeRouting(artifact.base())
+                                                                                                  .map(routing -> new RoutingDecision(artifact,
+                                                                                                                                      routing))));
     }
 
     private boolean evaluateRoutingDecision(Artifact artifact,
@@ -1220,11 +1229,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// `findLocalRoute` applies the active security overrides to the route it returns, which
     /// touches `security()` only -- method, prefix and artifact come back unchanged -- so the key
     /// built here is the same key the old scan produced for the route it happened to pick.
-    private Option<HttpNodeRouteKey> resolveLocalRoute(HttpRoutePublisher pub, String method, String normalizedPath) {
-        return pub.findLocalRoute(method, normalizedPath)
-                  .map(route -> HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(),
-                                                                  route.pathPrefix(),
-                                                                  selfNodeId));
+    private HttpNodeRouteKey routeKeyOf(LocalRouteInfo route) {
+        return HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId);
     }
 
     /// #1659 (v1670): the LONGEST matching remote prefix wins, the rule the hosting node applies to its local routes
@@ -1284,15 +1290,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void handleLocalRoute(HttpRequest request,
                                   ResponseWriter response,
                                   HttpNodeRouteKey routeKey,
+                                  Option<SliceRouter> servingRouter,
                                   String requestId) {
         log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
-        httpRoutePublisher.flatMap(pub -> pub.findServingRouter(routeKey.httpMethod(),
-                                                                normalizePath(request.path())))
-                          .onEmpty(() -> handleMissingLocalRouter(response,
-                                                                  request.path(),
-                                                                  routeKey,
-                                                                  requestId))
-                          .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
+        servingRouter.onEmpty(() -> handleMissingLocalRouter(response,
+                                                             request.path(),
+                                                             routeKey,
+                                                             requestId))
+                     .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
@@ -1503,7 +1508,10 @@ class AppHttpServerAdapter implements AppHttpServer {
         var method = httpCtx.method();
         var path = httpCtx.path();
         var normalizedPath = normalizePath(path);
-        var routerOpt = httpRoutePublisher.flatMap(pub -> findLocalRouterForPath(pub, method, normalizedPath));
+        // #1678 (v1670 R2-N4): ONE resolution names both the route this request is re-authorized against and the
+        // router that serves it, so an undeploy between two lookups cannot pair a parent's policy with a child's router.
+        var local = httpRoutePublisher.flatMap(pub -> pub.resolveLocal(method, normalizedPath));
+        var routerOpt = local.flatMap(LocalResolution::router);
 
         if (routerOpt.isEmpty()) {
             log.warn("No local router for forwarded request {} {} [{}]", method, path, request.requestId());
@@ -1512,13 +1520,13 @@ class AppHttpServerAdapter implements AppHttpServer {
             return;
         }
 
-        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath).onPresent(_ -> serveForwarded(httpCtx,
-                                                                                                                   request,
-                                                                                                                   network,
-                                                                                                                   ser,
-                                                                                                                   routerOpt.unwrap(),
-                                                                                                                   method,
-                                                                                                                   normalizedPath));
+        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath, local).onPresent(_ -> serveForwarded(httpCtx,
+                                                                                                                          request,
+                                                                                                                          network,
+                                                                                                                          ser,
+                                                                                                                          routerOpt.unwrap(),
+                                                                                                                          method,
+                                                                                                                          normalizedPath));
     }
 
     /// #1659 (v1670): the host RE-AUTHORIZES every forwarded request against the route it will actually serve it by
@@ -1534,8 +1542,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                               ClusterNetwork network,
                                               Serializer ser,
                                               String method,
-                                              String normalizedPath) {
-        var policy = resolveEffectivePolicy(method, normalizedPath, context.currentRoutes());
+                                              String normalizedPath,
+                                              Option<LocalResolution> local) {
+        var policy = resolveEffectivePolicy(method, normalizedPath, context.currentRoutes(), local);
 
         if (requiresAuthentication(policy) && config.securityMode() == SecurityMode.NONE) {
             refuseForwarded(SecurityError.NO_VALIDATOR_CONFIGURED, httpCtx, request, network, ser, method);
@@ -1651,10 +1660,6 @@ class AppHttpServerAdapter implements AppHttpServer {
                                       HttpRequestContext httpCtx) {
         routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
         sendForwardError(network, request, cause.message());
-    }
-
-    private Option<SliceRouter> findLocalRouterForPath(HttpRoutePublisher pub, String method, String normalizedPath) {
-        return pub.findServingRouter(method, normalizedPath);
     }
 
     private void sendForwardSuccess(ClusterNetwork network,

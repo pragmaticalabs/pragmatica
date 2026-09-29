@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.http.HttpRoutePublisher.LocalResolution;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
@@ -72,11 +73,15 @@ class AppHttpServerForwardReauthorizationTest {
     }
 
     private AppHttpServer hostServing(String prefix, SecurityPolicy policy, HttpRequestContext forwarded) {
+        return hostServing(new StubRoutePublisher("GET", prefix, SELF_NODE, router, policy, policy), forwarded);
+    }
+
+    private AppHttpServer hostServing(StubRoutePublisher publisher, HttpRequestContext forwarded) {
         return AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(TEST_PORT, Set.of(VALID_API_KEY)),
                                            ForwardingTimeouts.forwardingTimeouts(),
                                            SELF_NODE,
                                            HttpRouteRegistry.httpRouteRegistry(),
-                                           Option.some(new StubRoutePublisher("GET", prefix, SELF_NODE, router, policy)),
+                                           Option.some(publisher),
                                            Option.some(network),
                                            Option.some(serializer),
                                            Option.some(new StubDeserializer(forwarded)),
@@ -100,6 +105,9 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(router.handleCount()).as("a refused request must never reach the slice").isZero();
     }
 
+    /// Also the HOST half of v1670's P5 (the rollout forward): the host refuses whatever its own route refuses, however
+    /// the forward arose. The ingress half -- an ingress under a rollout forwarding a request it admitted under a
+    /// PUBLIC local parent -- is not modelled here; no test combines the two halves.
     @Test
     void forwardedRequest_withoutACredential_isRefusedWith401_andTheChallengeHeader() {
         var host = hostServing("/api/admin/", SecurityPolicy.roleRequired("admin"), withoutCredential("/api/admin/secret"));
@@ -113,20 +121,24 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(router.handleCount()).isZero();
     }
 
-    /// v1670 P5, the rollout forward: an ingress hosting a PUBLIC `/api/` under an active rollout admits
-    /// `GET /api/admin/secret` WITHOUT a credential under its local route, then its strategy step forwards it to the
-    /// remote `/api/admin/` (`role:admin`). The ingress never checks the child's policy; this host must, and does:
-    /// 401, the slice never runs. The ingress half is pinned as `…RouteSecurityPolicyTest` P5 control.
+    /// v1670 R2-N4: the route a forwarded request is re-authorized against and the router that serves it come from
+    /// ONE resolution. The stub's separate `findLocalRoute` answers a stale PUBLIC parent -- what a second lookup could
+    /// read after an undeploy between the two -- while its single `resolveLocal` names the admin child and its router.
+    /// Re-authorizing from a second lookup would admit the request; the single resolution refuses it.
     @Test
-    void forwardedRequest_fromARolloutForwardAdmittedUnderAPublicLocalParent_isRefusedByTheHostsChildRoute() {
-        var host = hostServing("/api/admin/", SecurityPolicy.roleRequired("admin"), withoutCredential("/api/admin/secret"));
+    void forwardedRequest_isReauthorizedByTheSameResolutionThatNamesItsRouter() {
+        var host = hostServing(new StubRoutePublisher("GET",
+                                                      "/api/admin/",
+                                                      SELF_NODE,
+                                                      router,
+                                                      SecurityPolicy.roleRequired("admin"),
+                                                      SecurityPolicy.publicRoute()),
+                               withoutCredential("/api/admin/secret"));
 
-        host.onHttpForwardRequest(forwardRequest("corr-p5"));
+        host.onHttpForwardRequest(forwardRequest("corr-one-resolution"));
 
-        var relayed = relayedResponse();
-
-        assertThat(relayed.statusCode()).as("the host's child route governs: %s", body(relayed)).isEqualTo(401);
-        assertThat(router.handleCount()).as("an unauthenticated rollout forward must never reach the admin slice").isZero();
+        assertThat(relayedResponse().statusCode()).isEqualTo(401);
+        assertThat(router.handleCount()).isZero();
     }
 
     /// CONTROL: a forwarded request the host's own policy admits is served exactly as before.
@@ -207,8 +219,27 @@ class AppHttpServerForwardReauthorizationTest {
     }
 
     /// Minimal publisher hosting one live local route, mirroring AppHttpServerLocalDispatchTest's stub.
-    private record StubRoutePublisher(String httpMethod, String pathPrefix, NodeId nodeId, SliceRouter router, SecurityPolicy security)
+    /// `security` is what the single [#resolveLocal] resolution answers; `separateLookupSecurity` is what the
+    /// separate `findLocalRoute` answers -- equal unless a test models a stale second lookup (R2-N4).
+    private record StubRoutePublisher(String httpMethod,
+                                      String pathPrefix,
+                                      NodeId nodeId,
+                                      SliceRouter router,
+                                      SecurityPolicy security,
+                                      SecurityPolicy separateLookupSecurity)
         implements HttpRoutePublisher {
+        @Override
+        public Option<LocalResolution> resolveLocal(String method, String path) {
+            return matches(method, path)
+                   ? Option.some(new LocalResolution(new LocalRouteInfo(httpMethod,
+                                                                        pathPrefix,
+                                                                        TEST_ARTIFACT.asString(),
+                                                                        "create",
+                                                                        security),
+                                                     Option.some(router)))
+                   : Option.none();
+        }
+
         private boolean matches(String method, String path) {
             return httpMethod.equalsIgnoreCase(method) && path.startsWith(pathPrefix);
         }
@@ -232,7 +263,7 @@ class AppHttpServerForwardReauthorizationTest {
                                                     pathPrefix,
                                                     TEST_ARTIFACT.asString(),
                                                     "create",
-                                                    security))
+                                                    separateLookupSecurity))
                    : Option.none();
         }
 

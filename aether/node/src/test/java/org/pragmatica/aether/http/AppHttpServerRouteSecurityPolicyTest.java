@@ -12,6 +12,7 @@ import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.http.HttpRoutePublisher.LocalResolution;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
@@ -100,10 +101,13 @@ class AppHttpServerRouteSecurityPolicyTest {
                              SecurityPolicy routePolicy,
                              HttpRouteRegistry registry,
                              SecurityOverrides committed) {
+        startServer(StubRoutePublisher.hosting("GET", pathPrefix, routePolicy, committed), registry);
+    }
+
+    private void startServer(StubRoutePublisher publisher, HttpRouteRegistry registry) {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
         var config = AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY));
-        var publisher = StubRoutePublisher.hosting("GET", pathPrefix, routePolicy, committed);
 
         server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
@@ -382,6 +386,23 @@ class AppHttpServerRouteSecurityPolicyTest {
         return new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, TEST_ARTIFACT), value), Option.none());
     }
 
+    /// #1678 (v1670 R2-N4), at the ingress: a request's policy and its dispatch come from ONE local resolution. The
+    /// stub's separate `findLocalRoute` answers a stale PUBLIC policy -- what a second lookup could read after an
+    /// undeploy between the two -- while its single `resolveLocal` answers `role:admin`. Authorizing from a second
+    /// lookup would serve the request without a credential; the single resolution refuses it.
+    @Test
+    void localRoute_isAuthorizedByTheSameResolutionThatDispatchesIt() throws Exception {
+        startServer(new StubRoutePublisher("GET",
+                                           "/local/",
+                                           SecurityPolicy.roleRequired("admin"),
+                                           new StubSliceRouter(),
+                                           SecurityOverrides.EMPTY,
+                                           SecurityPolicy.publicRoute()),
+                    HttpRouteRegistry.httpRouteRegistry());
+
+        assertThat(get("/local/thing").statusCode()).isEqualTo(401);
+    }
+
     private static ValuePut<NodeRoutesKey, NodeRoutesValue> remoteRouteOf(Artifact artifact, String prefix, String security) {
         var key = NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, artifact);
         var route = RouteEntry.activeRoute("GET", prefix, "handle", security, security);
@@ -440,17 +461,30 @@ class AppHttpServerRouteSecurityPolicyTest {
     /// Minimal HttpRoutePublisher stub hosting exactly one local route carrying a caller-supplied
     /// SecurityPolicy — mirrors AppHttpServerLocalDispatchTest's StubRoutePublisher, parameterized
     /// by policy instead of hard-coding SecurityPolicy.publicRoute().
+    /// `security` is what the single `resolveLocal` resolution answers; `separateLookupSecurity` is what the separate
+    /// `findLocalRoute` answers -- equal unless a test models a stale second lookup (#1678, v1670 R2-N4).
     private record StubRoutePublisher(String httpMethod,
                                       String pathPrefix,
                                       SecurityPolicy security,
                                       SliceRouter router,
-                                      SecurityOverrides committed)
+                                      SecurityOverrides committed,
+                                      SecurityPolicy separateLookupSecurity)
         implements HttpRoutePublisher {
         static StubRoutePublisher hosting(String httpMethod,
                                           String pathPrefix,
                                           SecurityPolicy security,
                                           SecurityOverrides committed) {
-            return new StubRoutePublisher(httpMethod, pathPrefix, security, new StubSliceRouter(), committed);
+            return new StubRoutePublisher(httpMethod, pathPrefix, security, new StubSliceRouter(), committed, security);
+        }
+
+        @Override
+        public Option<LocalResolution> resolveLocal(String method, String path) {
+            return findLocalRoute(method, path).map(route -> new LocalResolution(new LocalRouteInfo(route.httpMethod(),
+                                                                                                    route.pathPrefix(),
+                                                                                                    route.artifactCoord(),
+                                                                                                    route.sliceMethod(),
+                                                                                                    security),
+                                                                                 Option.some(router)));
         }
 
         /// The real rule over this stub's committed overrides, as the production publisher answers.
@@ -478,7 +512,7 @@ class AppHttpServerRouteSecurityPolicyTest {
         @Override
         public Option<LocalRouteInfo> findLocalRoute(String method, String path) {
             return matches(method, path)
-                   ? Option.some(new LocalRouteInfo(httpMethod, pathPrefix, TEST_ARTIFACT.asString(), "create", security))
+                   ? Option.some(new LocalRouteInfo(httpMethod, pathPrefix, TEST_ARTIFACT.asString(), "create", separateLookupSecurity))
                    : Option.none();
         }
 

@@ -89,6 +89,17 @@ public interface HttpRoutePublisher {
         return findLocalRoute(httpMethod, path).flatMap(route -> findLocalRouter(route.httpMethod(), route.pathPrefix()));
     }
 
+    /// #1678 (v1670 R2-N4): the route a request is authorized against AND the router that serves it, from ONE
+    /// resolution -- two separate lookups could straddle an undeploy and pair a parent's policy with a child's router.
+    record LocalResolution(LocalRouteInfo route, Option<SliceRouter> router) {}
+
+    /// The default composes the two lookups, as a publisher holding one route per prefix may; the production
+    /// publisher answers both from a single resolution.
+    default Option<LocalResolution> resolveLocal(String httpMethod, String path) {
+        return findLocalRoute(httpMethod, path).map(route -> new LocalResolution(route,
+                                                                                 findServingRouter(httpMethod, path)));
+    }
+
     /// #1659: the policy this node's committed security overrides assign to a route served elsewhere; empty when
     /// no committed override matches it. The default holds no overrides, as a publisher without an override set
     /// does; the production publisher answers from its committed overrides.
@@ -777,6 +788,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     @Override
     public Option<SliceRouter> findServingRouter(String httpMethod, String path) {
         return resolveServed(httpMethod, path).flatMap(served -> Option.option(sliceRouters.get(served.artifact())));
+    }
+
+    @Override
+    public Option<LocalResolution> resolveLocal(String httpMethod, String path) {
+        var overrides = activeOverrides.get();
+
+        return resolveServed(httpMethod, path).map(served -> new LocalResolution(LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(served.definition(),
+                                                                                                                                                     overrides)),
+                                                                                 Option.option(sliceRouters.get(served.artifact()))));
     }
 
     private record ServedRoute(Artifact artifact, HttpRouteDefinition definition) {}

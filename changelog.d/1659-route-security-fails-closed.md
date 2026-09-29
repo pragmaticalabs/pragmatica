@@ -23,9 +23,11 @@
   overrides propagate that view can lack a narrower, stricter route the host already serves. A rollout forward from a
   local PUBLIC parent could otherwise reach a protected child unauthenticated. A request is served only when both ends
   admit it. A refusal returns the same 401/403 response the ingress would send.
-- **Wire.** `NodeRoutesValue.RouteEntry` gained `declaredSecurity`, which changes its byte layout. Nodes on the previous
-  build cannot decode the new entries, and a route snapshot taken before the upgrade is not readable by the new build.
-  This is accepted pre-GA, with no migration path.
+- **Wire.** `NodeRoutesValue.RouteEntry` gained `declaredSecurity`, which changes its byte layout. The codec is
+  positional and does not refuse a mismatch; a mixed-version cluster misparses SILENTLY. A node on the previous build
+  reading a new entry desynchronises inside the `routes` list and misreads the rest of the value without an error, and
+  a new node reads past the end of an old entry. A route snapshot taken before the upgrade misreads the same way. This
+  is accepted pre-GA, with no migration path. (#1678)
   [verified at `4979555b5`: each of the above has a named unit test that goes red under its mutation. See the table in
   PR #1670. Ember `BlueprintSecurityOverrideClusterWideTest`, one instance on three nodes: every node answers 403 after
   the override and 200 after it is withdrawn.]

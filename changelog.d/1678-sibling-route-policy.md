@@ -14,4 +14,9 @@
 - When no sibling matches (the host would answer 404), the strongest policy across the base's siblings applies.
 - **Limitation (#1681):** security overrides still match on the base path, so an override covers every sibling. An operator
   cannot relax or tighten one sibling alone. No route is left open by this.
-- **Wire:** `NodeRoutesValue.RouteEntry` gained `pathArity` and `spacers`. This is pre-GA; no migration path.
+- **Wire:** `NodeRoutesValue.RouteEntry` gained `pathArity` and `spacers`. As with #1659's `declaredSecurity`, the
+  positional codec does not refuse a mismatch: mixed versions, or a snapshot taken before the upgrade, misparse
+  silently. This is pre-GA; no migration path.
+- **One local resolution per request (v1670 R2-N4).** The ingress's policy check and dispatch, and the host's
+  re-authorization of a forwarded request and its dispatch, each read ONE `resolveLocal` answer: (route, router).
+  Two lookups could straddle an undeploy and pair a parent's policy with a child's router.
