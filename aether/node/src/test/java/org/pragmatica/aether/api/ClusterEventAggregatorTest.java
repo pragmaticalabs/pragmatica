@@ -568,13 +568,75 @@ class ClusterEventAggregatorTest {
         var tail = h.aggregator().eventsFrom(3).await().unwrap();
         var none = h.aggregator().eventsFrom(5).await().unwrap();
 
-        assertThat(all.events()).as("control: every event from offset 0").extracting(ClusterEvent::summary)
+        assertThat(all.events()).as("control: every event from offset 0").extracting(landed -> landed.event().summary())
                                 .containsExactly("e0", "e1", "e2", "e3", "e4");
         assertThat(all.nextOffset()).isEqualTo(5);
-        assertThat(tail.events()).extracting(ClusterEvent::summary).containsExactly("e3", "e4");
+        assertThat(tail.events()).extracting(landed -> landed.event().summary()).containsExactly("e3", "e4");
         assertThat(tail.nextOffset()).isEqualTo(5);
         assertThat(none.events()).isEmpty();
         assertThat(none.nextOffset()).isEqualTo(5);
+    }
+
+    /// #1653 (v1640 V6): once retention has trimmed the head of the log, a read clamped up to the tail still reports
+    /// the offset after the last event it read, not `from` plus the number of events.
+    @Test
+    void eventsFrom_belowTheRetainedTail_nextOffsetFollowsTheLastEventRead() {
+        var h = Harness.create(RetentionPolicy.retentionPolicy(5, 64L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY), OWNER);
+
+        for (int i = 0; i < 12; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+
+        var page = h.aggregator().eventsFrom(0).await().unwrap();
+
+        assertThat(page.tailOffset()).as("control: retention trimmed the head").isPositive();
+        assertThat(page.events().getLast().offset()).as("control").isEqualTo(11);
+        assertThat(page.nextOffset()).isEqualTo(12);
+    }
+
+    /// #1653 (v1640 V2): the production feed wiring reads the node's aggregator from its cursor, not from offset 0.
+    @Test
+    void feed_wiredToTheAggregator_readsFromTheCursor() {
+        var h = Harness.create();
+        var broadcasts = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var feed = EventWebSocketPublisher.eventWebSocketPublisher(new EventWebSocketPublisherTest.CapturingHandler(broadcasts),
+                                                                   h::aggregator,
+                                                                   events -> String.valueOf(events.size()));
+
+        for (int i = 0; i < 30; i++) {
+            h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e" + i, Map.of()));
+        }
+        feed.publish();
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "e30", Map.of()));
+        feed.publish();
+
+        assertThat(broadcasts).as("control: 30, then the one new event").containsExactly("30", "1");
+        assertThat(h.aggregator().lastEventsFrom()).isEqualTo(30 - EventWebSocketPublisher.OVERLAP);
+    }
+
+    /// #1653: an ownership change of the cluster-events partition is counted on the page, which is what makes the feed
+    /// re-read a new owner's log.
+    @Test
+    void onStreamPartitionOwnershipPut_clusterEventsPartition_isCountedOnThePage() {
+        var h = Harness.create();
+        var before = h.aggregator().eventsFrom(0).await().unwrap().ownershipChanges();
+
+        h.aggregator().onStreamPartitionOwnershipPut(ownershipPut(SystemStreams.CLUSTER_EVENTS.asString(), 0));
+
+        assertThat(h.aggregator().eventsFrom(0).await().unwrap().ownershipChanges()).isEqualTo(before + 1);
+    }
+
+    /// #1653 (v1640 N3): stamping copies `details`, which throws on a null value. That throw stays inside the
+    /// publish's isolation: the caller is not interrupted and the event is still published, without an id.
+    @Test
+    void emitLocal_detailsWithANullValue_doesNotThrow_andIsPublishedWithoutAnId() {
+        var h = Harness.create();
+        var details = new java.util.HashMap<String, String>();
+
+        details.put("reason", null);
+        h.aggregator().emitLocal(new ClusterEvent.AlertInjected(h.hlc().now(), ClusterEvent.Severity.INFO, "null detail", details));
+
+        assertThat(h.aggregator().redeliveryCounters()).as("handed to redelivery").containsEntry("accepted", 1L);
     }
 
     private static void landThenFailFirst(FrameworkStreamPublisher<ClusterEvent> real,

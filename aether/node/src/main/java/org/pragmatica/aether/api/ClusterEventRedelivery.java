@@ -39,10 +39,10 @@ import static org.pragmatica.lang.Unit.unit;
 /// had no durable record.
 ///
 /// **What.** A failed publish is buffered and retried with backoff until it lands or its age passes
-/// [#RETRY_HORIZON_MS]. A retry re-sends the SAME event object, so it carries the same `at`
-/// (`HlcTimestamp(packed, nodeId)`, unique per node). An event that landed despite an unknown outcome and is
-/// then sent again is therefore a duplicate with the same `at`, and `ClusterEventAggregator.events()` removes
-/// it on read.
+/// [#RETRY_HORIZON_MS]. A retry re-sends the SAME event object, stamped once with `details.eventId` when the
+/// aggregator accepted it ([ClusterEventIdentity]). An event that landed despite an unknown outcome and is then
+/// sent again is therefore a duplicate with the same `eventId`, and `ClusterEventAggregator.events()` and the event
+/// feed remove it on read.
 ///
 /// **The emit gate is not re-applied.** It was satisfied when the event was produced. After a failover the
 /// producing node is typically no longer the owner, and the new owner never produced the event, so

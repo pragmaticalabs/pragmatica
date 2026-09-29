@@ -187,6 +187,9 @@ public final class ClusterEventAggregator {
     /// #1653 round 2: stamps each event with `details.eventId` so a redelivered copy is recognised on read.
     private final ClusterEventIdentity identity = ClusterEventIdentity.clusterEventIdentity();
     private volatile int lastReadDuplicates;
+    /// #1653: cluster-events ownership changes applied on this node; the event feed re-anchors when it moves.
+    private final AtomicLong ownershipChanges = new AtomicLong();
+    private volatile long lastEventsFrom = -1;
 
     /// Typed so [ClusterEventRedelivery#failuresByCause] counts it by name (#1653).
     private enum PublishError implements Cause {
@@ -357,34 +360,54 @@ public final class ClusterEventAggregator {
                        .orElse(0L);
     }
 
+    /// One event as the log holds it, with its offset.
+    public record LandedEvent(long offset, ClusterEvent event) {}
+
     /// A page of the log from an offset: the events at `[from, nextOffset)` in log order, as stored (not
     /// de-duplicated or sorted: the event feed de-duplicates against what it has already sent and sends in log order).
-    public record EventPage(List<ClusterEvent> events, long nextOffset) {}
+    /// `tailOffset` is the oldest retained offset. `ownershipChanges` counts the cluster-events ownership changes this
+    /// node has applied, read before the fetch: a reader that sees it move knows the log may now be a new owner's,
+    /// whose offsets can reuse ones it already read (#1653).
+    public record EventPage(List<LandedEvent> events, long nextOffset, long tailOffset, long ownershipChanges) {}
 
     /// #1653: the event feed's incremental read. Reads from `fromOffset` (clamped up to the oldest retained offset)
     /// and reports where the next read starts. A redelivered event is APPENDED, so it lands at an offset beyond any
-    /// earlier read, whatever its `at`: a reader that follows `nextOffset` sees it without any time window, and each
-    /// read costs what is new since the last one.
+    /// earlier read of the same owner's log, whatever its `at`; each read costs what is new since the last one.
     public Promise<EventPage> eventsFrom(long fromOffset) {
+        var changes = ownershipChanges.get();
+
+        lastEventsFrom = fromOffset;
+
         return Option.option(consumerSupplier.get())
-                     .map(consumer -> pageFrom(consumer, fromOffset))
+                     .map(consumer -> pageFrom(consumer, fromOffset, changes))
                      .or(() -> Promise.success(new EventPage(List.of(),
-                                                             fromOffset)));
+                                                             fromOffset,
+                                                             0L,
+                                                             changes)));
     }
 
-    private static Promise<EventPage> pageFrom(FrameworkStreamConsumer<ClusterEvent> consumer, long fromOffset) {
+    /// The offset the last [#eventsFrom] was asked for (observability for the #1653 feed-wiring pin).
+    long lastEventsFrom() {
+        return lastEventsFrom;
+    }
+
+    private static Promise<EventPage> pageFrom(FrameworkStreamConsumer<ClusterEvent> consumer,
+                                               long fromOffset,
+                                               long changes) {
         return consumer.metadata()
                        .map(ClusterEventAggregator::retainedTailOffset)
                        .flatMap(tail -> consumer.fetch(Math.max(fromOffset, tail),
-                                                       FETCH_BATCH))
-                       .map(raw -> page(raw, fromOffset));
+                                                       FETCH_BATCH)
+                                                .map(raw -> page(raw, fromOffset, tail, changes)));
     }
 
-    private static EventPage page(List<StreamEvent<ClusterEvent>> raw, long fromOffset) {
+    private static EventPage page(List<StreamEvent<ClusterEvent>> raw, long fromOffset, long tail, long changes) {
         var nextOffset = raw.stream().mapToLong(StreamEvent::offset).max().orElse(fromOffset - 1) + 1;
 
-        return new EventPage(raw.stream().map(StreamEvent::payload).toList(),
-                             nextOffset);
+        return new EventPage(raw.stream().map(event -> new LandedEvent(event.offset(), event.payload())).toList(),
+                             nextOffset,
+                             tail,
+                             changes);
     }
 
     /// Read events whose timestamp is strictly after `since`.
@@ -545,7 +568,18 @@ public final class ClusterEventAggregator {
     /// what it gives up on. Still never propagated to the caller.
     @Contract
     private void publishSafely(ClusterEvent event) {
-        redelivery.deliver(identity.stamped(event));
+        redelivery.deliver(stampedOrAsIs(event));
+    }
+
+    /// #1653: stamping copies `details` and so runs inside the same throw isolation as the publish. An event whose
+    /// details cannot be copied (a null value) goes out without an id and is de-duplicated by `at`.
+    private ClusterEvent stampedOrAsIs(ClusterEvent event) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> identity.stamped(event))
+                     .onFailure(cause -> LOG.warn("ClusterEventAggregator: {} published without an eventId: {}",
+                                                  event.type(),
+                                                  cause.message()))
+                     .or(event);
     }
 
     /// One publish attempt with its outcome: fails when the publisher is not yet bound, when the publish
@@ -586,10 +620,12 @@ public final class ClusterEventAggregator {
     }
 
     /// #1640: a new owner of the cluster-events partition means publishes can land again, so every waiting
-    /// event is re-sent at once instead of on its backoff.
+    /// event is re-sent at once instead of on its backoff. #1653: the change is also counted, so the event feed
+    /// re-reads the new owner's log instead of trusting offsets it read from the old one.
     @Contract
     public void onStreamPartitionOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
         if (isClusterEventsPartition(put.cause().key())) {
+            ownershipChanges.incrementAndGet();
             redelivery.redeliver(true);
         }
     }

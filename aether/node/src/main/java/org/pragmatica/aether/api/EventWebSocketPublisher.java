@@ -12,9 +12,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
-import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.ClusterEventAggregator.EventPage;
+import org.pragmatica.aether.api.ClusterEventAggregator.LandedEvent;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -26,72 +27,66 @@ import org.slf4j.LoggerFactory;
 
 /// Pushes new cluster events to connected WebSocket clients once a second.
 ///
-/// **An offset cursor, not a time window (#1640, #1653).** Each poll reads the log from the cursor, which is the offset
-/// after the last event it read, and moves the cursor past what it read. Every event is appended, and so is a
-/// redelivered one: it lands at an offset beyond the cursor however old its `at` is. It is therefore read by the next
-/// poll by construction, and each poll costs only what is new. The first poll starts at offset 0, which the read clamps
-/// to the oldest retained event, so a first client sees the retained history once. The read starts [#OVERLAP] events
-/// before the cursor, a cheap guard against reading a prefix that a replica had not finished applying. The seen-set
-/// makes that overlap harmless.
+/// **An offset cursor, not a time window (#1640, #1653).** Each poll reads the log from the cursor (less [#OVERLAP]
+/// events, a guard against a replica that had not finished applying a prefix) and moves the cursor past what it read.
+/// Within one owner's log every event is appended, a redelivered one included, so it lands beyond the cursor however
+/// old its `at` is and the next poll reads it.
 ///
-/// **Duplicates.** A redelivered event whose first publish also landed is in the log twice, with one `details.eventId`
-/// ([ClusterEventIdentity]). Keys already broadcast are remembered for [#DEDUP_MEMORY_MS], which is derived from the
-/// redelivery bounds: the latest a retry can land after the first copy is the retry horizon plus one maximum backoff
-/// plus a forward timeout. A copy landing later than that would be sent a second time. That is the safe direction: a
-/// duplicate, never a miss.
+/// **Owner failover.** A new owner continues from its own head, which can be BELOW offsets this feed already read, and
+/// reuses them for new events. The feed therefore re-anchors, reading again from the oldest retained offset, when the
+/// node applies a cluster-events ownership change ([EventPage#ownershipChanges]) or when a page ends below the cursor
+/// (the log it reads has moved back). It never relies on the overlap to cover a reuse of unknown size.
+///
+/// **Sent once.** Every key sent ([ClusterEventIdentity#key]: `details.eventId`, else `at`) is remembered with its
+/// offset for as long as that offset is still retained, so neither the overlap, a re-anchor, nor a second copy of a
+/// redelivered event (same `eventId`) is sent again while the first copy is retained. Keys below the retained tail are
+/// forgotten, which bounds the set by retention. The limit: a copy landing after its first copy was trimmed is sent
+/// again, which is a duplicate, never a miss.
 @SuppressWarnings("JBCT-RET-01")
 public class EventWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
     /// Events re-read before the cursor on each poll.
     static final long OVERLAP = 16;
 
-    /// Upper bound on how long after an event's first copy a duplicate copy can land, plus margin.
-    static final long DEDUP_MEMORY_MS = ClusterEventRedelivery.RETRY_HORIZON_MS + ClusterEventRedelivery.MAX_BACKOFF_MS + 60_000L;
-
     private final EventWebSocketHandler handler;
     private final Function<Long, Promise<EventPage>> eventsFrom;
     private final Function<List<ClusterEvent>, String> jsonSerializer;
     private final long intervalMs;
-    private final LongSupplier clock;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> taskRef = new AtomicReference<>(Option.none());
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong cursor = new AtomicLong();
-    /// Key ([ClusterEventIdentity#key]) → when it was broadcast, for [#DEDUP_MEMORY_MS].
-    private final Map<String, Long> broadcast = new ConcurrentHashMap<>();
+    private final AtomicLong ownershipChangesSeen = new AtomicLong();
+    /// Key ([ClusterEventIdentity#key]) of every event sent, with the offset it was last read at.
+    private final Map<String, Long> sent = new ConcurrentHashMap<>();
 
     private EventWebSocketPublisher(EventWebSocketHandler handler,
                                     Function<Long, Promise<EventPage>> eventsFrom,
                                     Function<List<ClusterEvent>, String> jsonSerializer,
-                                    long intervalMs,
-                                    LongSupplier clock) {
+                                    long intervalMs) {
         this.handler = handler;
         this.eventsFrom = eventsFrom;
         this.jsonSerializer = jsonSerializer;
         this.intervalMs = intervalMs;
-        this.clock = clock;
     }
 
+    /// Production wiring: the feed reads the node's own aggregator from its cursor.
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                  Function<Long, Promise<EventPage>> eventsFrom,
-                                                                  Function<List<ClusterEvent>, String> jsonSerializer,
-                                                                  long intervalMs) {
-        return new EventWebSocketPublisher(handler, eventsFrom, jsonSerializer, intervalMs, System::currentTimeMillis);
-    }
-
-    public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                  Function<Long, Promise<EventPage>> eventsFrom,
+                                                                  Supplier<ClusterEventAggregator> aggregator,
                                                                   Function<List<ClusterEvent>, String> jsonSerializer) {
-        return new EventWebSocketPublisher(handler, eventsFrom, jsonSerializer, 1000, System::currentTimeMillis);
+        return new EventWebSocketPublisher(handler,
+                                           fromOffset -> aggregator.get()
+                                                                   .eventsFrom(fromOffset),
+                                           jsonSerializer,
+                                           1000);
     }
 
-    /// Test seam: an explicit clock for [#DEDUP_MEMORY_MS].
+    /// Test seam: an explicit page source.
     static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
                                                            Function<Long, Promise<EventPage>> eventsFrom,
-                                                           Function<List<ClusterEvent>, String> jsonSerializer,
-                                                           LongSupplier clock) {
-        return new EventWebSocketPublisher(handler, eventsFrom, jsonSerializer, 1000, clock);
+                                                           Function<List<ClusterEvent>, String> jsonSerializer) {
+        return new EventWebSocketPublisher(handler, eventsFrom, jsonSerializer, 1000);
     }
 
     public void start() {
@@ -127,29 +122,41 @@ public class EventWebSocketPublisher {
     }
 
     private void broadcastNew(EventPage page) {
-        var now = clock.getAsLong();
-        var newEvents = notYetBroadcast(page.events(), now);
+        var newEvents = notYetSent(page.events());
 
-        cursor.accumulateAndGet(page.nextOffset(), Math::max);
-        forgetBefore(now - DEDUP_MEMORY_MS);
+        forgetBelow(page.tailOffset());
+        moveCursor(page);
         if (!newEvents.isEmpty()) {
             handler.broadcast(jsonSerializer.apply(newEvents));
         }
     }
 
-    private List<ClusterEvent> notYetBroadcast(List<ClusterEvent> events, long now) {
+    private List<ClusterEvent> notYetSent(List<LandedEvent> events) {
         return events.stream()
-                     .filter(event -> broadcast.putIfAbsent(ClusterEventIdentity.key(event),
-                                                            now) == null)
+                     .filter(landed -> sent.put(ClusterEventIdentity.key(landed.event()),
+                                                landed.offset()) == null)
+                     .map(LandedEvent::event)
                      .toList();
     }
 
-    private void forgetBefore(long horizon) {
-        broadcast.values().removeIf(broadcastAt -> broadcastAt < horizon);
+    private void forgetBelow(long tailOffset) {
+        sent.values().removeIf(offset -> offset < tailOffset);
     }
 
-    /// Keys remembered as broadcast (observability for the #1653 prune pin).
+    /// Re-anchor to the oldest retained offset when the log may be a new owner's; otherwise advance.
+    private void moveCursor(EventPage page) {
+        var ownerChanged = ownershipChangesSeen.getAndSet(page.ownershipChanges()) != page.ownershipChanges();
+        var movedBack = page.nextOffset() < cursor.get();
+
+        if (ownerChanged || movedBack) {
+            cursor.set(0);
+        } else {
+            cursor.accumulateAndGet(page.nextOffset(), Math::max);
+        }
+    }
+
+    /// Keys remembered as sent (observability for the #1653 bound pin).
     int rememberedBroadcasts() {
-        return broadcast.size();
+        return sent.size();
     }
 }

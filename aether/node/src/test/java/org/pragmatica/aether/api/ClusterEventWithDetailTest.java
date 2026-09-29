@@ -48,6 +48,16 @@ class ClusterEventWithDetailTest {
         }
     }
 
+    /// Every permitted subclass except the `ExtendedEvent` hatch must be a record; a non-record variant would
+    /// otherwise escape this test silently.
+    @Test
+    void permittedSubclasses_areRecords_exceptTheExtensionHatch() {
+        assertThat(Arrays.stream(ClusterEvent.class.getPermittedSubclasses())
+                         .filter(variant -> variant != ExtendedEvent.class)
+                         .filter(variant -> !variant.isRecord())
+                         .toList()).isEmpty();
+    }
+
     private static List<Class<?>> closedVariants() {
         return Arrays.stream(ClusterEvent.class.getPermittedSubclasses())
                      .filter(Class::isRecord)
