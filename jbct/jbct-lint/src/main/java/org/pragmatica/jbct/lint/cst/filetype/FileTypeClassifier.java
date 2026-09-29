@@ -70,6 +70,14 @@ public final class FileTypeClassifier {
     /// JDK interfaces a value object may legitimately implement without becoming a service/adapter.
     private static final Set<String> VALUE_ISH_JDK = Set.of("Comparable", "Serializable");
 
+    /// Nodes that end the walk from a declaration up to the type whose member list holds it. A `TypeKind`
+    /// owns the declaration; a code block, a variable initializer or an enum constant met first means the
+    /// declaration sits in an anonymous class body or a local scope, which has no `TypeKind` of its own (#655).
+    private static final RuleKind[] MEMBER_SCOPE_KINDS = {RuleKind.TYPE_KIND,
+                                                          RuleKind.BLOCK,
+                                                          RuleKind.VAR_INIT,
+                                                          RuleKind.ENUM_CONST};
+
     /// The [FileType] of the compilation unit rooted at `root`.
     public static FileType classify(Cursor root) {
         if (hasTestAnnotation(root)) {
@@ -94,11 +102,20 @@ public final class FileTypeClassifier {
                             .or(false);
     }
 
-    /// Method members declared directly in `typeKind` (methods of nested types are excluded).
+    /// Method members declared directly in `typeKind`. Methods of nested types are excluded, and so are
+    /// methods of an anonymous class body or an enum constant body, which have no `TypeKind` and would
+    /// otherwise read as the enclosing type's own methods (#655).
     public static List<Cursor> directMethods(Cursor root, Cursor typeKind) {
         return findAllMethods(typeKind).stream()
-                      .filter(method -> directlyEncloses(root, typeKind, method))
+                      .filter(method -> isInMemberListOf(root, typeKind, method))
                       .toList();
+    }
+
+    /// Whether `node` is in `typeKind`'s own member list: the first scope boundary above it is `typeKind`,
+    /// not a code block, a variable initializer or an enum constant between them.
+    public static boolean isInMemberListOf(Cursor root, Cursor typeKind, Cursor node) {
+        return findAncestorAny(root, node, MEMBER_SCOPE_KINDS).map(ancestor -> ancestor.idx() == typeKind.idx())
+                              .or(false);
     }
 
     /// Type declarations nested directly in `typeKind` (its own declaration excluded; deeper nesting
@@ -347,7 +364,10 @@ public final class FileTypeClassifier {
                                                            .filter(method -> isAbstractMethod(root, method))
                                                            .count();
 
-        return abstractMethods == 1 && directNestedTypes(root, typeKind).isEmpty();
+        // #655: only a type in the interface's own member list disqualifies it. A record declared inside a
+        // default method is local, not a member.
+        return abstractMethods == 1 && directNestedTypes(root, typeKind).stream()
+                                                               .noneMatch(nested -> isInMemberListOf(root, typeKind, nested));
     }
 
     private static boolean hasNestedRequestOrResponse(Cursor root, Cursor typeKind) {
