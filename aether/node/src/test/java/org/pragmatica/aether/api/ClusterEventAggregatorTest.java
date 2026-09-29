@@ -1085,8 +1085,9 @@ class ClusterEventAggregatorTest {
 
         var bound = (int) Math.ceil(60_000.0 / ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
 
+        // v1617-r3 nit: the exact bound, not a range, so a retry window other than OPERATOR_WARNING_RETRY_MS fails here too.
         assertThat(attempts.get()).as("publish attempts for 1,000 raises in one window, all failing")
-                                  .isBetween(2, bound);
+                                  .isEqualTo(bound);
         assertThat(h.events()).as("control: nothing was published").isEmpty();
     }
 
