@@ -43,7 +43,6 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -382,9 +381,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         var codec = buildQuicCodec();
         var bootstrap = new Bootstrap().group(eventLoopGroup)
                                        .channel(NioDatagramChannel.class)
-                                       // SO_REUSEADDR: defensive on the client side — eliminates rebind hangs if a previous
-                                       // ephemeral binding lingers in TIME_WAIT during rapid reconnect storms.
-                                       .option(ChannelOption.SO_REUSEADDR, true)
+                                       // NO SO_REUSEADDR on the dial socket (#1578). UDP has no TIME_WAIT to escape, and on
+                                       // Linux a reuse-enabled bind(0) may be handed the port of another reuse-enabled socket
+                                       // — a QUIC server's — after which that port's inbound datagrams go to this socket,
+                                       // silencing the server. Measured: 7 of 36,000 such binds landed on one of 5 server
+                                       // ports; 0 of 20,000 without the option.
                                        .handler(codec);
 
         bootstrap.bind(0).addListener(future -> handleBind(peerId, address, attempt, future));
