@@ -6,6 +6,10 @@ These are checkpoint results, not final-head CI approval. Build/install the matc
 The earlier integrated checkpoint is `20316f07bd732768e5cc9d7a999521e379bb4063`, incorporating rc4
 `836832f5` and prerequisite heads `4601627c2` / `c6bcefb47`. Full build6 passed before this
 integration; the subsequent node reactor install passed. Later corrections and their gates are listed below.
+Commands under a stated source SHA record the selection that ran there. Classes since removed: by #1545
+(durable control storage) `DurableRabiaPersistenceTest`, `RabiaDurableRestartTest`, `ProducerIncarnationTest`,
+`HierarchicalCoreRestartTest`, `HierarchicalGovernorConcurrencyRestartTest`; by #1554 (#1526)
+`RabiaVoterRecoveryTest`, `VoterConfigurationStateTest`. Selectors presented as current name only present classes.
 
 ## Passed checkpoints
 
@@ -28,15 +32,17 @@ Historical record at `2a175cecf`; #1526 removed the #1390 handoff classes, and t
 equivalent selector names `RabiaVoterReconfigurationTest` instead of the two handoff test classes.
 
 ```sh
-env -u HCLOUD_TOKEN mvn -T1 -pl integrations/consensus,aether/node -am test -Dtest='RabiaHierarchySafetyTest,RabiaSyncAdoptionQuorumTest,RabiaReorderedDeliveryTest,RabiaVoterRecoveryTest,VoterConfigurationStateTest,CoreVoterReconcilerTest,NodeLifecycleRoutesDrainBudgetTest,CommittedLeaderRefreshTest,GovernorAnnouncerTest,GovernorAuthorityClientTest,CommunityHealthIndexTest,CommunityHealthRuntimeTest' -Dsurefire.failIfNoSpecifiedTests=false
+env -u HCLOUD_TOKEN mvn -T1 -pl integrations/consensus,aether/node -am test -Dtest='RabiaHierarchySafetyTest,RabiaSyncAdoptionQuorumTest,RabiaReorderedDeliveryTest,RabiaVoterReconfigurationTest,CoreVoterReconcilerTest,NodeLifecycleRoutesDrainBudgetTest,CommittedLeaderRefreshTest,GovernorAnnouncerTest,GovernorAuthorityClientTest,CommunityHealthIndexTest,CommunityHealthRuntimeTest' -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 **Twenty-class Forge matrix**, source `1bf7ff14d207d090b89bc9cf3dffc5d8feb26c5c`: 38 cases,
 zero failures/errors, BUILD SUCCESS in approximately 1,390 seconds. Local log:
-`/private/tmp/hierarchy-review-final-forge-matrix.log`. Reproduce the same class selection:
+`/private/tmp/hierarchy-review-final-forge-matrix.log`. The current equivalent selection is below: #1545 removed
+`HierarchicalCoreRestartTest` and `HierarchicalGovernorConcurrencyRestartTest`, whose nomination half is now
+`HierarchicalGovernorConcurrentNominationTest`.
 
 ```sh
-env -u HCLOUD_TOKEN ./forge.sh 'HierarchicalGovernorConcurrencyRestartTest,HierarchicalMetadataRecoveryTest,HierarchicalMovementTakeoverTest,HierarchicalRecoveryEnvelopeTest,HierarchicalGovernorReportLossTest,HierarchicalWorkerDrainTest,HierarchicalWorkerFormationTest,HierarchicalLoadedMovementTest,HierarchicalCoreRestartTest,ClusterFormationTest,EmberAddNodeRoleLabelTest,HierarchicalWorkerWorkloadTest,HierarchicalCommunityMovementTest,StreamOwnershipDriverFenceTest,HierarchicalWorkerReconnectTest,HierarchicalDecisionReplayTest,HierarchicalWorkerRuntimeReplayTest,HierarchicalCoreResizeTest,HierarchicalLeaderObservationGraceTest,SliceInvocationTest'
+env -u HCLOUD_TOKEN ./forge.sh 'HierarchicalGovernorConcurrentNominationTest,HierarchicalMetadataRecoveryTest,HierarchicalMovementTakeoverTest,HierarchicalRecoveryEnvelopeTest,HierarchicalGovernorReportLossTest,HierarchicalWorkerDrainTest,HierarchicalWorkerFormationTest,HierarchicalLoadedMovementTest,ClusterFormationTest,EmberAddNodeRoleLabelTest,HierarchicalWorkerWorkloadTest,HierarchicalCommunityMovementTest,StreamOwnershipDriverFenceTest,HierarchicalWorkerReconnectTest,HierarchicalDecisionReplayTest,HierarchicalWorkerRuntimeReplayTest,HierarchicalCoreResizeTest,HierarchicalLeaderObservationGraceTest,SliceInvocationTest'
 ```
 
 This matrix used the earlier Decision replay fixture. It does not prove the later receiver-side
@@ -87,7 +93,9 @@ Foundation mutations remain path-triggered in `hierarchy-review.yml`. Runtime ac
 on PRs carrying `run-hierarchy` (on every push while labeled), by manual dispatch, and on
 main/release pushes that change the hierarchy acceptance tests, its strict selection checker,
 or its workflow. It does not run merely because an unrelated `aether/**` file changed.
-Before building, `check-hierarchy-selection.py` requires every selected source class. After
+Before building, `check-hierarchy-selection.py` requires the selection to include every `Hierarch*Test`
+class on disk and the six supporting classes it names (a partial selection is refused, #1451), and every
+selected source class to exist. After
 Forge, it requires actual successful, non-skipped cases for every selected class, including
 nested cases; a partial or empty green report is refused.
 
@@ -376,10 +384,11 @@ failures/errors/skips (`/private/tmp/review-r2-runtime-node-tests.log`). The liv
 then passed **23 cases, zero failures/errors/skips**, in 531 seconds, with all 70 runtime
 dependencies fresh (`/private/tmp/review-r2-runtime-forge.log`). No build/install ran during
 Forge. This is a targeted final-head gate; the earlier 50-case matrix remains a distinct
-historical checkpoint.
+historical checkpoint. That run also selected `HierarchicalCoreRestartTest`, which #1545 removed; the selection
+below omits it.
 
 ```sh
-env -u HCLOUD_TOKEN ./forge.sh HierarchyAuthorityAcceptanceTest,HierarchicalWorkerReconnectTest,HierarchicalGovernorReportLossTest,HierarchicalLeaderObservationGraceTest,HierarchicalWorkerFormationTest,HierarchicalWorkerDrainTest,HierarchicalCoreRestartTest,ClusterFormationTest,SliceInvocationTest,StreamOwnershipDriverFenceTest
+env -u HCLOUD_TOKEN ./forge.sh HierarchyAuthorityAcceptanceTest,HierarchicalWorkerReconnectTest,HierarchicalGovernorReportLossTest,HierarchicalLeaderObservationGraceTest,HierarchicalWorkerFormationTest,HierarchicalWorkerDrainTest,ClusterFormationTest,SliceInvocationTest,StreamOwnershipDriverFenceTest
 ```
 
 The strict selection validator passed all seven regressions and verified the ten selected
