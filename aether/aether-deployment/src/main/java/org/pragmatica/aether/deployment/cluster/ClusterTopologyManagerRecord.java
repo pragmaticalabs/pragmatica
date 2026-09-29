@@ -83,6 +83,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.consensus.net.NodeInfo.LABEL_SOURCE;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
@@ -812,7 +813,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                         .async()
                                         .flatMap(renderedSpec -> provisionWithZoneRotation(renderedSpec,
                                                                                            replacementZones(intendedRole,
-                                                                                                            sourceName)))
+                                                                                                            sourceName),
+                                                                                           sourceName))
                                         .onFailure(this::recordProvisioningFailure)
                                         .onSuccess(instance -> recordProvisionedReplacement(instance,
                                                                                             newNodeId,
@@ -948,9 +950,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// (backward-compatible — non-cloud Docker/forge providers ignore placement entirely). The
     /// `onFailure(recordProvisioningFailure)` in the caller fires only on the FINAL failure of this
     /// fold. Fully async — no blocking `await`.
-    private Promise<InstanceInfo> provisionWithZoneRotation(ProvisionSpec renderedSpec, List<String> zones) {
+    private Promise<InstanceInfo> provisionWithZoneRotation(ProvisionSpec renderedSpec,
+                                                            List<String> zones,
+                                                            SourceName sourceName) {
         if (zones.isEmpty()) {
-            var placedSpec = computePlacementHint().map(renderedSpec::withPlacement).or(renderedSpec);
+            var placedSpec = computePlacementHint(sourceName).map(renderedSpec::withPlacement).or(renderedSpec);
 
             return lifecycleManager.provisionNode(placedSpec);
         }
@@ -2327,9 +2331,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                       .port();
     }
 
-    private Option<PlacementHint> computePlacementHint() {
+    /// #1650 F1: zones are balanced WITHIN the source being provisioned. A zone is a provider location, so
+    /// another source's zone names a place this source's provider may not have -- Hetzner would put the node
+    /// there, AWS and GCP would fail the create. Counting across sources only stayed harmless while zone labels
+    /// were rarely populated; stamped labels made it steer a zoneless source into another source's zone.
+    private Option<PlacementHint> computePlacementHint(SourceName sourceName) {
         var zoneCounts = observer.topology()
                                  .stream()
+                                 .filter(nodeId -> sourceLabel(nodeId).equals(sourceName))
                                  .map(this::zoneLabel)
                                  .filter(z -> !z.isEmpty())
                                  .collect(Collectors.groupingBy(z -> z,
@@ -2361,6 +2370,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         return Option.some(PlacementHint.antiAffinityHint(overRepresented));
+    }
+
+    /// A node without a source label belongs to [SourceName#DEFAULT], as it does everywhere a source is derived.
+    private SourceName sourceLabel(NodeId nodeId) {
+        return observer.get(nodeId)
+                       .map(info -> SourceName.sourceNameOrDefault(info.labels()
+                                                                       .getOrDefault(LABEL_SOURCE, "")))
+                       .or(SourceName.DEFAULT);
     }
 
     private String zoneLabel(NodeId nodeId) {
