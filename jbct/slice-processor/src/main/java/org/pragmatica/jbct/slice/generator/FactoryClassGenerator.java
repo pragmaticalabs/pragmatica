@@ -2251,9 +2251,7 @@ public class FactoryClassGenerator {
                 case REQUIRED_VALUE_OBJECT -> configCall + ".flatMap(" + valueObjectType + "::" + valueObjectFactory + ")";
                 // #1429: a present but invalid value fails the chain with the factory's own cause, as the
                 // typed get* readers do since #1098; nothing validates it earlier, so it must never be unwrapped.
-                case OPTIONAL_VALUE_OBJECT -> configCall + ".fold(() -> Result.<" + OPTION_FQN + "<" + valueObjectType + ">>success("
-                                              + OPTION_FQN + ".none()), s -> " + valueObjectType + "." + valueObjectFactory
-                                              + "(s).map(" + OPTION_FQN + "::some))";
+                case OPTIONAL_VALUE_OBJECT -> configCall + ".fold(() -> Result.<" + OPTION_FQN + "<" + valueObjectType + ">>success(" + OPTION_FQN + ".none()), s -> " + valueObjectType + "." + valueObjectFactory + "(s).map(" + OPTION_FQN + "::some))";
             };
         }
     }
