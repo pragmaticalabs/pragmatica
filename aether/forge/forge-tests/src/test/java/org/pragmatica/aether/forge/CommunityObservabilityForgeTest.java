@@ -48,13 +48,14 @@ import static org.awaitility.Awaitility.await;
 /// core then removes the departed worker's activation directive, and the governor's next authority write
 /// commits a roster without it (MEMBER_LEFT).
 ///
-/// Registered in `TEST_PORT_ALLOCATION.md`: cluster 46100-46105, SWIM UDP 46200-46205 (cluster + 100), management
-/// 46300-46305, app HTTP 46400-46405 — disjoint from `EmberGenesisRecoveryTest`'s 44100–44900 candidates.
+/// Registered in `TEST_PORT_ALLOCATION.md`: cluster 14500-14505, SWIM UDP 14600-14605 (cluster + 100), management
+/// 14700-14705, app HTTP 14800-14805 — below 32768, the start of the Linux ephemeral range, and clear of every
+/// five-digit literal under `src/test` and of the Ember candidate scans.
 @Execution(ExecutionMode.SAME_THREAD)
 class CommunityObservabilityForgeTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final int WORKERS = 3;
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 46100, 46300, 46400, "community-obs");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 14500, 14700, 14800, "community-obs");
     private final HttpClient http = HttpClient.newHttpClient();
 
     @AfterEach
@@ -74,7 +75,7 @@ class CommunityObservabilityForgeTest {
                .until(() -> field(communityJson(community), "state").equals(Option.some("ACTIVE"))
                             && field(communityJson(community), "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
         await().atMost(BUDGET.duration())
-               .untilAsserted(() -> assertFormationEvents(community));
+               .untilAsserted(() -> assertFormationEvents(community, workers));
 
         var victim = nonGovernor(community, workers);
 
@@ -114,12 +115,17 @@ class CommunityObservabilityForgeTest {
                                 .communityId();
     }
 
-    private void assertFormationEvents(String community) {
+    /// Exactly one MEMBER_JOINED per admitted worker: each worker enters the committed roster once, and the roster
+    /// diff emits one event per added node.
+    private void assertFormationEvents(String community, List<NodeId> workers) {
         var events = communityEvents(community);
 
         assertThat(events).anyMatch(CommunityMinted.class::isInstance);
         assertThat(events).filteredOn(CommunityMemberJoined.class::isInstance)
-                          .hasSizeGreaterThanOrEqualTo(WORKERS);
+                          .extracting(event -> event.details().get("nodeId"))
+                          .containsExactlyInAnyOrderElementsOf(workers.stream()
+                                                                      .map(NodeId::id)
+                                                                      .toList());
         assertThat(stateChanges(community)).anySatisfy(event -> assertThat(event.details()).containsEntry("from", "FORMING")
                                                                                            .containsEntry("to", "ACTIVE"));
     }
