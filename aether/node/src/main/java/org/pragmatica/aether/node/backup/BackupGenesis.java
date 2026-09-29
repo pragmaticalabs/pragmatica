@@ -185,7 +185,9 @@ public record BackupGenesis(KvBackupService service) {
     private Promise<GenesisDeclared> commitSupersede(ClusterIncarnationValue current,
                                                      BackupHeader head,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        var next = ClusterIncarnation.superseding(current, head.incarnation(), ULID.ulid().encoded());
+        var next = ClusterIncarnation.superseding(current,
+                                                  head.incarnation(),
+                                                  ULID.ulid().encoded());
         var transactionId = "declare-genesis:" + UUID.randomUUID();
 
         return service.kvStore()
