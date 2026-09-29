@@ -86,6 +86,8 @@ When adding a new test class:
 3. Add an entry to this table
 4. Implement the `getPortOffset()` pattern
 5. Use `@Execution(ExecutionMode.SAME_THREAD)` annotation
+| StreamConfirmationFactorOwnerKillTest | 14500 | 14600 | 0 | 5 nodes (app-http 14700; #1564 RF 3 / CF 2: an acked record survives the owner's loss) |
+| StreamConfirmationEqualsFactorAvailabilityTest | 16500 | 16600 | 0 | 3 nodes (app-http 16700; #1564 RF 3 / CF 3: one lost core refuses writes until a replacement is placed) |
 
 ## This table is not exhaustive
 
