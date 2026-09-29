@@ -130,7 +130,9 @@ class QuicDialAttemptTest {
         start(highNode.network(), highPort);
         lowNode.network().dialForTests(nodeInfo(high, highPort), false);
 
-        awaitTrue(() -> connected(lowNode.network(), high) && connected(highNode.network(), low), "both ends CONNECTED");
+        awaitConnectedRedialing(lowNode.network(), nodeInfo(high, highPort), false,
+                                () -> connected(lowNode.network(), high) && connected(highNode.network(), low),
+                                "both ends CONNECTED");
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(OUTAGE_SETTLE_MS));
         assertEveryLaneCarriesTrafficBothWays(lowNode, highNode);
 
@@ -199,7 +201,16 @@ class QuicDialAttemptTest {
                 }
                 nodes.get(i).network().dialForTests(nodeInfo(ids.get(late), gate.port()), false);
             }
-            awaitTrue(() -> seedsConnected(nodes, ids, late), "the seeds are connected to each other");
+            for (int i = 0; i < late; i++) {
+                for (int j = i + 1; j < late; j++) {
+                    var a = nodes.get(i);
+                    var b = nodes.get(j);
+
+                    awaitConnectedRedialing(a.network(), nodeInfo(b.id(), ports.get(j)), false,
+                                            () -> connected(a.network(), b.id()) && connected(b.network(), a.id()),
+                                            a.id() + " and " + b.id() + " connected");
+                }
+            }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(LATE_START_DELAY_MS));
             start(nodes.get(late).network(), ports.get(late));
             // The late core is the designated dialer for no pair; it initiates from its isolation branch (forced).
@@ -207,6 +218,14 @@ class QuicDialAttemptTest {
                 nodes.get(late).network().dialForTests(nodeInfo(ids.get(i), ports.get(i)), true);
             }
 
+            for (int i = 0; i < late; i++) {
+                var seed = nodes.get(i);
+                var lateNode = nodes.get(late);
+
+                awaitConnectedRedialing(lateNode.network(), nodeInfo(seed.id(), ports.get(i)), true,
+                                        () -> connected(lateNode.network(), seed.id()) && connected(seed.network(), lateNode.id()),
+                                        lateNode.id() + " and " + seed.id() + " connected");
+            }
             awaitTrue(() -> fullyConnected(nodes, ids), "every core CONNECTED to every other");
             // Abandonment happens at attach, so it is normally complete already; the arming is ASSERTED after the count,
             // so that without the abandon the count itself shows the damage (the live attempts complete: 28, not 20).
@@ -288,102 +307,6 @@ class QuicDialAttemptTest {
         network.startOnPort(port).await(AWAIT).onFailure(cause -> fail("start failed: " + cause.message()));
     }
 
-    /// A UDP relay on its own port in front of `targetPort`: drops every datagram while closed; once open, relays each
-    /// client (by source address) through its own upstream socket and relays the replies back.
-    private static final class UdpGate implements AutoCloseable {
-        private final DatagramSocket front;
-        private final InetSocketAddress target;
-        private final Map<SocketAddress, DatagramSocket> upstreams = new ConcurrentHashMap<>();
-        private final List<Thread> threads = new CopyOnWriteArrayList<>();
-        private volatile boolean open;
-        private volatile boolean closed;
-
-        private UdpGate(DatagramSocket front, InetSocketAddress target) {
-            this.front = front;
-            this.target = target;
-        }
-
-        static UdpGate udpGate(int targetPort) {
-            try {
-                var gate = new UdpGate(new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0)),
-                                       new InetSocketAddress(InetAddress.getLoopbackAddress(), targetPort));
-
-                gate.spawn(gate::relayFromClients);
-                return gate;
-            } catch (IOException e) {
-                return fail("gate: " + e.getMessage());
-            }
-        }
-
-        int port() {
-            return front.getLocalPort();
-        }
-
-        void open() {
-            open = true;
-        }
-
-        private void spawn(Runnable loop) {
-            var thread = Thread.ofPlatform().daemon().start(loop);
-
-            threads.add(thread);
-        }
-
-        private void relayFromClients() {
-            var buffer = new byte[65_535];
-
-            while (!closed) {
-                try {
-                    var packet = new DatagramPacket(buffer, buffer.length);
-
-                    front.receive(packet);
-                    if (open) {
-                        upstream(packet.getSocketAddress()).send(new DatagramPacket(packet.getData(), packet.getLength(), target));
-                    }
-                } catch (IOException e) {
-                    return;
-                }
-            }
-        }
-
-        private DatagramSocket upstream(SocketAddress client) {
-            return upstreams.computeIfAbsent(client, this::newUpstream);
-        }
-
-        private DatagramSocket newUpstream(SocketAddress client) {
-            try {
-                var socket = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
-
-                spawn(() -> relayToClient(socket, client));
-                return socket;
-            } catch (IOException e) {
-                return fail("gate upstream: " + e.getMessage());
-            }
-        }
-
-        private void relayToClient(DatagramSocket socket, SocketAddress client) {
-            var buffer = new byte[65_535];
-
-            while (!closed) {
-                try {
-                    var packet = new DatagramPacket(buffer, buffer.length);
-
-                    socket.receive(packet);
-                    front.send(new DatagramPacket(packet.getData(), packet.getLength(), client));
-                } catch (IOException e) {
-                    return;
-                }
-            }
-        }
-
-        @Override
-        public void close() {
-            closed = true;
-            front.close();
-            upstreams.values().forEach(DatagramSocket::close);
-        }
-    }
-
     private record TestNode(NodeId id,
                             QuicClusterNetwork network,
                             List<LaneProbe> received,
@@ -462,6 +385,27 @@ class QuicDialAttemptTest {
         } catch (IOException e) {
             return fail("no free UDP port: " + e.getMessage());
         }
+    }
+
+    /// The stub topology has no reconciler, so a dial whose every Initial is lost on a loaded box is never retried and
+    /// the pair never connects — a fixture failure, not a product one. Re-dial an EVICTED pair, as the reconciler would.
+    private static void awaitConnectedRedialing(QuicClusterNetwork dialer,
+                                                NodeInfo peer,
+                                                boolean forceInitiate,
+                                                BooleanSupplier connectedBothEnds,
+                                                String what) {
+        var deadline = System.nanoTime() + AWAIT.nanos();
+
+        while (System.nanoTime() < deadline) {
+            if (connectedBothEnds.getAsBoolean()) {
+                return;
+            }
+            if (phase(dialer, peer.id()) == PeerState.Phase.EVICTED) {
+                dialer.dialForTests(peer, forceInitiate);
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+        }
+        fail("Timed out waiting for: " + what);
     }
 
     private static void waitUpTo(BooleanSupplier condition, long millis) {

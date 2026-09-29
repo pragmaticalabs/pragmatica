@@ -67,8 +67,10 @@ class QuicLateDesignatedDialTest {
     private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(30).seconds();
     /// How long the peer stays down after the designated dial starts; #1554's la-5 booted 3 s late.
     private static final long PEER_START_DELAY_MS = 2_000L;
-    /// Long enough for a late completion to land, were the abandoned dial still alive.
-    private static final long SETTLE_MS = 2_000L;
+    /// After the gate opens, a live attempt's retransmitted Initial (PTO backoff ≈ 1, 2, 4 s) must have time to land and
+    /// complete, so that a missing abandon is SEEN (a supersede and a second handshake), not missed.
+    private static final long SETTLE_MS = 8_000L;
+    private static final long ARMING_WAIT_MS = 2_000L;
     private static final List<String> SUPERSEDING_CAUSES = List.of(PeerState.CAUSE_ATTACH_SUPERSEDE,
                                                                    PeerState.CAUSE_ATTACH_STALE_REPLACE);
 
@@ -92,16 +94,22 @@ class QuicLateDesignatedDialTest {
         var lowNet = network(low, toLow, lowJournal);
         var highNet = network(high, toHigh, highJournal);
 
-        start(lowNet, 0);
-        lowNet.dialForTests(nodeInfo(high, highPort), false);
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(PEER_START_DELAY_MS));
-        start(highNet, highPort);
-        highNet.dialForTests(nodeInfo(low, lowNet.boundPort().unwrap()), true);
+        // The lower id reaches the peer through a gate that drops everything until the peer's link has attached.
+        // Without it, a retransmitted Initial can reach the peer FIRST under load: the lower id's dial then completes
+        // (legitimately — the peer's own dial becomes a DUPLICATE) and there is nothing to abandon, so the arming would
+        // be timing. The gate makes the shape exact; opening it afterwards lets a NOT-abandoned dial complete and show.
+        try (var gate = UdpGate.udpGate(highPort)) {
+            start(lowNet, 0);
+            lowNet.dialForTests(nodeInfo(high, gate.port()), false);
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(PEER_START_DELAY_MS));
+            start(highNet, highPort);
+            highNet.dialForTests(nodeInfo(low, lowNet.boundPort().unwrap()), true);
 
-        awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
-        awaitTrue(() -> lowNet.quicMetrics().dialAbandonedCount() == 1,
-                  "arming: the lower id's own dial was still pending when the peer's link attached, and was abandoned");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MS));
+            awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
+            waitUpTo(() -> lowNet.quicMetrics().dialAbandonedCount() == 1, ARMING_WAIT_MS);
+            gate.open();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MS));
+        }
 
         Arrays.stream(StreamType.values())
               .forEach(lane -> sendProbes(lane, lowNet, low, highNet, high));
@@ -114,6 +122,17 @@ class QuicLateDesignatedDialTest {
                                        .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
         assertThat(lowNet.quicMetrics().handshakeTotalCount()).as("one connection attached at the lower id").isEqualTo(1);
         assertThat(highNet.quicMetrics().handshakeTotalCount()).as("... and at the peer").isEqualTo(1);
+        assertThat(lowNet.quicMetrics().dialAbandonedCount())
+            .as("arming: the lower id's own dial was still pending when the peer's link attached, and was abandoned")
+            .isEqualTo(1);
+    }
+
+    private static void waitUpTo(BooleanSupplier condition, long millis) {
+        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+
+        while (System.nanoTime() < deadline && !condition.getAsBoolean()) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+        }
     }
 
     private static void sendProbes(StreamType lane, QuicClusterNetwork lowNet, NodeId low, QuicClusterNetwork highNet, NodeId high) {
