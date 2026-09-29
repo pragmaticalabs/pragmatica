@@ -1128,8 +1128,8 @@ A slice publishes through the injected `Publisher<T>` (or the typed `TypedPublis
 
 | Outcome | Meaning | What to do |
 |---------|---------|------------|
-| success | The event is in the log at the declared `min_sync_replicas` floor | nothing |
-| failure (e.g. `NOT_ENOUGH_REPLICAS`) | The event is **not** in the log — the floor is checked before the append | a retry is a new publish |
+| success | The event is held by `confirmation_factor` copies, the owner included | nothing |
+| failure (e.g. `NOT_ENOUGH_REPLICAS`) | The event is **not** in the log — the replica floor (`confirmation_factor − 1` registered peers) is checked before the append | a retry is a new publish |
 | `PublishOutcomeUnknown` | The owner appended but the floor was not confirmed (e.g. peer acks timed out): the event **may** be in the log | retry only with the same key |
 
 One known exception to "failure = not in the log": a WAL fsync failure after the owner's ring append
@@ -1162,8 +1162,8 @@ keyed publish. On an **ephemeral** topic the key is ignored (there is no log and
 | `topic_name` | `String` | required | Topic name for message routing |
 | `durability` | `String` | `"ephemeral"` | Delivery tier (#386): `"ephemeral"` keeps the RPC fan-out; `"durable"` backs the topic with a replicated stream |
 | `partitions` | `Integer` | `1` | Durable only. Partition count of the backing stream (per-partition ordering unit) |
-| `replicas` | `Integer` | `2` | Durable only. Copies of each partition, owner included. Must be `>= 2` |
-| `min_sync_replicas` | `Integer` | = `replicas` | Durable only. Write-ack floor, owner included. v1 constraint: MUST equal `replicas` (rejected at parse otherwise; relaxes when #411 lands) |
+| `replication_factor` | `Integer` | cluster `[replication]` default (built-in `3`) | Durable only. Copies of each partition, owner included (#1564). Below 3 only when declared here, with a LOUD warning; above the cluster's desired core count is refused |
+| `confirmation_factor` | `Integer` | `min(cluster default, replication_factor)` (built-in default `2`) | Durable only. Copies, owner included, that hold an event before `publish` resolves (#1564). Must satisfy `1 <= confirmation_factor <= replication_factor`; `1` and `= replication_factor` are accepted with a warning |
 | `retention` | `Duration` | `"7d"` | Durable only. Time retention of the backing stream (e.g. `"7d"`, `"12h"`). The effective replay window is min(this, the stream's ring count/byte sizing caps) |
 
 Declaring any of the four stream knobs on an ephemeral topic is a **deploy-time error** (the keys
@@ -1171,9 +1171,23 @@ would be inert — same stance as #576): either declare `durability = "durable"`
 invalid durable declaration fails slice activation loudly; it never silently downgrades to
 ephemeral delivery.
 
+**Replication policy (#1564).** Durable topics, streams and durable entities share one policy with the
+same two keys (see `guarantees.md` §4a). The factors resolve once, when the topic's config is committed;
+a later change of the cluster `[replication]` default affects only topics declared afterwards, and
+redeclaring a live topic with different factors is refused (`ChangedOnLiveResource` — declare a new
+topic instead). A declaration the policy refuses fails the blueprint publish and slice activation with
+its typed cause. The warnings — `replication-factor-below-three` (an explicit RF below 3; LOUD),
+`confirmation-equals-replication-factor` (losing any one replica refuses publishes) and
+`confirmation-factor-owner-only` (the owner's death loses events it acknowledged but had not
+replicated) — appear as WARN logs and in the publish response's `warnings`. The topic's dead-letter
+stream inherits its RF and CF. The removed keys `replicas` and `min_sync_replicas` have no aliases: a
+section still using one fails the bind as an unrecognized key. Earlier revisions forced
+`min_sync_replicas == replicas` (the "v1 constraint until #411"); that is superseded by #1564, and
+`confirmation_factor < replication_factor` is accepted.
+
 **Unrecognized keys in a topic's own section are rejected, not ignored** (#738). A mistyped key —
 most commonly a dashed spelling where the table above expects an underscore, e.g.
-`min-sync-replicas` instead of `min_sync_replicas` — used to bind silently as if the key had never
+`confirmation-factor` instead of `confirmation_factor` — used to bind silently as if the key had never
 been written. On an ephemeral topic this meant the deploy-time inert-key rejection above never
 fired: the mistyped knob was invisible to it, so a likely-durable declaration was silently dropped
 instead of raising the loud error it should have. (Durability-tier selection itself is unaffected
@@ -1215,7 +1229,7 @@ retention = "14d"
 - **Delivery is at-most-once, unordered, and best-effort — not durable.** A publish that finds no live instance of a subscribing slice drops the message silently (the publish call still reports success); a delivery that fails mid-flight is not retried. Nothing is queued or persisted, so a subscriber that is down when a message is published misses it permanently, even after it comes back up. If your handler needs guaranteed processing, declare the topic durable — or build idempotent recovery on top (e.g. reconcile against a durable source). See `guarantees.md` §5.
 
 **Durable topics (`durability = "durable"`, #386):**
-- `publish` resolves when the event is persisted at the declared replication floor (owner + `min_sync_replicas − 1` peer acks) — NOT when subscribers process it. A subscriber down at publish time reads the event from the log when it returns.
+- `publish` resolves when the event is persisted at the declared confirmation factor (owner append + `confirmation_factor − 1` distinct peer acks) — NOT when subscribers process it. A subscriber down at publish time reads the event from the log when it returns.
 - Delivery is **at-least-once per subscribing slice**: your handler's returned `Promise<Unit>` IS the acknowledgment — success advances the group cursor, failure or timeout triggers redelivery (5 attempts with backoff), and an event that exhausts its retries lands in the topic's durable dead-letter stream (`topic:<address>.dlq`) attributed to your consumer group, never silently dropped.
 - Events of one partition are processed **in order** by your group; different partitions process independently. **Duplicates are possible** (crash-window redelivery, retry racing a slow attempt) — write handlers idempotent; the framework idempotency aspect for topics arrives with a later batch.
 - A slice upgrade keeps its consumer position (groups are version-stable) — no reprocessing storm on deploy.
