@@ -38,10 +38,13 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
@@ -84,6 +87,14 @@ class ClusterEventAggregatorTest {
                               BooleanSupplier ownerCheck,
                               BooleanSupplier replayingCheck,
                               BooleanSupplier leaderCheck) {
+            return create(retention, ownerCheck, replayingCheck, leaderCheck, HlcClock.hlcClock(SELF));
+        }
+
+        static Harness create(RetentionPolicy retention,
+                              BooleanSupplier ownerCheck,
+                              BooleanSupplier replayingCheck,
+                              BooleanSupplier leaderCheck,
+                              HlcClock hlc) {
             // Generous memory budget so calculateStreamBytes (64 + 24*maxCount + maxBytes) fits.
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
             var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
@@ -104,7 +115,6 @@ class ClusterEventAggregatorTest {
                                                                                     config).unwrap();
             var pubRef = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(publisher);
             var conRef = new AtomicReference<FrameworkStreamConsumer<ClusterEvent>>(consumer);
-            var hlc = HlcClock.hlcClock(SELF);
             var aggregator = ClusterEventAggregator.clusterEventAggregator(pubRef::get,
                                                                            conRef::get,
                                                                            ownerCheck,
@@ -838,6 +848,293 @@ class ClusterEventAggregatorTest {
                                                                                                               epoch.localCounter(),
                                                                                                               HlcTimestamp.ZERO)),
                               Option.none());
+    }
+
+    // --- operator warnings (#1574) ---------------------------------------------------------------
+
+    private static OperatorWarning fsyncFailed(String subject) {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.REPLICA_FSYNC_FAILED,
+                                               subject,
+                                               "durability sync failed for " + subject);
+    }
+
+    /// A warning is a per-node fact, so a NON-OWNER still publishes it. The event carries the code
+    /// catalogue's severity, the logged message as its summary, and the filterable details.
+    @Test
+    void onOperatorWarning_notOwner_emitsEventCarryingCodeAndSubject() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.CORE_ABSENCE_FENCE,
+                                                                         "core",
+                                                                         "CORE ABSENCE fence firing"));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getFirst().type()).isEqualTo("OPERATOR_WARNING");
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(events.getFirst().summary()).isEqualTo("CORE ABSENCE fence firing");
+        assertThat(events.getFirst().details()).containsAllEntriesOf(Map.of("code", "core-absence-fence",
+                                                                            "subsystem", "worker-isolation",
+                                                                            "subject", "core",
+                                                                            "nodeId", SELF.id(),
+                                                                            "suppressedSince", "0"))
+                                                .as("#1653: stamped like every other event")
+                                                .containsKey(ClusterEventIdentity.EVENT_ID)
+                                                .hasSize(6);
+    }
+
+    /// The flood test. A thousand raises of one `(code, subject)` inside a window publish ONE event, a
+    /// different subject is not starved by the flood, and the first event after the window closes
+    /// reports how many were held back.
+    @Test
+    void onOperatorWarning_flood_emitsOncePerWindow_andReportsTheSuppressedCount() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 1_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        }
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[4]"));
+
+        assertThat(h.events()).hasSize(2);
+
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        var events = h.events();
+        assertThat(events).hasSize(3);
+        assertThat(events.stream().map(event -> event.details().get("subject")).toList())
+            .containsExactly("orders[3]", "orders[4]", "orders[3]");
+        assertThat(events.getLast().details()).containsEntry("suppressedSince", "999");
+        assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
+    }
+
+    /// One millisecond short of the window is still inside it.
+    @Test
+    void onOperatorWarning_justInsideTheWindow_isStillSuppressed() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(59_999L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        assertThat(h.events()).hasSize(1);
+    }
+
+    /// #1617 R3: throttle keys are evicted once idle for twice the window, so an open key space (peers,
+    /// `stream[partition]` subjects) cannot grow without bound. 100k keys, then an idle interval past the
+    /// eviction age: the map is empty again.
+    @Test
+    void evictIdleThrottleWindows_afterTwiceTheWindowIdle_emptiesTheOperatorWarningThrottle() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 100_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[" + i + "]"));
+        }
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).isEqualTo(100_000);
+
+        // The HLC's logical counter carries into its physical component under 100k reads in one millisecond,
+        // so the keys' last-seen times spread over a few ms. The margins below are far wider than that.
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).as("not yet idle for twice the window")
+                                                                .isEqualTo(100_000);
+
+        physicalMillis.addAndGet(70_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).as("idle for twice the window").isZero();
+    }
+
+    /// #1617 R3: a key that is still being raised is not evicted, however old its window is.
+    @Test
+    void evictIdleThrottleWindows_keyRaisedRecently_isKept() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(119_000L);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        physicalMillis.addAndGet(1_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).isEqualTo(1);
+    }
+
+    /// #1617 R4: a window is consumed only by an event that is published. The first occurrence is not
+    /// published (replay in progress); a second occurrence inside the same window is then admitted, and
+    /// reports the one that was lost.
+    @Test
+    void onOperatorWarning_firstPublishFails_retryInTheSameWindowIsAdmitted() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               replaying::get,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.events()).as("control: the first occurrence was not published").isEmpty();
+
+        replaying.set(false);
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        var events = h.events();
+        assertThat(events).as("the retry inside the same window is admitted").hasSize(1);
+        assertThat(events.getFirst().details()).containsEntry("suppressedSince", "1");
+    }
+
+    /// #1617 R4 (v1562): while publishing keeps failing, a key is attempted at most once per retry window, not once
+    /// per occurrence. 1,000 raises spread over one 60 s window, every publish failing, make at most
+    /// ceil(60 s / 5 s) = 12 attempts. Releasing the window outright made 1,000.
+    /// #1617 with #1653: a publish that fails transiently is HELD and re-sent by redelivery, so it is not a loss and
+    /// does not shorten the window. A second occurrence inside the window stays suppressed while the first is being
+    /// delivered, and the first lands once the publisher is back: one event for the window, not two.
+    @Test
+    void onOperatorWarning_transientPublishFailure_isRedelivered_andDoesNotReopenTheWindow() throws InterruptedException {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: the failed publish is held, not dropped").isEqualTo(1);
+
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.aggregator().redeliveryCounters()).as("the second occurrence was suppressed, not admitted")
+                                                       .containsEntry("accepted", 1L);
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.events()).as("the held event lands; the second occurrence stayed suppressed").hasSize(1);
+    }
+
+    /// #1617 with #1653: an event redelivery finally DROPS is a loss, so its key reopens the short retry window. Here
+    /// the drop is an overflow: with the publisher unbound, one more distinct key than the redelivery capacity pushes
+    /// the first key's event out.
+    @Test
+    void onOperatorWarning_eventRedeliveryGivesUpOn_reopensTheShortWindow() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.publisher().set(null);
+        for (int i = 0; i <= ClusterEventRedelivery.CAPACITY; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[" + i + "]"));
+        }
+        assertThat(h.aggregator().redeliveryDropped()).as("control: the first key's event was dropped by overflow")
+                                                      .containsEntry("overflow", 1L);
+
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[0]"));
+        assertThat(h.aggregator().redeliveryCounters()).as("the lost key is admitted again after the short window")
+                                                       .containsEntry("accepted", (long) ClusterEventRedelivery.CAPACITY + 2);
+
+        // orders[5] is still held by redelivery (only orders[0] and then orders[1] were pushed out), so its full window
+        // stands and the occurrence is suppressed.
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[5]"));
+        assertThat(h.aggregator().redeliveryCounters()).as("a key whose event is still held is not admitted")
+                                                       .containsEntry("accepted", (long) ClusterEventRedelivery.CAPACITY + 2);
+    }
+
+    @Test
+    void onOperatorWarning_publishAlwaysFails_attemptsAreBoundedByTheRetryWindow() {
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> attempts.incrementAndGet() > 0,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        for (int i = 0; i < 1_000; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+            physicalMillis.addAndGet(60);
+        }
+
+        var bound = (int) Math.ceil(60_000.0 / ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+
+        // v1617-r3 nit: the exact bound, not a range, so a retry window other than OPERATOR_WARNING_RETRY_MS fails here too.
+        assertThat(attempts.get()).as("publish attempts for 1,000 raises in one window, all failing")
+                                  .isEqualTo(bound);
+        assertThat(h.events()).as("control: nothing was published").isEmpty();
+    }
+
+    /// After failed attempts, the first success restores the full window.
+    @Test
+    void onOperatorWarning_afterAFailedPublish_successRestoresTheFullWindow() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               replaying::get,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        replaying.set(false);
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+        assertThat(h.events()).as("control: the retry after the short window landed").hasSize(1);
+
+        physicalMillis.addAndGet(ClusterEventAggregator.OPERATOR_WARNING_RETRY_MS);
+        h.aggregator().onOperatorWarning(fsyncFailed("orders[3]"));
+
+        assertThat(h.events()).as("a success restores the 60 s window: 5 s later is still suppressed").hasSize(1);
+    }
+
+    /// #1617 R5: the stream-memory throttle's own window edge. One millisecond short of the window is still
+    /// suppressed, and the window's end admits.
+    @Test
+    void onStreamMemoryExceeded_windowEdge_suppressesJustInside_admitsAtTheEdge() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(),
+                               OWNER,
+                               () -> false,
+                               LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+        physicalMillis.addAndGet(59_999L);
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+
+        assertThat(h.events()).as("59,999 ms: still inside the window").hasSize(1);
+
+        physicalMillis.addAndGet(1L);
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
+
+        assertThat(h.events()).as("60,000 ms: the window has ended").hasSize(2);
     }
 
     // --- production retention -------------------------------------------------------------------
