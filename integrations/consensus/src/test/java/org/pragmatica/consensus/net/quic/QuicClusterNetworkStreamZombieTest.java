@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.net.tcp.TlsConfig;
 import java.net.SocketAddress;
+import java.nio.channels.ClosedChannelException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import io.netty.channel.ChannelFuture;
+import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
@@ -653,6 +655,91 @@ class QuicClusterNetworkStreamZombieTest {
         List<String> messages() {
             return List.copyOf(captured);
         }
+    }
+
+    /// #1578 — a write that resolved its stream just before the lane moved to another stream, and ran
+    /// after the old one was finished, fails on the event loop. It is re-sent ONCE on the stream the lane
+    /// kept, rather than dropped with only a write-failure line; a failure whose lane still resolves to
+    /// the failed stream is an ordinary failure and is not re-sent.
+    @Nested
+    class RetiredStreamResend {
+
+        @Test
+        void writeToStream_streamRetiredBeforeTheWriteRan_resendsOnceOnTheKeptStream() {
+            var network = network();
+            var peerId = new NodeId("retired-lane-peer");
+            var connection = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+            var kept = writableStream();
+            var retired = streamFailingWritesAfter(() -> connection.registerStream(StreamType.CONTROL, kept));
+
+            connection.registerStream(StreamType.CONTROL, retired);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+            var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), connection);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.Sent.class);
+            verify(kept, times(1)).writeAndFlush(any());
+            assertThat(network.quicMetrics().retiredStreamResendCount()).as("re-sent exactly once").isEqualTo(1L);
+            assertThat(network.quicMetrics().writeFailureCount()).as("a delivered resend is not a failure").isZero();
+        }
+
+        /// The rep-7 route of QuicSimultaneousDialLaneTest: a write captured the LOSING connection of a
+        /// duplicate dial, its lane open failed because that connection was closed, and the BACKSTOP
+        /// evicted whatever was bound — the survivor. Now the survivor stays bound and carries the message.
+        @Test
+        void lazyOpenFailsOnAReplacedConnection_survivorStaysBound_andCarriesTheWaitingMessage() {
+            var network = network();
+            var peerId = new NodeId("replaced-connection-peer");
+            var survivorStream = writableStream();
+            var survivor = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+            var loser = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+
+            survivor.registerStream(StreamType.CONTROL, survivorStream);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, survivor));
+
+            var _ = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), loser);
+
+            verify(survivorStream, times(1)).writeAndFlush(any());
+            assertThat(network.quicMetrics().streamZombieEvictionCount()).as("the survivor is not evicted").isZero();
+            assertThat(network.activeConnectionForTests(peerId)).isEqualTo(Option.some(survivor));
+        }
+
+        @Test
+        void writeToStream_failedWriteWhoseLaneStillResolvesToIt_isReportedNotResent() {
+            var network = network();
+            var peerId = new NodeId("failed-lane-peer");
+            var connection = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+            var failing = streamFailingWritesAfter(() -> {});
+
+            connection.registerStream(StreamType.CONTROL, failing);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+            var _ = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), connection);
+
+            verify(failing, times(1)).writeAndFlush(any());
+            assertThat(network.quicMetrics().retiredStreamResendCount()).isZero();
+            assertThat(network.quicMetrics().writeFailureCount()).as("reported as a write failure").isEqualTo(1L);
+        }
+    }
+
+    /// A live, writable mock stream whose writes FAIL: `beforeFailure` runs first (a test uses it to move
+    /// the lane to another stream, the retirement the write raced), then every listener sees a failed future.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static QuicStreamChannel streamFailingWritesAfter(Runnable beforeFailure) {
+        var stream = mock(QuicStreamChannel.class);
+        var future = mock(ChannelFuture.class);
+
+        lenient().when(future.isSuccess()).thenReturn(false);
+        lenient().when(future.cause()).thenReturn(new ClosedChannelException());
+        lenient().when(future.addListener(any())).thenAnswer(invocation -> {
+            beforeFailure.run();
+            ((GenericFutureListener) invocation.getArgument(0)).operationComplete(future);
+            return future;
+        });
+        lenient().when(stream.writeAndFlush(any())).thenReturn(future);
+        lenient().when(stream.isActive()).thenReturn(true);
+        lenient().when(stream.isWritable()).thenReturn(true);
+        return stream;
     }
 
     /// A mock QUIC lane stream that is active + writable and returns a self-listening future.
