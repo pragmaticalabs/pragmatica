@@ -20,6 +20,7 @@ import java.util.stream.IntStream;
 
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.handler.codec.quic.QuicStreamFrame;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -28,6 +29,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.StreamType;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -216,17 +219,25 @@ class QuicPeerConnectionLaneOpenDedupTest {
 
         /// THE pin for leak 2. Re-registering a lane displaces the previous stream; that stream is now
         /// unreachable for writes, so leaving it open holds one of 64 stream credits forever.
+        ///
+        /// #1578 changed HOW it is released, and this pin with it: the displaced stream is FINISHED (a
+        /// FIN queued behind its pending writes) by the side that opened it, not closed. The pre-#1578
+        /// assertion here was `close()`, which discards writes still queued on the stream — the silent
+        /// loss #1578 forbids. The credit is still returned: the other side closes the stream when the
+        /// FIN arrives. A peer-opened stream is left to its opener (see QuicPeerConnectionLaneOwnershipTest).
         @Test
-        void registerStream_replacingALiveStream_closesTheSupersededOne() {
+        void registerStream_replacingALiveLocallyOpenedStream_finishesTheSupersededOne() {
             var connection = connection();
             var first = liveStream();
             var second = liveStream();
 
+            lenient().when(first.isLocalCreated()).thenReturn(true);
             connection.registerStream(StreamType.DHT, first);
             connection.registerStream(StreamType.DHT, second);
 
-            verify(first, times(1)).close();
-            verify(second, never()).close();
+            verify(first, times(1)).writeAndFlush(argThat(message -> message instanceof QuicStreamFrame frame && frame.hasFin()));
+            verify(first, never()).close();
+            verify(second, never()).writeAndFlush(any());
             assertThat(connection.stream(StreamType.DHT))
                 .describedAs("the lane resolves to the replacement")
                 .isEqualTo(Option.some(second));

@@ -60,6 +60,7 @@ jobs:
         if: always()
         with:
           name: test-results
+          if-no-files-found: error
           path: |
             **/target/surefire-reports/*.xml
             **/target/failsafe-reports/*.xml
@@ -92,6 +93,19 @@ jobs:
       - name: Build test-stream-repl blueprint
         run: mvn -B -f aether/tests/blueprints/test-stream-repl/pom.xml clean install -DskipTests
 
+      # #1684, #919: the standalone test blueprints and the standalone url-shortener examples are outside the reactor,
+      # so no reactor gate checks their format or lint.
+      - name: JBCT check standalone test blueprints and examples
+        run: |
+          shopt -s nullglob
+          blueprints=(aether/tests/blueprints/*/pom.xml)
+          (( ${#blueprints[@]} > 0 )) || { echo "no aether/tests/blueprints/*/pom.xml found; refusing to continue" >&2; exit 1; }
+          poms=("${blueprints[@]}" examples/url-shortener/pom.xml examples/url-shortener-v2/pom.xml)
+          for pom in "${poms[@]}"; do
+            mvn -B jbct:check -f "$pom"
+          done
+          echo "JBCT-checked ${#poms[@]} standalone pom(s)"
+
       - name: Run Forge tests
         run: >
           mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
@@ -103,6 +117,7 @@ jobs:
         if: always()
         with:
           name: forge-test-results
+          if-no-files-found: error
           path: |
             aether/forge/forge-tests/target/failsafe-reports/*.xml
           retention-days: 7
