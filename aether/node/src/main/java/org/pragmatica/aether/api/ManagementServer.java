@@ -248,11 +248,13 @@ class ManagementServerImpl implements ManagementServer {
     /// nobody will ever look again.
     private final PublishSlot<HttpServer> serverSlot = PublishSlot.publishSlot();
     private final PublishSlot<HttpServer> h3ServerSlot = PublishSlot.publishSlot();
+
     /// #1456 test seam: runs between the H1 bind completing and the just-bound server being published to
     /// [#serverSlot], so a test can call `stop()` inside that window. The window is sub-millisecond in
     /// production, which is why the race is only reachable deterministically from here. No-op unless a test
     /// installs a hook.
     private volatile Runnable beforePublish = () -> {};
+
     /// #642: the only route source that arms a periodic task. Held so stop() can cancel its sweep —
     /// route sources are otherwise fire-and-forget, and this one outlived its node on the shared
     /// scheduler.
