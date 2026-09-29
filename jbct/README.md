@@ -44,6 +44,19 @@ clean the files it did read were. The same clause appears on the Maven goals' `L
 (`JBCT DENSITY — 5 LOC, 1 of 2 files, 1 UNPARSEABLE`) alongside a `filesUnanalyzed` field in
 `--format json`. Zero findings over a file the tool never analysed is silence, not compliance (#977).
 
+**Machine formats carry their own coverage (#1100).** Most CI SARIF uploaders never read the exit status,
+so `jbct lint --format json|sarif` states in the document itself what the run examined:
+
+- `--format json` emits one object: `collected` (files found), `examined` (files analysed), `skipped`
+  (`{file, reason}` for each file that could not be read or parsed) and `diagnostics`. A clean scan is
+  `jq -e '.examined > 0 and (.skipped | length) == 0 and (.diagnostics | length) == 0'`.
+- `--format sarif` adds `runs[0].invocations[0]`: `executionSuccessful` is `false` when any collected file
+  could not be analysed, with one `error` notification per such file; a run that found no Java files at
+  all carries a `warning` notification that nothing was examined. A clean scan is
+  `jq -e '.runs[0] | .invocations[0].executionSuccessful and (.invocations[0].toolExecutionNotifications | length) == 0 and (.results | length) == 0'`.
+
+A run that found no Java files still exits `0`; its document is what says it examined nothing.
+
 `shape-census` and `obligations` are reports rather than gates: they still exit 0 over a partial run,
 but each states the gap rather than omitting it silently.
 

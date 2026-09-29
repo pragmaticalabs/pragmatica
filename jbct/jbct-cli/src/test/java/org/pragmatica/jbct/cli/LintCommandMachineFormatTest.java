@@ -85,7 +85,7 @@ class LintCommandMachineFormatTest {
     }
 
     @Test
-    void json_withFindings_stdoutIsExactlyTheArray_summaryGoesToStderr() throws IOException {
+    void json_withFindings_stdoutIsExactlyTheDocument_summaryGoesToStderr() throws IOException {
         write("Warny.java", VIOLATING);
         var exitCode = lint("--format", "json");
 
@@ -100,7 +100,7 @@ class LintCommandMachineFormatTest {
     }
 
     @Test
-    void json_cleanRun_stdoutIsAnEmptyArray_notNothing() throws IOException {
+    void json_cleanRun_stdoutIsACleanDocument_notNothing() throws IOException {
         write("Pure.java", CLEAN);
         var exitCode = lint("--format", "json");
 
