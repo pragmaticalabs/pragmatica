@@ -15,4 +15,8 @@
   peers to republish. With no matching override the replicated (strongest) policy applies, and it relaxes once every
   serving node has republished.
   [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/BlueprintSecurityOverrideClusterWideTest.java`
-  — `overrideAddedAfterTheRouteRegistered_isEnforcedOnNodesThatDoNotHostTheRoute`, one instance on three nodes]
+  — `overrideAddedAfterTheRouteRegistered_isEnforcedOnNodesThatDoNotHostTheRoute`, one instance on three nodes: every
+  node answers 403 after the override and 200 again after it is withdrawn; with both layers reverted the two
+  non-hosting nodes answer 200]
+  [unverified: the Ember test goes red only with BOTH layers reverted; each layer alone keeps it green, so each layer
+  is pinned by unit tests only (`HttpRouteRegistrySecurityRefreshTest`, `AppHttpServerRouteSecurityPolicyTest`)]
