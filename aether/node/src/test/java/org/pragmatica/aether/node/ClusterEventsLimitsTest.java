@@ -76,11 +76,28 @@ class ClusterEventsLimitsTest {
         assertRefused(ClusterEventsLimits.MAX_COUNT_VARIABLE, String.valueOf(OffHeapRingBuffer.MAX_CAPACITY + 1));
     }
 
+    /// #1571 — this used to assert that a count AT the ring's indexable capacity was accepted. It was
+    /// correct about the code and wrong about the requirement: the aggregator reads at most
+    /// `CLUSTER_EVENTS_MAX_RETAINED` events, so any count above that window retained events no read could
+    /// return. The ceiling for the count is now the read window, which is far below the ring capacity.
     @Test
-    void clusterEventsLimits_countAtTheIndexableCapacity_isAccepted() {
-        var limits = limitsFrom(Map.of(ClusterEventsLimits.MAX_COUNT_VARIABLE, String.valueOf(OffHeapRingBuffer.MAX_CAPACITY))).unwrap();
+    void clusterEventsLimits_countAtTheReadWindow_isAccepted() {
+        var limits = limitsFrom(Map.of(ClusterEventsLimits.MAX_COUNT_VARIABLE, String.valueOf(AetherNode.CLUSTER_EVENTS_MAX_RETAINED))).unwrap();
 
-        assertThat(limits.maxCount()).isEqualTo(OffHeapRingBuffer.MAX_CAPACITY);
+        assertThat(limits.maxCount()).isEqualTo(AetherNode.CLUSTER_EVENTS_MAX_RETAINED);
+    }
+
+    /// #1571 — a count one past the read window refuses the boot, and the refusal names the variable, its
+    /// value, and the window it exceeds.
+    @Test
+    void clusterEventsLimits_countPastTheReadWindow_refusesTheBoot_namingBoth() {
+        var value = String.valueOf(AetherNode.CLUSTER_EVENTS_MAX_RETAINED + 1);
+
+        limitsFrom(Map.of(ClusterEventsLimits.MAX_COUNT_VARIABLE, value))
+                .onSuccess(limits -> fail("expected " + ClusterEventsLimits.MAX_COUNT_VARIABLE + "='" + value + "' to be refused, bound " + limits))
+                .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterEventsLimits.InvalidLimit.class))
+                .onFailure(cause -> assertThat(cause.message()).contains(ClusterEventsLimits.MAX_COUNT_VARIABLE + "='" + value + "'",
+                                                                         "CLUSTER_EVENTS_MAX_RETAINED=" + AetherNode.CLUSTER_EVENTS_MAX_RETAINED));
     }
 
     @Test
