@@ -79,7 +79,10 @@
   both peers), its positive control and differently-lagging peers of one lineage; `OwnerActivationTest` pins the unreachable-member report and its window.
 - `OwnerPeerReadsTest` pins the peer reads (resume at the oldest offset for the probe and the window,
   failures other than expiry propagate); `PromotionGateShapesVerifierTest` (the verifier's shapes, adopted)
-  pins three-lineage, ahead/behind and evicted-source shapes; `LenientPeerShapesVerifierTest` (adopted) pins a
-  divergent candidate whose ring is evicted below a lower acked peer, and `ReplicaCatchupTierFallbackTest` the
-  candidate's own tier-backed window read; `StreamAccessOwnerGateTest` pins the gated
+  pins three-lineage, ahead/behind and evicted-source shapes; `LenientPeerShapesVerifierTest` (adopted) pins the
+  gate's DECISION over a divergent candidate whose ring is evicted below a lower acked peer — it models each copy's
+  retention itself and does not exercise the production read. The production overlap read
+  (`OwnerPeerReads.ownerRange`, the node's only call site) is pinned by `ReplicaCatchupTierFallbackTest`:
+  `ownerGate_divergentCandidateWithEvictedRing_isRefusedOverTheLowerAckedPeer` on a real evicted ring and tier, and
+  `ownerGateLocalWindow_readsTheEvictedPrefixThroughTheTier`; `StreamAccessOwnerGateTest` pins the gated
   stream-access read, and `StreamReadRouterReplicaSnapshotTest` the gated `servedByOwner`.

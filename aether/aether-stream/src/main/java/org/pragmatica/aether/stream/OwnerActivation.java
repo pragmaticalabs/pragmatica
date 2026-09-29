@@ -81,10 +81,12 @@ import org.slf4j.LoggerFactory;
 /// window of offsets both copies hold lies inside it however deep the divergence starts. What the window bounds is
 /// the cost of each check. Offsets either side has evicted are not compared: a peer's window is read from its
 /// oldest available offset ([OwnerPeerReads]); a catch-up SOURCE that holds none of the window it is checked over
-/// cannot be verified and is refused ([ActivationBlock.OverlapUnverifiable]). Both sides read ring then tier, so a
-/// lower peer compared over nothing is one whose window the candidate's retention has reclaimed — accepted,
-/// since nothing is pulled from it (a ring-only candidate read made that the case for a merely evicted ring,
-/// v1555 R3).
+/// cannot be verified and is refused ([ActivationBlock.OverlapUnverifiable]). The candidate reads its own window
+/// ring then tier ([OwnerPeerReads#ownerRange]; a ring-only candidate read compared nothing once its ring was
+/// evicted, v1555 R3). A peer answers ring then tier only when the candidate is in that peer's registered replica
+/// set (`StreamPartitionManager.isRegisteredReplica`); otherwise it answers from its ring alone, bounded by its
+/// VISIBLE position. So a peer whose ring has evicted the window compares nothing: as the catch-up SOURCE it fails
+/// closed ([ActivationBlock.OverlapUnverifiable]); as a lower peer it is accepted, since nothing is pulled from it.
 ///
 /// **An unreachable member that stays unreachable is reported, not bypassed (#1555 item 8).** After
 /// `unreachableAlarmAfter` of continuous probe failure the partition stays blocked and the block is reported
