@@ -5,6 +5,7 @@
 package org.pragmatica.aether.http;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -618,14 +619,16 @@ class AppHttpServerAdapter implements AppHttpServer {
         var currentRoutes = context.currentRoutes();
 
         context.dispatch(new AppHttpEvents.CertRotationRequested(newBundle));
-
-        return context.stopServersAsync(previous.server(),
-                                        previous.h3())
-                      .flatMap(_ -> restartWithNewBundle(newBundle))
-                      .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
-                                                                                                pair.h3(),
-                                                                                                currentRoutes)))
-                      .mapToUnit();
+        // #1612: a failed stop is logged and the restart goes ahead (ListenerStops.stoppedForRestart).
+        return ListenerStops.stoppedForRestart(context.stopServersAsync(previous.server(),
+                                                                        previous.h3()),
+                                               log,
+                                               "App HTTP listeners")
+                            .flatMap(_ -> restartWithNewBundle(newBundle))
+                            .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
+                                                                                                      pair.h3(),
+                                                                                                      currentRoutes)))
+                            .mapToUnit();
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
@@ -864,8 +867,20 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         return findMatchingRemoteRoute(routeTable.remoteRoutes(),
                                        method,
-                                       normalizedPath).map(route -> SecurityPolicy.fromString(route.security()))
+                                       normalizedPath).map(this::remoteRoutePolicy)
                                       .filter(AppHttpServerAdapter::isExplicitPolicy);
+    }
+
+    /// #1659: a route this node does not host is judged by THIS node's committed security overrides wherever one
+    /// matches it -- applied to the route's declared policy by the same rule the hosting node uses -- so an
+    /// override is enforced, and a relaxed one relaxes, at every ingress without depending on a peer's republish.
+    /// With no matching override the replicated policy applies, which the registry reports as the strongest any
+    /// serving node published: while they disagree the route is as strict as its strictest node.
+    private SecurityPolicy remoteRoutePolicy(HttpRouteRegistry.RouteInfo route) {
+        return httpRoutePublisher.flatMap(publisher -> publisher.committedOverride(route.httpMethod(),
+                                                                                   route.pathPrefix(),
+                                                                                   SecurityPolicy.fromString(route.declaredSecurity())))
+                                 .or(() -> SecurityPolicy.fromString(route.security()));
     }
 
     private static boolean isExplicitPolicy(SecurityPolicy policy) {
@@ -1212,6 +1227,10 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                   selfNodeId));
     }
 
+    /// #1659 (v1670): the LONGEST matching remote prefix wins, the rule the hosting node applies to its local routes
+    /// (`HttpRoutePublisher.findLocalRoute`, #884). The forwarded request is served by that longest route and is not
+    /// re-authorized there, so authorizing it here by a shorter, broader route -- which `findFirst` over the
+    /// ascending registry picked -- let a PUBLIC parent admit requests its protected child would refuse.
     private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
                                                                         String method,
                                                                         String normalizedPath) {
@@ -1220,7 +1239,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              .equalsIgnoreCase(method))
                                        .filter(route -> pathMatchesPrefix(normalizedPath,
                                                                           route.pathPrefix()))
-                                       .findFirst());
+                                       .max(Comparator.comparingInt(route -> normalizePath(route.pathPrefix()).length())));
     }
 
     private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {
@@ -1496,12 +1515,103 @@ class AppHttpServerAdapter implements AppHttpServer {
             return;
         }
 
+        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath).onPresent(_ -> serveForwarded(httpCtx,
+                                                                                                                   request,
+                                                                                                                   network,
+                                                                                                                   ser,
+                                                                                                                   routerOpt.unwrap(),
+                                                                                                                   method,
+                                                                                                                   normalizedPath));
+    }
+
+    /// #1659 (v1670): the host RE-AUTHORIZES every forwarded request against the route it will actually serve it by
+    /// -- its own longest local match, with its own committed overrides. The ingress authorized against ITS view:
+    /// while a route or an override propagates, that view can lack a narrower, stricter child route the host already
+    /// serves (`/api/admin/` under a PUBLIC `/api/`), or a stricter override. Authorizing only at the ingress let such
+    /// a request through with no check against the route that served it: fail open. Checked at both ends, a request
+    /// is served only when BOTH policies admit it, so a propagation window in either direction fails closed. The
+    /// forwarded context carries the client's headers, so the credential is the one the ingress saw. A refusal goes
+    /// back as the same 401/403 problem response the ingress would send, so the client sees the status.
+    private Option<Unit> reauthorizeForwarded(HttpRequestContext httpCtx,
+                                              HttpForwardRequest request,
+                                              ClusterNetwork network,
+                                              Serializer ser,
+                                              String method,
+                                              String normalizedPath) {
+        var policy = resolveEffectivePolicy(method, normalizedPath, context.currentRoutes());
+
+        if (requiresAuthentication(policy) && config.securityMode() == SecurityMode.NONE) {
+            refuseForwarded(SecurityError.NO_VALIDATOR_CONFIGURED, httpCtx, request, network, ser, method);
+
+            return Option.none();
+        }
+
+        return securityValidator.validate(httpCtx, policy)
+                                .flatMap(ctx -> enforceRoleIfRequired(ctx, policy))
+                                .onFailure(cause -> refuseForwarded(cause, httpCtx, request, network, ser, method))
+                                .option()
+                                .map(_ -> Unit.unit());
+    }
+
+    @Contract
+    private void refuseForwarded(Cause cause,
+                                 HttpRequestContext httpCtx,
+                                 HttpForwardRequest request,
+                                 ClusterNetwork network,
+                                 Serializer ser,
+                                 String method) {
+        var statusAndMessage = mapSecurityError(cause);
+        var status = statusAndMessage.status();
+        var problem = ProblemDetail.problemDetail(status,
+                                                  statusAndMessage.clientMessage(),
+                                                  httpCtx.path(),
+                                                  request.requestId());
+
+        log.warn("[{}] Forwarded {} {} refused by this host's own authorization: {}",
+                 request.requestId(),
+                 method,
+                 httpCtx.path(),
+                 cause.message());
+        recordSecurityDenial(cause, httpCtx.path(), request.requestId(), method);
+        JSON_MAPPER.writeAsString(problem)
+                   .onSuccess(json -> sendForwardSuccess(network,
+                                                         request,
+                                                         ser,
+                                                         HttpResponseData.httpResponseData(status.code(),
+                                                                                           refusalHeaders(status),
+                                                                                           json.getBytes(StandardCharsets.UTF_8))))
+                   .onFailure(serializationFailure -> sendForwardError(network,
+                                                                       request,
+                                                                       "Forwarded request refused: " + statusAndMessage.clientMessage()));
+    }
+
+    private Map<String, String> refusalHeaders(HttpStatus status) {
+        var contentType = Map.entry("Content-Type", "application/problem+json");
+
+        return switch (config.securityMode()) {
+            case JWT -> status == HttpStatus.UNAUTHORIZED
+                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "Bearer realm=\"Aether\""))
+                        : Map.ofEntries(contentType);
+            case API_KEY -> status == HttpStatus.UNAUTHORIZED
+                            ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "ApiKey realm=\"Aether\""))
+                            : Map.ofEntries(contentType);
+            case NONE -> Map.ofEntries(contentType);
+        };
+    }
+
+    @Contract
+    private void serveForwarded(HttpRequestContext httpCtx,
+                                HttpForwardRequest request,
+                                ClusterNetwork network,
+                                Serializer ser,
+                                SliceRouter router,
+                                String method,
+                                String normalizedPath) {
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
 
         routeInfo.onPresent(this::recordMetricsStart);
-        invocationAdmission.execute(() -> routerOpt.unwrap()
-                                                   .handle(httpCtx),
+        invocationAdmission.execute(() -> router.handle(httpCtx),
                                     result -> emitForwardResult(result,
                                                                 network,
                                                                 request,

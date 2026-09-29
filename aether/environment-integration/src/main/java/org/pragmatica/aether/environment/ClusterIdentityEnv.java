@@ -51,6 +51,10 @@ public sealed interface ClusterIdentityEnv {
                                          "AETHER_ROLE",
                                          "AETHER_ZONE");
 
+    /// The members of [#IDENTITY_VARS] that describe THE NODE rather than the cluster, so a provider sets them
+    /// from the node's own provision context and NEVER copies them from the provisioning host's env: that host
+    /// is usually the leader, and its role, source and zone are its own (#1650; AETHER_ROLE since W4).
+    List<String> NODE_OWN_VARS = List.of("AETHER_ROLE", "AETHER_SOURCE", "AETHER_ZONE");
     /// Docker-specific infrastructure env vars (network + docker group id).
     List<String> DOCKER_INFRA_VARS = List.of("AETHER_DOCKER_NETWORK", "DOCKER_GID");
     /// Insecure dev-mode flag. Isolated from [#IDENTITY_VARS] on purpose — propagated

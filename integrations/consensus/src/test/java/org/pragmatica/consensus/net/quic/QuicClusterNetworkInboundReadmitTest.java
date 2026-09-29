@@ -387,6 +387,30 @@ class QuicClusterNetworkInboundReadmitTest {
         assertThat(routed).as("only the live identity's message is routed").containsExactly(live);
     }
 
+    /// #1558 — the moment a NodeId is retired (a different process claimed it, seen by any layer), its
+    /// still-CONNECTED link to the dead process is dropped, instead of lingering in `connectedPeers()`
+    /// until the liveness TTL. Control: before the conflict the peer is CONNECTED.
+    @Test
+    void retirement_evictsTheConnectedPeerImmediately() {
+        var self = new NodeId("aaa-self");
+        var peerId = new NodeId("zzz-peer");
+        var network = createNetwork(self, Set.of(self, peerId));
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        network.setBootTokens(tokens);
+        var connected = PeerState.peerState(peerId, System.nanoTime());
+
+        connected.attach(activeConnection(peerId), System.nanoTime());
+        var seeded = network.seedPeerForTests(peerId, connected);
+
+        tokens.admit(peerId, 0x0011L);
+        assertThat(seeded.phase()).as("control: the admitted process stays CONNECTED").isEqualTo(PeerState.Phase.CONNECTED);
+
+        tokens.admit(peerId, 0x0022L);
+
+        assertThat(seeded.phase()).as("the retired identity is permanently departed at once").isEqualTo(PeerState.Phase.REMOVED);
+    }
+
     private static BootTokens retiredRegistry(NodeId peer) {
         var tokens = BootTokens.bootTokens(0x5E1FL);
 

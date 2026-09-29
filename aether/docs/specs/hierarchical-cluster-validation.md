@@ -24,6 +24,9 @@ env -u HCLOUD_TOKEN mvn -T1 -pl integrations/consensus,aether/aether-metrics,aet
 BUILD SUCCESS. Local log: `/private/tmp/hierarchy-review-authority-unit.log`.
 Original command:
 
+Historical record at `2a175cecf`; #1526 removed the #1390 handoff classes, and the current
+equivalent selector names `RabiaVoterReconfigurationTest` instead of the two handoff test classes.
+
 ```sh
 env -u HCLOUD_TOKEN mvn -T1 -pl integrations/consensus,aether/node -am test -Dtest='RabiaHierarchySafetyTest,RabiaSyncAdoptionQuorumTest,RabiaReorderedDeliveryTest,RabiaVoterRecoveryTest,VoterConfigurationStateTest,CoreVoterReconcilerTest,NodeLifecycleRoutesDrainBudgetTest,CommittedLeaderRefreshTest,GovernorAnnouncerTest,GovernorAuthorityClientTest,CommunityHealthIndexTest,CommunityHealthRuntimeTest' -Dsurefire.failIfNoSpecifiedTests=false
 ```

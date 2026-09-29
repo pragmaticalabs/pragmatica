@@ -364,6 +364,19 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Owner promotion gate refusal (#1555): this node is the owner of `(streamName, partition)` by placement or
+    /// by the committed record, but it has not yet completed promotion — a fresh committed view naming itself
+    /// and a catch-up to every live holder's watermark ([OwnerActivation]). Until then it neither appends nor
+    /// serves reads as owner. Transient: promotion runs on demand and completes within a probe/backfill round,
+    /// or stays blocked while a live holder is unreachable until that holder is declared dead.
+    record OwnerNotActivated(String streamName, int partition) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream partition %s[%d] is not yet promoted on this node (fresh ownership view and catch-up pending)".formatted(streamName,
+                                                                                                                                    partition);
+        }
+    }
+
     /// Linearizable-read owner mismatch (#345 item 1e): a `LINEARIZABLE` read landed on `actual` but the
     /// committed `StreamPartitionOwnershipValue.owner` for the `(stream, partition)` arc is `expected`, so
     /// `actual` is NOT the authoritative owner (a stale committed view, or a routing race during a

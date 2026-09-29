@@ -526,7 +526,10 @@ the last dash — that was identifier parsing rather than zone awareness, and it
 `[worker] zone` is a **different knob** from the `AETHER_ZONE` environment variable, and only the latter is live:
 `Main` maps `AETHER_ZONE` onto `NodeInfo.LABEL_ZONE`, the Hello handshake propagates that label into
 `SwimMember.labels`, and it is read for observability by `ClusterTopologyManagerRecord` and `ClusterTopologyRoutes`.
-`AETHER_ZONE` is carried to every provisioned node via `ClusterIdentityEnv.IDENTITY_VARS`.
+`AETHER_ZONE` is stamped on every provisioned node from that node's own source, never inherited from the
+provisioning host (#1650): the source's single configured zone, or nothing for a source listing several `zones`,
+because the landing zone is chosen by capacity rotation after the node's user-data is rendered. `AETHER_SOURCE` is
+stamped the same way, always.
 
 Workers self-organize into groups deterministically from SWIM membership. Same membership produces identical groups on every worker — no coordination needed. Each group elects its own governor (lowest ALIVE NodeId).
 

@@ -10,7 +10,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -29,7 +28,6 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,9 +53,6 @@ public interface BootstrapModule {
 
     @Contract
     void retryIfNeeded();
-
-    @Contract
-    BootstrapModule onBootstrapCommitted(Runnable callback);
 
     /// RC1 Step 2: tail `MembershipDecision` events from `TopologyObserver` so the
     /// bootstrap module retries its core-partition seeding whenever the membership
@@ -86,8 +81,7 @@ public interface BootstrapModule {
                                          configBaselineSupplier,
                                          Option.some(cluster),
                                          new AtomicBoolean(false),
-                                         new AtomicInteger(),
-                                         new AtomicReference<>());
+                                         new AtomicInteger());
     }
 }
 
@@ -101,8 +95,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                              Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier,
                              Option<ClusterNode<KVCommand<AetherKey>>> cluster,
                              AtomicBoolean bootstrapComplete,
-                             AtomicInteger bootstrapAttempts,
-                             AtomicReference<Runnable> bootstrapCommittedCallback) implements BootstrapModule {
+                             AtomicInteger bootstrapAttempts) implements BootstrapModule {
     private static final Logger log = LoggerFactory.getLogger(BootstrapModuleRecord.class);
     private static final int SEED_CORE_MIN = 3;
     private static final int SEED_CORE_MAX = 15;
@@ -132,14 +125,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     @Contract
     @Override
-    public BootstrapModule onBootstrapCommitted(Runnable callback) {
-        bootstrapCommittedCallback.set(callback);
-
-        return this;
-    }
-
-    @Contract
-    @Override
     public void onMembershipDecision(MembershipDecision decision) {
         log.debug("BootstrapModule received {}", decision);
         retryIfNeeded();
@@ -148,9 +133,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract
     private void performLeaderChangeBootstrap(Set<NodeId> coreMembers) {
         cluster.onPresent(clusterNode -> applyLeaderChangeBootstrapBatch(clusterNode, coreMembers));
-        if (cluster.isEmpty()) {
-            fireBootstrapCommitted();
-        }
     }
 
     @Contract
@@ -164,8 +146,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         corePlan.onPresent(plan -> batch.add(plan.command()));
         configPlan.onPresent(plan -> batch.add(plan.command()));
         if (batch.isEmpty()) {
-            fireBootstrapCommitted();
-
             return;
         }
 
@@ -218,18 +198,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         }
 
         log.info("Leader-change bootstrap committed: {} commands", commandCount);
-        fireBootstrapCommitted();
-    }
-
-    @Contract
-    private void fireBootstrapCommitted() {
-        var callback = bootstrapCommittedCallback.get();
-
-        if (callback == null) {
-            return;
-        }
-
-        Result.lift(callback::run).onFailure(cause -> log.warn("Bootstrap-committed callback threw: {}", cause.message()));
     }
 
     @Contract

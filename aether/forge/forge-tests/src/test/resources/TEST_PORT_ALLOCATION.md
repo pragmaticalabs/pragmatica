@@ -28,18 +28,27 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | SliceVersionLifecycleTest     | 12500     | 12600          | 0          | 3 nodes (shared cluster, app-http 12700; #198 §8.2/§11.3) |
 | StreamFanoutConsumerTest      | 13000     | 13100          | 0          | 5 nodes (shared cluster, app-http 13200; #265 STEP 0 streaming baseline) |
 | StreamCrashDurabilityTest     | 13500     | 13600          | 0          | 5 nodes (shared cluster, app-http 13700; streaming-persistence A6 WAL crash-durability) |
-| StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership) |
+| StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership; per-PR since #1550) |
 | StreamOwnerFailoverPinnedTest | 15000     | 15100          | 0          | 5 nodes (shared cluster, app-http 15200; #491 RF=2 owner-kill failover, pinned membership) |
 | MultiPartitionStreamTest      | 16000     | 16100          | 0          | 5 nodes (shared cluster, app-http 16200; #429 multi-partition e2e — distribution/order/read-paths) |
 | StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |
 | MultiPartitionCrashDurabilityTest | 17500 | 17600          | 0          | 5 nodes (shared cluster, app-http 17700; #431 multi-partition WAL crash-durability, per-partition replay) |
 | DeclarativeStreamConsumerTest | 18000     | 18100          | 0          | 5 nodes (shared cluster, app-http 18200; #488 declarative consumer delivery + #526 app-typed round trip) |
 | DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
+| DurableTopicDeliveryForgeTest | 19000     | 19100          | 0          | 5 nodes (shared cluster, app-http 19200; #386 composed durable pub/sub path, Heavy) |
+| DurableEntityForgeTest        | 24300     | 24320          | 0          | 5 nodes (shared cluster, app-http 24340, SWIM UDP 24400-24404; durable entities, Heavy). Moved off 19000, which it shared unregistered with the row above (#1627) |
+| ClusterEventOwnerFailoverTest | 24210     | 24230          | 0          | 5 nodes (single method, app-http 24250, SWIM UDP 24310-24314; #1640 events survive the cluster-events owner and leader dying) |
 | CoordinationSlopeInstrumentTest | 20000  | 20100          | 0          | 3 nodes (shared cluster, app-http 20200; #591 validates the coordination-load sampler against live endpoints) |
 | MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
 | CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |
 | EmberAddNodeRoleLabelTest     | 21500     | 21600          | 0          | 3+2 nodes (shared cluster, app-http 21700; #590 addWorkerNode role-label guard, Heavy) |
-| LeaderTermFailoverTest        | 37400     | 37500          | 0          | 5 nodes (single method, app-http 37600; #1527 leader term strictly increases across two leader kills) |
+| DurableEntityTimerDurabilityTest | 22000  | 22100          | 0          | 5 nodes (app-http 22200) — registered late: it bound these ports while absent from this table |
+| NodeLifecyclePeriodicArmingForgeTest | 22050 | 22150        | 0          | 3 nodes (app-http 22250) — registered late, interleaved with the row above |
+| EmberInstanceTagRoundTripTest | 22350     | 22450          | 0          | 3 nodes (app-http 22550) — registered late |
+| MultiSourceCommunitySmokeTest | 22650     | 22750          | 0          | 5 core nodes initially (app-http 22850) — registered late |
+| EmberSameIdentityRelaunchTest (aether/ember) | 23000-23300 scan | base+40 | 5 | 3 nodes + relaunch, app-http base+80; scans 100-port blocks from 23000 to 23300 for a free one (#1528/#1558 — below the 32768 ephemeral floor). Moved off 22000-23800, which overlapped the four rows above and the next one |
+| BlueprintSecurityOverrideClusterWideTest | 23500 | 23600    | 0          | 3 nodes (app-http 23700) — registered late |
+| LeaderTermFailoverTest        | 24000     | 24100          | 0          | 5 nodes (single method, app-http 24200; #1527/#1559 leader term strictly increases across two leader kills, and the re-election pre-latch fires). Moved off 37400, which is inside the Linux ephemeral range 32768-60999 |
 
 ## Per-Method Offset Pattern
 
@@ -78,6 +87,18 @@ When adding a new test class:
 3. Add an entry to this table
 4. Implement the `getPortOffset()` pattern
 5. Use `@Execution(ExecutionMode.SAME_THREAD)` annotation
+
+## This table is not exhaustive
+
+The rows above are the registered ranges, and the non-overlap rule holds only among them. As of #1558,
+more test classes bind fixed ports without a row here: in `forge-tests`, for example
+`DurableEntityForgeTest` (19000, which it shares with `DurableTopicDeliveryForgeTest`),
+`PostRestartSlowRejoinDeficitFillProbeTest` (19500), `SurvivorLivenessAfterGracefulKillTest` (24500),
+`TerminatedWorkerGhostTest` (24800), `ScheduledSingleFireHostingTest` (25500), the `Hierarchical*` classes
+(28400-37100), `DurableProjectionRebuildForgeTest` (31600) and `ApiKeyFullRestartForgeTest` (31900). The
+`aether/ember` tests also scan 25700-27500, 27700-29500 and 29700-31500. Before choosing a range, search
+every five-digit literal under `src/test` rather than trusting this table, and prefer bases below 32768,
+the start of the Linux ephemeral range.
 
 ## Reserved Ranges
 
